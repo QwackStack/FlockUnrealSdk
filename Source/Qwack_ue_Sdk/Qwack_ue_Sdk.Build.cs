@@ -7,52 +7,48 @@ public class Qwack_ue_Sdk : ModuleRules
 	public Qwack_ue_Sdk(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-		
-		PublicIncludePaths.AddRange(
-			new string[] {
-				// ... add public include paths required here ...
-			}
-			);
-				
-		
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				// ... add other private include paths required here ...
-			}
-			);
-			
-		
-		PublicDependencyModuleNames.AddRange(
-			new string[]
-			{
-				"Core",
-				"SSL",
-				"OpenSSL",
-				"Icmp",
-			}
-			);
-			
-		
-		PrivateDependencyModuleNames.AddRange(
-			new string[]
-			{
-				"Core",
-				"CoreUObject",
-				"Engine",
-				"HTTP",
-				"Json",
-				"JsonUtilities",
-				"Projects", 
-				"ModularGameplay",
-			}
-			);
-		
-		
-		DynamicallyLoadedModuleNames.AddRange(
-			new string[]
-			{
-				// ... add any modules that your module loads dynamically here ...
-			}
-			);
+
+		PublicIncludePaths.AddRange(new string[]
+		{
+			ModuleDirectory + "/Public",
+			ModuleDirectory + "/Public/Qwack_ue_Sdk",
+			ModuleDirectory + "/Public/Qwack_ue_Sdk/Analytics",
+			ModuleDirectory + "/Public/Qwack_ue_Sdk/Auth",
+			ModuleDirectory + "/Public/Qwack_ue_Sdk/Cache",
+			ModuleDirectory + "/Public/Qwack_ue_Sdk/Config",
+			ModuleDirectory + "/Public/Qwack_ue_Sdk/Endpoints",
+			ModuleDirectory + "/Public/Qwack_ue_Sdk/GameAPI",
+			ModuleDirectory + "/Public/Qwack_ue_Sdk/HTTPClient",
+			ModuleDirectory + "/Public/Qwack_ue_Sdk/LogEvent",
+			ModuleDirectory + "/Public/Qwack_ue_Sdk/Utils",
+		});
+
+		PrivateIncludePaths.AddRange(new string[]
+		{
+			ModuleDirectory + "/Private",
+			ModuleDirectory + "/Private/Analytics",
+			ModuleDirectory + "/Private/Auth",
+			ModuleDirectory + "/Private/Cache",
+			ModuleDirectory + "/Private/Config",
+			ModuleDirectory + "/Private/Endpoints",
+			ModuleDirectory + "/Private/GameAPI",
+			ModuleDirectory + "/Private/HTTPClient",
+			ModuleDirectory + "/Private/LogEvent",
+		});
+
+		PublicDependencyModuleNames.AddRange(new string[]
+		{
+			"Core",
+			"CoreUObject",
+			"Engine",
+			"DeveloperSettings",
+		});
+
+		PrivateDependencyModuleNames.AddRange(new string[]
+		{
+			"HTTP",
+			"Json",
+			"JsonUtilities",
+		});
 	}
 }

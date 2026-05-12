@@ -5,6 +5,7 @@
 #define LOCTEXT_NAMESPACE "FQwack_ue_SdkModule"
 DEFINE_LOG_CATEGORY(LOG_FLOCK_GAME_SDK);
 DEFINE_LOG_CATEGORY(LOG_QWACK_SDK);
+
 void FQwack_ue_SdkModule::StartupModule()
 {
 	// This code will execute after your module is loaded into memory; the exact timing is specified in the .uplugin file per-module

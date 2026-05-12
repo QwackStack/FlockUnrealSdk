@@ -25,7 +25,6 @@ public:
 
 	void SendRequest(const FString& endPoint, const FString& requestType, const FString& data, FQwackFlockResponse OnCompleteRequest, TMap
 	                 <FString, FString> customHeaders) const;
-	void GetToken(const FString& TokenEndpoint, bool bPlayer, const FString& SteamToken, const FQwackHTTPResponse& OnCompleteRequest) const;
 private:
 	static const FString UserAgent;
 	static const FString UserInstanceIdentifier;
