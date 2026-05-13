@@ -17,6 +17,9 @@ FSQwackFlockEndpoints UQwackFlockGameEndpoints::RecordTransaction  = Make(TEXT("
 FSQwackFlockEndpoints UQwackFlockGameEndpoints::LogEvent           = Make(TEXT("/v1/log_event/single"),                EQwackSDKHTTPType::POST);
 FSQwackFlockEndpoints UQwackFlockGameEndpoints::LogEvents          = Make(TEXT("/v1/log_event"),                       EQwackSDKHTTPType::POST);
 
+// Game version
+FSQwackFlockEndpoints UQwackFlockGameEndpoints::GameVersionByName  = Make(TEXT("/v1/game_version/by-name/{name}"),     EQwackSDKHTTPType::GET);
+
 FSQwackFlockEndpoints UQwackFlockGameEndpoints::Make(const FString& Path, EQwackSDKHTTPType T)
 {
 	FSQwackFlockEndpoints E;

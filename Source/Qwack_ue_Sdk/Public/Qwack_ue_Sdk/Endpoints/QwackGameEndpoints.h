@@ -53,6 +53,12 @@ public:
 	static FSQwackFlockEndpoints LogEvent;             // POST /v1/log_event/single
 	static FSQwackFlockEndpoints LogEvents;            // POST /v1/log_event
 
+	// ---- Game version ----
+	// Resolves the X-Game-Version-ID UUID from a configured version name. The
+	// trailing "{name}" must be URL-encoded by the caller and substituted into
+	// the request URL (Send's UrlOverride) before dispatch.
+	static FSQwackFlockEndpoints GameVersionByName;    // GET  /v1/game_version/by-name/{name}
+
 	static const TCHAR* QwackHttpVerb(EQwackSDKHTTPType T);
 
 private:

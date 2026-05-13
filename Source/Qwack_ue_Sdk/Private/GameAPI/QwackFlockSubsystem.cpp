@@ -1,8 +1,10 @@
 #include "QwackFlockSubsystem.h"
 
+#include "Engine/GameInstance.h"
 #include "JsonObjectConverter.h"
 #include "Misc/Paths.h"
 #include "Qwack_ue_Sdk/Cache/FlockEventSpool.h"
+#include "Qwack_ue_Sdk/Config/QwackConfigSubsystem.h"
 #include "Qwack_ue_Sdk/Config/QwackSettings.h"
 #include "Qwack_ue_Sdk/Endpoints/QwackGameEndpoints.h"
 #include "Qwack_ue_Sdk/HTTPClient/HTTPResponse.h"
@@ -150,15 +152,22 @@ TMap<FString, FString> UQwackFlockSubsystem::MakeHeaders(bool bIncludeAuth) cons
 {
 	TMap<FString, FString> Headers;
 	const UQwackSettings* S = GetDefault<UQwackSettings>();
-	if (S)
+	if (S && !S->ApiKey.IsEmpty())
 	{
-		if (!S->ApiKey.IsEmpty())
+		Headers.Add(TEXT("X-Flock-API-Key"), S->ApiKey);
+	}
+	// X-Game-Version-ID is the UUID of the game version, not the version name.
+	// The UUID is resolved lazily via UQwackConfigSubsystem::EnsureGameVersionResolved;
+	// Send() defers requests until that lookup lands.
+	if (const UGameInstance* GI = GetGameInstance())
+	{
+		if (const UQwackConfigSubsystem* Config = GI->GetSubsystem<UQwackConfigSubsystem>())
 		{
-			Headers.Add(TEXT("X-Flock-API-Key"), S->ApiKey);
-		}
-		if (!S->GameVersion.IsEmpty())
-		{
-			Headers.Add(TEXT("X-Game-Version-ID"), S->GameVersion);
+			const FString GameVersionId = Config->GetGameVersionId();
+			if (!GameVersionId.IsEmpty())
+			{
+				Headers.Add(TEXT("X-Game-Version-ID"), GameVersionId);
+			}
 		}
 	}
 	if (bIncludeAuth && !AccessToken.IsEmpty())
@@ -195,6 +204,33 @@ void UQwackFlockSubsystem::Send(const FSQwackFlockEndpoints& Endpoint,
 		FQwackHTTPResponse R; R.StatusCode = 0; R.FullText = TEXT("Empty URL — GameBaseURI not configured");
 		OnDone(R); return;
 	}
+
+	// Defer until X-Game-Version-ID is resolved. The resolver itself bypasses
+	// this Send path (it uses FHttpModule directly inside UQwackConfigSubsystem),
+	// so there is no recursion.
+	UQwackConfigSubsystem* Config = nullptr;
+	if (const UGameInstance* GI = GetGameInstance())
+	{
+		Config = GI->GetSubsystem<UQwackConfigSubsystem>();
+	}
+	if (Config
+		&& !Config->IsGameVersionResolved()
+		&& !Config->WasGameVersionResolveAttempted()
+		&& !Config->GetGameVersion().IsEmpty())
+	{
+		TWeakObjectPtr<const UQwackFlockSubsystem> WeakThis(this);
+		Config->OnGameVersionResolved(
+			[WeakThis, Endpoint, UrlOverride, Body, bIncludeAuth, OnDone](bool)
+			{
+				if (const UQwackFlockSubsystem* Strong = WeakThis.Get())
+				{
+					Strong->Send(Endpoint, UrlOverride, Body, bIncludeAuth, OnDone);
+				}
+			});
+		Config->EnsureGameVersionResolved();
+		return;
+	}
+
 	const TCHAR* Verb = UQwackFlockGameEndpoints::QwackHttpVerb(Endpoint.RequestType);
 	TMap<FString, FString> Headers = MakeHeaders(bIncludeAuth);
 

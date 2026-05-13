@@ -54,10 +54,12 @@ TMap<FString, FString> UQwackFlockGameSubsystem::MakeHeaders(bool bIncludeAuth) 
 		{
 			Headers.Add(TEXT("X-Flock-API-Key"), ApiKey);
 		}
-		const FString GameVersion = Config->GetGameVersion();
-		if (!GameVersion.IsEmpty())
+		// X-Game-Version-ID must be the UUID of the game version, not the
+		// human-readable name. The UUID is fetched lazily by Send (see below).
+		const FString GameVersionId = Config->GetGameVersionId();
+		if (!GameVersionId.IsEmpty())
 		{
-			Headers.Add(TEXT("X-Game-Version-ID"), GameVersion);
+			Headers.Add(TEXT("X-Game-Version-ID"), GameVersionId);
 		}
 	}
 	if (bIncludeAuth)
@@ -101,6 +103,35 @@ void UQwackFlockGameSubsystem::Send(const FSQwackFlockEndpoints& Endpoint,
 		FQwackHTTPResponse R; R.StatusCode = 0; R.FullText = TEXT("Empty URL — ApiUrl not configured");
 		OnDone(R); return;
 	}
+
+	// Defer until the X-Game-Version-ID UUID has been resolved from the
+	// configured name. The resolver in UQwackConfigSubsystem uses FHttpModule
+	// directly (it doesn't go through Send), so no recursion concern. If no
+	// name is configured we let the request fly with no version header — the
+	// server's behavior in that case is the user's call, not ours.
+	UQwackConfigSubsystem* Config = nullptr;
+	if (const UGameInstance* GI = GetGameInstance())
+	{
+		Config = GI->GetSubsystem<UQwackConfigSubsystem>();
+	}
+	if (Config
+		&& !Config->IsGameVersionResolved()
+		&& !Config->WasGameVersionResolveAttempted()
+		&& !Config->GetGameVersion().IsEmpty())
+	{
+		TWeakObjectPtr<const UQwackFlockGameSubsystem> WeakThis(this);
+		Config->OnGameVersionResolved(
+			[WeakThis, Endpoint, UrlOverride, Body, bIncludeAuth, OnDone](bool)
+			{
+				if (const UQwackFlockGameSubsystem* Strong = WeakThis.Get())
+				{
+					Strong->Send(Endpoint, UrlOverride, Body, bIncludeAuth, OnDone);
+				}
+			});
+		Config->EnsureGameVersionResolved();
+		return;
+	}
+
 	const TCHAR* Verb = UQwackFlockGameEndpoints::QwackHttpVerb(Endpoint.RequestType);
 	TMap<FString, FString> Headers = MakeHeaders(bIncludeAuth);
 
