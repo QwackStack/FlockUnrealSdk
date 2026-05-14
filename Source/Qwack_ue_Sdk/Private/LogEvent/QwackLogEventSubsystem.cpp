@@ -7,6 +7,7 @@
 #include "Qwack_ue_Sdk/Cache/FlockEventSpool.h"
 #include "Qwack_ue_Sdk/Config/QwackConfigSubsystem.h"
 #include "Qwack_ue_Sdk/Config/QwackSettings.h"
+#include "Qwack_ue_Sdk/Context/QwackContextSubsystem.h"
 #include "Qwack_ue_Sdk/Endpoints/QwackGameEndpoints.h"
 #include "Qwack_ue_Sdk/GameAPI/QwackFlockGameSubsystem.h"
 #include "Qwack_ue_Sdk/GameAPI/QwackJsonHelpers.h"
@@ -91,7 +92,7 @@ void UQwackLogEventSubsystem::HandleAccessTokenChanged(const FString& Token)
 // Serialization
 // =====================================================================
 
-FString UQwackLogEventSubsystem::SerializeEvent(const FFlockLogEventRequest& Req)
+FString UQwackLogEventSubsystem::SerializeEvent(const FFlockLogEventRequest& Req) const
 {
 	const TSharedPtr<FJsonObject> Obj = QwackJson::StructToJsonObject(FFlockLogEventRequest::StaticStruct(), &Req);
 	if (!Obj.IsValid()) return TEXT("{}");
@@ -99,7 +100,29 @@ FString UQwackLogEventSubsystem::SerializeEvent(const FFlockLogEventRequest& Req
 	if (Obj->TryGetObjectField(TEXT("data"), DataObjPtr) && DataObjPtr && DataObjPtr->IsValid())
 	{
 		QwackJson::EmbedJsonStringField(*DataObjPtr, TEXT("error_data"));
-		QwackJson::EmbedJsonStringField(*DataObjPtr, TEXT("extra_data"));
+
+		// extra_data: start from the caller's JSON (if any), then merge SDK defaults.
+		// Caller keys win; replaces the in-place EmbedJsonStringField path so the field
+		// is always present even when the caller passed an empty string.
+		(*DataObjPtr)->RemoveField(TEXT("extra_data"));
+		TSharedPtr<FJsonObject> Extra = MakeShared<FJsonObject>();
+		if (!Req.data.extra_data.IsEmpty())
+		{
+			const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Req.data.extra_data);
+			TSharedPtr<FJsonObject> UserExtra;
+			if (FJsonSerializer::Deserialize(Reader, UserExtra) && UserExtra.IsValid())
+			{
+				Extra = UserExtra.ToSharedRef();
+			}
+		}
+		if (const UGameInstance* GI = GetGameInstance())
+		{
+			if (const UQwackContextSubsystem* Ctx = GI->GetSubsystem<UQwackContextSubsystem>())
+			{
+				Ctx->MergeDefaults(Extra.ToSharedRef());
+			}
+		}
+		(*DataObjPtr)->SetObjectField(TEXT("extra_data"), Extra);
 	}
 	return QwackJson::JsonObjectToString(Obj.ToSharedRef());
 }

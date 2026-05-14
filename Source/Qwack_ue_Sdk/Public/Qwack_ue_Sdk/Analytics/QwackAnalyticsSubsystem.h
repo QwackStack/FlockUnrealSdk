@@ -55,6 +55,7 @@ private:
 	// spool is non-empty and the previous batch landed.
 	void FlushSpoolAsBatch();
 
-	static FString SerializeEvent(const FFlockAnalyticsEventRequest& Req);
+	// Non-static: needs GetGameInstance() to reach the context subsystem for default-field injection.
+	FString SerializeEvent(const FFlockAnalyticsEventRequest& Req) const;
 	static FString BuildBatchPayload(const TArray<FString>& Bodies);
 };

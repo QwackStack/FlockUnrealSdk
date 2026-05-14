@@ -7,6 +7,7 @@
 #include "Qwack_ue_Sdk/Cache/FlockEventSpool.h"
 #include "Qwack_ue_Sdk/Config/QwackConfigSubsystem.h"
 #include "Qwack_ue_Sdk/Config/QwackSettings.h"
+#include "Qwack_ue_Sdk/Context/QwackContextSubsystem.h"
 #include "Qwack_ue_Sdk/Endpoints/QwackGameEndpoints.h"
 #include "Qwack_ue_Sdk/GameAPI/QwackFlockGameSubsystem.h"
 #include "Qwack_ue_Sdk/GameAPI/QwackJsonHelpers.h"
@@ -81,20 +82,33 @@ void UQwackAnalyticsSubsystem::HandleAccessTokenChanged(const FString& Token)
 // Serialization
 // =====================================================================
 
-FString UQwackAnalyticsSubsystem::SerializeEvent(const FFlockAnalyticsEventRequest& Req)
+FString UQwackAnalyticsSubsystem::SerializeEvent(const FFlockAnalyticsEventRequest& Req) const
 {
 	const TSharedPtr<FJsonObject> Obj = QwackJson::StructToJsonObject(FFlockAnalyticsEventRequest::StaticStruct(), &Req);
 	if (!Obj.IsValid()) return TEXT("{}");
 	Obj->RemoveField(TEXT("PropertiesJson"));
+
+	// Start from the caller's properties (if any), then merge SDK defaults. Caller keys
+	// already present remain untouched — caller-supplied values always win.
+	TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
 	if (!Req.PropertiesJson.IsEmpty())
 	{
-		TSharedPtr<FJsonObject> Props;
 		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Req.PropertiesJson);
-		if (FJsonSerializer::Deserialize(Reader, Props) && Props.IsValid())
+		TSharedPtr<FJsonObject> UserProps;
+		if (FJsonSerializer::Deserialize(Reader, UserProps) && UserProps.IsValid())
 		{
-			Obj->SetObjectField(TEXT("properties"), Props);
+			Props = UserProps.ToSharedRef();
 		}
 	}
+	if (const UGameInstance* GI = GetGameInstance())
+	{
+		if (const UQwackContextSubsystem* Ctx = GI->GetSubsystem<UQwackContextSubsystem>())
+		{
+			Ctx->MergeDefaults(Props.ToSharedRef());
+		}
+	}
+	Obj->SetObjectField(TEXT("properties"), Props);
+
 	return QwackJson::JsonObjectToString(Obj.ToSharedRef());
 }
 
@@ -124,8 +138,9 @@ void UQwackAnalyticsSubsystem::StartSession(const FFlockSessionStartRequest& Req
 	FString Body;
 	FJsonObjectConverter::UStructToJsonObjectString(Request, Body, 0, 0);
 
+	TWeakObjectPtr<UQwackAnalyticsSubsystem> WeakThis(this);
 	Game->Send(UQwackFlockGameEndpoints::StartSession, FString(), Body, /*bIncludeAuth*/ true,
-		[Callback](const FQwackHTTPResponse& R)
+		[WeakThis, Callback](const FQwackHTTPResponse& R)
 		{
 			FFlockSessionStartResponse Out;
 			Out.Meta = UQwackFlockGameSubsystem::MakeMeta(R);
@@ -136,6 +151,17 @@ void UQwackAnalyticsSubsystem::StartSession(const FFlockSessionStartRequest& Req
 				if (FJsonSerializer::Deserialize(Reader, Obj) && Obj.IsValid())
 				{
 					Obj->TryGetStringField(TEXT("session_id"), Out.session_id);
+				}
+				// Cache for default-field injection on subsequent events.
+				if (UQwackAnalyticsSubsystem* Strong = WeakThis.Get())
+				{
+					if (const UGameInstance* GI = Strong->GetGameInstance())
+					{
+						if (UQwackContextSubsystem* Ctx = GI->GetSubsystem<UQwackContextSubsystem>())
+						{
+							Ctx->SetSessionId(Out.session_id);
+						}
+					}
 				}
 			}
 			Callback.ExecuteIfBound(Out);
@@ -153,11 +179,25 @@ void UQwackAnalyticsSubsystem::EndSession(const FString& SessionId, const FFlock
 	FString Body;
 	FJsonObjectConverter::UStructToJsonObjectString(Request, Body, 0, 0);
 
+	TWeakObjectPtr<UQwackAnalyticsSubsystem> WeakThis(this);
 	Game->Send(UQwackFlockGameEndpoints::EndSession, Url, Body, /*bIncludeAuth*/ true,
-		[Callback](const FQwackHTTPResponse& R)
+		[WeakThis, Callback](const FQwackHTTPResponse& R)
 		{
 			FFlockGenericResponse Out;
 			Out.Meta = UQwackFlockGameSubsystem::MakeMeta(R);
+			if (Out.Meta.bSuccess)
+			{
+				if (UQwackAnalyticsSubsystem* Strong = WeakThis.Get())
+				{
+					if (const UGameInstance* GI = Strong->GetGameInstance())
+					{
+						if (UQwackContextSubsystem* Ctx = GI->GetSubsystem<UQwackContextSubsystem>())
+						{
+							Ctx->ClearSessionId();
+						}
+					}
+				}
+			}
 			Callback.ExecuteIfBound(Out);
 		});
 }
