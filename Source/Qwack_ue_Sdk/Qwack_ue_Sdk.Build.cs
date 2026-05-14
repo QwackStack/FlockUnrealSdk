@@ -21,6 +21,7 @@ public class Qwack_ue_Sdk : ModuleRules
 			ModuleDirectory + "/Public/Qwack_ue_Sdk/GameAPI",
 			ModuleDirectory + "/Public/Qwack_ue_Sdk/HTTPClient",
 			ModuleDirectory + "/Public/Qwack_ue_Sdk/LogEvent",
+			ModuleDirectory + "/Public/Qwack_ue_Sdk/Session",
 			ModuleDirectory + "/Public/Qwack_ue_Sdk/Utils",
 		});
 
@@ -36,6 +37,7 @@ public class Qwack_ue_Sdk : ModuleRules
 			ModuleDirectory + "/Private/GameAPI",
 			ModuleDirectory + "/Private/HTTPClient",
 			ModuleDirectory + "/Private/LogEvent",
+			ModuleDirectory + "/Private/Session",
 		});
 
 		PublicDependencyModuleNames.AddRange(new string[]
