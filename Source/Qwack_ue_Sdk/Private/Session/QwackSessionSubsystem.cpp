@@ -3,6 +3,7 @@
 #include "Engine/GameInstance.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/Paths.h"
 #include "Qwack_ue_Sdk/Analytics/QwackAnalyticsSubsystem.h"
 #include "Qwack_ue_Sdk/Auth/QwackAuthSubsystem.h"
 #include "Qwack_ue_Sdk/Config/QwackConfigSubsystem.h"
@@ -13,6 +14,14 @@ DEFINE_LOG_CATEGORY_STATIC(LogFlockSession, Log, All);
 
 namespace
 {
+	bool IsHttpSuccess(int32 Code) { return Code >= 200 && Code < 300; }
+
+	// 4xx (except 408/429) won't change on retry — safe to drop the marker.
+	bool IsHttpPermanent(int32 Code)
+	{
+		return Code >= 400 && Code < 500 && Code != 408 && Code != 429;
+	}
+
 	const TCHAR* PlatformLabel()
 	{
 #if PLATFORM_WINDOWS
@@ -49,9 +58,9 @@ void UQwackSessionSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	UQwackConfigSubsystem* Config = GetConfig();
 	const UQwackSettings* Settings = Config ? Config->GetSettings() : GetDefault<UQwackSettings>();
 	const bool bAutoStart = Settings ? Settings->AnalyticsAutoStartSession : true;
+	const bool bPersist = Settings ? Settings->AnalyticsPersistSession : true;
 
-	// Screens are counted whether or not we end up auto-starting, so a manual
-	// StartSession later in the run still gets the running tally.
+	// Count screens regardless so a manual StartSession later still has the tally.
 	PostLoadMapHandle = FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(
 		this, &UQwackSessionSubsystem::OnPostLoadMapWithWorld);
 
@@ -60,16 +69,28 @@ void UQwackSessionSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		return;
 	}
 
-	// Idle/background hooks — both pairs route through the same handlers so desktop
-	// focus loss and mobile background both contribute. bInBackground guards re-entry.
+	// A leftover active.json means the previous run died without EndSession.
+	if (bPersist)
+	{
+		Store = MakeUnique<FFlockSessionStore>(
+			FPaths::ProjectSavedDir() / TEXT("Flock") / TEXT("sessions"));
+
+		const FString Rotated = Store->RotateActiveToPending();
+		if (!Rotated.IsEmpty())
+		{
+			UE_LOG(LogFlockSession, Log, TEXT("Recovered orphan session marker."));
+		}
+		PendingRecoveryQueue = Store->ListPending();
+	}
+
+	// Desktop deactivate + mobile background both go through OnEnterBackground;
+	// bInBackground guards overlapping pairs.
 	DeactivateHandle = FCoreDelegates::ApplicationWillDeactivateDelegate.AddUObject(this, &UQwackSessionSubsystem::OnEnterBackground);
 	ReactivateHandle = FCoreDelegates::ApplicationHasReactivatedDelegate.AddUObject(this, &UQwackSessionSubsystem::OnEnterForeground);
 	BackgroundHandle = FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddUObject(this, &UQwackSessionSubsystem::OnEnterBackground);
 	ForegroundHandle = FCoreDelegates::ApplicationHasEnteredForegroundDelegate.AddUObject(this, &UQwackSessionSubsystem::OnEnterForeground);
 
-	// Quit path: OnPreExit fires before UObject teardown so the HTTP module is still alive;
-	// ApplicationWillTerminate is the OS-side equivalent and catches kill paths that bypass
-	// OnPreExit. Both route through the same bEndDispatched-guarded handler.
+	// OnPreExit covers normal quit; WillTerminate catches OS-initiated kills.
 	PreExitHandle = FCoreDelegates::OnPreExit.AddUObject(this, &UQwackSessionSubsystem::OnPreExit);
 	TerminateHandle = FCoreDelegates::ApplicationWillTerminateDelegate.AddUObject(this, &UQwackSessionSubsystem::OnPreExit);
 
@@ -78,26 +99,29 @@ void UQwackSessionSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		Auth->OnAccessTokenChanged.AddDynamic(this, &UQwackSessionSubsystem::HandleAccessTokenChanged);
 	}
 
-	// Kick off game-version resolution if it hasn't been already — TryStartSession
-	// will be re-fired through the resolve callback once the UUID lands.
 	if (Config)
 	{
 		Config->EnsureGameVersionResolved();
 	}
 
-	// Maybe everything is ready already (cached token from a refresh, version
-	// resolved synchronously, etc.). One shot at start before delegates fire.
+	// Cached token bypasses HandleAccessTokenChanged — kick recovery + start manually.
+	if (UQwackAuthSubsystem* Auth = GetAuth(); Auth && !Auth->GetAccessToken().IsEmpty())
+	{
+		DispatchNextRecovery();
+	}
+
 	TryStartSession();
 }
 
 void UQwackSessionSubsystem::Deinitialize()
 {
-	// Best-effort end on graceful shutdown when OnPreExit didn't catch us
-	// (e.g. PIE stop in the editor doesn't always fire OnPreExit).
+	// Catches PIE stop and other paths that skip OnPreExit.
 	if (bSessionActive && !bEndDispatched)
 	{
 		FireEndSession(/*bChainStartAfter*/ false);
 	}
+
+	StopHeartbeatTicker();
 
 	FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(PostLoadMapHandle);
 	FCoreDelegates::ApplicationWillDeactivateDelegate.Remove(DeactivateHandle);
@@ -112,6 +136,7 @@ void UQwackSessionSubsystem::Deinitialize()
 		Auth->OnAccessTokenChanged.RemoveDynamic(this, &UQwackSessionSubsystem::HandleAccessTokenChanged);
 	}
 
+	Store.Reset();
 	Super::Deinitialize();
 }
 
@@ -141,12 +166,12 @@ UQwackConfigSubsystem* UQwackSessionSubsystem::GetConfig() const
 // Readiness gate + auto start
 // =====================================================================
 
-void UQwackSessionSubsystem::HandleAccessTokenChanged(const FString& /*Token*/)
+void UQwackSessionSubsystem::HandleAccessTokenChanged(const FString& Token)
 {
 	const UQwackAuthSubsystem* Auth = GetAuth();
 	const FString CurrentPlayerId = Auth ? Auth->GetPlayerId() : FString();
 
-	// Logout: end the active session and stop here.
+	// Logout.
 	if (CurrentPlayerId.IsEmpty())
 	{
 		if (bSessionActive && !bEndDispatched)
@@ -156,14 +181,18 @@ void UQwackSessionSubsystem::HandleAccessTokenChanged(const FString& /*Token*/)
 		return;
 	}
 
-	// Re-login as a different player: cycle the session.
+	if (!Token.IsEmpty())
+	{
+		DispatchNextRecovery();
+	}
+
+	// Re-login as a different player cycles the session.
 	if (bSessionActive && CurrentPlayerId != SessionPlayerId)
 	{
 		FireEndSession(/*bChainStartAfter*/ true);
 		return;
 	}
 
-	// First login / token refresh under the same player.
 	TryStartSession();
 }
 
@@ -173,21 +202,14 @@ void UQwackSessionSubsystem::TryStartSession()
 
 	const UQwackAuthSubsystem* Auth = GetAuth();
 	const FString PlayerId = Auth ? Auth->GetPlayerId() : FString();
-	if (PlayerId.IsEmpty())
-	{
-		// Wait for auth — HandleAccessTokenChanged will re-fire us.
-		return;
-	}
+	if (PlayerId.IsEmpty()) return;
 
 	UQwackConfigSubsystem* Config = GetConfig();
-	if (!Config)
-	{
-		return;
-	}
+	if (!Config) return;
+
 	if (!Config->IsGameVersionResolved())
 	{
-		// Register a one-shot callback. Guard so we don't pile up callbacks on
-		// repeated TryStartSession calls before resolution lands.
+		// One-shot callback; guard against piling up callbacks on repeated calls.
 		if (!bGameVersionCallbackRegistered)
 		{
 			bGameVersionCallbackRegistered = true;
@@ -198,8 +220,7 @@ void UQwackSessionSubsystem::TryStartSession()
 				{
 					Self->bGameVersionCallbackRegistered = false;
 					if (bSuccess) Self->TryStartSession();
-					else UE_LOG(LogFlockSession, Warning,
-						TEXT("Game version resolution failed — auto-session skipped."));
+					else UE_LOG(LogFlockSession, Warning, TEXT("Game version unresolved; auto-session skipped."));
 				}
 			});
 		}
@@ -230,8 +251,6 @@ void UQwackSessionSubsystem::FireStartSession()
 	Req.game_version_id = Config->GetGameVersionId();
 	Req.started_at = SessionStartUtc.ToIso8601();
 
-	// Dynamic delegate types are declared inside UQwackAnalyticsSubsystem — qualify
-	// when constructing from another class.
 	UQwackAnalyticsSubsystem::FFlockOnSessionStart Cb;
 	Cb.BindDynamic(this, &UQwackSessionSubsystem::HandleAutoStartCompleted);
 	Analytics->StartSession(Req, Cb);
@@ -243,7 +262,7 @@ void UQwackSessionSubsystem::HandleAutoStartCompleted(const FFlockSessionStartRe
 	if (!Response.Meta.bSuccess || Response.session_id.IsEmpty())
 	{
 		UE_LOG(LogFlockSession, Warning,
-			TEXT("Auto StartSession failed (code=%d) — session inactive."),
+			TEXT("Auto StartSession failed (code=%d)."),
 			Response.Meta.StatusCode);
 		bSessionActive = false;
 		ActiveSessionId.Reset();
@@ -251,8 +270,10 @@ void UQwackSessionSubsystem::HandleAutoStartCompleted(const FFlockSessionStartRe
 	}
 	bSessionActive = true;
 	ActiveSessionId = Response.session_id;
-	// Context's session_id was already set by UQwackAnalyticsSubsystem::StartSession
-	// in the same response handling — no need to duplicate here.
+	// Context session_id is already set by UQwackAnalyticsSubsystem::StartSession.
+
+	PersistActiveMarker();
+	StartHeartbeatTicker();
 }
 
 // =====================================================================
@@ -264,8 +285,7 @@ void UQwackSessionSubsystem::FireEndSession(bool bChainStartAfter)
 	UQwackAnalyticsSubsystem* Analytics = GetAnalytics();
 	if (!Analytics) return;
 
-	// Snapshot before clearing so the EndSession payload reflects the session we're closing,
-	// even if a new StartSession is queued behind it.
+	// Snapshot before clearing so a chained restart can't trample the closing id.
 	const FString ClosingSessionId = ActiveSessionId;
 	if (ClosingSessionId.IsEmpty()) return;
 
@@ -282,13 +302,18 @@ void UQwackSessionSubsystem::FireEndSession(bool bChainStartAfter)
 	Req.is_bounce = (DurationSec < BounceThreshold) || (ScreensViewed <= 1);
 	Req.ended_at = EndUtc.ToIso8601();
 
-	// Local state goes inactive immediately — late events shouldn't be tagged to a
-	// session we're closing, and a chained restart needs a clean slate.
+	// Clear state up-front so late events don't tag the closing session and a chained
+	// restart starts clean.
 	bSessionActive = false;
 	bEndDispatched = true;
 	ActiveSessionId.Reset();
 	SessionPlayerId.Reset();
 	ScreensViewed = 0;
+	StopHeartbeatTicker();
+
+	// Rotate the marker to pending/ before HTTP. End-callback deletes on success;
+	// transient failure (or process exit before callback) leaves it for next launch.
+	LastRotatedPendingFile = Store ? Store->RotateActiveToPending() : FString();
 
 	UQwackAnalyticsSubsystem::FFlockOnGenericResponse Cb;
 	if (bChainStartAfter)
@@ -302,15 +327,30 @@ void UQwackSessionSubsystem::FireEndSession(bool bChainStartAfter)
 	Analytics->EndSession(ClosingSessionId, Req, Cb);
 }
 
-void UQwackSessionSubsystem::HandleAutoEndCompleted(const FFlockGenericResponse& /*Response*/)
+void UQwackSessionSubsystem::HandleAutoEndCompleted(const FFlockGenericResponse& Response)
 {
-	// Nothing further — analytics subsystem cleared ContextSubsystem::SessionId.
+	if (Store && !LastRotatedPendingFile.IsEmpty())
+	{
+		if (IsHttpSuccess(Response.Meta.StatusCode) || IsHttpPermanent(Response.Meta.StatusCode))
+		{
+			Store->DeletePending(LastRotatedPendingFile);
+		}
+		LastRotatedPendingFile.Reset();
+	}
 }
 
-void UQwackSessionSubsystem::HandleEndForRestartCompleted(const FFlockGenericResponse& /*Response*/)
+void UQwackSessionSubsystem::HandleEndForRestartCompleted(const FFlockGenericResponse& Response)
 {
-	// Chain a fresh session regardless of end-call outcome. If end failed (network drop)
-	// we still want a new session on the front; the orphan will time out server-side.
+	if (Store && !LastRotatedPendingFile.IsEmpty())
+	{
+		if (IsHttpSuccess(Response.Meta.StatusCode) || IsHttpPermanent(Response.Meta.StatusCode))
+		{
+			Store->DeletePending(LastRotatedPendingFile);
+		}
+		LastRotatedPendingFile.Reset();
+	}
+
+	// Always chain; if end failed the orphan stays in pending/ for retry.
 	bEndDispatched = false;
 	TryStartSession();
 }
@@ -329,6 +369,9 @@ void UQwackSessionSubsystem::OnEnterBackground()
 	if (bInBackground) return;
 	bInBackground = true;
 	BackgroundEnterMonotonic = FPlatformTime::Seconds();
+
+	// Ticker won't fire while paused; flush a final marker for recovery.
+	if (bSessionActive) PersistActiveMarker();
 }
 
 void UQwackSessionSubsystem::OnEnterForeground()
@@ -345,8 +388,6 @@ void UQwackSessionSubsystem::OnEnterForeground()
 
 	if (BackgroundedSec >= TimeoutSec)
 	{
-		// End the stale session and chain a new one — keeps Unity's "after timeout,
-		// new session_id" behavior so per-event analytics correctly attribute play.
 		FireEndSession(/*bChainStartAfter*/ true);
 	}
 }
@@ -354,8 +395,120 @@ void UQwackSessionSubsystem::OnEnterForeground()
 void UQwackSessionSubsystem::OnPreExit()
 {
 	if (bEndDispatched || !bSessionActive) return;
+	// HTTP likely won't land before exit; FireEndSession already rotated to pending/
+	// so next launch replays it.
 	FireEndSession(/*bChainStartAfter*/ false);
-	// HTTP dispatched but likely won't complete before process exit — that's accepted loss.
-	// A future enhancement is a session heartbeat persisted to disk so the next launch
-	// can finalize an unterminated session server-side.
+}
+
+// =====================================================================
+// Disk persistence
+// =====================================================================
+
+void UQwackSessionSubsystem::PersistActiveMarker()
+{
+	if (!Store || ActiveSessionId.IsEmpty()) return;
+
+	FFlockSessionMarker M;
+	M.SessionId = ActiveSessionId;
+	M.PlayerId = SessionPlayerId;
+	if (const UQwackConfigSubsystem* Config = GetConfig())
+	{
+		M.GameVersionId = Config->GetGameVersionId();
+	}
+	M.StartedAt = SessionStartUtc;
+	M.LastSeenAt = FDateTime::UtcNow();
+	M.ScreensViewed = ScreensViewed;
+
+	Store->WriteActive(M);
+}
+
+void UQwackSessionSubsystem::StartHeartbeatTicker()
+{
+	if (HeartbeatHandle.IsValid()) return;
+
+	const UQwackConfigSubsystem* Config = GetConfig();
+	const UQwackSettings* Settings = Config ? Config->GetSettings() : GetDefault<UQwackSettings>();
+	const int32 IntervalSec = Settings ? Settings->AnalyticsHeartbeatIntervalSeconds : 60;
+	if (IntervalSec <= 0 || !Store) return;
+
+	HeartbeatHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(this, &UQwackSessionSubsystem::OnHeartbeatTick),
+		static_cast<float>(IntervalSec));
+}
+
+void UQwackSessionSubsystem::StopHeartbeatTicker()
+{
+	if (HeartbeatHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(HeartbeatHandle);
+		HeartbeatHandle.Reset();
+	}
+}
+
+bool UQwackSessionSubsystem::OnHeartbeatTick(float /*DeltaSeconds*/)
+{
+	// false stops the ticker.
+	if (!bSessionActive) return false;
+	PersistActiveMarker();
+	return true;
+}
+
+// =====================================================================
+// Crash recovery — drain pending markers from previous runs
+// =====================================================================
+
+void UQwackSessionSubsystem::DispatchNextRecovery()
+{
+	if (!Store) return;
+	if (!RecoveryInFlightFilename.IsEmpty()) return;       // one at a time
+	if (PendingRecoveryQueue.Num() == 0) return;
+
+	UQwackAnalyticsSubsystem* Analytics = GetAnalytics();
+	const UQwackAuthSubsystem* Auth = GetAuth();
+	// Wait for auth; HandleAccessTokenChanged retriggers.
+	if (!Analytics || !Auth || Auth->GetAccessToken().IsEmpty()) return;
+
+	const FString Filename = PendingRecoveryQueue[0];
+	PendingRecoveryQueue.RemoveAt(0);
+
+	FFlockSessionMarker Marker;
+	if (!Store->TryReadPending(Filename, Marker))
+	{
+		UE_LOG(LogFlockSession, Warning, TEXT("Unreadable marker, dropping: %s"), *Filename);
+		Store->DeletePending(Filename);
+		DispatchNextRecovery();
+		return;
+	}
+
+	const UQwackSettings* Settings = GetConfig() ? GetConfig()->GetSettings() : GetDefault<UQwackSettings>();
+	const int32 BounceThreshold = Settings ? Settings->AnalyticsBounceThresholdSeconds : 10;
+
+	const FTimespan Span = Marker.LastSeenAt - Marker.StartedAt;
+	const double DurationSec = FMath::Max(0.0, Span.GetTotalSeconds());
+
+	FFlockSessionEndRequest Req;
+	Req.duration_seconds = FMath::RoundToInt(static_cast<float>(DurationSec));
+	Req.screens_viewed = Marker.ScreensViewed;
+	Req.is_bounce = (DurationSec < BounceThreshold) || (Marker.ScreensViewed <= 1);
+	Req.ended_at = Marker.LastSeenAt.ToIso8601();
+
+	RecoveryInFlightFilename = Filename;
+
+	UQwackAnalyticsSubsystem::FFlockOnGenericResponse Cb;
+	Cb.BindDynamic(this, &UQwackSessionSubsystem::HandleRecoveryEndCompleted);
+	Analytics->EndSession(Marker.SessionId, Req, Cb);
+}
+
+void UQwackSessionSubsystem::HandleRecoveryEndCompleted(const FFlockGenericResponse& Response)
+{
+	if (Store && !RecoveryInFlightFilename.IsEmpty())
+	{
+		if (IsHttpSuccess(Response.Meta.StatusCode) || IsHttpPermanent(Response.Meta.StatusCode))
+		{
+			Store->DeletePending(RecoveryInFlightFilename);
+		}
+		// Transient (5xx/0/408/429) keeps the marker for next launch.
+	}
+	RecoveryInFlightFilename.Reset();
+	DispatchNextRecovery();
 }

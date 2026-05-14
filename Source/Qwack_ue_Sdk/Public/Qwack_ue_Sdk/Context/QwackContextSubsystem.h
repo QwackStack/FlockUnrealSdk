@@ -1,13 +1,6 @@
-// SDK-owned default fields injected into every analytics event's `properties` block
-// and every log event's `extra_data` block. Holds:
-//   - a one-shot snapshot of platform/device info captured at Initialize
-//   - a persistent per-install GUID (Saved/Flock/install_id.txt)
-//   - session-lifetime accounting: process start, plus accumulated background time
-//     subtracted from gameplay_time_sec via FCoreDelegates focus/background hooks
-//   - the active analytics session_id, cached when StartSession succeeds
-//
-// Identity fields (player_id, game_version) are pulled lazily from Auth/Config at
-// merge time so callers don't have to push state changes through this subsystem.
+// Default fields merged into every analytics `properties` and log `extra_data` block.
+// Snapshots platform/device once, persists an install GUID, tracks gameplay time
+// (minus backgrounded time), and caches the live session_id.
 
 #pragma once
 
@@ -24,18 +17,14 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	// Merges SDK-owned defaults into Target. Keys already present in Target are
-	// preserved — caller-supplied values always win on conflict.
+	// Existing keys in Target are kept; caller values always win.
 	void MergeDefaults(const TSharedRef<FJsonObject>& Target) const;
 
-	// Called by analytics StartSession / EndSession callbacks so subsequent events
-	// pick up the active session id automatically.
 	void SetSessionId(const FString& InSessionId);
 	void ClearSessionId();
 
 	FString GetInstallId() const { return InstallId; }
 
-	// Wall-clock seconds since SDK init, minus accumulated background/deactivated time.
 	double GetGameplayTimeSeconds() const;
 
 private:

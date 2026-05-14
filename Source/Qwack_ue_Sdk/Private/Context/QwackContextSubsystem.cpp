@@ -14,7 +14,7 @@
 
 namespace
 {
-	// Bumped manually with releases; surfaces in `sdk_version` on every event.
+	// Bump on release.
 	constexpr const TCHAR* kSdkVersion = TEXT("1.0.0");
 	FString InstallIdFilePath()
 	{
@@ -41,8 +41,7 @@ void UQwackContextSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	SnapshotPlatform();
 	LoadOrCreateInstallId();
 
-	// Desktop focus loss and mobile background both subtract from gameplay_time.
-	// The bInBackground guard makes overlap between the pairs safe.
+	// Both desktop focus loss and mobile background subtract from gameplay_time.
 	DeactivateHandle = FCoreDelegates::ApplicationWillDeactivateDelegate.AddUObject(this, &UQwackContextSubsystem::OnEnterBackground);
 	ReactivateHandle = FCoreDelegates::ApplicationHasReactivatedDelegate.AddUObject(this, &UQwackContextSubsystem::OnEnterForeground);
 	BackgroundHandle = FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddUObject(this, &UQwackContextSubsystem::OnEnterBackground);

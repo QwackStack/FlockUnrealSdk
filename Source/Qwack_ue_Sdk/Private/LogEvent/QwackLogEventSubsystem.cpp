@@ -101,9 +101,8 @@ FString UQwackLogEventSubsystem::SerializeEvent(const FFlockLogEventRequest& Req
 	{
 		QwackJson::EmbedJsonStringField(*DataObjPtr, TEXT("error_data"));
 
-		// extra_data: start from the caller's JSON (if any), then merge SDK defaults.
-		// Caller keys win; replaces the in-place EmbedJsonStringField path so the field
-		// is always present even when the caller passed an empty string.
+		// Caller extra_data first, then SDK defaults; existing keys win. Always present
+		// even when the caller passed empty.
 		(*DataObjPtr)->RemoveField(TEXT("extra_data"));
 		TSharedPtr<FJsonObject> Extra = MakeShared<FJsonObject>();
 		if (!Req.data.extra_data.IsEmpty())

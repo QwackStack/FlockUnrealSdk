@@ -88,8 +88,7 @@ FString UQwackAnalyticsSubsystem::SerializeEvent(const FFlockAnalyticsEventReque
 	if (!Obj.IsValid()) return TEXT("{}");
 	Obj->RemoveField(TEXT("PropertiesJson"));
 
-	// Start from the caller's properties (if any), then merge SDK defaults. Caller keys
-	// already present remain untouched — caller-supplied values always win.
+	// Caller properties first, then SDK defaults; existing keys win.
 	TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
 	if (!Req.PropertiesJson.IsEmpty())
 	{
@@ -152,7 +151,7 @@ void UQwackAnalyticsSubsystem::StartSession(const FFlockSessionStartRequest& Req
 				{
 					Obj->TryGetStringField(TEXT("session_id"), Out.session_id);
 				}
-				// Cache for default-field injection on subsequent events.
+				// Subsequent events pick up session_id from the context subsystem.
 				if (UQwackAnalyticsSubsystem* Strong = WeakThis.Get())
 				{
 					if (const UGameInstance* GI = Strong->GetGameInstance())

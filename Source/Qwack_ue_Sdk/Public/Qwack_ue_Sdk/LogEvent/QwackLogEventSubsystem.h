@@ -50,7 +50,7 @@ private:
 	void OnSpoolResponse(const TArray<FString>& Handles, const FQwackHTTPResponse& R);
 	void FlushSpoolAsBatch();
 
-	// Non-static: needs GetGameInstance() to reach the context subsystem for default-field injection.
+	// Non-static: needs GetGameInstance() to reach the context subsystem.
 	FString SerializeEvent(const FFlockLogEventRequest& Req) const;
 	static FString BuildBatchPayload(const TArray<FString>& Bodies);
 };
