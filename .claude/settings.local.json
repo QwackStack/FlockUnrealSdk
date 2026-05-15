@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(git -C \"C:\\\\Users\\\\Administrator\\\\Desktop\\\\Qwacks\\\\FlockUETest\\\\Plugins\\\\FlockUnrealSdk\" diff Qwack_ue_Sdk.uplugin)"
-    ]
-  }
-}
