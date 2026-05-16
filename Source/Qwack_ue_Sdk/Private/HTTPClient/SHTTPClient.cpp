@@ -1,6 +1,7 @@
 #include "SHTTPClient.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpResponse.h"
+#include "Misc/EngineVersionComparison.h" // defines ENGINE_VERSION_STRING in all build targets
 #include "HTTPResponse.h"
 
 const FString USHTTPClient::UserAgent = FString::Format(TEXT("X-UnrealEngine-Agent/{0}"), { ENGINE_VERSION_STRING });

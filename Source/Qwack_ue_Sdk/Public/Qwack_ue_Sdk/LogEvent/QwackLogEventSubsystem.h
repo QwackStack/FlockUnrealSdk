@@ -7,9 +7,9 @@
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Qwack_ue_Sdk/Utils/Schemas.h"
+#include "Qwack_ue_Sdk/Cache/FlockEventSpool.h"
 #include "QwackLogEventSubsystem.generated.h"
 
-class FFlockEventSpool;
 struct FQwackHTTPResponse;
 
 UCLASS()
