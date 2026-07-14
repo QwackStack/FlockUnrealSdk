@@ -1,4 +1,4 @@
-// Copyright 2022, Qwack. All Rights Reserved.
+// Copyright 2022, Qwacks. All Rights Reserved.
 
 #include "Config/FlockConfig.h"
 

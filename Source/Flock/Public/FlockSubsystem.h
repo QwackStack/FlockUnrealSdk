@@ -41,6 +41,13 @@ public:
 	 */
 	static const FString ApiVersion;
 
+	/**
+	 * This plugin's SDK version. Keep in sync with Flock.uplugin's VersionName and CHANGELOG.md —
+	 * bump all three together. Mirrors the Unity SDK's FlockSdkVersion.Current; sent to the backend
+	 * once request headers exist.
+	 */
+	static const FString SdkVersion;
+
 	/** Returns the Flock subsystem for the given world context, or null if unavailable. */
 	UFUNCTION(BlueprintPure, Category = "Flock", meta = (WorldContext = "WorldContextObject"))
 	static UFlockSubsystem* Get(const UObject* WorldContextObject);
