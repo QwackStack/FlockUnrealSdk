@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0.0",
+	"FriendlyName": "Flock SDK",
+	"Description": "A game backend SDK for Unreal Engine with authentication, game configuration, player data, shop, and analytics.",
+	"Category": "Online Platform",
+	"CreatedBy": "Qwacks",
+	"CreatedByURL": "https://flock.qwacks.com",
+	"DocsURL": "https://docs.qwacks.com/sdk/unreal",
+	"MarketplaceURL": "",
+	"SupportURL": "mailto:support@qwacks.com",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "Flock",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

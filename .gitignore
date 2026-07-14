@@ -1,0 +1,64 @@
+# ────────────────────────────────────────────────────────────
+#  Unreal Engine — build artifacts & generated output
+#  (mirrors the Flock Unity SDK's intent: never commit generated
+#   build output; do commit source, config, .uplugin and Resources)
+# ────────────────────────────────────────────────────────────
+Binaries/
+Intermediate/
+DerivedDataCache/
+Saved/
+
+# Compiled / linker output
+*.dll
+*.exe
+*.pdb
+*.exp
+*.lib
+*.app
+*.ipa
+*.dSYM/
+
+# UnrealBuildTool generated
+*.target
+*.modules
+*.version
+
+# ────────────────────────────────────────────────────────────
+#  Generated IDE / project files
+# ────────────────────────────────────────────────────────────
+*.sln
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+*.xcodeproj/
+*.xcworkspace/
+.vs/
+.vsconfig
+
+# IDEs
+.idea/
+.vscode/
+
+# ────────────────────────────────────────────────────────────
+#  Local tooling — parity with the Flock Unity SDK's .gitignore
+# ────────────────────────────────────────────────────────────
+# Local Claude Code context (not shared)
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.editorconfig
+
+# graphify knowledge graph output (local-only)
+graphify-out/
+
+# Maintainer-only docs (specs/plans) — kept local, not shipped
+Documentation~/
+docs/superpowers/
+
+# ────────────────────────────────────────────────────────────
+#  OS cruft
+# ────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
