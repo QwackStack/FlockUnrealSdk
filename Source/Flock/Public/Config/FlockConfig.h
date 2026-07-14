@@ -22,6 +22,13 @@ public:
 	/** Groups this panel under Project Settings > Plugins. */
 	virtual FName GetCategoryName() const override { return FName(TEXT("Plugins")); }
 
+	/**
+	 * True when the required credentials/identity fields (API URL, API Key, Game Name, Game Version)
+	 * are all present. Mirrors the Unity SDK's FlockConfigAsset.IsValid. Does NOT check the baked
+	 * GameVersionId — that gate lives in SDK init. On failure, OutError describes the first missing field.
+	 */
+	bool IsValid(FString& OutError) const;
+
 	// ──────────────────────────────── Required ────────────────────────────────
 
 	/** API endpoint URL. */
