@@ -4,19 +4,17 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
-#include "QwackConfig.generated.h"
+#include "FlockConfig.generated.h"
 
 /**
- * Flock SDK settings, surfaced under Project Settings > Plugins > Flock SDK Settings.
+ * Flock SDK settings for this project.
  *
- * Mirrors the developer-facing parameters of the Flock Unity SDK's FlockConfigAsset,
- * adapted to Unreal idioms (UDeveloperSettings + Config=Game). Grouped by category to
- * match Unity's inspector headers. Features backing many of these settings (Analytics,
- * Asset/Offline cache, Codegen) are rebuilt per their own tickets; the parameters live
- * here up front so the config surface stays at parity with Unity.
+ * Set your API credentials and game identity under "Required", then adjust the analytics,
+ * caching, HTTP, and initialization options as needed. Values are saved to the project's
+ * DefaultGame.ini and read by the SDK at runtime.
  */
 UCLASS(Config = Game, DefaultConfig, meta = (DisplayName = "Flock SDK Settings"))
-class QWACK_UE_SDK_API UQwackConfig : public UDeveloperSettings
+class FLOCK_API UFlockConfig : public UDeveloperSettings
 {
 	GENERATED_BODY()
 
@@ -35,7 +33,7 @@ public:
 	FString ApiKey;
 
 	/** Your game's name (from the Flock dashboard). */
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Required")
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Required", meta = (DisplayName = "Game Name"))
 	FString GameId;
 
 	/** Your Game Version name. The matching version ID is resolved from the backend on SDK init. */
@@ -46,9 +44,10 @@ public:
 
 	/**
 	 * Game Version ID, resolved from the dashboard at edit time and baked here.
+	 * Read-only: set automatically by "Resolve Game Version", not by hand.
 	 * Runtime init uses this directly and never contacts the server.
 	 */
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Resolved")
+	UPROPERTY(Config, VisibleAnywhere, BlueprintReadOnly, Category = "Resolved")
 	FString GameVersionId;
 
 	// ──────────────────────────────── Codegen ─────────────────────────────────
@@ -189,7 +188,7 @@ public:
 
 	/**
 	 * When ON, entering Play In Editor with Flock not set up (missing/invalid settings) shows a
-	 * fixable dialog instead of failing at runtime. Editor-only; no effect in builds.
+	 * fixable notification instead of failing at runtime. Editor-only; no effect in builds.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Editor")
 	bool bPlayModeGuardEnabled = true;
