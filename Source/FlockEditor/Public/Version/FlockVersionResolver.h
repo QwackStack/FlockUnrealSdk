@@ -9,7 +9,7 @@ struct FFlockResolveResult;
 
 /**
  * Resolves the Game Version name to its ID at edit time and bakes it onto UFlockConfig, so runtime
- * init needs no network. Mirrors the Unity SDK's FlockVersionResolver.
+ * init needs no network.
  */
 class FLOCKEDITOR_API FFlockVersionResolver
 {
@@ -25,8 +25,8 @@ public:
 
 	/**
 	 * Editor convenience: resolve via the active lookup, then (on success) apply, persist to
-	 * DefaultGame.ini, and surface the outcome as an editor toast. Fails cleanly while transport is
-	 * stubbed (QWA-978).
+	 * DefaultGame.ini, and surface the outcome as an editor toast. Fails cleanly when no version lookup
+	 * is registered.
 	 */
 	static void ResolveAndBake(UFlockConfig& Config);
 };

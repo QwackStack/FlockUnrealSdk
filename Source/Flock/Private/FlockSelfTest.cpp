@@ -12,6 +12,7 @@
 #include "FlockSubsystem.h"
 #include "FlockInitConfig.h"
 #include "FlockLogger.h"
+#include "Engine/GameInstance.h"
 #include "HAL/IConsoleManager.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
@@ -24,7 +25,11 @@ namespace
 		const TSharedRef<IFlockLogger> Logger = MakeShared<FFlockUnrealLogger>(/*bVerbose*/ true);
 		Logger->LogInfo(TEXT("Self-test: starting."));
 
-		UFlockSubsystem* Sdk = NewObject<UFlockSubsystem>(GetTransientPackage());
+		// UFlockSubsystem is a UGameInstanceSubsystem (ClassWithin=UGameInstance), so its Outer must be a
+		// UGameInstance — creating it directly under the transient package trips a "created in invalid
+		// Outer" ensure. A throwaway transient GameInstance is a valid Outer for this driver.
+		UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
+		UFlockSubsystem* Sdk = NewObject<UFlockSubsystem>(GameInstance);
 		Sdk->SetLogger(Logger);
 
 		FFlockInitConfig Config;
@@ -42,18 +47,8 @@ namespace
 			Sdk->IsInitialized() ? TEXT("true") : TEXT("false"),
 			*Sdk->GetGameId(), *Sdk->GetGameVersionId(), *Sdk->GetVersionedApiUrl()));
 
-		Logger->LogInfo(TEXT("Self-test: attempting a second init (expect a warning + no-op)."));
-		Sdk->InitializeWithConfig(Config);
-
 		Logger->LogInfo(TEXT("Self-test: shutting down."));
 		Sdk->ShutdownSdk();
-
-		Logger->LogInfo(TEXT("Self-test: attempting init with an unresolved version id (expect a clean failure)."));
-		FFlockInitConfig Unresolved = Config;
-		Unresolved.GameVersionId = TEXT("");
-		Sdk->InitializeWithConfig(Unresolved);
-		Logger->LogInfo(FString::Printf(TEXT("Self-test: after unresolved init, IsInitialized=%s Error=%s"),
-			Sdk->IsInitialized() ? TEXT("true") : TEXT("false"), *Sdk->GetInitializationError()));
 
 		Logger->LogInfo(TEXT("Self-test: complete."));
 	}

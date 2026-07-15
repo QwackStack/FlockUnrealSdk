@@ -7,7 +7,6 @@
 /**
  * Sink for Flock SDK breadcrumbs and errors. Implement this and inject it via
  * UFlockSubsystem::SetLogger() to route SDK logs into your own telemetry or an on-screen debugger.
- * Mirrors the Unity SDK's IFlockLogger.
  */
 class FLOCK_API IFlockLogger
 {
@@ -23,8 +22,7 @@ public:
 /**
  * Default logger: routes to the LogFlock category with a "[Flock SDK]" prefix. When not verbose
  * (Enable Debug Logs off) Debug/Info are suppressed, but Warning/Error still surface — a UE-native
- * adjustment so startup failures are never silently swallowed (Unity relies on its auto-initializer
- * logging errors directly instead).
+ * adjustment so startup failures are never silently swallowed.
  */
 class FLOCK_API FFlockUnrealLogger : public IFlockLogger
 {
@@ -43,7 +41,7 @@ private:
 	bool bVerbose;
 };
 
-/** Silences all SDK logging. Inject via SetLogger() to fully opt out. Mirrors Unity's NullFlockLogger. */
+/** Silences all SDK logging. Inject via SetLogger() to fully opt out. */
 class FLOCK_API FFlockNullLogger : public IFlockLogger
 {
 public:

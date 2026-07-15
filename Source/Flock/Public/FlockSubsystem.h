@@ -18,16 +18,15 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnInitializationFailed, const 
  * The global Flock SDK accessor.
  *
  * A GameInstanceSubsystem is created automatically when the game starts (PIE and packaged) and lives
- * for the whole game session — the UE analog of the Unity SDK's static FlockClient that auto-initializes
- * before the first scene loads. Fetch it with UFlockSubsystem::Get(WorldContext) or the standard
+ * for the whole game session. Fetch it with UFlockSubsystem::Get(WorldContext) or the standard
  * GetGameInstance()->GetSubsystem<UFlockSubsystem>().
  *
  * Initialization is synchronous and needs no network: the Game Version ID is resolved and baked at
  * edit time (Tools > Flock > Resolve Game Version), and runtime init uses it directly.
  *
- * NOTE (foundation slate): SDK providers (Authentication / Config / Game / Player / Commands / Shop /
- * Asset / Analytics) are wired into this subsystem in later tickets. This branch delivers the accessor,
- * auto/manual init, init state + events, and the baked-version gate.
+ * NOTE: SDK feature providers (Authentication / Config / Game / Player / Commands / Shop / Asset /
+ * Analytics) are wired into this subsystem in later releases. This delivers the accessor, auto/manual
+ * init, init state + events, and the baked-version gate.
  */
 UCLASS()
 class FLOCK_API UFlockSubsystem : public UGameInstanceSubsystem
@@ -37,14 +36,13 @@ class FLOCK_API UFlockSubsystem : public UGameInstanceSubsystem
 public:
 	/**
 	 * API version segment appended to the API URL for all SDK HTTP calls. Single source of truth —
-	 * bump here (and in the Unity SDK for parity) when the backend cuts a new major API version.
+	 * bump here when the backend cuts a new major API version.
 	 */
 	static const FString ApiVersion;
 
 	/**
 	 * This plugin's SDK version. Keep in sync with Flock.uplugin's VersionName and CHANGELOG.md —
-	 * bump all three together. Mirrors the Unity SDK's FlockSdkVersion.Current; sent to the backend
-	 * once request headers exist.
+	 * bump all three together. Reported to the backend when an SDK-version request header is added.
 	 */
 	static const FString SdkVersion;
 
@@ -71,7 +69,7 @@ public:
 
 	/**
 	 * Injects a custom logger so SDK breadcrumbs/errors flow into your own telemetry or debugger.
-	 * C++ only (IFlockLogger is not a UObject), mirroring Unity's FlockClient.Create(config, logger).
+	 * C++ only (IFlockLogger is not a UObject).
 	 * If never called, a default logger is used (verbose when Enable Debug Logs is on).
 	 */
 	void SetLogger(const TSharedRef<IFlockLogger>& InLogger);

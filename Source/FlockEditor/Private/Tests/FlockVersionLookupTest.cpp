@@ -8,7 +8,7 @@
 
 namespace
 {
-	/** A lookup that resolves successfully, standing in for the real QWA-978 HTTP lookup. */
+	/** A lookup that resolves successfully, standing in for the real HTTP lookup. */
 	class FFakeResolvableLookup : public IFlockVersionLookup
 	{
 	public:

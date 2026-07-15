@@ -1,13 +1,10 @@
 # Flock Unreal SDK
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
-It mirrors the [Flock Unity SDK](https://github.com/QwackStack/FlockUnitySdk) surface, adapted to
-Unreal idioms.
 
-> **Foundation release.** This is an early cut. It ships the SDK's boot/init foundation — a global
-> accessor, edit-time Game Version baking, and a pluggable logger — but the network transport and the
-> feature providers (authentication, config, player data, shop, analytics, …) are not wired yet. See
-> [Status](#status).
+> **Early release.** The SDK's boot/init foundation, the network transport (HTTP client, automatic
+> retry, typed errors), and automatic edit-time Game Version baking now ship. The feature providers
+> (authentication, config, player data, shop, analytics, …) build on this next. See [Status](#status).
 
 ## Contents
 
@@ -23,16 +20,22 @@ Unreal idioms.
 
 ## Features
 
-- **Global accessor** — `UFlockSubsystem`, a `UGameInstanceSubsystem` ready when the game starts, the
-  Unreal analog of the Unity SDK's `FlockClient`.
+- **Global accessor** — `UFlockSubsystem`, a `UGameInstanceSubsystem` ready when the game starts and the
+  entry point to the SDK.
 - **Hands-off startup** — the SDK auto-initializes from your project settings at launch, or you drive
   init yourself.
 - **Offline, synchronous init** — the Game Version ID is resolved at edit time and baked into
   `DefaultGame.ini`; runtime init makes no network call.
-- **Editor version baking** — resolve the Game Version name to its ID and bake it, plus a Play-In-Editor
-  setup guard and a packaging build guard.
+- **Automatic version baking** — the Game Version ID resolves and bakes itself when you edit your
+  settings (or on editor load if unresolved), with a Play-In-Editor setup guard and a packaging build
+  guard. No manual step required; a manual **Resolve Game Version** action is still available.
+- **HTTP transport** — an instance HTTP client over the engine HTTP module with automatic retry
+  (exponential backoff + jitter, `Retry-After` aware) and a callback + result surface (no C++
+  exceptions). JSON is (de)serialized to/from your `USTRUCT` models, unwrapping the backend envelope.
+- **Typed errors** — every failure is an `FFlockError` with a typed `EFlockErrorType` and the server's
+  `EFlockErrorCode`, Blueprint-ready.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
-- **Blueprint-friendly** — the accessor, init, state, and events are exposed to Blueprint.
+- **Blueprint-friendly** — the accessor, init, state, events, and error types are exposed to Blueprint.
 
 ## Requirements
 
@@ -62,13 +65,11 @@ Values are written to your project's `DefaultGame.ini`.
 
 ### Baking the Game Version
 
-Run **Tools → Flock → Resolve Game Version**. It resolves the Game Version name to its ID and bakes it
-into `DefaultGame.ini` (a read-only **Game Version ID** field on the settings panel), so runtime init
-never contacts the server.
-
-> The resolve transport is **stubbed** in this release (see [Status](#status)) — the action reports a
-> clean "HTTP layer not available yet" failure until the network layer ships. The rest of the flow
-> (baking, the gate, the guards) is live and wired around it.
+The Game Version ID bakes **automatically**: it resolves whenever you fill in or change a resolve input
+(**API URL** / **API Key** / **Game Version**), and once on editor startup if the project has a version
+name but no baked ID. It writes the ID into `DefaultGame.ini` (the read-only **Game Version ID** field on
+the settings panel), so runtime init never contacts the server. You can also force a resolve any time with
+**Tools → Flock → Resolve Game Version**.
 
 ## Initialization
 
@@ -171,12 +172,13 @@ UnrealEditor-Cmd.exe <YourProject>.uproject -ExecCmds="Automation RunTests Flock
 
 ## Status
 
-This release is the boot/init + editor foundation. Not yet wired:
+The boot/init foundation, the HTTP transport, and automatic version baking now ship. Not yet wired:
 
-- **Network transport.** Version-lookup and all SDK HTTP are stubbed behind `IFlockVersionLookup`;
-  `Resolve Game Version` fails cleanly and the build guard stays inert until a real lookup is registered.
-- **Feature providers.** Authentication, config, player data, shop, analytics, and the error model are
-  not present yet — they build on this foundation in later releases.
+- **Feature providers.** Authentication, config, player data, shop, and analytics build on the HTTP layer
+  and land in later releases — the transport, retry, typed error model, and endpoint registry they need
+  are in place.
+- **Blueprint call nodes.** The generic HTTP client is C++-only (it's templated); typed Blueprint async
+  nodes arrive per-operation with the providers. The error and model types are already Blueprint-ready.
 
 See [CHANGELOG.md](CHANGELOG.md) for the version history.
 

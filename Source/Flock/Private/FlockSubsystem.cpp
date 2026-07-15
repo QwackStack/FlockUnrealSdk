@@ -8,7 +8,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.2.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.3.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -76,7 +76,7 @@ void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 		Logger = MakeShared<FFlockUnrealLogger>(Config.bEnableDebugLogs);
 	}
 
-	// Misuse guard — mirrors FlockClient.Create's already-initialized check. Don't broadcast a
+	// Misuse guard for an already-initialized SDK. Don't broadcast a
 	// failure: the SDK is already initialized and working.
 	if (bInitialized)
 	{
@@ -105,8 +105,7 @@ void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 
 bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& OutError)
 {
-	// The Game Version ID is baked at edit time; runtime init never contacts the server
-	// (mirrors FlockClient.Create's baked-version gate).
+	// The Game Version ID is baked at edit time; runtime init never contacts the server.
 	if (Config.GameVersionId.IsEmpty())
 	{
 		OutError = TEXT("Game Version not resolved. Open Tools > Flock > Resolve Game Version (or Project Settings > Flock SDK) ")

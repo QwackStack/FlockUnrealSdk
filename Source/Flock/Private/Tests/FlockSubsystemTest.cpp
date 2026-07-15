@@ -6,6 +6,7 @@
 
 #include "FlockSubsystem.h"
 #include "FlockInitConfig.h"
+#include "Engine/GameInstance.h"
 #include "UObject/Package.h"
 
 namespace
@@ -20,6 +21,14 @@ namespace
 		Config.GameVersionId = TEXT("ver-abc");
 		return Config;
 	}
+
+	// UFlockSubsystem is a UGameInstanceSubsystem (ClassWithin=UGameInstance), so its Outer must be a
+	// UGameInstance. Creating it under the transient package trips a "created in invalid Outer" ensure.
+	UFlockSubsystem* NewTransientSubsystem()
+	{
+		UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
+		return NewObject<UFlockSubsystem>(GameInstance);
+	}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemInitGateTest, "Flock.Runtime.Subsystem.InitGate",
@@ -30,7 +39,7 @@ bool FFlockSubsystemInitGateTest::RunTest(const FString& Parameters)
 	// The clean-failure path logs an Error on purpose; tell the framework to expect it.
 	AddExpectedError(TEXT("Initialize failed"), EAutomationExpectedErrorFlags::Contains, 1);
 
-	UFlockSubsystem* Sdk = NewObject<UFlockSubsystem>(GetTransientPackage());
+	UFlockSubsystem* Sdk = NewTransientSubsystem();
 
 	// Missing baked version ID -> clean failure, stays uninitialized.
 	FFlockInitConfig NoVersion = MakeValidConfig();
@@ -55,7 +64,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemReinitTest, "Flock.Runtime.Subsy
 
 bool FFlockSubsystemReinitTest::RunTest(const FString& Parameters)
 {
-	UFlockSubsystem* Sdk = NewObject<UFlockSubsystem>(GetTransientPackage());
+	UFlockSubsystem* Sdk = NewTransientSubsystem();
 	Sdk->InitializeWithConfig(MakeValidConfig());
 	TestTrue(TEXT("Initialized"), Sdk->IsInitialized());
 
