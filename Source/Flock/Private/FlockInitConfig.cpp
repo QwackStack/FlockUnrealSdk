@@ -14,3 +14,11 @@ FFlockInitConfig FFlockInitConfig::FromSettings(const UFlockConfig& Settings)
 	Config.bEnableDebugLogs = Settings.bEnableDebugLogs;
 	return Config;
 }
+
+TMap<FString, FString> FFlockInitConfig::GetBaseHeaders() const
+{
+	TMap<FString, FString> Headers;
+	Headers.Add(TEXT("X-Flock-API-Key"), ApiKey);
+	Headers.Add(TEXT("X-Game-Version-ID"), GameVersionId);
+	return Headers;
+}

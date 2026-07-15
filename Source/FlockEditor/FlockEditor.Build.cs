@@ -32,6 +32,11 @@ public class FlockEditor : ModuleRules
 				"MessageLog",     // FMessageLog (play-mode guard)
 				"AssetRegistry",  // FAssetData (validator signatures)
 				"DataValidation", // UEditorValidatorBase (build/validate guard)
+				// FlockHttpVersionLookup.cpp instantiates FFlockHttpClient::Get<T>, which pulls the
+				// Json/JsonUtilities template code into THIS module's objects — so they must be linked
+				// here directly, not just inherited transitively through Flock.
+				"Json",
+				"JsonUtilities",
 			}
 			);
 	}

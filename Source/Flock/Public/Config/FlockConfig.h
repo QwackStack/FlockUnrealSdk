@@ -24,7 +24,7 @@ public:
 
 	/**
 	 * True when the required credentials/identity fields (API URL, API Key, Game Name, Game Version)
-	 * are all present. Mirrors the Unity SDK's FlockConfigAsset.IsValid. Does NOT check the baked
+	 * are all present. Does NOT check the baked
 	 * GameVersionId — that gate lives in SDK init. On failure, OutError describes the first missing field.
 	 */
 	bool IsValid(FString& OutError) const;

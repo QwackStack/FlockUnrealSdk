@@ -5,8 +5,8 @@
 void FFlockStubVersionLookup::Resolve(const FString& ApiUrl, const FString& ApiKey, const FString& GameVersion, FFlockResolveComplete OnComplete)
 {
 	OnComplete.ExecuteIfBound(FFlockResolveResult::Fail(
-		TEXT("The Flock HTTP layer is not available yet (pending QWA-978). Game Version resolve is stubbed, ")
-		TEXT("so the ID cannot be baked until the HTTP module lands.")));
+		TEXT("No Flock version lookup is registered, so the Game Version cannot be resolved. ")
+		TEXT("Ensure the FlockEditor module is loaded.")));
 }
 
 namespace

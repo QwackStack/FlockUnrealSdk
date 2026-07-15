@@ -32,8 +32,8 @@ struct FFlockResolveResult
 DECLARE_DELEGATE_OneParam(FFlockResolveComplete, const FFlockResolveResult&);
 
 /**
- * Transport seam for the edit-time Game Version lookup. Kept behind an interface so the general
- * HTTP layer (QWA-978) can drop in a real FFlockHttpVersionLookup without touching the resolver.
+ * Transport seam for the edit-time Game Version lookup. Kept behind an interface so the HTTP-backed
+ * FFlockHttpVersionLookup can be registered without touching the resolver.
  */
 class FLOCKEDITOR_API IFlockVersionLookup
 {
@@ -45,12 +45,12 @@ public:
 
 	/**
 	 * True when this lookup can actually contact the backend. The stub returns false, which keeps
-	 * the build guard inert until a real lookup (QWA-978) is registered.
+	 * the build guard inert until a real lookup is registered.
 	 */
 	virtual bool CanResolve() const = 0;
 };
 
-/** Default lookup used until the HTTP layer (QWA-978) registers a real one. Fails cleanly. */
+/** Default lookup used until a real HTTP-backed lookup is registered. Fails cleanly. */
 class FLOCKEDITOR_API FFlockStubVersionLookup : public IFlockVersionLookup
 {
 public:
@@ -59,8 +59,8 @@ public:
 };
 
 /**
- * Process-wide holder for the active version lookup. Stub by default; QWA-978 calls Set() to swap in
- * the real HTTP-backed lookup. The resolver and the build guard both read this.
+ * Process-wide holder for the active version lookup. Stub by default; the FlockEditor module calls Set()
+ * to register the real HTTP-backed lookup on startup. The resolver and the build guard both read this.
  */
 class FLOCKEDITOR_API FFlockVersionLookupRegistry
 {
@@ -68,7 +68,7 @@ public:
 	/** The active lookup (the stub until a real one is registered). */
 	static IFlockVersionLookup& Get();
 
-	/** Register a real lookup (e.g. FFlockHttpVersionLookup from QWA-978). */
+	/** Register a real lookup (the HTTP-backed FFlockHttpVersionLookup). */
 	static void Set(const TSharedRef<IFlockVersionLookup>& InLookup);
 
 	/** Revert to the stub lookup. */

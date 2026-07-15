@@ -12,7 +12,7 @@
 
 namespace
 {
-	/** Percent-encodes a URL path segment (RFC 3986 unreserved kept), mirroring Unity's Uri.EscapeDataString. */
+	/** Percent-encodes a URL path segment (RFC 3986 unreserved kept). */
 	FString EncodePathSegment(const FString& In)
 	{
 		FString Result;

@@ -45,7 +45,7 @@ FString UFlockConfigValidator::GetBuildBlockReason(const FString& BakedGameVersi
 		return FString();
 	}
 
-	// Inert until a real (non-stub) lookup is registered — never block a package during the stub period.
+	// Inert until a real lookup is registered — never block a package when the version can't be resolved.
 	if (!bCanResolve)
 	{
 		return FString();
