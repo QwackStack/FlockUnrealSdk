@@ -108,34 +108,31 @@ TSharedRef<FJsonObject> FFlockJsonUtils::TransformObjectKeys(const TSharedRef<FJ
 	return Obj.IsValid() ? Obj.ToSharedRef() : MakeShared<FJsonObject>();
 }
 
-FString FFlockJsonUtils::ParseCodedErrorCode(const FString& Body)
+void FFlockJsonUtils::ParseCodedError(const FString& Body, FString& OutCode, FString& OutMessage)
 {
+	OutCode.Reset();
+	OutMessage.Reset();
+
 	TSharedPtr<FJsonObject> Root;
 	if (!TryParseObject(Body, Root) || !Root.IsValid())
 	{
-		return FString();
+		return;
 	}
 
-	// Prefer detail.code (CodedErrorResponse), fall back to error.code (GenericResponse.error).
+	// Prefer detail (the coded-error shape), fall back to error.code (the enveloped shape).
 	const TSharedPtr<FJsonObject>* Detail = nullptr;
 	if (Root->TryGetObjectField(TEXT("detail"), Detail) && Detail->IsValid())
 	{
-		FString Code;
-		if ((*Detail)->TryGetStringField(TEXT("code"), Code))
-		{
-			return Code;
-		}
+		(*Detail)->TryGetStringField(TEXT("code"), OutCode);
+		(*Detail)->TryGetStringField(TEXT("message"), OutMessage);
 	}
 
-	const TSharedPtr<FJsonObject>* ErrorObj = nullptr;
-	if (Root->TryGetObjectField(TEXT("error"), ErrorObj) && ErrorObj->IsValid())
+	if (OutCode.IsEmpty())
 	{
-		FString Code;
-		if ((*ErrorObj)->TryGetStringField(TEXT("code"), Code))
+		const TSharedPtr<FJsonObject>* ErrorObj = nullptr;
+		if (Root->TryGetObjectField(TEXT("error"), ErrorObj) && ErrorObj->IsValid())
 		{
-			return Code;
+			(*ErrorObj)->TryGetStringField(TEXT("code"), OutCode);
 		}
 	}
-
-	return FString();
 }

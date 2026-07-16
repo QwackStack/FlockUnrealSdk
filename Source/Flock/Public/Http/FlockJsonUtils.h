@@ -37,10 +37,11 @@ public:
 	static TSharedRef<FJsonObject> TransformObjectKeys(const TSharedRef<FJsonObject>& In, bool bToPascal);
 
 	/**
-	 * Reads the server's machine-readable error code from a coded-error body, preferring `detail.code`
-	 * and falling back to `error.code`. Empty when the body has no code.
+	 * Reads the server's coded-error body ({"detail":{"code","message"}}) into its machine-readable
+	 * code and human-readable message, falling back to `error.code` for the enveloped shape. Outputs
+	 * are empty when absent; safe on malformed or empty bodies.
 	 */
-	static FString ParseCodedErrorCode(const FString& Body);
+	static void ParseCodedError(const FString& Body, FString& OutCode, FString& OutMessage);
 
 	// ── Templated conversions (T is a USTRUCT) ──
 

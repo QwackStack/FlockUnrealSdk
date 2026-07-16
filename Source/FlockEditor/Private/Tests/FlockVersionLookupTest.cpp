@@ -5,6 +5,7 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Version/FlockVersionLookup.h"
+#include "Version/FlockHttpVersionLookup.h"
 
 namespace
 {
@@ -50,16 +51,20 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLookupRegistryTest, "Flock.Editor.Lookup.
 
 bool FFlockLookupRegistryTest::RunTest(const FString& Parameters)
 {
-	// Default is the stub, which keeps the build guard inert.
-	TestFalse(TEXT("Default lookup is the stub"), FFlockVersionLookupRegistry::Get().CanResolve());
+	// The FlockEditor module registers the HTTP lookup at startup, so the live registry can resolve.
+	TestTrue(TEXT("Module-registered lookup is live"), FFlockVersionLookupRegistry::Get().CanResolve());
 
-	// Registering a real lookup makes it active.
+	// Reset falls back to the stub, which keeps the build guard inert.
+	FFlockVersionLookupRegistry::Reset();
+	TestFalse(TEXT("Reset restores the stub"), FFlockVersionLookupRegistry::Get().CanResolve());
+
+	// Registering a lookup makes it active.
 	FFlockVersionLookupRegistry::Set(MakeShared<FFakeResolvableLookup>());
 	TestTrue(TEXT("Registered lookup becomes active"), FFlockVersionLookupRegistry::Get().CanResolve());
 
-	// Reset restores the stub and leaves global state clean for other tests.
-	FFlockVersionLookupRegistry::Reset();
-	TestFalse(TEXT("Reset restores the stub"), FFlockVersionLookupRegistry::Get().CanResolve());
+	// Put the module's real lookup back so this test doesn't disarm resolve/build-guard for the session.
+	FFlockVersionLookupRegistry::Set(MakeShared<FFlockHttpVersionLookup>());
+	TestTrue(TEXT("Real lookup restored"), FFlockVersionLookupRegistry::Get().CanResolve());
 
 	return true;
 }

@@ -55,7 +55,9 @@ bool FFlockHttpClient::ClassifyResponse(const FFlockHttpResponse& Response, FFlo
 	const int32 Code = Response.StatusCode;
 	if (Code < 200 || Code >= 300)
 	{
-		const FString Coded = FFlockJsonUtils::ParseCodedErrorCode(Response.Body);
+		FString Coded;
+		FString ServerMessage;
+		FFlockJsonUtils::ParseCodedError(Response.Body, Coded, ServerMessage);
 
 		EFlockErrorType Type;
 		FString Message;
@@ -75,7 +77,7 @@ bool FFlockHttpClient::ClassifyResponse(const FFlockHttpResponse& Response, FFlo
 			Message = FString::Printf(TEXT("HTTP request failed (HTTP %d)"), Code);
 		}
 
-		OutError = FFlockError::Make(Type, Message, Code, Response.Body, Coded);
+		OutError = FFlockError::Make(Type, Message, Code, Response.Body, Coded, ServerMessage);
 
 		float Seconds = 0.f;
 		if (TryParseRetryAfter(Response.RetryAfterHeader, Seconds))

@@ -32,8 +32,9 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 - **HTTP transport** — an instance HTTP client over the engine HTTP module with automatic retry
   (exponential backoff + jitter, `Retry-After` aware) and a callback + result surface (no C++
   exceptions). JSON is (de)serialized to/from your `USTRUCT` models, unwrapping the backend envelope.
-- **Typed errors** — every failure is an `FFlockError` with a typed `EFlockErrorType` and the server's
-  `EFlockErrorCode`, Blueprint-ready.
+- **Typed errors** — every failure is an `FFlockError` with a typed `EFlockErrorType`, the server's
+  `EFlockErrorCode`, and the server's human-readable message (`ServerMessage`) — Blueprint-ready,
+  with `UFlockErrorLibrary` exposing display text and coded-error group checks to Blueprint.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
 - **Blueprint-friendly** — the accessor, init, state, events, and error types are exposed to Blueprint.
 
