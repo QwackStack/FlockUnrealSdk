@@ -5,6 +5,38 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-16
+
+### Added
+- **SDK event hub.** `UFlockEvents`, reached via `UFlockSubsystem::GetEvents()` — lifecycle
+  (`OnInitialized`, `OnInitializationFailed`, `OnShutdown`), auth (`OnAuthenticated` with
+  `FFlockAuthInfo`, `OnTokenRefreshed`, `OnAuthExpired`, `OnLoggedOut`, `OnSessionRestored`), session
+  (`OnSessionStarted`, `OnSessionEnded` with `FFlockSessionEndedArgs`, `OnSessionPaused`,
+  `OnSessionResumed`), and consent (`OnConsentChanged`). All Blueprint-assignable, raised on the game
+  thread, and debug-logged per raise with the subscriber count. Lifecycle events are live now; auth,
+  session, and consent events are declared and get raised by their features as they land.
+- **Late-binder-safe init callbacks.** `CallOrRegister_OnInitialized` /
+  `CallOrRegister_OnInitializationFailed` fire immediately when init already happened — under
+  auto-init the SDK initializes during GameInstance startup, before any Blueprint can bind, so a plain
+  event binding would miss it. One-shot.
+- **Event payload models.** `EFlockAuthMethod`, `FFlockAuthInfo`, `EFlockSessionEndReason`,
+  `FFlockSessionEndedArgs`, plus the session wire models they carry (`FFlockSessionSnapshot`,
+  `FFlockDeviceInfo`) ready for the session/analytics features.
+- **Event automation tests** (`Flock.Runtime.Events.*`): lifecycle raises through the subsystem
+  (including the misuse guard staying silent and subscriptions surviving re-init), CallOrRegister
+  parked/immediate/one-shot behavior, and payload delivery for the feature raises.
+- **Retry + pagination coverage gaps closed.** `Flock.Http.Retry.OverrideAndExhaustion` pins the
+  `MaxRetriesOverride = 0` single-attempt contract (the offline layer's "one attempt, then serve
+  cache" path depends on it) and that the last failure propagates once the budget is exhausted;
+  `Flock.Http.Client.Paginated` drives `GetPaged` through the transport seam (success, status→error
+  mapping, and missing-items bodies).
+
+### Changed
+- **Init events moved into the hub.** `UFlockSubsystem::OnFlockInitialized` /
+  `OnFlockInitializationFailed` are now `GetEvents()->OnInitialized` / `OnInitializationFailed`
+  (pre-1.0 breaking change — rebind in Blueprint via **Get Events**). Subscriptions are not cleared by
+  `ShutdownSdk()`; they persist for re-init and release with the GameInstance.
+
 ## [0.4.0] - 2026-07-16
 
 ### Added

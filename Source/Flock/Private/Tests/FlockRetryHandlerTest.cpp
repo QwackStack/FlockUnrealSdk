@@ -109,6 +109,53 @@ bool FFlockRetryOrchestrationTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRetryOverrideAndExhaustionTest, "Flock.Http.Retry.OverrideAndExhaustion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRetryOverrideAndExhaustionTest::RunTest(const FString& Parameters)
+{
+	FFlockRetryPolicy Policy;
+	Policy.MaxRetries = 3;
+	Policy.InitialDelaySeconds = 0.f;
+	Policy.bUseJitter = false;
+
+	const TSharedRef<IFlockLogger> Logger = MakeShared<FFlockNullLogger>();
+	FFlockRetryHandler Handler(Policy, Logger);
+	Handler.SetScheduler([](float, TFunction<void()> Work) { Work(); });
+
+	// MaxRetriesOverride = 0: one attempt only, even for a retryable failure. The offline layer's
+	// "one attempt, then serve cache" path relies on this contract.
+	int32 SingleAttempts = 0;
+	auto FailingOperation = [&SingleAttempts](TFunction<void(TFlockResult<int32>)> Callback) -> FFlockRequestHandle
+	{
+		++SingleAttempts;
+		Callback(TFlockResult<int32>::Fail(Net(500)));
+		return FFlockRequestHandle();
+	};
+
+	bool bFailed = false;
+	Handler.Execute<int32>(FailingOperation, [&bFailed](TFlockResult<int32> Result) { bFailed = !Result.bSuccess; },
+		/*bIdempotent*/ true, /*MaxRetriesOverride*/ 0);
+	TestTrue(TEXT("failure delivered"), bFailed);
+	TestEqual(TEXT("override zero -> single attempt"), SingleAttempts, 1);
+
+	// Exhausted budget: initial + MaxRetries attempts, and the LAST failure is what propagates.
+	int32 Attempts = 0;
+	const int32 Statuses[] = { 500, 502, 503, 504 };
+	auto DrainingOperation = [&Attempts, &Statuses](TFunction<void(TFlockResult<int32>)> Callback) -> FFlockRequestHandle
+	{
+		Callback(TFlockResult<int32>::Fail(Net(Statuses[FMath::Min(Attempts++, 3)])));
+		return FFlockRequestHandle();
+	};
+
+	int32 FinalStatus = 0;
+	Handler.Execute<int32>(DrainingOperation, [&FinalStatus](TFlockResult<int32> Result) { FinalStatus = Result.Error.StatusCode; });
+	TestEqual(TEXT("initial + MaxRetries attempts"), Attempts, 4);
+	TestEqual(TEXT("last failure propagates"), FinalStatus, 504);
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRetryCancellationTest, "Flock.Http.Retry.Cancellation",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 

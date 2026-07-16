@@ -80,6 +80,52 @@ bool FFlockHttpClientDeserializeTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientPaginatedTest, "Flock.Http.Client.Paginated",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientPaginatedTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockHttpClient> Client = MakeClient(Fake);
+	const FString Url = TEXT("http://x/game_version?page=1");
+
+	Fake->On(TEXT("game_version"), FFlockFakeTransport::Ok(
+		TEXT("{\"result\":{\"items\":[{\"id\":\"a\"},{\"id\":\"b\"}],\"total\":2,\"page\":1,\"limit\":10}}")));
+	bool bSuccess = false;
+	TFlockPage<FFlockGameVersionSchema> Page;
+	Client->GetPaged<FFlockGameVersionSchema>(Url, {}, [&](TFlockResult<TFlockPage<FFlockGameVersionSchema>> R)
+	{
+		bSuccess = R.bSuccess;
+		Page = R.Value;
+	});
+	TestTrue(TEXT("paged success"), bSuccess);
+	TestEqual(TEXT("two items"), Page.Items.Num(), 2);
+	if (Page.Items.Num() == 2)
+	{
+		TestEqual(TEXT("item ids deserialized"), Page.Items[1].Id, FString(TEXT("b")));
+	}
+	TestEqual(TEXT("total carried"), Page.Total, 2);
+	TestEqual(TEXT("page carried"), Page.Page, 1);
+	TestEqual(TEXT("limit carried"), Page.Limit, 10);
+
+	// Non-2xx goes through the same status->error mapping as the other verbs.
+	Fake->On(TEXT("game_version"), FFlockFakeTransport::Coded(404, TEXT("game_version.game_version_not_found")));
+	FFlockError Error;
+	Client->GetPaged<FFlockGameVersionSchema>(Url, {}, [&Error](TFlockResult<TFlockPage<FFlockGameVersionSchema>> R) { Error = R.Error; });
+	TestEqual(TEXT("paged error classified"), static_cast<int32>(Error.Type), static_cast<int32>(EFlockErrorType::Network));
+	TestEqual(TEXT("paged error keeps code"), static_cast<int32>(Error.ErrorCode),
+		static_cast<int32>(EFlockErrorCode::GameVersionGameVersionNotFound));
+
+	// A 2xx body without items is a Serialization failure, not a silent empty page.
+	Fake->On(TEXT("game_version"), FFlockFakeTransport::Ok(TEXT("{\"result\":{}}")));
+	EFlockErrorType MissingItemsType = EFlockErrorType::None;
+	Client->GetPaged<FFlockGameVersionSchema>(Url, {}, [&MissingItemsType](TFlockResult<TFlockPage<FFlockGameVersionSchema>> R) { MissingItemsType = R.Error.Type; });
+	TestEqual(TEXT("missing items -> Serialization"), static_cast<int32>(MissingItemsType),
+		static_cast<int32>(EFlockErrorType::Serialization));
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientCodedErrorTest, "Flock.Http.Client.CodedError",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 

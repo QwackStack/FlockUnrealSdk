@@ -14,6 +14,7 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 - [Setup](#setup)
 - [Initialization](#initialization)
 - [Accessing the SDK](#accessing-the-sdk)
+- [SDK events](#sdk-events)
 - [Logging & debugging](#logging--debugging)
 - [Testing](#testing)
 - [Status](#status)
@@ -35,6 +36,8 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 - **Typed errors** — every failure is an `FFlockError` with a typed `EFlockErrorType`, the server's
   `EFlockErrorCode`, and the server's human-readable message (`ServerMessage`) — Blueprint-ready,
   with `UFlockErrorLibrary` exposing display text and coded-error group checks to Blueprint.
+- **SDK events** — a single hub (`GetEvents()`) for lifecycle, auth, session, and consent events,
+  Blueprint-assignable, with auto-init-safe `CallOrRegister` entry points for the init events.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
 - **Blueprint-friendly** — the accessor, init, state, events, and error types are exposed to Blueprint.
 
@@ -80,10 +83,13 @@ With the settings above filled in, **Auto-Initialize On Load** is on by default,
 initializes itself when the game starts. Nothing to call — just use the subsystem when you need it.
 
 ```cpp
-// React to init (optional):
+// React to init (optional). Auto-init completes before BeginPlay, so use CallOrRegister —
+// it fires immediately if the SDK is already initialized, otherwise when init succeeds:
 if (UFlockSubsystem* Flock = UFlockSubsystem::Get(this))
 {
-    Flock->OnFlockInitialized.AddDynamic(this, &AMyActor::HandleFlockReady);
+    FFlockInitializedCallback OnReady;
+    OnReady.BindDynamic(this, &AMyActor::HandleFlockReady); // HandleFlockReady must be a UFUNCTION()
+    Flock->GetEvents()->CallOrRegister_OnInitialized(OnReady);
 }
 ```
 
@@ -92,7 +98,7 @@ off (Flock SDK Settings → Initialization) and call one of the manual entry poi
 
 > **Init is fail-safe.** A bad config or an unresolved Game Version leaves the SDK uninitialized and
 > logs the reason (it never crashes startup). Guard with `IsInitialized()`, read
-> `GetInitializationError()`, or handle `OnFlockInitializationFailed`.
+> `GetInitializationError()`, or handle `GetEvents()->OnInitializationFailed`.
 
 ### Manual
 
@@ -132,8 +138,24 @@ if (UFlockSubsystem* Flock = UFlockSubsystem::Get(WorldContextObject))
 `GetGameInstance()->GetSubsystem<UFlockSubsystem>()`; either works.
 
 **Blueprint:** use **Get Flock Subsystem** (or the built-in **Get Game Instance Subsystem** node), then
-call `Is Initialized`, `Get Game Version Id`, etc., or bind the `On Flock Initialized` /
-`On Flock Initialization Failed` events.
+call `Is Initialized`, `Get Game Version Id`, etc. For events, call **Get Events** and bind there.
+
+## SDK events
+
+`GetEvents()` returns the SDK event hub (`UFlockEvents`): lifecycle (`OnInitialized`,
+`OnInitializationFailed`, `OnShutdown`), auth (`OnAuthenticated`, `OnTokenRefreshed`, `OnAuthExpired`,
+`OnLoggedOut`, `OnSessionRestored`), session (`OnSessionStarted`, `OnSessionEnded`, `OnSessionPaused`,
+`OnSessionResumed`), and consent (`OnConsentChanged`). All are Blueprint-assignable and raised on the
+game thread; auth/session/consent events are declared now and raised by their features as they land.
+
+Two things to know:
+
+- **Auto-init fires before you can bind.** Initialization completes during GameInstance startup, so a
+  plain `OnInitialized` binding made in `BeginPlay` misses it. Use `CallOrRegister_OnInitialized` (or
+  `..._OnInitializationFailed`) — it fires immediately when init already happened, otherwise on the
+  next init. One-shot.
+- **Subscriptions survive `ShutdownSdk()`.** They stay bound across re-initialization and are released
+  with the GameInstance (dynamic delegates hold weak references, so destroyed subscribers are skipped).
 
 ## Logging & debugging
 

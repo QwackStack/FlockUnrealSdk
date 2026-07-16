@@ -2,13 +2,14 @@
 
 #include "FlockSubsystem.h"
 #include "Flock.h"
+#include "FlockEvents.h"
 #include "Config/FlockConfig.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.4.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.5.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -61,7 +62,7 @@ void UFlockSubsystem::InitializeFromSettings()
 			TEXT("Flock config is incomplete: %s Open Project Settings > Flock SDK to fix it, or turn off Auto-Initialize On Load."),
 			*ValidationError);
 		GetLogger().LogError(InitializationError);
-		OnFlockInitializationFailed.Broadcast(InitializationError);
+		GetEvents()->InvokeInitializationFailed(InitializationError);
 		return;
 	}
 
@@ -74,6 +75,10 @@ void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 	if (!Logger.IsValid())
 	{
 		Logger = MakeShared<FFlockUnrealLogger>(Config.bEnableDebugLogs);
+		if (Events)
+		{
+			Events->SetLogger(Logger);
+		}
 	}
 
 	// Misuse guard for an already-initialized SDK. Don't broadcast a
@@ -92,7 +97,7 @@ void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 	{
 		InitializationError = Error;
 		GetLogger().LogError(FString::Printf(TEXT("Initialize failed: %s"), *Error));
-		OnFlockInitializationFailed.Broadcast(Error);
+		GetEvents()->InvokeInitializationFailed(Error);
 		return;
 	}
 
@@ -100,7 +105,7 @@ void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 	InitializationError.Empty();
 	GetLogger().LogInfo(FString::Printf(TEXT("SDK initialized (GameId=%s, GameVersionId=%s)."),
 		*ActiveConfig.GameId, *ActiveConfig.GameVersionId));
-	OnFlockInitialized.Broadcast();
+	GetEvents()->InvokeInitialized();
 }
 
 bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& OutError)
@@ -130,6 +135,7 @@ void UFlockSubsystem::ShutdownSdk()
 	ActiveConfig = FFlockInitConfig();
 	bInitialized = false;
 	GetLogger().LogInfo(TEXT("SDK shut down."));
+	GetEvents()->InvokeShutdown();
 }
 
 FString UFlockSubsystem::GetVersionedApiUrl() const
@@ -137,9 +143,23 @@ FString UFlockSubsystem::GetVersionedApiUrl() const
 	return FString::Printf(TEXT("%s/%s"), *ActiveConfig.ApiUrl, *ApiVersion);
 }
 
+UFlockEvents* UFlockSubsystem::GetEvents()
+{
+	if (!Events)
+	{
+		Events = NewObject<UFlockEvents>(this);
+		Events->SetLogger(Logger);
+	}
+	return Events;
+}
+
 void UFlockSubsystem::SetLogger(const TSharedRef<IFlockLogger>& InLogger)
 {
 	Logger = InLogger;
+	if (Events)
+	{
+		Events->SetLogger(Logger);
+	}
 }
 
 IFlockLogger& UFlockSubsystem::GetLogger()
@@ -147,6 +167,10 @@ IFlockLogger& UFlockSubsystem::GetLogger()
 	if (!Logger.IsValid())
 	{
 		Logger = MakeShared<FFlockUnrealLogger>(GetDefault<UFlockConfig>()->bEnableDebugLogs);
+		if (Events)
+		{
+			Events->SetLogger(Logger);
+		}
 	}
 	return *Logger;
 }
