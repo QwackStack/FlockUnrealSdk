@@ -97,6 +97,7 @@ bool FFlockHttpClientCodedErrorTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("raw code parsed"), Error.Code, FString(TEXT("game_version.game_version_by_name_not_found")));
 	TestEqual(TEXT("typed error code"), static_cast<int32>(Error.ErrorCode),
 		static_cast<int32>(EFlockErrorCode::GameVersionGameVersionByNameNotFound));
+	TestEqual(TEXT("server message parsed"), Error.ServerMessage, FString(TEXT("test")));
 
 	return true;
 }

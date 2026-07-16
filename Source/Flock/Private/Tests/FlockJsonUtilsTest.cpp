@@ -49,16 +49,32 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonCodedErrorTest, "Flock.Http.Json.Code
 
 bool FFlockJsonCodedErrorTest::RunTest(const FString& Parameters)
 {
-	TestEqual(TEXT("detail.code preferred"),
-		FFlockJsonUtils::ParseCodedErrorCode(TEXT("{\"detail\":{\"code\":\"player.email_already_registered\"}}")),
-		FString(TEXT("player.email_already_registered")));
+	FString OutCode;
+	FString OutMessage;
 
-	TestEqual(TEXT("error.code fallback"),
-		FFlockJsonUtils::ParseCodedErrorCode(TEXT("{\"error\":{\"code\":\"game.game_not_found\"}}")),
-		FString(TEXT("game.game_not_found")));
+	FFlockJsonUtils::ParseCodedError(
+		TEXT("{\"detail\":{\"code\":\"player.email_already_registered\",\"message\":\"Email already registered\"}}"),
+		OutCode, OutMessage);
+	TestEqual(TEXT("detail.code preferred"), OutCode, FString(TEXT("player.email_already_registered")));
+	TestEqual(TEXT("detail.message parsed"), OutMessage, FString(TEXT("Email already registered")));
 
-	TestEqual(TEXT("no code -> empty"),
-		FFlockJsonUtils::ParseCodedErrorCode(TEXT("{\"result\":{}}")), FString());
+	FFlockJsonUtils::ParseCodedError(TEXT("{\"detail\":{\"code\":\"game.game_not_found\"}}"), OutCode, OutMessage);
+	TestEqual(TEXT("code without message"), OutCode, FString(TEXT("game.game_not_found")));
+	TestEqual(TEXT("absent message -> empty"), OutMessage, FString());
+
+	FFlockJsonUtils::ParseCodedError(TEXT("{\"error\":{\"code\":\"game.game_not_found\"}}"), OutCode, OutMessage);
+	TestEqual(TEXT("error.code fallback"), OutCode, FString(TEXT("game.game_not_found")));
+	TestEqual(TEXT("fallback has no message"), OutMessage, FString());
+
+	FFlockJsonUtils::ParseCodedError(TEXT("{\"result\":{}}"), OutCode, OutMessage);
+	TestEqual(TEXT("no code -> empty"), OutCode, FString());
+
+	// Stale values must not survive a parse of a body without them.
+	OutCode = TEXT("stale");
+	OutMessage = TEXT("stale");
+	FFlockJsonUtils::ParseCodedError(TEXT("not json"), OutCode, OutMessage);
+	TestEqual(TEXT("malformed -> code cleared"), OutCode, FString());
+	TestEqual(TEXT("malformed -> message cleared"), OutMessage, FString());
 
 	return true;
 }

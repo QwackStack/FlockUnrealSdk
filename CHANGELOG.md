@@ -5,6 +5,37 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-16
+
+### Added
+- **Server error message.** The human-readable message from the backend's coded-error body
+  (`detail.message`) is now parsed into `FFlockError::ServerMessage`, alongside the machine-readable
+  `Code`/`ErrorCode` — the server's wording of the failure, ready to show in-game, while `Message` stays
+  terse for error-tracker bucketing.
+- **Coded-error group check.** `FFlockError::IsAlreadyRegistered()` — true when a register/login route
+  reports the identity (email / device / Google / Apple / Steam) already belongs to an account. A taken
+  display name is deliberately excluded — that's a different fix for the player.
+- **Blueprint error surface.** `UFlockErrorLibrary`, a Blueprint function library over `FFlockError`:
+  **To String (Flock Error)** (log-friendly display text) and **Is Already Registered** (the group
+  check). The struct's fields already break out in Blueprint; this covers the derived views that
+  Blueprint can't reach as USTRUCT member functions.
+- **Error automation tests** (`Flock.Http.Error.*`): the already-registered group (membership,
+  exclusions, and library parity) and display text; the coded-error JSON and client tests now also
+  cover `detail.message`.
+
+### Changed
+- `FFlockJsonUtils::ParseCodedErrorCode` is replaced by `ParseCodedError`, which returns the code and
+  the message in one parse (same `detail`-first, `error.code`-fallback behavior).
+
+### Fixed
+- First full run of the automation suite against a real UE 5.5 editor surfaced and fixed two test bugs:
+  the logger tests still created `UFlockSubsystem` under the transient package (the invalid-Outer ensure
+  fixed for the other tests in 0.3.0), and `Flock.Editor.Lookup.Registry` still assumed the pre-0.3.0
+  stub default — it now verifies the module-registered HTTP lookup and restores it instead of leaving
+  the session disarmed.
+- `Flock.uplugin` now declares the `DataValidation` plugin dependency `FlockEditor` already relied on
+  (fixes a UBT warning).
+
 ## [0.3.0] - 2026-07-15
 
 ### Added

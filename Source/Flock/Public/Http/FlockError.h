@@ -66,6 +66,13 @@ struct FLOCK_API FFlockError
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	EFlockErrorCode ErrorCode = EFlockErrorCode::Unknown;
 
+	/**
+	 * Human-readable message from the server's coded-error body (`detail.message`); empty when the body
+	 * had none. The server's wording of the failure — unlike Message, which stays terse for bucketing.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ServerMessage;
+
 	/** True when the server sent a Retry-After hint (429/503) parsed into RetryAfterSeconds. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	bool bHasRetryAfter = false;
@@ -76,10 +83,17 @@ struct FLOCK_API FFlockError
 
 	/** Builds an error and parses ErrorCode from the coded string. */
 	static FFlockError Make(EFlockErrorType InType, const FString& InMessage, int32 InStatusCode = 0,
-		const FString& InBody = FString(), const FString& InCode = FString());
+		const FString& InBody = FString(), const FString& InCode = FString(),
+		const FString& InServerMessage = FString());
 
 	/** Standard text plus the server body (so logs show the reason while Message stays terse). */
 	FString ToString() const;
+
+	/**
+	 * True when a register/login route reports this identity (email/device/OAuth) already belongs to an
+	 * account. Excludes a taken display name — that's a different fix.
+	 */
+	bool IsAlreadyRegistered() const;
 
 	/** Permanent 4xx is an authoritative server answer; 408/429 are 4xx but transient by spec. */
 	static bool IsPermanentStatus(int32 InStatusCode);
