@@ -8,11 +8,7 @@
 #include "FlockLogger.h"
 #include "FlockSubsystem.generated.h"
 
-/** Broadcast once the SDK has successfully initialized. */
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockOnInitialized);
-
-/** Broadcast when initialization fails; carries the error message. */
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnInitializationFailed, const FString&, Error);
+class UFlockEvents;
 
 /**
  * The global Flock SDK accessor.
@@ -95,13 +91,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Flock")
 	FString GetVersionedApiUrl() const;
 
-	/** Fires after the SDK successfully initializes. */
-	UPROPERTY(BlueprintAssignable, Category = "Flock")
-	FFlockOnInitialized OnFlockInitialized;
-
-	/** Fires when initialization fails; carries the error message. */
-	UPROPERTY(BlueprintAssignable, Category = "Flock")
-	FFlockOnInitializationFailed OnFlockInitializationFailed;
+	/**
+	 * The SDK event hub (lifecycle/auth/session/consent). Bind its events or use its
+	 * CallOrRegister entry points; always valid.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock")
+	UFlockEvents* GetEvents();
 
 private:
 	/** Applies the baked-version gate and adopts the config. Returns false with OutError on failure. */
@@ -114,4 +109,8 @@ private:
 	FString InitializationError;
 	FFlockInitConfig ActiveConfig;
 	TSharedPtr<IFlockLogger> Logger;
+
+	/** Backing store for GetEvents(); created on first use so events can be bound before init. */
+	UPROPERTY(Transient)
+	TObjectPtr<UFlockEvents> Events;
 };
