@@ -15,6 +15,7 @@
 #include "Tests/Support/FlockEventTestListener.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
+#include "Tests/Support/FlockRecordingLogger.h"
 
 namespace FlockAuthProviderTestHelpers
 {
@@ -98,6 +99,8 @@ namespace FlockAuthProviderTestHelpers
 		UFlockEvents* Events = nullptr;
 		UFlockEventTestListener* Listener = nullptr;
 		TUniquePtr<FFlockAuthProvider> Provider;
+		/** What the provider reported, so a test can assert on log level as well as outcome. */
+		TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
 
 		FProviderFixture()
 			: Client(MakeShared<FFlockHttpClient>(Fake, MakeShared<FFlockNullLogger>()))
@@ -113,7 +116,7 @@ namespace FlockAuthProviderTestHelpers
 			Events->OnSessionRestored.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionRestored);
 			Session->SetEvents(Events);
 			Provider = MakeUnique<FFlockAuthProvider>(Client, NoRetryPolicy(),
-				MakeShared<FFlockNullLogger>(), Session, Events, TEXT("http://x/v1"));
+				Log, Session, Events, TEXT("http://x/v1"));
 		}
 	};
 }
@@ -357,6 +360,15 @@ bool FFlockAuthProviderRegisterTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("already registered"), bAlready);
 		TestFalse(TEXT("still signed out"), F.Session->IsAuthenticated());
 		TestEqual(TEXT("no event"), F.Listener->AuthenticatedCount, 0);
+
+		// The outcome is a success, so nothing about it may be reported as an error. Both the retry
+		// handler and the provider base used to log one here, which made a normal first-run path look
+		// broken in the log.
+		TestEqual(TEXT("no error logged for an expected outcome"), F.Log->Errors.Num(), 0);
+		TestTrue(TEXT("reported as a warning instead"),
+			FFlockRecordingLogger::AnyContains(F.Log->Warnings, TEXT("already registered")));
+		TestTrue(TEXT("and still leaves a debug breadcrumb"),
+			FFlockRecordingLogger::AnyContains(F.Log->Debugs, TEXT("Operation failed")));
 	}
 	// A taken display name is NOT the already-registered case — it must fail.
 	{
@@ -366,6 +378,8 @@ bool FFlockAuthProviderRegisterTest::RunTest(const FString& Parameters)
 		F.Provider->RegisterWithEmail(TEXT("a@b.c"), TEXT("pw"), TEXT("Taken"),
 			[&](TFlockResult<FFlockRegisterResult> R) { bSuccess = R.bSuccess; });
 		TestFalse(TEXT("taken name fails"), bSuccess);
+		// The suppression is scoped to the declared outcome — a neighbouring coded error is still an error.
+		TestTrue(TEXT("a taken name is still logged as an error"), F.Log->Errors.Num() > 0);
 	}
 	// Other failures pass through.
 	{
@@ -375,6 +389,7 @@ bool FFlockAuthProviderRegisterTest::RunTest(const FString& Parameters)
 		F.Provider->RegisterWithEmail(TEXT("a@b.c"), TEXT("pw"), TEXT(""),
 			[&](TFlockResult<FFlockRegisterResult> R) { Type = R.Error.Type; });
 		TestEqual(TEXT("network error"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Network));
+		TestTrue(TEXT("a genuine failure is still logged as an error"), F.Log->Errors.Num() > 0);
 	}
 	// Route matrix for the remaining register endpoints.
 	{

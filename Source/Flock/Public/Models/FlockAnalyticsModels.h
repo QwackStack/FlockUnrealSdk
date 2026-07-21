@@ -124,3 +124,138 @@ struct FLOCK_API FFlockSessionSnapshot
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	bool IsFirstSession = false;
 };
+
+/**
+ * Which of the three log channels an entry belongs to. The wire spelling is snake_case and is NOT
+ * the enum name, so it is mapped explicitly by FFlockAnalyticsJson rather than by the generic
+ * struct exporter (which would emit "LogicError").
+ */
+UENUM(BlueprintType)
+enum class EFlockLogEventType : uint8
+{
+	/** An unhandled or reported exception, with a stack trace. Wire: `exception`. */
+	Exception,
+	/** A recoverable logic fault the game chose to report. Wire: `logic_error`. */
+	LogicError,
+	/** A plain diagnostic message. Wire: `debug`. */
+	Debug
+};
+
+/**
+ * The `data` member of a log event. Only Type is required; every other member is omitted from the
+ * body when empty.
+ *
+ * ErrorData/ExtraData are caller-supplied free-form maps. Their keys are game-authored and must
+ * reach the backend byte-for-byte, so these two members deliberately bypass the snake_case key
+ * transform — see the note on FFlockAnalyticsJson.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockLogEventData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	EFlockLogEventType Type = EFlockLogEventType::Debug;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString GameVersion;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString LogicalExpression;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString ErrorMessage;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString ErrorCode;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	TMap<FString, FString> ErrorData;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString ErrorTraceback;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	TArray<FString> ErrorTracebackLines;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	TMap<FString, FString> ExtraData;
+};
+
+/** One entry for `POST log_event/single`, and one element of the batch for `POST log_event`. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockLogEventRequest
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString Message;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FFlockLogEventData Data;
+
+	/** ISO-8601 UTC. Stamped when the entry is created, not when it is finally delivered. */
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString Timestamp;
+};
+
+/** Batch body for `POST log_event`. */
+USTRUCT()
+struct FLOCK_API FFlockLogEventsRequest
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FFlockLogEventRequest> Events;
+};
+
+// ── Session wire models ──
+
+/** Body for `POST analytics/sessions`. PlayerId is the only member the backend requires. */
+USTRUCT()
+struct FLOCK_API FFlockSessionStartRequest
+{
+	GENERATED_BODY()
+
+	UPROPERTY() FString PlayerId;
+	UPROPERTY() FString Platform;
+	UPROPERTY() FString DeviceType;
+	UPROPERTY() FString GameVersionId;
+	UPROPERTY() FString StartedAt;
+};
+
+/**
+ * Response of `POST analytics/sessions` — the one analytics route that returns a typed body. It is
+ * NOT enveloped (no `result` member), so it is read with the raw verbs.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockSessionStartResponse
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString SessionId;
+};
+
+/** Body for `PATCH analytics/sessions/{session_id}`. Every member is optional to the backend. */
+USTRUCT()
+struct FLOCK_API FFlockSessionEndRequest
+{
+	GENERATED_BODY()
+
+	UPROPERTY() int32 DurationSeconds = 0;
+	UPROPERTY() int32 ScreensViewed = 0;
+	UPROPERTY() bool IsBounce = false;
+	UPROPERTY() FString EndedAt;
+};
+
+/**
+ * Stand-in for the analytics routes that answer with a free-form object nobody reads (session end,
+ * log event delivery). Deserializing into an empty struct succeeds against any object body, which
+ * is what makes these calls fire-and-forget: success is the 2xx, not the payload.
+ */
+USTRUCT()
+struct FLOCK_API FFlockAnalyticsAck
+{
+	GENERATED_BODY()
+};

@@ -1,7 +1,8 @@
 // Copyright 2022, Qwacks. All Rights Reserved.
 
 // A dev-only console command that drives the Flock SDK surface and narrates each step to the log,
-// so you can watch boot/init and authentication behavior against your configured Flock backend.
+// so you can watch boot/init, authentication, and analytics behavior against your configured Flock
+// backend.
 // It initializes from Project Settings > Flock SDK (API URL, key, and the resolved Game Version),
 // so it needs valid settings and a reachable backend to get past init. Run from the editor or
 // in-game console: `Flock.SelfTest` (also works via -ExecCmds in a development build).
@@ -13,6 +14,7 @@
 #if !UE_BUILD_SHIPPING
 
 #include "FlockSubsystem.h"
+#include "Analytics/FlockLogSink.h"
 #include "FlockLogger.h"
 #include "Engine/GameInstance.h"
 #include "HAL/IConsoleManager.h"
@@ -34,12 +36,113 @@ namespace
 	const TCHAR* const DemoCode = TEXT("123456UE");
 	const TCHAR* const DemoNewPassword = TEXT("new-pwUE");
 
+	/**
+	 * Drives the analytics session lifecycle against the configured backend, then hands off to
+	 * Teardown. Runs signed in, because a session needs a player id — which is why it is chained off
+	 * the auth sweep rather than run alongside it.
+	 *
+	 * This is the part that only a real backend can prove: session start is the one analytics route
+	 * with a typed response, and session end is the only PATCH. Both pass against test fakes whatever
+	 * the wire shape is.
+	 */
+	void RunAnalyticsSweep(FFlockAnalyticsProvider& AnalyticsRef, const FString& PlayerId,
+		const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Teardown)
+	{
+		FFlockAnalyticsProvider* Analytics = &AnalyticsRef;
+
+		// Signing in auto-starts a session when Auto Start Session is on, so one may already be in
+		// flight here — that wiring is itself worth seeing.
+		Logger->LogInfo(FString::Printf(
+			TEXT("Self-test: analytics signed in — HasConsent=%s SessionAutoStarted=%s ServerSessionId='%s'"),
+			Analytics->HasConsent() ? TEXT("true") : TEXT("false"),
+			Analytics->HasActiveSession() ? TEXT("true") : TEXT("false"),
+			*Analytics->GetCurrentSessionId()));
+
+		// Close whatever sign-in opened, so the id narrated below is unambiguously this sweep's.
+		Analytics->EndSession(EFlockSessionEndReason::Manual,
+			[Analytics, PlayerId, Logger, Teardown](TFlockResult<FFlockAnalyticsAck>)
+			{
+				Analytics->StartSession(PlayerId,
+					[Analytics, Logger, Teardown](TFlockResult<FString> StartResult)
+					{
+						if (!StartResult.bSuccess)
+						{
+							Logger->LogInfo(FString::Printf(
+								TEXT("Self-test: analytics start session -> failed (%s); skipping the rest of the sweep."),
+								*StartResult.Error.Message));
+							Teardown();
+							return;
+						}
+						Logger->LogInfo(FString::Printf(
+							TEXT("Self-test: analytics start session -> server session id %s"), *StartResult.Value));
+
+						// Screen views only count against a live session, which is exactly what the
+						// signed-out probe earlier cannot exercise.
+						Analytics->RecordScreenView(TEXT("MainMenu"));
+						Analytics->RecordScreenView(TEXT("Shop"));
+						Analytics->LogEvent(TEXT("self-test event (signed in)"),
+							TMap<FString, FString>{ { TEXT("source"), TEXT("Flock.SelfTest") } });
+						Analytics->LogError(TEXT("self-test logic error"), TEXT("selfTest == true"), TEXT("SELF_TEST"));
+						Analytics->LogException(TEXT("self-test exception"), TEXT("at SelfTest()"));
+
+						const FFlockSessionSnapshot Snapshot = Analytics->GetCurrentSnapshot();
+						Logger->LogInfo(FString::Printf(
+							TEXT("Self-test: analytics snapshot — screens=%d firstSession=%s pendingSpooled=%d"),
+							Snapshot.ScreensViewed,
+							Snapshot.IsFirstSession ? TEXT("true") : TEXT("false"),
+							Analytics->GetPendingEventCount()));
+
+						Analytics->Flush([Analytics, Logger, Teardown](TFlockResult<FFlockAnalyticsAck> FlushResult)
+						{
+							Logger->LogInfo(FlushResult.bSuccess
+								? FString::Printf(TEXT("Self-test: analytics flush -> spool drained (pending=%d)"),
+									Analytics->GetPendingEventCount())
+								: FString::Printf(TEXT("Self-test: analytics flush -> failed (%s); entries stay spooled."),
+									*FlushResult.Error.Message));
+
+							Analytics->EndSession(EFlockSessionEndReason::Manual,
+								[Analytics, Logger, Teardown](TFlockResult<FFlockAnalyticsAck> EndResult)
+								{
+									Logger->LogInfo(EndResult.bSuccess
+										? FString(TEXT("Self-test: analytics end session -> closed out on the backend."))
+										: FString::Printf(TEXT("Self-test: analytics end session -> failed (%s)"),
+											*EndResult.Error.Message));
+
+									// Consent round trip: withdrawing must stop collection and drop the
+									// queue; restoring must reopen the session (the opt-in path).
+									Analytics->LogEvent(TEXT("self-test entry before revoke"));
+									const int32 PendingBefore = Analytics->GetPendingEventCount();
+									Analytics->SetConsent(false);
+									Logger->LogInfo(FString::Printf(
+										TEXT("Self-test: analytics consent withdrawn — pending %d -> %d, HasConsent=%s"),
+										PendingBefore, Analytics->GetPendingEventCount(),
+										Analytics->HasConsent() ? TEXT("true") : TEXT("false")));
+
+									Analytics->SetConsent(true);
+									Logger->LogInfo(FString::Printf(
+										TEXT("Self-test: analytics consent restored — HasConsent=%s SessionReopened=%s"),
+										Analytics->HasConsent() ? TEXT("true") : TEXT("false"),
+										Analytics->HasActiveSession() ? TEXT("true") : TEXT("false")));
+
+									// Leave no residue on this machine: the spool, the persisted consent
+									// decision, and any crash marker all go.
+									Analytics->EraseLocalData();
+									Logger->LogInfo(TEXT("Self-test: analytics local data erased (spool + consent decision + crash marker)."));
+
+									Teardown();
+								});
+						});
+					});
+			});
+	}
+
 	// Runs the auth surface against the configured backend. The register -> login flow is chained (login
-	// fires on register success OR "already registered") and calls Teardown when it finishes; the other
-	// calls are independent one-shots that narrate their own result. Every completion captures shared
-	// refs / the raw provider (kept alive by the caller's AddToRoot until Teardown), never `this`, so a
-	// late arrival stays safe.
-	void RunAuthSweep(FFlockAuthProvider& AuthRef, const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Teardown)
+	// fires on register success OR "already registered") and hands off to the analytics sweep — which
+	// calls Teardown when it finishes; the other calls are independent one-shots that narrate their own
+	// result. Every completion captures shared refs / the raw providers (kept alive by the caller's
+	// AddToRoot until Teardown), never `this`, so a late arrival stays safe.
+	void RunAuthSweep(FFlockAuthProvider& AuthRef, FFlockAnalyticsProvider* Analytics,
+		const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Teardown)
 	{
 		FFlockAuthProvider* Auth = &AuthRef;
 
@@ -88,7 +191,7 @@ namespace
 		// chain authenticates, to get a real answer instead of a server 401. Teardown runs on whichever
 		// branch ends the chain, so the subsystem outlives every async round trip.
 		Auth->RegisterWithEmail(DemoEmail, DemoPassword, DemoName,
-			[Auth, Logger, Teardown, NarrateAction](TFlockResult<FFlockRegisterResult> Result)
+			[Auth, Analytics, Logger, Teardown, NarrateAction](TFlockResult<FFlockRegisterResult> Result)
 			{
 				if (!Result.bSuccess)
 				{
@@ -102,7 +205,7 @@ namespace
 					: TEXT("Self-test: email register -> registered + signed in; logging in to confirm."));
 
 				Auth->LoginWithEmail(DemoEmail, DemoPassword,
-					[Auth, Logger, Teardown, NarrateAction](TFlockResult<FFlockPlayerLoginResponse> LoginResult)
+					[Auth, Analytics, Logger, Teardown, NarrateAction](TFlockResult<FFlockPlayerLoginResponse> LoginResult)
 					{
 						if (!LoginResult.bSuccess)
 						{
@@ -113,19 +216,28 @@ namespace
 						}
 
 						Logger->LogInfo(FString::Printf(TEXT("Self-test: email login -> signed in as %s"), *LoginResult.Value.PlayerId));
+						const FString PlayerId = LoginResult.Value.PlayerId;
 
 						// Signed in from here: the bearer rides along automatically.
 						Auth->SendEmailVerification(
-							[Auth, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> SendResult)
+							[Auth, Analytics, PlayerId, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> SendResult)
 							{
 								NarrateAction(TEXT("send email verification (signed in)"), SendResult);
 
 								// The real code arrives by email, so this placeholder is expected to be
 								// rejected — a code error here still proves the authenticated round trip.
 								Auth->VerifyEmail(DemoCode,
-									[Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> VerifyResult)
+									[Analytics, PlayerId, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> VerifyResult)
 									{
 										NarrateAction(TEXT("verify email (signed in, placeholder code)"), VerifyResult);
+
+										// Analytics needs a signed-in player, so it runs here and owns
+										// the teardown from this point.
+										if (Analytics != nullptr)
+										{
+											RunAnalyticsSweep(*Analytics, PlayerId, Logger, Teardown);
+											return;
+										}
 										Teardown();
 									});
 							});
@@ -171,6 +283,70 @@ namespace
 			*Sdk->GetPlayerId(),
 			Sdk->IsRestoringSession() ? TEXT("true") : TEXT("false")));
 
+		// ── Analytics (signed out) ──
+		// A session needs a player id, so none can open yet. What can be shown here is that the log
+		// API and the disk spool work before sign-in — an entry recorded now is not lost, and the
+		// sweep after sign-in delivers it. Screen views are deliberately NOT called here: they only
+		// count against a live session, so they would be a silent no-op.
+		FFlockAnalyticsProvider* Analytics = Sdk->GetAnalyticsProvider();
+		if (Analytics != nullptr)
+		{
+			Logger->LogInfo(FString::Printf(
+				TEXT("Self-test: analytics signed out — HasConsent=%s HasActiveSession=%s PendingSpooled=%d"),
+				Analytics->HasConsent() ? TEXT("true") : TEXT("false"),
+				Analytics->HasActiveSession() ? TEXT("true") : TEXT("false"),
+				Analytics->GetPendingEventCount()));
+
+			Analytics->LogEvent(TEXT("self-test event (signed out)"),
+				TMap<FString, FString>{ { TEXT("source"), TEXT("Flock.SelfTest") } });
+			Logger->LogInfo(FString::Printf(
+				TEXT("Self-test: analytics spooled an entry while signed out -> pending=%d (delivered by the sweep after sign-in)."),
+				Analytics->GetPendingEventCount()));
+
+			// Automatic capture demo. Nothing below calls the SDK: the log sink picks this up off
+			// GLog, walks the callstack, and the next tick turns it into a spooled exception. The
+			// SDK's own categories are excluded, so an SDK error could not demonstrate this.
+			UE_LOG(LogTemp, Error, TEXT("Flock self-test: simulated unhandled error (automatic capture demo)"));
+
+			// Peek (not dequeue) so the entry still drains to the backend on the next tick. This is
+			// the exact payload that will be sent, printed here so a capture problem is visible
+			// locally instead of only in the dashboard.
+			if (const FFlockLogSink* Sink = Analytics->GetLogSinkForTesting())
+			{
+				FFlockCapturedLog Captured;
+				if (Sink->Peek(Captured))
+				{
+					TArray<FString> Lines;
+					Captured.StackTrace.ParseIntoArrayLines(Lines);
+					Logger->LogInfo(FString::Printf(
+						TEXT("Self-test: sink captured '%s' [%s] with %d callstack frames:"),
+						*Captured.Message, *Captured.Category.ToString(), Lines.Num()));
+					for (int32 Index = 0; Index < FMath::Min(Lines.Num(), 8); ++Index)
+					{
+						Logger->LogInfo(FString::Printf(TEXT("Self-test:   #%d %s"), Index, *Lines[Index]));
+					}
+					if (Lines.Num() > 8)
+					{
+						Logger->LogInfo(FString::Printf(TEXT("Self-test:   ... %d more frames"), Lines.Num() - 8));
+					}
+				}
+				else
+				{
+					Logger->LogError(TEXT("Self-test: the engine error was NOT captured by the sink."));
+				}
+			}
+
+			if (GIsEditor)
+			{
+				Logger->LogInfo(TEXT("Self-test: analytics crash reporting is off in the editor "
+					"(stopping Play-In-Editor is not an app death), so no app_termination check runs here."));
+			}
+		}
+		else
+		{
+			Logger->LogInfo(TEXT("Self-test: analytics is off in Project Settings > Flock SDK; skipping the analytics sweep."));
+		}
+
 		Logger->LogInfo(TEXT("Self-test: Logout to start from a clean signed-out state (safe when already signed out)."));
 		Sdk->Logout();
 
@@ -192,8 +368,9 @@ namespace
 			return;
 		}
 
-		RunAuthSweep(*Auth, Logger, Teardown);
-		Logger->LogInfo(TEXT("Self-test: auth sweep dispatched; teardown runs when the register -> login chain finishes."));
+		RunAuthSweep(*Auth, Analytics, Logger, Teardown);
+		Logger->LogInfo(TEXT("Self-test: auth sweep dispatched; the analytics session sweep runs once it signs in, "
+			"and teardown follows that."));
 	}
 
 	FAutoConsoleCommand GFlockSelfTestCommand(

@@ -3,8 +3,9 @@
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
 > **Early release.** The SDK's boot/init foundation, the network transport (HTTP client, automatic
-> retry, typed errors), and automatic edit-time Game Version baking now ship. The feature providers
-> (authentication, config, player data, shop, analytics, …) build on this next. See [Status](#status).
+> retry, typed errors), automatic edit-time Game Version baking, **player authentication**, and
+> **analytics** now ship. The remaining feature providers (config, player data, commands, shop,
+> assets) build on this next. See [Status](#status).
 
 ## Contents
 
@@ -16,6 +17,8 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 - [Accessing the SDK](#accessing-the-sdk)
 - [SDK events](#sdk-events)
 - [Logging & debugging](#logging--debugging)
+- [Authentication](#authentication)
+- [Analytics](#analytics)
 - [Testing](#testing)
 - [Status](#status)
 
@@ -38,6 +41,10 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   with `UFlockErrorLibrary` exposing display text and coded-error group checks to Blueprint.
 - **SDK events** — a single hub (`GetEvents()`) for lifecycle, auth, session, and consent events,
   Blueprint-assignable, with auto-init-safe `CallOrRegister` entry points for the init events.
+- **Authentication** — email/device/Google/Apple/Steam login and registration, encrypted token
+  persistence, automatic session restore, silent token refresh, and the account flows.
+- **Analytics** — a diagnostic log API, session tracking, automatic exception capture, an offline
+  queue that survives crashes, consent gating, and next-launch crash reporting.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
 - **Blueprint-friendly** — the accessor, init, state, events, and error types are exposed to Blueprint.
 
@@ -232,6 +239,66 @@ Token storage: an AES-encrypted file under the project's Saved directory, keyed 
 user, and game — it defeats casual copying/inspection, not code running as the same user.
 Implement `IFlockTokenStore` to plug in platform keychain storage.
 
+## Analytics
+
+Reach it with `UFlockSubsystem::GetAnalyticsProvider()` in C++, or the *Flock | Analytics* nodes and
+subsystem functions in Blueprint. Everything below is off when **Analytics Enabled** is unticked in
+*Project Settings → Plugins → Flock SDK*.
+
+```cpp
+UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+
+Sdk->LogAnalyticsEvent(TEXT("level_complete"), { { TEXT("level"), TEXT("3") } });
+Sdk->LogAnalyticsError(TEXT("Inventory desynced"), TEXT("ItemCount >= 0"), TEXT("INV_DESYNC"), {});
+Sdk->RecordScreenView(TEXT("MainMenu"));
+```
+
+**Logging.** `LogAnalyticsEvent` records a diagnostic, `LogAnalyticsError` a recoverable logic fault
+(with the invariant that failed and an error code), and `LogAnalyticsException` an exception with a
+stack trace. All three return immediately: the entry is written to disk and delivered later, so a
+call is cheap and nothing is lost to a crash or a dead network. Keys in the extra-data map reach the
+backend exactly as you write them.
+
+**Automatic exception capture.** Engine `Error` and `Fatal` log lines are reported as exceptions with
+no wiring, along with hard crashes that never reach the log. Each carries the callstack from the point
+of capture, with frames as `Module+0xOffset` — measured from the module base rather than the raw
+address, so a frame reads the same on every run and stays symbolicatable from your build's symbols
+after the fact. Function names and source lines are included when symbols are available locally.
+The SDK's own categories are excluded so a failed upload cannot report itself in a loop.
+Once the queue is full, further entries are dropped *before* their callstack is walked, so an error
+storm stays cheap.
+
+**Sessions** open when a player signs in and close on logout or quit, tracking duration, screen
+views, pauses, and FPS. Backgrounding pauses the session; returning after **Analytics Session
+Timeout** starts a fresh one. Bind `OnSessionStarted` / `OnSessionEnded` / `OnSessionPaused` /
+`OnSessionResumed` on `GetEvents()`, or read `GetAnalyticsSnapshot()` for live metrics.
+
+**Offline queue.** Entries are stored under the project's Saved directory and sent in batches on an
+interval, when the app is backgrounded, or when you call Flush. A failed send keeps the batch queued
+for the next attempt; the queue is capped by **Analytics Max Cached Events**, dropping oldest first.
+
+**Crash reporting.** A run that ends without a clean quit is detected on the next launch and reported
+once, classified `background_kill` (OS eviction or swipe-close) or `abnormal` (died in the
+foreground), with the lost session's id, an approximate time of death, and how many unhandled
+exceptions preceded it. Disabled in the editor, where stopping Play-In-Editor is not an app death.
+
+**Consent** is a gate, not a filter. With consent withheld there is no session and nothing is
+collected, not even on disk. The decision persists between runs; withdrawing it ends the session and
+discards anything queued. Granting it opens the session that sign-in could not — so in an opt-in
+flow, a player who agrees after signing in still gets a session.
+
+```cpp
+Sdk->SetAnalyticsConsent(true);            // persists; raises OnConsentChanged
+const bool bOptedIn = Sdk->HasAnalyticsConsent();
+Sdk->EraseLocalAnalyticsData();            // drops the queue, the decision, and any crash marker
+```
+
+Leave **Analytics Require Explicit Consent** off to collect by default (a withdrawal still applies),
+or tick it for an opt-in flow where nothing is collected until you call `SetAnalyticsConsent(true)`.
+
+> Analytics timestamps come from the device clock, so they are wrong if the player's clock is wrong.
+> Session durations are unaffected — they are measured from frame deltas, not clock readings.
+
 ## Testing
 
 Automation tests live beside each feature and are grouped under the `Flock.` prefix. Run them from
@@ -243,13 +310,16 @@ UnrealEditor-Cmd.exe <YourProject>.uproject -ExecCmds="Automation RunTests Flock
 
 ## Status
 
-The boot/init foundation, the HTTP transport, and automatic version baking now ship. Not yet wired:
+Shipping: the boot/init foundation, the HTTP transport, automatic version baking, the SDK event hub,
+player authentication, and analytics. Not yet wired:
 
-- **Feature providers.** Authentication, config, player data, shop, and analytics build on the HTTP layer
-  and land in later releases — the transport, retry, typed error model, and endpoint registry they need
-  are in place.
-- **Blueprint call nodes.** The generic HTTP client is C++-only (it's templated); typed Blueprint async
-  nodes arrive per-operation with the providers. The error and model types are already Blueprint-ready.
+- **Remaining feature providers.** Config, player data, commands, shop, and assets build on the same
+  HTTP layer and land in later releases — the transport, retry, typed error model, and endpoint
+  registry they need are already in place.
+- **Analytics gameplay events.** This release ships the diagnostic log API (event/error/exception);
+  custom gameplay event tracking and purchase/transaction reporting arrive with the shop provider.
+- **Blueprint call nodes.** The generic HTTP client is C++-only (it's templated); typed Blueprint
+  async nodes arrive per-operation with each provider, as they have for auth and analytics.
 
 See [CHANGELOG.md](CHANGELOG.md) for the version history.
 

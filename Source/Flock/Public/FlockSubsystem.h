@@ -10,6 +10,7 @@
 #include "FlockLogger.h"
 #include "Http/FlockHttpAdapter.h"
 #include "Http/FlockHttpClient.h"
+#include "Providers/FlockAnalyticsProvider.h"
 #include "Providers/FlockAuthProvider.h"
 #include "FlockSubsystem.generated.h"
 
@@ -127,6 +128,61 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Flock|Auth")
 	void Logout();
 
+	// ── Analytics ──
+
+	/**
+	 * The analytics provider. Null before initialization, after shutdown, and when analytics is
+	 * switched off in settings. C++ API; Blueprint uses the passthroughs below and the Flock
+	 * analytics async nodes.
+	 */
+	FFlockAnalyticsProvider* GetAnalyticsProvider() const { return AnalyticsProvider.Get(); }
+
+	/**
+	 * Records a diagnostic message. Spooled to disk and delivered on the next flush, so it costs
+	 * nothing at the call site and survives a crash. Silently ignored without consent.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "ExtraData"))
+	void LogAnalyticsEvent(const FString& Message, const TMap<FString, FString>& ExtraData);
+
+	/** Records a recoverable logic fault. LogicalExpression is the invariant that failed, e.g. "hp > 0". */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "ExtraData"))
+	void LogAnalyticsError(const FString& Message, const FString& LogicalExpression, const FString& ErrorCode,
+		const TMap<FString, FString>& ExtraData);
+
+	/** Records an exception. Unhandled engine errors are captured automatically; this is for reported ones. */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "ExtraData"))
+	void LogAnalyticsException(const FString& Message, const FString& StackTrace,
+		const TMap<FString, FString>& ExtraData);
+
+	/** Counts a screen/menu view against the current session. */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics")
+	void RecordScreenView(const FString& ScreenName);
+
+	/**
+	 * Grants or withdraws analytics consent, persisted across runs. Withdrawing ends the session and
+	 * drops anything still queued. Raises OnConsentChanged.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics")
+	void SetAnalyticsConsent(bool bGranted);
+
+	UFUNCTION(BlueprintPure, Category = "Flock|Analytics")
+	bool HasAnalyticsConsent() const;
+
+	UFUNCTION(BlueprintPure, Category = "Flock|Analytics")
+	bool HasActiveAnalyticsSession() const;
+
+	/** The backend's id for the running session; empty until the session start call returns. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Analytics")
+	FString GetAnalyticsSessionId() const;
+
+	/** Live metrics for the running session (duration, screens, pauses, FPS). */
+	UFUNCTION(BlueprintPure, Category = "Flock|Analytics")
+	FFlockSessionSnapshot GetAnalyticsSnapshot() const;
+
+	/** Drops the local spool, the consent decision, and any crash tombstone. */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics")
+	void EraseLocalAnalyticsData();
+
 	// ── Test seams (call before initialization; unused by games) ──
 
 	/** Routes SDK HTTP through the given adapter instead of the engine HTTP module. */
@@ -138,6 +194,16 @@ public:
 private:
 	/** Applies the baked-version gate and adopts the config. Returns false with OutError on failure. */
 	bool TryInitialize(const FFlockInitConfig& Config, FString& OutError);
+
+	/**
+	 * A session needs a player id, so it opens on sign-in rather than at init. Bound to the event hub
+	 * only while analytics is live.
+	 */
+	UFUNCTION()
+	void HandleAnalyticsAuthenticated(const FFlockAuthInfo& Info);
+
+	UFUNCTION()
+	void HandleAnalyticsLoggedOut();
 
 	/** The active logger, lazily defaulted from the project's Enable Debug Logs setting when unset. */
 	IFlockLogger& GetLogger();
@@ -157,6 +223,9 @@ private:
 	TSharedPtr<IFlockTokenStore> TokenStore;
 	TSharedPtr<FFlockAuthSession> AuthSession;
 	TUniquePtr<FFlockAuthProvider> AuthProvider;
+
+	/** Shared, not unique: the provider pins a weak reference to itself across flush continuations. */
+	TSharedPtr<FFlockAnalyticsProvider> AnalyticsProvider;
 
 	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
 	TSharedPtr<IFlockTokenStore> TestTokenStore;
