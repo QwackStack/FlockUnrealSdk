@@ -4,8 +4,13 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
+#include "Auth/FlockAuthSession.h"
+#include "Auth/FlockTokenStore.h"
 #include "FlockInitConfig.h"
 #include "FlockLogger.h"
+#include "Http/FlockHttpAdapter.h"
+#include "Http/FlockHttpClient.h"
+#include "Providers/FlockAuthProvider.h"
 #include "FlockSubsystem.generated.h"
 
 class UFlockEvents;
@@ -20,9 +25,9 @@ class UFlockEvents;
  * Initialization is synchronous and needs no network: the Game Version ID is resolved and baked at
  * edit time (Tools > Flock > Resolve Game Version), and runtime init uses it directly.
  *
- * NOTE: SDK feature providers (Authentication / Config / Game / Player / Commands / Shop / Asset /
- * Analytics) are wired into this subsystem in later releases. This delivers the accessor, auto/manual
- * init, init state + events, and the baked-version gate.
+ * The Authentication provider is wired (with automatic session restore after init); the remaining
+ * feature providers (Config / Game / Player / Commands / Shop / Asset / Analytics) land in later
+ * releases.
  */
 UCLASS()
 class FLOCK_API UFlockSubsystem : public UGameInstanceSubsystem
@@ -98,6 +103,38 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Flock")
 	UFlockEvents* GetEvents();
 
+	// ── Authentication ──
+
+	/**
+	 * The authentication provider — every login/register/account call lives here. Null before
+	 * initialization and after shutdown. C++ API; Blueprint uses the Flock auth async nodes.
+	 */
+	FFlockAuthProvider* GetAuthProvider() const { return AuthProvider.Get(); }
+
+	/** True when a player is signed in. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Auth")
+	bool IsAuthenticated() const;
+
+	/** The signed-in player's id from the access-token claims; empty when signed out. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Auth")
+	FString GetPlayerId() const;
+
+	/** True while a persisted session is being restored (kicked automatically after init). */
+	UFUNCTION(BlueprintPure, Category = "Flock|Auth")
+	bool IsRestoringSession() const;
+
+	/** Logs the current player out locally; safe when signed out. Server-side revocation is separate (RevokeToken). */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Auth")
+	void Logout();
+
+	// ── Test seams (call before initialization; unused by games) ──
+
+	/** Routes SDK HTTP through the given adapter instead of the engine HTTP module. */
+	void SetHttpAdapterForTesting(const TSharedPtr<IFlockHttpAdapter>& InAdapter) { TestHttpAdapter = InAdapter; }
+
+	/** Persists tokens through the given store instead of the encrypted file store. */
+	void SetTokenStoreForTesting(const TSharedPtr<IFlockTokenStore>& InStore) { TestTokenStore = InStore; }
+
 private:
 	/** Applies the baked-version gate and adopts the config. Returns false with OutError on failure. */
 	bool TryInitialize(const FFlockInitConfig& Config, FString& OutError);
@@ -113,4 +150,14 @@ private:
 	/** Backing store for GetEvents(); created on first use so events can be bound before init. */
 	UPROPERTY(Transient)
 	TObjectPtr<UFlockEvents> Events;
+
+	// Auth stack, built per-initialization and dropped on shutdown. Everything is shared-ptr
+	// backed; in-flight callbacks hold what they need, so teardown mid-request stays safe.
+	TSharedPtr<FFlockHttpClient> HttpClient;
+	TSharedPtr<IFlockTokenStore> TokenStore;
+	TSharedPtr<FFlockAuthSession> AuthSession;
+	TUniquePtr<FFlockAuthProvider> AuthProvider;
+
+	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
+	TSharedPtr<IFlockTokenStore> TestTokenStore;
 };

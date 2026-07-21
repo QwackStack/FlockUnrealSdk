@@ -9,6 +9,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
 #include "JsonObjectConverter.h"
 
 /**
@@ -45,9 +46,13 @@ public:
 
 	// ── Templated conversions (T is a USTRUCT) ──
 
-	/** Serializes a USTRUCT to a snake_case JSON string for a request body. */
+	/**
+	 * Serializes a USTRUCT to a snake_case JSON string for a request body. With bOmitEmptyStrings,
+	 * top-level fields whose value is an empty string are dropped — for request models with optional
+	 * members, where an absent key and an empty string mean different things to the backend.
+	 */
 	template <typename T>
-	static bool StructToWireJson(const T& Struct, FString& OutJson)
+	static bool StructToWireJson(const T& Struct, FString& OutJson, bool bOmitEmptyStrings = false)
 	{
 		const TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
 		if (!FJsonObjectConverter::UStructToJsonObject(T::StaticStruct(), &Struct, Obj, 0, 0))
@@ -55,7 +60,25 @@ public:
 			return false;
 		}
 		const TSharedRef<FJsonObject> SnakeObj = TransformObjectKeys(Obj, /*bToPascal*/ false);
-		const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutJson);
+		if (bOmitEmptyStrings)
+		{
+			TArray<FString> EmptyKeys;
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : SnakeObj->Values)
+			{
+				if (Pair.Value.IsValid() && Pair.Value->Type == EJson::String && Pair.Value->AsString().IsEmpty())
+				{
+					EmptyKeys.Add(Pair.Key);
+				}
+			}
+			for (const FString& Key : EmptyKeys)
+			{
+				SnakeObj->RemoveField(Key);
+			}
+		}
+		// Condensed, not the default pretty print: request bodies are wire payloads, and callers
+		// (and tests) rely on the compact "key":"value" form.
+		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+			TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&OutJson);
 		return FJsonSerializer::Serialize(SnakeObj, Writer);
 	}
 

@@ -5,6 +5,55 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-21
+
+### Added
+- **Player authentication** end to end: email/device/Google/Apple/Steam login and registration,
+  plus Facebook/Discord login via the generic route (`FFlockAuthProvider`, reached with
+  `UFlockSubsystem::GetAuthProvider()`). Success adopts the returned tokens, records the sign-in
+  method, and raises `OnAuthenticated`.
+- **Session persistence & restore.** Tokens persist between launches in an AES-encrypted file
+  bound to the machine/user and game (`FFlockFileTokenStore`; `IFlockTokenStore` is the seam for
+  custom or platform-secure stores). A persisted session is restored automatically after SDK init —
+  expired tokens are refreshed — surfacing via `OnSessionRestored` / `OnAuthenticated`, with the
+  original sign-in method re-adopted for method-gated flows.
+- **Token lifecycle.** Single-flight access-token refresh (concurrent callers share one request);
+  authenticated calls that hit an auth failure silently refresh and replay once; a refresh
+  rejection clears the session and raises `OnAuthExpired`, while transport failures keep the
+  session so a flaky network doesn't sign the player out.
+- **Account flows**: forgot/reset password (reset is gated to email-method sessions), email
+  verification send/confirm, server-side token revoke (confirmation required), and an advisory
+  display-name availability check.
+- **Blueprint**: async nodes for every auth call with success/failure exec pins under *Flock |
+  Auth* (login, register, restore session, password/email flows, revoke, refresh, name check),
+  plus `IsAuthenticated` / `GetPlayerId` / `IsRestoringSession` / `Logout` on the subsystem.
+- **Registration UX.** Registering an identity that already has an account completes successfully
+  with an `Already Registered` flag instead of erroring; a taken display name stays an error.
+- **JWT claims parser** (`FFlockJwt`) with claim-spelling fallbacks and UTC expiry handling.
+- **Call origin in the log.** Every SDK log line for a provider call names its caller —
+  `Email login [Blueprint 'bpTest'] starting...` versus `Email login [C++] starting...` — so a log
+  shows which graph (or C++ path) made a request. Blueprint nodes tag their own dispatch; anything
+  else reads as `C++`.
+- **Automation tests** (`Flock.Auth.*`, 51 in the suite): JWT parse/fallbacks/rejects, token store
+  roundtrip and corruption handling, auth session state/persistence/refresh (including
+  single-flight), silent refresh-and-replay in the provider base, every provider route and guard,
+  subsystem wiring with auto-restore, and the async nodes' uninitialized-SDK guard.
+
+### Changed
+- `FFlockJsonUtils::StructToWireJson` now emits condensed JSON (wire payloads were pretty-printed)
+  and can omit top-level empty-string fields so optional request members drop off the wire.
+- `FFlockHttpClient` gained `PostJson` (enveloped) and `PostJsonRaw` (non-enveloped) for
+  caller-serialized bodies. The API uses both response shapes: most endpoints wrap their payload in
+  `{error, response, result}`, while every `/v1/player/*` auth route returns its model at the root,
+  so the auth provider and session use the raw verbs. Pick the verb family from the endpoint's
+  OpenAPI response schema.
+- `FFlockProviderBase::Execute` gained the silent-refresh path and a `bAllowAuthRetry` opt-out
+  (used by the auth routes themselves).
+- `Flock.SelfTest` now initializes from **Project Settings > Flock SDK** instead of a demo config,
+  and drives a chained register → login → email-verification flow against the configured backend
+  (so it registers a demo player on first run). It narrates auth state, the local guards, and each
+  call's real result.
+
 ## [0.5.0] - 2026-07-16
 
 ### Added

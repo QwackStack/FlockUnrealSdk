@@ -100,4 +100,28 @@ bool FFlockJsonPaginatedTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonUtilsOmitEmptyTest, "Flock.Http.Json.OmitEmptyStrings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockJsonUtilsOmitEmptyTest::RunTest(const FString& Parameters)
+{
+	FFlockGameVersionSchema Model;
+	Model.Id = TEXT("id-1");
+	Model.Name = TEXT("");   // must vanish with bOmitEmptyStrings
+	Model.Env = TEXT("dev"); // must stay
+
+	FString Json;
+	TestTrue(TEXT("serializes"), FFlockJsonUtils::StructToWireJson(Model, Json, /*bOmitEmptyStrings*/ true));
+	TestTrue(TEXT("keeps non-empty"), Json.Contains(TEXT("\"env\"")));
+	TestTrue(TEXT("keeps id"), Json.Contains(TEXT("\"id\"")));
+	TestFalse(TEXT("omits empty name"), Json.Contains(TEXT("\"name\"")));
+
+	// Default keeps empties (existing callers unchanged).
+	FString DefaultJson;
+	TestTrue(TEXT("serializes default"), FFlockJsonUtils::StructToWireJson(Model, DefaultJson));
+	TestTrue(TEXT("default keeps empty name"), DefaultJson.Contains(TEXT("\"name\"")));
+
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

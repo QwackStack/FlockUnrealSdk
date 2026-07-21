@@ -5,8 +5,13 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "FlockSubsystem.h"
+#include "FlockEvents.h"
 #include "FlockInitConfig.h"
 #include "Engine/GameInstance.h"
+#include "Misc/Base64.h"
+#include "Tests/Support/FlockEventTestListener.h"
+#include "Tests/Support/FlockFakeTransport.h"
+#include "Tests/Support/FlockMemoryTokenStore.h"
 #include "UObject/Package.h"
 
 namespace
@@ -83,6 +88,101 @@ bool FFlockSubsystemReinitTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("New config adopted after shutdown"), Sdk->GetGameVersionId(),
 		FString(TEXT("ver-xyz")));
 
+	return true;
+}
+
+namespace FlockSubsystemAuthTestHelpers
+{
+	inline FString Base64Url(const FString& In)
+	{
+		FString Encoded = FBase64::Encode(In);
+		Encoded.ReplaceInline(TEXT("+"), TEXT("-"));
+		Encoded.ReplaceInline(TEXT("/"), TEXT("_"));
+		Encoded.ReplaceInline(TEXT("="), TEXT(""));
+		return Encoded;
+	}
+
+	inline FString MakeJwt(const FString& PlayerId, int64 ExpiryOffsetSeconds = 3600)
+	{
+		const int64 Exp = FDateTime::UtcNow().ToUnixTimestamp() + ExpiryOffsetSeconds;
+		const FString Payload = FString::Printf(TEXT("{\"sub\":\"%s\",\"exp\":%lld}"), *PlayerId, Exp);
+		return FString::Printf(TEXT("h.%s.s"), *Base64Url(Payload));
+	}
+
+	struct FSubsystemAuthFixture
+	{
+		UGameInstance* GameInstance = nullptr;
+		UFlockSubsystem* Sdk = nullptr;
+		TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+		TSharedRef<FFlockMemoryTokenStore> Store = MakeShared<FFlockMemoryTokenStore>();
+		UFlockEventTestListener* Listener = nullptr;
+
+		FSubsystemAuthFixture()
+		{
+			GameInstance = NewObject<UGameInstance>(GetTransientPackage());
+			Sdk = NewObject<UFlockSubsystem>(GameInstance);
+			Sdk->SetHttpAdapterForTesting(Fake);
+			Sdk->SetTokenStoreForTesting(Store);
+			Listener = NewObject<UFlockEventTestListener>();
+			Sdk->GetEvents()->OnAuthenticated.AddDynamic(Listener, &UFlockEventTestListener::HandleAuthenticated);
+			Sdk->GetEvents()->OnSessionRestored.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionRestored);
+		}
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemAuthWiringTest, "Flock.Runtime.Subsystem.AuthWiring",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSubsystemAuthWiringTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockSubsystemAuthTestHelpers;
+
+	// Before init: no provider, safe no-op Logout, signed-out getters.
+	{
+		FSubsystemAuthFixture F;
+		TestNull(TEXT("no provider before init"), F.Sdk->GetAuthProvider());
+		TestFalse(TEXT("not authenticated"), F.Sdk->IsAuthenticated());
+		TestTrue(TEXT("player id empty"), F.Sdk->GetPlayerId().IsEmpty());
+		F.Sdk->Logout(); // must not crash
+	}
+	// Init wires the auth stack; shutdown drops it.
+	{
+		FSubsystemAuthFixture F;
+		F.Sdk->InitializeWithConfig(MakeValidConfig());
+		TestTrue(TEXT("initialized"), F.Sdk->IsInitialized());
+		TestNotNull(TEXT("provider wired"), F.Sdk->GetAuthProvider());
+		TestFalse(TEXT("no session -> not authenticated"), F.Sdk->IsAuthenticated());
+		TestEqual(TEXT("restore attempted (event fired false)"), F.Listener->SessionRestoredCount, 1);
+		TestFalse(TEXT("nothing restored"), F.Listener->bLastSessionRestored);
+
+		F.Sdk->ShutdownSdk();
+		TestNull(TEXT("provider dropped"), F.Sdk->GetAuthProvider());
+		TestFalse(TEXT("signed-out getters safe"), F.Sdk->IsAuthenticated());
+	}
+	// A persisted session is auto-restored on init and surfaces through the subsystem getters.
+	{
+		FSubsystemAuthFixture F;
+		F.Store->bHasTokens = true;
+		F.Store->Stored.AccessToken = MakeJwt(TEXT("p-42"));
+		F.Store->Stored.RefreshToken = TEXT("r-42");
+		F.Store->Stored.AuthMethod = EFlockAuthMethod::Device;
+
+		F.Sdk->InitializeWithConfig(MakeValidConfig());
+
+		TestTrue(TEXT("restored"), F.Sdk->IsAuthenticated());
+		TestEqual(TEXT("player id"), F.Sdk->GetPlayerId(), FString(TEXT("p-42")));
+		TestFalse(TEXT("restore finished"), F.Sdk->IsRestoringSession());
+		TestEqual(TEXT("authenticated event"), F.Listener->AuthenticatedCount, 1);
+		TestEqual(TEXT("via session-restore"), static_cast<int32>(F.Listener->LastAuthInfo.Method),
+			static_cast<int32>(EFlockAuthMethod::SessionRestore));
+
+		// Logout through the subsystem clears the restored session.
+		F.Sdk->Logout();
+		TestFalse(TEXT("logged out"), F.Sdk->IsAuthenticated());
+		TestFalse(TEXT("store cleared"), F.Store->bHasTokens);
+
+		F.Sdk->ShutdownSdk();
+	}
 	return true;
 }
 

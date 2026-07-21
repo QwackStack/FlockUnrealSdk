@@ -177,12 +177,60 @@ public:
 Flock->SetLogger(MakeShared<FMyFlockLogger>());
 ```
 
-To watch the whole boot/init flow narrate itself without a backend, run the console command (development
-builds):
+Every SDK log line for a provider call names its caller, so a log shows where a request came from:
+
+```
+[Flock SDK] Email login [Blueprint 'bpTest'] starting...
+[Flock SDK] Email login [C++] successful for player: 01KY1QNRFNZO4E2KHNGV9F175N
+```
+
+To watch the whole flow narrate itself — init, auth state, the local guards, then a chained
+register → login → email-verification run — use the console command (development builds):
 
 ```
 Flock.SelfTest
 ```
+
+It initializes from your Project Settings and calls your real backend, so the first run registers a
+demo player (`pUE@x.com`). Point the settings at a dev environment before running it.
+
+## Authentication
+
+Sign players in with email, device id, Google, Apple, Steam, Facebook, or Discord. Tokens are
+stored encrypted between launches and the session is restored automatically on startup; expired
+access tokens refresh silently, including a one-shot retry for authenticated calls that raced the
+expiry.
+
+**Blueprint** — use the async nodes in *Flock | Auth* (each has success/failure pins):
+`Flock Login With Email`, `Flock Register With Device`, `Flock Restore Session`,
+`Flock Forgot Password`, `Flock Reset Password`, `Flock Send Email Verification`,
+`Flock Verify Email`, `Flock Revoke Token`, `Flock Refresh Token`, `Flock Is Name Available` —
+and read `Is Authenticated` / `Get Player Id` / call `Logout` on the Flock subsystem. Bind
+`On Authenticated`, `On Logged Out`, `On Session Restored`, and `On Auth Expired` on the event
+hub (`Get Events`) to react anywhere.
+
+**C++** — everything lives on the auth provider:
+
+```cpp
+UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+Sdk->GetAuthProvider()->LoginWithEmail(Email, Password,
+	[](TFlockResult<FFlockPlayerLoginResponse> Result)
+	{
+		if (Result.bSuccess)
+		{
+			UE_LOG(LogTemp, Log, TEXT("Signed in as %s"), *Result.Value.PlayerId);
+		}
+	});
+```
+
+Registration notes: the display name is optional and server-enforced unique; registering an
+identity that already has an account completes successfully with `bAlreadyRegistered` set (log in
+instead). `RevokeToken` invalidates the refresh token server-side; call `Logout` afterwards for a
+full sign-out. Password reset requires the active session to have been signed in with email.
+
+Token storage: an AES-encrypted file under the project's Saved directory, keyed to the machine,
+user, and game — it defeats casual copying/inspection, not code running as the same user.
+Implement `IFlockTokenStore` to plug in platform keychain storage.
 
 ## Testing
 

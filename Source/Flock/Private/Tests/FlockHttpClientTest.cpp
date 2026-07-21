@@ -148,4 +148,27 @@ bool FFlockHttpClientCodedErrorTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientPostJsonTest, "Flock.Http.Client.PostJson",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientPostJsonTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockHttpClient> Client = MakeClient(Fake);
+
+	Fake->On(TEXT("login"), FFlockFakeTransport::Ok(TEXT("{\"result\":{\"id\":\"p-1\"}}")));
+	bool bSuccess = false;
+	FString Id;
+	Client->PostJson<FFlockGameVersionSchema>(TEXT("http://x/login"), {}, TEXT("{\"login_type\":\"email\"}"),
+		[&](TFlockResult<FFlockGameVersionSchema> R) { bSuccess = R.bSuccess; Id = R.Value.Id; });
+
+	TestTrue(TEXT("success"), bSuccess);
+	TestEqual(TEXT("unwrapped"), Id, FString(TEXT("p-1")));
+	TestEqual(TEXT("one request"), Fake->CountTo(TEXT("login")), 1);
+	TestEqual(TEXT("method"), Fake->Requests.Last().Method, FString(TEXT("POST")));
+	TestEqual(TEXT("body passed through"), Fake->Requests.Last().JsonBody, FString(TEXT("{\"login_type\":\"email\"}")));
+	TestTrue(TEXT("has body"), Fake->Requests.Last().bHasBody);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS
