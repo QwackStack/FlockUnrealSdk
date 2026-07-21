@@ -3,13 +3,14 @@
 #include "FlockSubsystem.h"
 #include "Flock.h"
 #include "FlockEvents.h"
+#include "Auth/FlockFileTokenStore.h"
 #include "Config/FlockConfig.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.5.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.6.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -106,6 +107,10 @@ void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 	GetLogger().LogInfo(FString::Printf(TEXT("SDK initialized (GameId=%s, GameVersionId=%s)."),
 		*ActiveConfig.GameId, *ActiveConfig.GameVersionId));
 	GetEvents()->InvokeInitialized();
+
+	// Resume any persisted session in the background; the outcome surfaces via
+	// OnSessionRestored / OnAuthenticated rather than a return value.
+	AuthProvider->TryRestoreSession(nullptr);
 }
 
 bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& OutError)
@@ -120,7 +125,28 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	}
 
 	ActiveConfig = Config;
-	// NOTE: SDK providers (Authentication / Config / Game / Player / ...) are constructed here in later tickets.
+
+	const UFlockConfig* Settings = GetDefault<UFlockConfig>();
+	FFlockRetryPolicy RetryPolicy;
+	RetryPolicy.MaxRetries = Settings->RetryMaxRetries;
+	RetryPolicy.bUseJitter = Settings->bRetryUseJitter;
+
+	GetLogger(); // make sure the shared logger exists before wiring it into the auth stack
+	const TSharedRef<IFlockLogger> LoggerRef = Logger.ToSharedRef();
+
+	HttpClient = TestHttpAdapter.IsValid()
+		? MakeShared<FFlockHttpClient>(TestHttpAdapter.ToSharedRef(), LoggerRef, Settings->HttpTimeoutSeconds)
+		: FFlockHttpClient::CreateDefault(Settings->HttpTimeoutSeconds, LoggerRef);
+
+	TokenStore = TestTokenStore.IsValid()
+		? TestTokenStore
+		: TSharedPtr<IFlockTokenStore>(MakeShared<FFlockFileTokenStore>(FFlockFileTokenStore::DefaultPath(), Config.GameId));
+
+	AuthSession = MakeShared<FFlockAuthSession>(HttpClient.ToSharedRef(), TokenStore, LoggerRef,
+		GetVersionedApiUrl(), Config.GetBaseHeaders());
+	AuthSession->SetEvents(GetEvents());
+	AuthProvider = MakeUnique<FFlockAuthProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
+		AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl());
 	return true;
 }
 
@@ -131,7 +157,10 @@ void UFlockSubsystem::ShutdownSdk()
 		return;
 	}
 
-	// NOTE: provider teardown happens here in later tickets.
+	AuthProvider.Reset();
+	AuthSession.Reset();
+	HttpClient.Reset();
+	TokenStore.Reset();
 	ActiveConfig = FFlockInitConfig();
 	bInitialized = false;
 	GetLogger().LogInfo(TEXT("SDK shut down."));
@@ -173,4 +202,29 @@ IFlockLogger& UFlockSubsystem::GetLogger()
 		}
 	}
 	return *Logger;
+}
+
+bool UFlockSubsystem::IsAuthenticated() const
+{
+	return AuthSession.IsValid() && AuthSession->IsAuthenticated();
+}
+
+FString UFlockSubsystem::GetPlayerId() const
+{
+	return AuthSession.IsValid() ? AuthSession->GetPlayerId() : FString();
+}
+
+bool UFlockSubsystem::IsRestoringSession() const
+{
+	return AuthProvider.IsValid() && AuthProvider->IsRestoringSession();
+}
+
+void UFlockSubsystem::Logout()
+{
+	if (!AuthProvider.IsValid())
+	{
+		GetLogger().LogWarning(TEXT("Logout called before the SDK was initialized; nothing to do."));
+		return;
+	}
+	AuthProvider->Logout();
 }

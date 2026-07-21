@@ -49,6 +49,17 @@ public:
 		return SendWithBody<TResp, TBody>(TEXT("POST"), Url, Headers, Body, /*bUnwrap*/ true, MoveTemp(OnComplete));
 	}
 
+	/**
+	 * Enveloped POST with a caller-serialized JSON body — for providers that shape the body beyond a
+	 * direct struct export (e.g. omitting optional fields entirely).
+	 */
+	template <typename T>
+	FFlockRequestHandle PostJson(const FString& Url, const TMap<FString, FString>& Headers, const FString& JsonBody,
+		TFunction<void(TFlockResult<T>)> OnComplete)
+	{
+		return Send<T>(TEXT("POST"), Url, Headers, JsonBody, /*bHasBody*/ true, /*bUnwrap*/ true, MoveTemp(OnComplete));
+	}
+
 	template <typename TResp, typename TBody>
 	FFlockRequestHandle Put(const FString& Url, const TMap<FString, FString>& Headers, const TBody& Body, TFunction<void(TFlockResult<TResp>)> OnComplete)
 	{
@@ -73,6 +84,17 @@ public:
 	FFlockRequestHandle GetRaw(const FString& Url, const TMap<FString, FString>& Headers, TFunction<void(TFlockResult<T>)> OnComplete)
 	{
 		return Send<T>(TEXT("GET"), Url, Headers, FString(), /*bHasBody*/ false, /*bUnwrap*/ false, MoveTemp(OnComplete));
+	}
+
+	/**
+	 * Bare POST with a caller-serialized JSON body — the non-enveloped counterpart of PostJson, for
+	 * endpoints that return the model at the root (the player auth routes) rather than under `result`.
+	 */
+	template <typename T>
+	FFlockRequestHandle PostJsonRaw(const FString& Url, const TMap<FString, FString>& Headers, const FString& JsonBody,
+		TFunction<void(TFlockResult<T>)> OnComplete)
+	{
+		return Send<T>(TEXT("POST"), Url, Headers, JsonBody, /*bHasBody*/ true, /*bUnwrap*/ false, MoveTemp(OnComplete));
 	}
 
 	// ── Paginated GET ({items, total, page, limit}) ──
