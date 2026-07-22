@@ -97,6 +97,14 @@ public:
 		return Send<T>(TEXT("POST"), Url, Headers, JsonBody, /*bHasBody*/ true, /*bUnwrap*/ false, MoveTemp(OnComplete));
 	}
 
+	/** Bare PATCH with a caller-serialized JSON body — the shape the session-end route answers with. */
+	template <typename T>
+	FFlockRequestHandle PatchJsonRaw(const FString& Url, const TMap<FString, FString>& Headers, const FString& JsonBody,
+		TFunction<void(TFlockResult<T>)> OnComplete)
+	{
+		return Send<T>(TEXT("PATCH"), Url, Headers, JsonBody, /*bHasBody*/ true, /*bUnwrap*/ false, MoveTemp(OnComplete));
+	}
+
 	// ── Paginated GET ({items, total, page, limit}) ──
 
 	template <typename T>

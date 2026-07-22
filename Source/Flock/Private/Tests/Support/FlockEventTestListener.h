@@ -94,4 +94,21 @@ public:
 
 	UFUNCTION()
 	void HandleNamePin(bool bAvailable, const FFlockError& Error) { ++NamePinCount; LastError = Error; }
+
+	// ── Analytics nodes ──
+
+	int32 FlushPinCount = 0;
+	int32 SessionPinCount = 0;
+	FString LastSessionId;
+
+	UFUNCTION()
+	void HandleFlushPin(const FFlockError& Error) { ++FlushPinCount; LastError = Error; }
+
+	UFUNCTION()
+	void HandleSessionPin(const FString& SessionId, const FFlockError& Error)
+	{
+		++SessionPinCount;
+		LastSessionId = SessionId;
+		LastError = Error;
+	}
 };

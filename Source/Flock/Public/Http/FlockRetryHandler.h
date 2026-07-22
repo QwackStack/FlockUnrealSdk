@@ -36,11 +36,13 @@ public:
 	 */
 	template <typename T>
 	FFlockRequestHandle Execute(FOperation<T> Operation, TFunction<void(TFlockResult<T>)> OnComplete,
-		bool bIdempotent = true, int32 MaxRetriesOverride = -1)
+		bool bIdempotent = true, int32 MaxRetriesOverride = -1,
+		TFunction<bool(const FFlockError&)> IsExpectedFailure = nullptr)
 	{
 		const TSharedRef<TRetryState<T>> State = MakeShared<TRetryState<T>>();
 		State->Operation = MoveTemp(Operation);
 		State->OnComplete = MoveTemp(OnComplete);
+		State->IsExpectedFailure = MoveTemp(IsExpectedFailure);
 		State->bIdempotent = bIdempotent;
 		State->MaxRetries = MaxRetriesOverride >= 0 ? MaxRetriesOverride : Policy.MaxRetries;
 		State->Policy = Policy;
@@ -96,6 +98,8 @@ private:
 		FFlockRequestHandle CurrentAttempt;
 		TSharedPtr<FFlockCancelToken> OuterToken;
 		bool bCompleted = false;
+		/** Optional: marks an error the caller treats as a normal outcome, so it is not logged as one. */
+		TFunction<bool(const FFlockError&)> IsExpectedFailure;
 
 		void Finish(const TFlockResult<T>& Result)
 		{
@@ -168,8 +172,19 @@ private:
 		{
 			if (State->Logger.IsValid())
 			{
-				State->Logger->LogError(FString::Printf(TEXT("Operation failed after %d attempt(s): %s"),
-					State->Attempt, *Result.Error.Message));
+				// An outcome the caller declared as expected — "already registered", say, which it
+				// turns into a success — is not a failure, and logging it as one trains people to
+				// ignore real errors. Still worth a breadcrumb at debug level.
+				const FString Line = FString::Printf(TEXT("Operation failed after %d attempt(s): %s"),
+					State->Attempt, *Result.Error.Message);
+				if (State->IsExpectedFailure && State->IsExpectedFailure(Result.Error))
+				{
+					State->Logger->LogDebug(Line);
+				}
+				else
+				{
+					State->Logger->LogError(Line);
+				}
 			}
 			State->Finish(Result);
 			return;

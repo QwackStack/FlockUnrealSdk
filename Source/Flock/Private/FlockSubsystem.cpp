@@ -1,6 +1,8 @@
 // Copyright 2022, Qwacks. All Rights Reserved.
 
 #include "FlockSubsystem.h"
+
+#include "Analytics/FlockFileEventCache.h"
 #include "Flock.h"
 #include "FlockEvents.h"
 #include "Auth/FlockFileTokenStore.h"
@@ -10,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.6.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.7.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -108,6 +110,13 @@ void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 		*ActiveConfig.GameId, *ActiveConfig.GameVersionId));
 	GetEvents()->InvokeInitialized();
 
+	// Before the restore below can raise OnAuthenticated and open a new session: this drains any
+	// crash tombstone left by the previous run and starts one for this run.
+	if (AnalyticsProvider.IsValid())
+	{
+		AnalyticsProvider->Initialize();
+	}
+
 	// Resume any persisted session in the background; the outcome surfaces via
 	// OnSessionRestored / OnAuthenticated rather than a return value.
 	AuthProvider->TryRestoreSession(nullptr);
@@ -147,7 +156,116 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	AuthSession->SetEvents(GetEvents());
 	AuthProvider = MakeUnique<FFlockAuthProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 		AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl());
+
+	const FFlockAnalyticsConfig AnalyticsConfig = FFlockAnalyticsConfig::FromSettings(*Settings);
+	if (AnalyticsConfig.bEnabled)
+	{
+		FFlockAnalyticsDependencies Deps;
+		// A cap of zero is how "don't spool" is expressed, so the caching switch maps onto it.
+		Deps.LogEventCache = MakeShared<FFlockFileEventCache>(TEXT("log_events"),
+			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedEvents : 0);
+		Deps.Session = MakeShared<FFlockSession>(AnalyticsConfig);
+		// Off in the editor: a PIE shutdown is not a real app death and would be reported as a crash.
+		Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(
+			AnalyticsConfig.bPersistSessionOnDisk && !GIsEditor);
+		Deps.ConsentStore = MakeShared<FFlockConsentStore>();
+		Deps.Pump = MakeShared<FFlockLifecyclePump>();
+		Deps.bEnableLogSink = true;
+
+		AnalyticsProvider = MakeShared<FFlockAnalyticsProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
+			AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl(), AnalyticsConfig, Deps,
+			Config.GameVersionId, SdkVersion);
+
+		// The backend requires a player id on a session, so sessions follow sign-in rather than init.
+		GetEvents()->OnAuthenticated.AddDynamic(this, &UFlockSubsystem::HandleAnalyticsAuthenticated);
+		GetEvents()->OnLoggedOut.AddDynamic(this, &UFlockSubsystem::HandleAnalyticsLoggedOut);
+	}
 	return true;
+}
+
+void UFlockSubsystem::HandleAnalyticsAuthenticated(const FFlockAuthInfo& Info)
+{
+	if (AnalyticsProvider.IsValid() && GetDefault<UFlockConfig>()->bAnalyticsAutoStartSession)
+	{
+		AnalyticsProvider->StartSession(Info.PlayerId);
+	}
+}
+
+void UFlockSubsystem::HandleAnalyticsLoggedOut()
+{
+	if (AnalyticsProvider.IsValid())
+	{
+		AnalyticsProvider->EndSession(EFlockSessionEndReason::Logout);
+	}
+}
+
+void UFlockSubsystem::LogAnalyticsEvent(const FString& Message, const TMap<FString, FString>& ExtraData)
+{
+	if (AnalyticsProvider.IsValid())
+	{
+		AnalyticsProvider->LogEvent(Message, ExtraData);
+	}
+}
+
+void UFlockSubsystem::LogAnalyticsError(const FString& Message, const FFlockLogDetails& Details)
+{
+	if (AnalyticsProvider.IsValid())
+	{
+		AnalyticsProvider->LogError(Message, Details);
+	}
+}
+
+void UFlockSubsystem::LogAnalyticsException(const FString& Message, const FString& StackTrace,
+	const FFlockLogDetails& Details)
+{
+	if (AnalyticsProvider.IsValid())
+	{
+		AnalyticsProvider->LogException(Message, StackTrace, Details);
+	}
+}
+
+void UFlockSubsystem::RecordAnalyticsScreenView(const FString& ScreenName)
+{
+	if (AnalyticsProvider.IsValid())
+	{
+		AnalyticsProvider->RecordScreenView(ScreenName);
+	}
+}
+
+void UFlockSubsystem::SetAnalyticsConsent(bool bGranted)
+{
+	if (AnalyticsProvider.IsValid())
+	{
+		AnalyticsProvider->SetConsent(bGranted);
+	}
+}
+
+bool UFlockSubsystem::HasAnalyticsConsent() const
+{
+	return AnalyticsProvider.IsValid() && AnalyticsProvider->HasConsent();
+}
+
+bool UFlockSubsystem::HasActiveAnalyticsSession() const
+{
+	return AnalyticsProvider.IsValid() && AnalyticsProvider->HasActiveSession();
+}
+
+FString UFlockSubsystem::GetAnalyticsSessionId() const
+{
+	return AnalyticsProvider.IsValid() ? AnalyticsProvider->GetCurrentSessionId() : FString();
+}
+
+FFlockSessionSnapshot UFlockSubsystem::GetAnalyticsSnapshot() const
+{
+	return AnalyticsProvider.IsValid() ? AnalyticsProvider->GetCurrentSnapshot() : FFlockSessionSnapshot();
+}
+
+void UFlockSubsystem::EraseLocalAnalyticsData()
+{
+	if (AnalyticsProvider.IsValid())
+	{
+		AnalyticsProvider->EraseLocalData();
+	}
 }
 
 void UFlockSubsystem::ShutdownSdk()
@@ -155,6 +273,19 @@ void UFlockSubsystem::ShutdownSdk()
 	if (!bInitialized)
 	{
 		return;
+	}
+
+	// Shut the provider down while it is still alive — its destructor deliberately will not end a
+	// session, because that would dispatch HTTP from a destructor.
+	if (AnalyticsProvider.IsValid())
+	{
+		AnalyticsProvider->Shutdown();
+		AnalyticsProvider.Reset();
+	}
+	if (Events != nullptr)
+	{
+		Events->OnAuthenticated.RemoveDynamic(this, &UFlockSubsystem::HandleAnalyticsAuthenticated);
+		Events->OnLoggedOut.RemoveDynamic(this, &UFlockSubsystem::HandleAnalyticsLoggedOut);
 	}
 
 	AuthProvider.Reset();

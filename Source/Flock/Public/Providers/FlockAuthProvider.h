@@ -123,10 +123,15 @@ public:
 		TFunction<void(TFlockResult<FFlockNameAvailableResponse>)> OnComplete);
 
 private:
-	/** Shared login/register success path: validate, adopt tokens, record method, raise OnAuthenticated. */
+	/**
+	 * Shared login/register success path: validate, adopt tokens, record method, raise OnAuthenticated.
+	 * IsExpectedFailure lets the registration path declare "already registered" as a normal outcome so
+	 * it is not logged as an error on the way to being converted into a success.
+	 */
 	template <typename TReq>
 	FFlockRequestHandle ExecuteAuth(const TReq& Request, const FString& Endpoint, const FString& Context,
-		EFlockAuthMethod Method, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete);
+		EFlockAuthMethod Method, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete,
+		TFunction<bool(const FFlockError&)> IsExpectedFailure = nullptr);
 
 	/** ExecuteAuth + the already-registered short-circuit into a successful FFlockRegisterResult. */
 	template <typename TReq>
@@ -160,7 +165,8 @@ private:
 
 template <typename TReq>
 FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const FString& Endpoint,
-	const FString& Context, EFlockAuthMethod Method, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete)
+	const FString& Context, EFlockAuthMethod Method, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete,
+	TFunction<bool(const FFlockError&)> IsExpectedFailure)
 {
 	FString Json;
 	if (!FFlockJsonUtils::StructToWireJson(Request, Json, /*bOmitEmptyStrings*/ true))
@@ -241,7 +247,8 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 				OnComplete(Result);
 			}
 		},
-		Context, /*bIdempotent*/ true, /*MaxRetriesOverride*/ -1, /*bAllowAuthRetry*/ false);
+		Context, /*bIdempotent*/ true, /*MaxRetriesOverride*/ -1, /*bAllowAuthRetry*/ false,
+		MoveTemp(IsExpectedFailure));
 }
 
 template <typename TReq>
@@ -273,7 +280,10 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteRegistration(const TReq& Request,
 				return;
 			}
 			OnComplete(TFlockResult<FFlockRegisterResult>::Fail(Result.Error));
-		});
+		},
+		// Registering an identity that already exists is the documented success path below, not a
+		// failure — so it must not be logged as one on the way there.
+		[](const FFlockError& Error) { return Error.IsAlreadyRegistered(); });
 }
 
 template <typename T>

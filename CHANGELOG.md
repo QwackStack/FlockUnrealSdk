@@ -5,6 +5,81 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-21
+
+### Added
+- **Analytics** end to end (`FFlockAnalyticsProvider`, reached with
+  `UFlockSubsystem::GetAnalyticsProvider()`): a diagnostic log API, session tracking, an offline
+  spool with explicit flush, consent gating, and automatic crash reporting on the next launch.
+- **Log API.** `LogEvent` / `LogError` / `LogException` record diagnostics, recoverable logic faults,
+  and exceptions. All three are fire-and-forget at the call site: the entry is written to disk
+  immediately and delivered on the next flush, so a call costs nothing and nothing is lost to a crash
+  or a dead network. **Reporting an exception needs no stack trace** — leave it off and the SDK walks
+  the callstack itself; pass one only when you have something better, such as a script VM's stack.
+- **`FFlockLogDetails`** carries the optional detail on an error or exception (`LogicalExpression`,
+  `ErrorCode`, `ErrorData`, `ExtraData`) as one named argument rather than four positional ones, and
+  gives Blueprint a single pin. **`FFlockMetadata`** builds the wire's string map from ints, floats
+  and bools directly, so attaching a level or a count no longer means converting by hand.
+- **Automatic exception capture.** Engine `Error` and `Fatal` log lines become exception entries
+  without any wiring, alongside a hard-crash hook for failures that never reach the log. Each one
+  carries the callstack walked at the point of capture, with frames recorded as `Module+0xOffset`
+  (plus function and source line when symbols are available). The offset is measured from the
+  module's base, not the raw program counter, so a frame means the same thing on every run and can
+  still be symbolicated from a build's symbols long after the report arrives.
+  The SDK's own log categories are excluded so a failed upload cannot report itself in a loop, and a
+  game can exclude its own noisy categories. Entries beyond the queue cap are dropped before the
+  callstack is walked, so an error storm does not pay for reports it will not keep.
+- **Sessions.** A session opens on sign-in and closes on logout or quit, tracking duration, screen
+  views, pause count and time, and FPS (average/min/max). Backgrounding pauses it; returning after
+  the configured timeout rotates to a fresh session instead of resuming. Raises `OnSessionStarted`,
+  `OnSessionEnded` (with the reason), `OnSessionPaused`, and `OnSessionResumed`.
+- **Offline spool.** Entries queue as plain JSON under `Saved/Flock/analytics/` and drain batch by
+  batch on an interval, on backgrounding, or on an explicit `Flush`. A failed send leaves the batch
+  queued for the next attempt; the queue is capped, dropping oldest first.
+- **Crash reporting.** A run that ends without the quit path — crash, force-kill, foreground OOM,
+  power loss — is detected on the next launch and reported once as an `app_termination` entry,
+  classified `background_kill` (OS eviction or swipe-close) or `abnormal` (died in the foreground),
+  carrying the dead session's id, an approximate time of death, and the unhandled-exception count.
+  Disabled in the editor, where a PIE shutdown is not a real app death.
+- **Consent.** Consent is a hard gate, not a send filter: with it withheld there is no session and
+  nothing is collected, not even locally. The decision persists across runs, an explicit withdrawal
+  ends the session and drops the queue, and `OnConsentChanged` reports every change. Granting consent
+  opens the session that sign-in could not, so an opt-in flow still gets a session when the player
+  agrees after signing in. Set *Analytics Require Explicit Consent* for that flow; leave it off to
+  collect by default.
+  `EraseLocalAnalyticsData` drops the queue, the consent decision, and any crash marker.
+- **Blueprint**: *Flock | Analytics* nodes for Flush, Start Session, and End Session, plus
+  `Log Analytics Event` / `Error` / `Exception`, `Record Screen View`, `Set Analytics Consent`,
+  `Has Analytics Consent`, `Has Active Analytics Session`, `Get Analytics Session Id`, and
+  `Get Analytics Snapshot` on the subsystem. Every one is a safe no-op before the SDK is initialized.
+- Starting a session takes the signed-in player automatically — leave the player id empty and the
+  SDK uses whoever is signed in, rather than making every caller fetch and pass it.
+- **Automation tests** (`Flock.Analytics.*`, 91 in the suite): wire models and free-form key
+  preservation, consent persistence and resolution, the spool's ordering/cap/persistence/resilience,
+  session accounting and the lifecycle pump, crash-marker classification and folding, the log sink's
+  filtering and re-entrancy guard, the provider's consent gate, flush and failure recovery, session
+  lifecycle and termination reporting, and the Blueprint nodes' uninitialized-SDK guard.
+
+### Changed
+- `FFlockHttpClient` gained `PatchJsonRaw` for non-enveloped PATCH routes (session end).
+- `Flock.SelfTest` now drives the analytics session lifecycle against the live backend — consent and
+  session state, screen views, one entry of each log type, the queue depth, flush, session end, and a
+  consent round trip — and prints the callstack of an automatically captured error so a capture
+  problem is visible locally rather than only in the dashboard. It erases its local analytics data
+  afterwards, so a run leaves nothing behind.
+
+### Fixed
+- **Registering an identity that already exists no longer logs errors.** The call reports success
+  with `Already Registered`, but two error lines were written on the way there ("Operation failed
+  after 1 attempt(s)" and "… registration failed"), so a normal first-run path looked broken in the
+  log. Providers can now declare an expected failure, which drops those lines to debug; the outcome
+  is still reported once as a warning. Genuine registration failures — a taken display name, a server
+  error — are unchanged and still log as errors.
+
+### Notes
+- Analytics timestamps come from the device clock, so they are wrong if the player's clock is wrong.
+  Session *durations* are unaffected — they accumulate from frame deltas rather than clock readings.
+
 ## [0.6.0] - 2026-07-21
 
 ### Added

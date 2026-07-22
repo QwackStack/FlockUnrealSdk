@@ -61,16 +61,29 @@ protected:
 	 */
 	template <typename T>
 	FFlockRequestHandle Execute(FFlockRetryHandler::FOperation<T> Operation, TFunction<void(TFlockResult<T>)> OnComplete,
-		const FString& Context, bool bIdempotent = true, int32 MaxRetriesOverride = -1, bool bAllowAuthRetry = true)
+		const FString& Context, bool bIdempotent = true, int32 MaxRetriesOverride = -1, bool bAllowAuthRetry = true,
+		TFunction<bool(const FFlockError&)> IsExpectedFailure = nullptr)
 	{
 		const TSharedRef<IFlockLogger> Log = Logger;
 		// Resolved now, at dispatch, so the completion still reports the origin that made the call.
 		const FString LoggedContext = DecorateContext(Context);
-		TFunction<void(TFlockResult<T>)> Finish = [Log, LoggedContext, OnComplete](TFlockResult<T> Result)
+		TFunction<void(TFlockResult<T>)> Finish =
+			[Log, LoggedContext, OnComplete, IsExpectedFailure](TFlockResult<T> Result)
 		{
 			if (!Result.bSuccess)
 			{
-				Log->LogError(FString::Printf(TEXT("%s failed: %s"), *LoggedContext, *Result.Error.Message));
+				// Some failures are a normal outcome the caller converts into a success (registering
+				// an identity that already exists). Logging those as errors is noise that devalues
+				// the real ones, so the caller can declare them and they drop to debug.
+				const FString Line = FString::Printf(TEXT("%s failed: %s"), *LoggedContext, *Result.Error.Message);
+				if (IsExpectedFailure && IsExpectedFailure(Result.Error))
+				{
+					Log->LogDebug(Line);
+				}
+				else
+				{
+					Log->LogError(Line);
+				}
 			}
 			if (OnComplete)
 			{
@@ -106,7 +119,7 @@ protected:
 					});
 				});
 			},
-			bIdempotent, MaxRetriesOverride);
+			bIdempotent, MaxRetriesOverride, IsExpectedFailure);
 	}
 
 	/** Reports a Validation failure and returns false when a required argument is empty. */
