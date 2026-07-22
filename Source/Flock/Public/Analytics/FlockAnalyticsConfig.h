@@ -41,6 +41,13 @@ struct FLOCK_API FFlockAnalyticsConfig
 	/** Cap on spooled entries. Oldest are dropped first once it is hit. */
 	int32 MaxCachedEvents = 1000;
 
+	/**
+	 * Cap on spooled session ends, kept separate because ends are rare next to log events — if this
+	 * many have gone undelivered, the oldest are of no further interest. Not surfaced in the project
+	 * settings: it is a safety limit, not a tuning knob.
+	 */
+	int32 MaxCachedSessionEnds = 50;
+
 	/** How many spooled entries go out per flush batch. */
 	int32 CacheFlushBatchSize = 50;
 

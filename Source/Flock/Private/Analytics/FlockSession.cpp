@@ -2,6 +2,8 @@
 
 #include "Analytics/FlockSession.h"
 
+#include "Analytics/FlockAnalyticsJson.h"
+#include "Http/FlockJsonUtils.h"
 #include "Dom/JsonObject.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
@@ -12,6 +14,7 @@
 namespace
 {
 	const TCHAR* SessionNumberField = TEXT("session_number");
+	const TCHAR* ActiveSessionField = TEXT("active_session");
 
 	/** Empty rather than the epoch, so "never happened" is distinguishable on the wire. */
 	FString ToIsoOrEmpty(const FDateTime& Value)
@@ -42,8 +45,7 @@ void FFlockSession::LoadSessionNumber()
 	}
 
 	TSharedPtr<FJsonObject> Root;
-	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
-	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+	if (!FFlockJsonUtils::TryParseObject(Json, Root) || !Root.IsValid())
 	{
 		// Corrupt state just restarts the count; it is a statistic, not a correctness input.
 		return;
@@ -56,18 +58,97 @@ void FFlockSession::LoadSessionNumber()
 	}
 }
 
-void FFlockSession::SaveSessionNumber() const
+void FFlockSession::EnsureStateDirectory() const
+{
+	// The directory can only ever need creating once, and this runs on every heartbeat write.
+	if (bStateDirectoryEnsured)
+	{
+		return;
+	}
+	FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*FPaths::GetPath(StateFilePath));
+	bStateDirectoryEnsured = true;
+}
+
+void FFlockSession::WriteState(const FFlockSessionSnapshot* ActiveSnapshot) const
 {
 	const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetNumberField(SessionNumberField, SessionNumber);
+
+	if (ActiveSnapshot != nullptr)
+	{
+		if (const TSharedPtr<FJsonObject> Active = FFlockAnalyticsJson::SnapshotToJson(*ActiveSnapshot))
+		{
+			Root->SetObjectField(ActiveSessionField, Active);
+		}
+	}
 
 	FString Json;
 	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
 		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Json);
 	FJsonSerializer::Serialize(Root, Writer);
 
-	FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*FPaths::GetPath(StateFilePath));
+	EnsureStateDirectory();
 	FFileHelper::SaveStringToFile(Json, *StateFilePath);
+}
+
+void FFlockSession::PersistState() const
+{
+	if (!Config.bPersistSessionOnDisk || !bActive)
+	{
+		return;
+	}
+	const FFlockSessionSnapshot Snapshot = TakeSnapshot();
+	WriteState(&Snapshot);
+}
+
+void FFlockSession::ClearPersistedSession() const
+{
+	WriteState(nullptr);
+}
+
+bool FFlockSession::RecoverOrphanedSession(FFlockSessionSnapshot& OutSnapshot) const
+{
+	if (!Config.bPersistSessionOnDisk)
+	{
+		return false;
+	}
+
+	FString Json;
+	if (!FFileHelper::LoadFileToString(Json, *StateFilePath))
+	{
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Root;
+	if (!FFlockJsonUtils::TryParseObject(Json, Root) || !Root.IsValid())
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* Active = nullptr;
+	if (!Root->TryGetObjectField(ActiveSessionField, Active) || !Active->IsValid())
+	{
+		// The clean-exit state, and what every pre-0.8.0 state file looks like.
+		return false;
+	}
+
+	FFlockSessionSnapshot Recovered;
+	if (!FFlockAnalyticsJson::SnapshotFromJson(Active->ToSharedRef(), Recovered))
+	{
+		return false;
+	}
+	// A record that was already closed has been dealt with; only a still-active one was orphaned.
+	if (!Recovered.IsActive || Recovered.SessionId.IsEmpty())
+	{
+		return false;
+	}
+
+	Recovered.IsActive = false;
+	Recovered.EndTimeUtc = Recovered.LastHeartbeatUtc.IsEmpty()
+		? Recovered.StartTimeUtc
+		: Recovered.LastHeartbeatUtc;
+	OutSnapshot = Recovered;
+	return true;
 }
 
 void FFlockSession::ResetAccounting()
@@ -102,8 +183,12 @@ FString FFlockSession::Start(const FString& InPlayerId)
 	SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
 	StartTimeUtc = Clock();
 	++SessionNumber;
-	SaveSessionNumber();
 	bActive = true;
+
+	// One write covers both halves — the bumped counter, and the live record that makes this session
+	// recoverable if the run never reaches End().
+	const FFlockSessionSnapshot Snapshot = TakeSnapshot();
+	WriteState(Config.bPersistSessionOnDisk ? &Snapshot : nullptr);
 	return SessionId;
 }
 

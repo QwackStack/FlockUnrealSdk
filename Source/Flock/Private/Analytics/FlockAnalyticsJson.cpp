@@ -2,6 +2,7 @@
 
 #include "Analytics/FlockAnalyticsJson.h"
 
+#include "Http/FlockJsonUtils.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -173,4 +174,34 @@ bool FFlockAnalyticsJson::DeserializeEvent(const FString& Json, FFlockLogEventRe
 		return false;
 	}
 	return FromJson(Root.ToSharedRef(), OutEvent);
+}
+
+TSharedPtr<FJsonObject> FFlockAnalyticsJson::SnapshotToJson(const FFlockSessionSnapshot& Snapshot)
+{
+	// Empty strings are dropped rather than written blank, matching every other body the SDK emits.
+	return FFlockJsonUtils::StructToWireObject(Snapshot, /*bOmitEmptyStrings*/ true);
+}
+
+bool FFlockAnalyticsJson::SnapshotFromJson(const TSharedRef<FJsonObject>& Object, FFlockSessionSnapshot& OutSnapshot)
+{
+	OutSnapshot = FFlockSessionSnapshot();
+	FString Error;
+	return FFlockJsonUtils::WireObjectToStruct(Object, OutSnapshot, Error);
+}
+
+FString FFlockAnalyticsJson::SerializeSnapshot(const FFlockSessionSnapshot& Snapshot)
+{
+	const TSharedPtr<FJsonObject> Object = SnapshotToJson(Snapshot);
+	return Object.IsValid() ? SerializeObject(Object.ToSharedRef()) : FString();
+}
+
+bool FFlockAnalyticsJson::DeserializeSnapshot(const FString& Json, FFlockSessionSnapshot& OutSnapshot)
+{
+	OutSnapshot = FFlockSessionSnapshot();
+	TSharedPtr<FJsonObject> Root;
+	if (!FFlockJsonUtils::TryParseObject(Json, Root) || !Root.IsValid())
+	{
+		return false;
+	}
+	return SnapshotFromJson(Root.ToSharedRef(), OutSnapshot);
 }
