@@ -13,8 +13,17 @@
  *   Sdk->LogAnalyticsEvent(TEXT("level_complete"),
  *       FFlockMetadata().Add(TEXT("level"), 7).Add(TEXT("deaths"), 2).Add(TEXT("flawless"), true));
  *
- * Converts implicitly to the map, so it drops into any call taking metadata. C++ only — Blueprint
- * has Make Map, which is already ergonomic there.
+ * Converts implicitly to the map, so it drops into any call taking metadata. Blueprint gets the same
+ * builders as chainable nodes on UFlockAnalyticsLibrary.
+ *
+ * Pass a chain straight into a call, as above — the temporary lives to the end of the statement.
+ * Do NOT bind a reference to its Values:
+ *
+ *     const TMap<FString, FString>& Bad = FFlockMetadata().Add(...).Values;  // dangles
+ *     const TMap<FString, FString>  Good = FFlockMetadata().Add(...).Values; // copies
+ *
+ * Reaching a member through a returned reference gets no lifetime extension, so the first form reads
+ * freed memory.
  */
 struct FFlockMetadata
 {
