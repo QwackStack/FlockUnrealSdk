@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.7.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.8.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -164,6 +164,9 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		// A cap of zero is how "don't spool" is expressed, so the caching switch maps onto it.
 		Deps.LogEventCache = MakeShared<FFlockFileEventCache>(TEXT("log_events"),
 			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedEvents : 0);
+		// Its own queue, so ends drain ahead of events and erasing one leaves the other alone.
+		Deps.SessionEndCache = MakeShared<FFlockFileEventCache>(TEXT("session_ends"),
+			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedSessionEnds : 0);
 		Deps.Session = MakeShared<FFlockSession>(AnalyticsConfig);
 		// Off in the editor: a PIE shutdown is not a real app death and would be reported as a crash.
 		Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(
@@ -195,7 +198,7 @@ void UFlockSubsystem::HandleAnalyticsLoggedOut()
 {
 	if (AnalyticsProvider.IsValid())
 	{
-		AnalyticsProvider->EndSession(EFlockSessionEndReason::Logout);
+		AnalyticsProvider->HandleLoggedOut();
 	}
 }
 
@@ -356,6 +359,13 @@ void UFlockSubsystem::Logout()
 	{
 		GetLogger().LogWarning(TEXT("Logout called before the SDK was initialized; nothing to do."));
 		return;
+	}
+	// Before the tokens go: closing the session needs a bearer, and OnLoggedOut — which is where the
+	// analytics side would otherwise hear about this — only fires once they have been cleared. The
+	// end is spooled either way, so a failure here costs delivery time, not the record.
+	if (AnalyticsProvider.IsValid())
+	{
+		AnalyticsProvider->EndSession(EFlockSessionEndReason::Logout);
 	}
 	AuthProvider->Logout();
 }

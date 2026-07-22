@@ -54,10 +54,30 @@ public:
 	template <typename T>
 	static bool StructToWireJson(const T& Struct, FString& OutJson, bool bOmitEmptyStrings = false)
 	{
+		const TSharedPtr<FJsonObject> SnakeObj = StructToWireObject(Struct, bOmitEmptyStrings);
+		if (!SnakeObj.IsValid())
+		{
+			return false;
+		}
+		// Condensed, not the default pretty print: request bodies are wire payloads, and callers
+		// (and tests) rely on the compact "key":"value" form.
+		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+			TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&OutJson);
+		return FJsonSerializer::Serialize(SnakeObj.ToSharedRef(), Writer);
+	}
+
+	/**
+	 * StructToWireJson stopping before the writer. A model that has to be nested inside a larger
+	 * document uses this instead of serializing to a string and parsing it straight back — same
+	 * key transform, one pass. Null when the struct could not be converted.
+	 */
+	template <typename T>
+	static TSharedPtr<FJsonObject> StructToWireObject(const T& Struct, bool bOmitEmptyStrings = false)
+	{
 		const TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
 		if (!FJsonObjectConverter::UStructToJsonObject(T::StaticStruct(), &Struct, Obj, 0, 0))
 		{
-			return false;
+			return nullptr;
 		}
 		const TSharedRef<FJsonObject> SnakeObj = TransformObjectKeys(Obj, /*bToPascal*/ false);
 		if (bOmitEmptyStrings)
@@ -75,11 +95,20 @@ public:
 				SnakeObj->RemoveField(Key);
 			}
 		}
-		// Condensed, not the default pretty print: request bodies are wire payloads, and callers
-		// (and tests) rely on the compact "key":"value" form.
-		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
-			TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&OutJson);
-		return FJsonSerializer::Serialize(SnakeObj, Writer);
+		return SnakeObj;
+	}
+
+	/** Transforms snake->Pascal keys and converts one already-parsed object into a USTRUCT. */
+	template <typename T>
+	static bool WireObjectToStruct(const TSharedRef<FJsonObject>& Object, T& OutStruct, FString& OutError)
+	{
+		const TSharedRef<FJsonObject> Transformed = TransformObjectKeys(Object, /*bToPascal*/ true);
+		if (!FJsonObjectConverter::JsonObjectToUStruct(Transformed, T::StaticStruct(), &OutStruct, 0, 0))
+		{
+			OutError = TEXT("Malformed response body");
+			return false;
+		}
+		return true;
 	}
 
 	/** Deserializes a bare (non-enveloped) JSON object body directly into a USTRUCT. */
@@ -92,7 +121,7 @@ public:
 			OutError = TEXT("Malformed response body");
 			return false;
 		}
-		return ConvertObject(Root.ToSharedRef(), OutStruct, OutError);
+		return WireObjectToStruct(Root.ToSharedRef(), OutStruct, OutError);
 	}
 
 	/**
@@ -114,7 +143,7 @@ public:
 			OutError = TEXT("Invalid response from server (missing result)");
 			return false;
 		}
-		return ConvertObject((*ResultObj).ToSharedRef(), OutStruct, OutError);
+		return WireObjectToStruct((*ResultObj).ToSharedRef(), OutStruct, OutError);
 	}
 
 	/**
@@ -151,7 +180,7 @@ public:
 				return false;
 			}
 			T Item;
-			if (!ConvertObject(ElemObj.ToSharedRef(), Item, OutError))
+			if (!WireObjectToStruct(ElemObj.ToSharedRef(), Item, OutError))
 			{
 				return false;
 			}
@@ -163,17 +192,4 @@ public:
 		return true;
 	}
 
-private:
-	/** Transforms snake->Pascal keys and converts one object into a USTRUCT. */
-	template <typename T>
-	static bool ConvertObject(const TSharedRef<FJsonObject>& Object, T& OutStruct, FString& OutError)
-	{
-		const TSharedRef<FJsonObject> Transformed = TransformObjectKeys(Object, /*bToPascal*/ true);
-		if (!FJsonObjectConverter::JsonObjectToUStruct(Transformed, T::StaticStruct(), &OutStruct, 0, 0))
-		{
-			OutError = TEXT("Malformed response body");
-			return false;
-		}
-		return true;
-	}
 };

@@ -32,7 +32,10 @@ public:
 	explicit FFlockSession(const FFlockAnalyticsConfig& InConfig, const FString& InStateFilePath = FString(),
 		FClock InClock = FClock());
 
-	/** `<ProjectSavedDir>/Flock/analytics/session_state.json` — carries the session counter across runs. */
+	/**
+	 * `<ProjectSavedDir>/Flock/analytics/session_state.json` — carries the session counter across
+	 * runs, and the live session while one is open.
+	 */
 	static FString DefaultStatePath();
 
 	// ── Lifecycle ──
@@ -84,15 +87,43 @@ public:
 
 	FFlockSessionSnapshot TakeSnapshot() const;
 
+	// ── Persistence ──
+	// The live session is written beside the counter so a run that dies without an End() leaves
+	// something to recover. When to refresh it is the caller's business, like everything else here —
+	// with one exception: Start() records it immediately, because it has to write the bumped counter
+	// anyway and fusing the two saves a redundant file write at the busiest moment.
+
+	/** Records the live session. No-op when persistence is off or no session is active. */
+	void PersistState() const;
+
+	/**
+	 * Drops the live-session record, keeping the counter. Call only once the end is durable
+	 * elsewhere — clearing first loses the session if that write fails.
+	 */
+	void ClearPersistedSession() const;
+
+	/**
+	 * A session left behind by a run that never ended cleanly, closed at its last heartbeat (or its
+	 * start, when it never reached one). A wall-clock "now" would invent however long the app was
+	 * dead, so an under-reported duration is the honest answer.
+	 *
+	 * Deliberately does not clear — see ClearPersistedSession().
+	 */
+	bool RecoverOrphanedSession(FFlockSessionSnapshot& OutSnapshot) const;
+
 private:
 	void LoadSessionNumber();
-	void SaveSessionNumber() const;
+	/** Creates the state directory once per instance rather than on every write. */
+	void EnsureStateDirectory() const;
+	/** Writes the whole state file; a null snapshot means "no live session". */
+	void WriteState(const FFlockSessionSnapshot* ActiveSnapshot) const;
 	void ResetAccounting();
 	void SampleFps(float DeltaSeconds);
 
 	FFlockAnalyticsConfig Config;
 	FString StateFilePath;
 	FClock Clock;
+	mutable bool bStateDirectoryEnsured = false;
 
 	FString SessionId;
 	FString ServerSessionId;

@@ -34,4 +34,20 @@ public:
 	/** Condensed `{"events":[...]}` body for `POST log_event`. */
 	static FString SerializeEvents(const TArray<FFlockLogEventRequest>& Events);
 	static bool DeserializeEvent(const FString& Json, FFlockLogEventRequest& OutEvent);
+
+	// ── Session snapshots ──
+	// The session-end spool's on-disk format, and the live-session record inside the session state
+	// file. Both formats live here for the same reason the log-event one does: a spooled record and
+	// the code that reads it can never drift when there is only one place to change.
+
+	/**
+	 * Unlike a log event, a snapshot is a fixed-field struct with no caller-authored maps, so it can
+	 * go through the generic snake_case exporter without a game-authored key being rewritten.
+	 */
+	static FString SerializeSnapshot(const FFlockSessionSnapshot& Snapshot);
+	static bool DeserializeSnapshot(const FString& Json, FFlockSessionSnapshot& OutSnapshot);
+
+	/** The same format as an object, for a snapshot nested inside a larger document. */
+	static TSharedPtr<FJsonObject> SnapshotToJson(const FFlockSessionSnapshot& Snapshot);
+	static bool SnapshotFromJson(const TSharedRef<FJsonObject>& Object, FFlockSessionSnapshot& OutSnapshot);
 };

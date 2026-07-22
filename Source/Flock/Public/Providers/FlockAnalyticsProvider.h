@@ -25,6 +25,14 @@ class FFlockLogSink;
 struct FLOCK_API FFlockAnalyticsDependencies
 {
 	TSharedPtr<IFlockEventCache> LogEventCache;
+
+	/**
+	 * Durable queue of session ends, separate from the log spool so ends can drain first and so
+	 * erasing one does not disturb the other. Without it an end that cannot be delivered at the
+	 * moment it happens — offline, mid-quit, signed out — is lost.
+	 */
+	TSharedPtr<IFlockEventCache> SessionEndCache;
+
 	TSharedPtr<FFlockSession> Session;
 	TSharedPtr<FFlockTerminationTracker> TerminationTracker;
 	TSharedPtr<FFlockConsentStore> ConsentStore;
@@ -98,8 +106,20 @@ public:
 	void StartSession(const FString& InPlayerId = FString(),
 		TFunction<void(TFlockResult<FString>)> OnComplete = nullptr);
 
+	/**
+	 * Closes the session and delivers its end. The end is made durable before anything is sent, so a
+	 * failure here costs nothing: the record drains on a later flush, or on the next launch.
+	 */
 	void EndSession(EFlockSessionEndReason Reason = EFlockSessionEndReason::Manual,
 		TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete = nullptr);
+
+	/**
+	 * The player signed out. Closes the session if one is still open and forgets the remembered
+	 * player, so a consent grant arriving afterwards cannot open a session attributed to whoever just
+	 * left. One call rather than two, because the order of those two steps is analytics' business,
+	 * not the caller's.
+	 */
+	void HandleLoggedOut();
 
 	bool HasActiveSession() const;
 	FString GetCurrentSessionId() const;
@@ -127,7 +147,16 @@ public:
 
 	void RecordScreenView(const FString& ScreenName);
 
-	/** Drains the spool batch by batch until it is empty or a send fails. */
+	/**
+	 * Drains everything queued, batch by batch, until it is empty or a send fails. Session ends go
+	 * first — they are small, rare, and the most valuable record, so a quit's remaining time must not
+	 * be spent on an event backlog ahead of them.
+	 *
+	 * A failed *send* is reported as a failure. Deferral is not: with nothing queued, a drain already
+	 * running, or nobody signed in, this succeeds without sending anything, because none of those is
+	 * a reason for a fire-and-forget flush to look broken. Success therefore means "nothing was lost",
+	 * not "the queue is now empty" — read GetPendingEventCount() if you need the latter.
+	 */
 	void Flush(TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete = nullptr);
 
 	/** Drops the spool, the consent decision, and any tombstone — the "erase my data" path. */
@@ -159,6 +188,65 @@ private:
 
 	void DrainLogSink();
 	void ReportSurvivingTermination();
+
+	// ── Session internals ──
+
+	/** Body for `POST analytics/sessions`, from a live or a spooled snapshot. */
+	FFlockSessionStartRequest MakeStartRequest(const FFlockSessionSnapshot& Snapshot) const;
+
+	/**
+	 * Registers the live session, single-flight. The id is adopted only if that same session is still
+	 * the active one when the reply lands — it may have rotated or ended while the POST was away, and
+	 * tagging the new session with the old one's id corrupts both.
+	 */
+	void RegisterActiveSession(TFunction<void(TFlockResult<FString>)> OnComplete);
+
+	/** Heartbeat hook: registers an active session that has none yet. */
+	void TryHealRegistration();
+
+	/**
+	 * Marks the one failure the spool is designed around — an auth failure while nobody is signed in
+	 * — as expected, so it logs as debug instead of burying real errors. Deliberately not "any 401":
+	 * one that arrives with a live bearer has already survived the provider base's silent refresh,
+	 * and that is a genuine problem worth seeing.
+	 */
+	TFunction<bool(const FFlockError&)> SignedOutFailurePredicate() const;
+
+	/** Closes the session and clears what it left behind locally: live record and crash tombstone. */
+	void StopSessionLocally();
+
+	/**
+	 * The one end path. Closes the session, makes the end durable, stops the tombstone, and raises
+	 * OnSessionEnded. bOutSpooled is false when there was no spool to take it, and the caller must
+	 * deliver the returned snapshot itself or lose it.
+	 */
+	FFlockSessionSnapshot FinishSession(EFlockSessionEndReason Reason, bool& bOutSpooled);
+
+	/** Consent-revoke path: stops the session locally with no spool, no send, and no OnSessionEnded. */
+	void DiscardSession();
+
+	/** Spools the end of a session the previous run left open. */
+	void RecoverOrphanedSession();
+
+	/**
+	 * IsExpectedFailure is supplied by the spool drain, where a signed-out failure is a wait rather
+	 * than a loss. The no-spool path leaves it unset: there the record really does go missing.
+	 */
+	void PatchSessionEnd(const FString& ServerSessionId, const FFlockSessionSnapshot& Snapshot,
+		TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete,
+		TFunction<bool(const FFlockError&)> IsExpectedFailure = nullptr);
+
+	void FlushSessionEnds(TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete);
+	/** Delivered carries the session ids already sent in this pass, so a duplicate record is dropped. */
+	void SendNextEnd(const TSharedRef<TSet<FString>>& Delivered,
+		TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete);
+	void SendSpooledEnd(const FString& Handle, const FFlockSessionSnapshot& Snapshot,
+		const TSharedRef<TSet<FString>>& Delivered, TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete);
+	/** Drops the entry and carries on when the failure is final; otherwise stops the pass. */
+	void HandleEndFailure(const FString& Handle, const FString& SessionId, const FFlockError& Error,
+		const TSharedRef<TSet<FString>>& Delivered, TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete);
+
+	void FlushLogEvents(TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete);
 	void SendNextBatch(TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete);
 
 	FFlockAnalyticsConfig Config;
@@ -182,5 +270,8 @@ private:
 	float FlushAccumulator = 0.f;
 	bool bInitialized = false;
 	bool bFlushInFlight = false;
+	bool bEndFlushInFlight = false;
+	/** A second POST while one is away would open a second server session for the same play session. */
+	bool bRegistrationInFlight = false;
 	bool bConsent = false;
 };

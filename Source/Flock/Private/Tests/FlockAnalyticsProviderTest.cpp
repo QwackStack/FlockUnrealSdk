@@ -15,6 +15,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Providers/FlockAnalyticsProvider.h"
+#include "Tests/Support/FlockEventTestListener.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryEventCache.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
@@ -57,6 +58,7 @@ namespace FlockAnalyticsProviderTestHelpers
 		TSharedRef<FFlockAuthSession> Session;
 		UFlockEvents* Events = nullptr;
 		TSharedPtr<FFlockMemoryEventCache> Cache;
+		TSharedPtr<FFlockMemoryEventCache> EndCache;
 		TSharedPtr<FFlockAnalyticsProvider> Provider;
 		FFlockAnalyticsDependencies Deps;
 
@@ -70,22 +72,62 @@ namespace FlockAnalyticsProviderTestHelpers
 		{
 			Events = NewObject<UFlockEvents>();
 
+			// Signed in by default, because that is the only state analytics really runs in: a session
+			// needs a player, and every session route needs a bearer. Tests that care about the
+			// signed-out path clear this explicitly.
+			FString TokenError;
+			Session->SetTokens(MakeTestJwt(TEXT("p-fixture")), TEXT("r-1"), TokenError);
+
 			Cache = MakeShared<FFlockMemoryEventCache>(Config.MaxCachedEvents);
 			Deps.LogEventCache = Cache;
+			EndCache = MakeShared<FFlockMemoryEventCache>(Config.MaxCachedEvents);
+			Deps.SessionEndCache = EndCache;
 			Deps.Session = MakeShared<FFlockSession>(Config, FPaths::Combine(Dir, TEXT("session.json")));
 			Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(true, MarkerPath());
 			Deps.ConsentStore = MakeShared<FFlockConsentStore>(FPaths::Combine(Dir, TEXT("consent.json")));
 			Deps.Pump = MakeShared<FFlockLifecyclePump>();
 			Deps.bEnableLogSink = false; // a GLog tap inside the runner captures the runner's own errors
 
-			Fake->On(TEXT("analytics/sessions"), FFlockFakeTransport::Ok(TEXT("{\"session_id\":\"srv-1\"}")));
-			Fake->On(TEXT("log_event"), FFlockFakeTransport::Ok(TEXT("{}")));
+			ApplyRoutes();
 
 			Provider = MakeShared<FFlockAnalyticsProvider>(Client, NoRetryPolicy(), MakeShared<FFlockNullLogger>(),
 				Session, Events, TEXT("http://x/v1"), Config, Deps, TEXT("gv-1"), TEXT("0.7.0"));
 		}
 
 		FString MarkerPath() const { return FPaths::Combine(Dir, TEXT("marker.json")); }
+
+		// ── routing ──
+		// The fake matches by URL fragment in insertion order, and "analytics/sessions" is a prefix of
+		// every "analytics/sessions/{id}" close URL. Routing them through here keeps the id-scoped
+		// closes ahead of the generic registration route; setting them directly on the fake would
+		// silently be shadowed by it, and the test would pass against the wrong response.
+
+		FFlockHttpResponse Registration = FFlockFakeTransport::Ok(TEXT("{\"session_id\":\"srv-1\"}"));
+		TMap<FString, FFlockHttpResponse> Closes;
+
+		void ApplyRoutes()
+		{
+			for (const TPair<FString, FFlockHttpResponse>& Close : Closes)
+			{
+				Fake->On(FString::Printf(TEXT("analytics/sessions/%s"), *Close.Key), Close.Value);
+			}
+			Fake->On(TEXT("analytics/sessions"), Registration);
+			Fake->On(TEXT("log_event"), FFlockFakeTransport::Ok(TEXT("{}")));
+		}
+
+		/** How `POST analytics/sessions` answers from now on. */
+		void OnRegistration(const FFlockHttpResponse& Response)
+		{
+			Registration = Response;
+			ApplyRoutes();
+		}
+
+		/** How `PATCH analytics/sessions/{ServerId}` answers from now on. */
+		void OnClose(const FString& ServerId, const FFlockHttpResponse& Response)
+		{
+			Closes.Add(ServerId, Response);
+			ApplyRoutes();
+		}
 
 		~FFixture()
 		{
@@ -100,6 +142,32 @@ namespace FlockAnalyticsProviderTestHelpers
 			TArray<FString> Payloads;
 			Cache->PeekBatch(1, Handles, Payloads);
 			return Payloads.Num() > 0 && FFlockAnalyticsJson::DeserializeEvent(Payloads[0], OutEvent);
+		}
+
+		/** The oldest spooled session end, parsed. */
+		bool FirstSpooledEnd(FFlockSessionSnapshot& OutSnapshot) const
+		{
+			TArray<FString> Handles;
+			TArray<FString> Payloads;
+			EndCache->PeekBatch(1, Handles, Payloads);
+			return Payloads.Num() > 0 && FFlockAnalyticsJson::DeserializeSnapshot(Payloads[0], OutSnapshot);
+		}
+
+		/**
+		 * Requests of one method whose URL contains Fragment. Both the registration POST and the close
+		 * PATCH contain "analytics/sessions", so the method is the only thing that tells them apart.
+		 */
+		int32 CountMethod(const TCHAR* Method, const FString& Fragment) const
+		{
+			int32 Count = 0;
+			for (const FFlockHttpRequest& Request : Fake->Requests)
+			{
+				if (Request.Method == Method && Request.Url.Contains(Fragment))
+				{
+					++Count;
+				}
+			}
+			return Count;
 		}
 	};
 }
@@ -480,11 +548,7 @@ bool FFlockAnalyticsSessionTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("server id returned"), StartedId, TEXT("srv-1"));
 	TestEqual(TEXT("server id adopted"), Fix.Provider->GetCurrentSessionId(), TEXT("srv-1"));
 	TestTrue(TEXT("session active"), Fix.Provider->HasActiveSession());
-	TestEqual(TEXT("one start call"), Fix.Fake->CountTo(TEXT("analytics/sessions")), 1);
-
-	// Starting again while active does not open a second session.
-	Fix.Provider->StartSession(TEXT("p-1"));
-	TestEqual(TEXT("still one start call"), Fix.Fake->CountTo(TEXT("analytics/sessions")), 1);
+	TestEqual(TEXT("one start call"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")), 1);
 
 	Fix.Provider->RecordScreenView(TEXT("MainMenu"));
 	Fix.Provider->RecordScreenView(TEXT("Shop"));
@@ -499,7 +563,8 @@ bool FFlockAnalyticsSessionTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("session ended"), bEnded);
 	TestFalse(TEXT("no longer active"), Fix.Provider->HasActiveSession());
 	// The end call is a PATCH to the id-scoped route.
-	TestEqual(TEXT("ended against the server id"), Fix.Fake->CountTo(TEXT("analytics/sessions/srv-1")), 1);
+	TestEqual(TEXT("ended against the server id"), Fix.CountMethod(TEXT("PATCH"), TEXT("analytics/sessions/srv-1")), 1);
+	TestEqual(TEXT("delivered, so nothing left spooled"), Fix.EndCache->PendingCount(), 0);
 
 	// Ending twice is harmless.
 	bool bSecondEnd = false;
@@ -508,7 +573,394 @@ bool FFlockAnalyticsSessionTest::RunTest(const FString& Parameters)
 		bSecondEnd = Result.bSuccess;
 	});
 	TestTrue(TEXT("second end is a no-op success"), bSecondEnd);
-	TestEqual(TEXT("no extra call"), Fix.Fake->CountTo(TEXT("analytics/sessions/srv-1")), 1);
+	TestEqual(TEXT("no extra call"), Fix.CountMethod(TEXT("PATCH"), TEXT("analytics/sessions/srv-1")), 1);
+	return true;
+}
+
+/**
+ * Starting while a session is open replaces it rather than ignoring the call. The old behavior handed
+ * back the stale id and left the previous session running, so its metrics never reached anyone.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionRestartTest, "Flock.Analytics.Provider.SessionRestart",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionRestartTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+
+	UFlockEventTestListener* Listener = NewObject<UFlockEventTestListener>();
+	Fix.Events->OnSessionEnded.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionEnded);
+
+	Fix.Provider->StartSession(TEXT("p-1"));
+	const FString FirstLocalId = Fix.Provider->GetCurrentSnapshot().SessionId;
+
+	Fix.Provider->StartSession(TEXT("p-1"));
+	TestEqual(TEXT("the previous session was ended"), Listener->SessionEndedCount, 1);
+	TestTrue(TEXT("reported as Restarted"),
+		Listener->LastSessionEnded.Reason == EFlockSessionEndReason::Restarted);
+	TestTrue(TEXT("a session is still active"), Fix.Provider->HasActiveSession());
+	TestNotEqual(TEXT("and it is a new one"), Fix.Provider->GetCurrentSnapshot().SessionId, FirstLocalId);
+	TestEqual(TEXT("two registrations"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")), 2);
+	TestEqual(TEXT("the old session was closed out"), Fix.CountMethod(TEXT("PATCH"), TEXT("analytics/sessions/")), 1);
+	return true;
+}
+
+/**
+ * The durability contract: an end is on disk before anything is sent, a failed send leaves it there,
+ * and a later flush delivers it. This is what makes a quit, a crash, or an offline stretch cost
+ * nothing.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionEndSpoolTest, "Flock.Analytics.Provider.SessionEndSpool",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionEndSpoolTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	Fix.Provider->StartSession(TEXT("p-1"));
+	Fix.Provider->RecordScreenView(TEXT("MainMenu"));
+
+	// The close fails: offline, mid-quit, or signed out — the record must survive it.
+	Fix.OnClose(TEXT("srv-1"), FFlockFakeTransport::Offline());
+
+	bool bReportedFailure = false;
+	Fix.Provider->EndSession(EFlockSessionEndReason::Quit, [&bReportedFailure](TFlockResult<FFlockAnalyticsAck> Result)
+	{
+		bReportedFailure = !Result.bSuccess;
+	});
+
+	TestTrue(TEXT("the caller is told it did not land"), bReportedFailure);
+	TestFalse(TEXT("the session is closed locally regardless"), Fix.Provider->HasActiveSession());
+	TestEqual(TEXT("still spooled after the failure"), Fix.EndCache->PendingCount(), 1);
+
+	FFlockSessionSnapshot Spooled;
+	TestTrue(TEXT("readable"), Fix.FirstSpooledEnd(Spooled));
+	TestEqual(TEXT("carries the server id"), Spooled.ServerSessionId, TEXT("srv-1"));
+	TestEqual(TEXT("carries the metrics"), Spooled.ScreensViewed, 1);
+	TestFalse(TEXT("stored closed"), Spooled.IsActive);
+
+	// Back online: the ordinary flush drains it, and the entry goes only once it is acknowledged.
+	Fix.OnClose(TEXT("srv-1"), FFlockFakeTransport::Ok(TEXT("{}")));
+	bool bDrained = false;
+	Fix.Provider->Flush([&bDrained](TFlockResult<FFlockAnalyticsAck> Result) { bDrained = Result.bSuccess; });
+
+	TestTrue(TEXT("the retry delivered it"), bDrained);
+	TestEqual(TEXT("nothing left spooled"), Fix.EndCache->PendingCount(), 0);
+	TestEqual(TEXT("two close attempts in total"), Fix.CountMethod(TEXT("PATCH"), TEXT("analytics/sessions/srv-1")), 2);
+	return true;
+}
+
+/**
+ * A session that never registered — offline at sign-in, or recovered from a run that died before the
+ * POST landed — registers itself out of the spool and is then closed. The id is written back into the
+ * spooled record, so a close that fails afterwards cannot open a second server session on retry.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionEndRegistersTest, "Flock.Analytics.Provider.SessionEndRegisters",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionEndRegistersTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+
+	// Registration is down when the session opens, so it runs with no server id.
+	Fix.OnRegistration(FFlockFakeTransport::Offline());
+	Fix.Provider->StartSession(TEXT("p-1"));
+	TestTrue(TEXT("the session runs anyway"), Fix.Provider->HasActiveSession());
+	TestEqual(TEXT("with no server id"), Fix.Provider->GetCurrentSessionId(), FString());
+
+	// It ends while still unregistered, and the close cannot work without an id.
+	Fix.Provider->EndSession(EFlockSessionEndReason::Quit);
+	TestEqual(TEXT("spooled"), Fix.EndCache->PendingCount(), 1);
+
+	// Registration comes back, but the close still fails. One POST must have happened, and the id it
+	// returned must now be in the spooled record.
+	Fix.OnRegistration(FFlockFakeTransport::Ok(TEXT("{\"session_id\":\"srv-late\"}")));
+	Fix.OnClose(TEXT("srv-late"), FFlockFakeTransport::Offline());
+	Fix.Provider->Flush();
+
+	const int32 PostsAfterFirstDrain = Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions"));
+	TestEqual(TEXT("still spooled"), Fix.EndCache->PendingCount(), 1);
+	FFlockSessionSnapshot Spooled;
+	TestTrue(TEXT("readable"), Fix.FirstSpooledEnd(Spooled));
+	TestEqual(TEXT("the id was written back"), Spooled.ServerSessionId, TEXT("srv-late"));
+
+	// The retry closes it — and must NOT register a second time.
+	Fix.OnClose(TEXT("srv-late"), FFlockFakeTransport::Ok(TEXT("{}")));
+	bool bDrained = false;
+	Fix.Provider->Flush([&bDrained](TFlockResult<FFlockAnalyticsAck> Result) { bDrained = Result.bSuccess; });
+
+	TestTrue(TEXT("delivered"), bDrained);
+	TestEqual(TEXT("nothing left spooled"), Fix.EndCache->PendingCount(), 0);
+	TestEqual(TEXT("registered exactly once"),
+		Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")), PostsAfterFirstDrain);
+	TestEqual(TEXT("closed against the late id"),
+		Fix.CountMethod(TEXT("PATCH"), TEXT("analytics/sessions/srv-late")), 2);
+	return true;
+}
+
+/**
+ * A 2xx carrying no session id is not a registration. Unguarded this recursed until the stack gave
+ * out — the empty id is exactly what routes a record into the register branch, so adopting it and
+ * carrying on fed the record straight back in. It cost a process crash, so it is pinned here.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionEndNoIdTest, "Flock.Analytics.Provider.SessionEndNoId",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionEndNoIdTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+
+	FFlockSessionSnapshot Unregistered;
+	Unregistered.SessionId = TEXT("local-1");
+	Unregistered.PlayerId = TEXT("p-1");
+	Unregistered.StartTimeUtc = TEXT("2026-07-22T08:00:00Z");
+	Fix.EndCache->Enqueue(FFlockAnalyticsJson::SerializeSnapshot(Unregistered));
+
+	// The backend answers 200 with nothing useful in it.
+	Fix.OnRegistration(FFlockFakeTransport::Ok(TEXT("{}")));
+
+	bool bFailed = false;
+	Fix.Provider->Flush([&bFailed](TFlockResult<FFlockAnalyticsAck> Result) { bFailed = !Result.bSuccess; });
+
+	TestTrue(TEXT("reported as a failure"), bFailed);
+	TestEqual(TEXT("attempted once, did not spin"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")), 1);
+	TestEqual(TEXT("nothing was closed"), Fix.CountMethod(TEXT("PATCH"), TEXT("analytics/sessions/")), 0);
+	// Kept, not dropped: the record is fine, it was the answer that was not.
+	TestEqual(TEXT("the record survives for the next attempt"), Fix.EndCache->PendingCount(), 1);
+	return true;
+}
+
+/**
+ * Two records can describe one session — a quit spools its end, then a crash-recovery pass spools a
+ * staler copy of the same session. Only the first is delivered.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionEndDedupeTest, "Flock.Analytics.Provider.SessionEndDedupe",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionEndDedupeTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+
+	FFlockSessionSnapshot Snapshot;
+	Snapshot.SessionId = TEXT("local-dupe");
+	Snapshot.ServerSessionId = TEXT("srv-1");
+	Snapshot.PlayerId = TEXT("p-1");
+	Snapshot.DurationSeconds = 120.f;
+	Fix.EndCache->Enqueue(FFlockAnalyticsJson::SerializeSnapshot(Snapshot));
+	Snapshot.DurationSeconds = 90.f; // the staler copy
+	Fix.EndCache->Enqueue(FFlockAnalyticsJson::SerializeSnapshot(Snapshot));
+
+	// A permanently rejected record must not wedge the queue either, so one of those goes in behind.
+	FFlockSessionSnapshot Rejected;
+	Rejected.SessionId = TEXT("local-bad");
+	Rejected.ServerSessionId = TEXT("srv-bad");
+	Rejected.PlayerId = TEXT("p-1");
+	Fix.EndCache->Enqueue(FFlockAnalyticsJson::SerializeSnapshot(Rejected));
+	Fix.OnClose(TEXT("srv-bad"), FFlockFakeTransport::Status(400, TEXT("{}")));
+
+	Fix.Provider->Flush();
+
+	TestEqual(TEXT("the whole queue cleared"), Fix.EndCache->PendingCount(), 0);
+	TestEqual(TEXT("the duplicate cost no request"),
+		Fix.CountMethod(TEXT("PATCH"), TEXT("analytics/sessions/srv-1")), 1);
+	TestEqual(TEXT("the rejected one was tried once, then dropped"),
+		Fix.CountMethod(TEXT("PATCH"), TEXT("analytics/sessions/srv-bad")), 1);
+	return true;
+}
+
+/**
+ * A session the previous run left open is recovered at init, spooled, and delivered. Without this a
+ * crashed run's session stays open on the backend forever.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionRecoveryTest, "Flock.Analytics.Provider.SessionRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionRecoveryTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	Fix.Provider->StartSession(TEXT("p-1"));
+	Fix.Provider->TickForTesting(120.f);
+	// The run dies here: no EndSession, no Shutdown.
+
+	{
+		// Same files, new process. A fresh directory would pass even if nothing were persisted at all.
+		FFixture NextLaunch(FFlockAnalyticsConfig(), Fix.Dir);
+		NextLaunch.Provider->Initialize();
+
+		TestEqual(TEXT("the orphan was spooled"), NextLaunch.EndCache->PendingCount(), 1);
+		FFlockSessionSnapshot Orphan;
+		TestTrue(TEXT("readable"), NextLaunch.FirstSpooledEnd(Orphan));
+		TestEqual(TEXT("with the id it had registered"), Orphan.ServerSessionId, TEXT("srv-1"));
+		TestEqual(TEXT("and the duration it had reached"), Orphan.DurationSeconds, 120.f);
+		TestFalse(TEXT("closed"), Orphan.IsActive);
+
+		// Signing in drains it before the new session registers.
+		NextLaunch.Provider->StartSession(TEXT("p-1"));
+		TestEqual(TEXT("delivered on the next sign-in"), NextLaunch.EndCache->PendingCount(), 0);
+		TestEqual(TEXT("closed against the recovered id"),
+			NextLaunch.CountMethod(TEXT("PATCH"), TEXT("analytics/sessions/srv-1")), 1);
+
+		// This run exits cleanly, so the launch after it has nothing to recover — the same orphan is
+		// never reported twice.
+		NextLaunch.Provider->EndSession(EFlockSessionEndReason::Quit);
+		{
+			FFixture ThirdLaunch(FFlockAnalyticsConfig(), Fix.Dir);
+			ThirdLaunch.Provider->Initialize();
+			TestEqual(TEXT("a clean exit leaves nothing to recover"), ThirdLaunch.EndCache->PendingCount(), 0);
+		}
+	}
+	return true;
+}
+
+/**
+ * A registration that failed at start is healed by the heartbeat. Without it the session can never be
+ * closed on the server, and its end has to re-register itself out of the spool instead.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsRegistrationHealTest, "Flock.Analytics.Provider.RegistrationHeal",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsRegistrationHealTest::RunTest(const FString& Parameters)
+{
+	FFlockAnalyticsConfig Config;
+	Config.HeartbeatIntervalSeconds = 60.f;
+	Config.EventBufferFlushIntervalSeconds = 0.f; // isolate the heartbeat
+	Config.bTrackFps = false;
+	FFixture Fix(Config);
+
+	// Signed in, so the heal has a bearer to spend a request on.
+	FString TokenError;
+	Fix.Session->SetTokens(MakeTestJwt(TEXT("p-1")), TEXT("r-1"), TokenError);
+
+	Fix.Provider->Initialize();
+	Fix.Fake->On(TEXT("analytics/sessions"), FFlockFakeTransport::Offline());
+	Fix.Provider->StartSession(TEXT("p-1"));
+	TestEqual(TEXT("no server id yet"), Fix.Provider->GetCurrentSessionId(), FString());
+	TestEqual(TEXT("one attempt so far"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")), 1);
+
+	// Below the interval nothing is retried.
+	Fix.Provider->TickForTesting(30.f);
+	TestEqual(TEXT("no retry mid-interval"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")), 1);
+
+	Fix.Fake->On(TEXT("analytics/sessions"), FFlockFakeTransport::Ok(TEXT("{\"session_id\":\"srv-healed\"}")));
+	Fix.Provider->TickForTesting(31.f);
+	TestEqual(TEXT("the heartbeat retried it"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")), 2);
+	TestEqual(TEXT("and the id was adopted"), Fix.Provider->GetCurrentSessionId(), TEXT("srv-healed"));
+
+	// Once it has an id the heartbeat stops asking.
+	Fix.Provider->TickForTesting(61.f);
+	TestEqual(TEXT("no further registrations"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")), 2);
+	return true;
+}
+
+/**
+ * Withdrawing consent discards the session instead of ending it: nothing is spooled, nothing is sent,
+ * and no OnSessionEnded fires — a listener reacting to that would be reacting to data the player just
+ * asked us to forget.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsConsentDiscardTest, "Flock.Analytics.Provider.ConsentDiscard",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsConsentDiscardTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	Fix.Provider->StartSession(TEXT("p-1"));
+	Fix.Provider->LogEvent(TEXT("something"));
+
+	UFlockEventTestListener* Listener = NewObject<UFlockEventTestListener>();
+	Fix.Events->OnSessionEnded.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionEnded);
+
+	const int32 CallsBefore = Fix.Fake->Requests.Num();
+	Fix.Provider->SetConsent(false);
+
+	TestFalse(TEXT("the session is closed"), Fix.Provider->HasActiveSession());
+	TestEqual(TEXT("no end was spooled"), Fix.EndCache->PendingCount(), 0);
+	TestEqual(TEXT("and nothing was sent"), Fix.Fake->Requests.Num(), CallsBefore);
+	TestEqual(TEXT("no OnSessionEnded"), Listener->SessionEndedCount, 0);
+	TestEqual(TEXT("the queued events went too"), Fix.Provider->GetPendingEventCount(), 0);
+	return true;
+}
+
+/**
+ * The logout case that used to lose every end: signed out, the close is refused with a 401, and auth
+ * failures are never retried. The record has to stay spooled and go out after the next sign-in — so
+ * this asserts that an Auth failure is not treated as a permanent rejection.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionEndSurvivesAuthTest, "Flock.Analytics.Provider.SessionEndSurvivesAuth",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionEndSurvivesAuthTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	Fix.Provider->StartSession(TEXT("p-1"));
+
+	Fix.OnClose(TEXT("srv-1"), FFlockFakeTransport::Status(401, TEXT("{}")));
+	Fix.Provider->EndSession(EFlockSessionEndReason::Logout);
+
+	// A 4xx, but not one to drop the record for: the token went bad, which is temporary.
+	TestEqual(TEXT("kept for the next sign-in"), Fix.EndCache->PendingCount(), 1);
+
+	// The 401 took the session down with it — the provider base tried a silent refresh, the refresh
+	// failed, and a failed refresh clears the tokens. So the record waits for a real sign-in, not
+	// merely for the route to start answering.
+	TestFalse(TEXT("the 401 signed the session out"), Fix.Session->IsAuthenticated());
+
+	Fix.OnClose(TEXT("srv-1"), FFlockFakeTransport::Ok(TEXT("{}")));
+	Fix.Provider->Flush();
+	TestEqual(TEXT("still waiting while signed out"), Fix.EndCache->PendingCount(), 1);
+
+	FString TokenError;
+	Fix.Session->SetTokens(MakeTestJwt(TEXT("p-1")), TEXT("r-1"), TokenError);
+	Fix.Provider->Flush();
+	TestEqual(TEXT("delivered on the next sign-in"), Fix.EndCache->PendingCount(), 0);
+	return true;
+}
+
+/**
+ * Signed out, the drain does not run at all. Every session route needs a bearer, so attempting one
+ * is guaranteed-wasted traffic — and on the flush interval it produced a 401 error line every few
+ * seconds for the whole run, which is what this pins.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionEndWaitsForAuthTest, "Flock.Analytics.Provider.SessionEndWaitsForAuth",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionEndWaitsForAuthTest::RunTest(const FString& Parameters)
+{
+	FFlockAnalyticsConfig Config;
+	Config.EventBufferFlushIntervalSeconds = 10.f;
+	Config.bTrackFps = false;
+	FFixture Fix(Config);
+	Fix.Provider->Initialize();
+
+	// A previous run left an end behind, and nobody has signed in yet this run.
+	FFlockSessionSnapshot Orphan;
+	Orphan.SessionId = TEXT("local-old");
+	Orphan.ServerSessionId = TEXT("srv-old");
+	Orphan.PlayerId = TEXT("p-1");
+	Fix.EndCache->Enqueue(FFlockAnalyticsJson::SerializeSnapshot(Orphan));
+	Fix.Session->ClearTokens();
+
+	const int32 CallsBefore = Fix.Fake->Requests.Num();
+	Fix.Provider->Flush();
+	Fix.Provider->TickForTesting(11.f); // crosses the flush interval
+	Fix.Provider->TickForTesting(11.f);
+
+	TestEqual(TEXT("no request while signed out"), Fix.Fake->Requests.Num(), CallsBefore);
+	TestEqual(TEXT("and the record is still waiting"), Fix.EndCache->PendingCount(), 1);
+
+	// Signing in is the first moment it could have worked, and it goes then.
+	FString TokenError;
+	Fix.Session->SetTokens(MakeTestJwt(TEXT("p-1")), TEXT("r-1"), TokenError);
+	Fix.Provider->Flush();
+
+	TestEqual(TEXT("delivered on sign-in"), Fix.EndCache->PendingCount(), 0);
+	TestEqual(TEXT("closed against its id"), Fix.CountMethod(TEXT("PATCH"), TEXT("analytics/sessions/srv-old")), 1);
 	return true;
 }
 

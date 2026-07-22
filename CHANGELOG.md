@@ -5,6 +5,46 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-22
+
+### Added
+- **Session ends survive everything.** Every close — manual, quit, timeout, logout, or a session
+  replaced by a new one — is written to disk before it is sent. A failed send leaves the record
+  queued and the next flush retries it, so quitting, signing out, or losing the network costs
+  delivery time rather than the session. Ends drain ahead of log events: they are small, rare, and
+  the record you most want to arrive.
+- **Crashed sessions are recovered.** A run that dies with a session open is picked up on the next
+  launch, closed at the last moment it was known to be alive, and delivered. Previously that session
+  stayed open on the backend indefinitely. The live session is recorded on start, on registration,
+  on each heartbeat, and when the app is backgrounded, so a crash costs at most one heartbeat of
+  duration rather than the whole session.
+- **Sessions that never registered register themselves.** A session opened while offline runs
+  locally with no server id; the heartbeat now retries the registration, and if it never succeeds,
+  the end registers the session (with its original start time) before closing it.
+- **Queued ends wait for a signed-in player** instead of being attempted on every flush. Session
+  routes need a bearer, so a drain while signed out could only ever fail; the queue is emptied at
+  the next sign-in, which is the first moment it could have worked. Should a token expire mid-drain,
+  the record is kept and the failure is reported as a debug line rather than an error, because
+  nothing was lost.
+
+### Changed
+- **Starting a session while one is open replaces it** instead of returning the open session's id.
+  The previous session is closed and reported with reason `Restarted`, which no longer leaves its
+  metrics unrecorded.
+- **Withdrawing consent discards the session** rather than ending it: nothing is queued, nothing is
+  sent, and no `OnSessionEnded` is raised. Previously the session was reported to the backend after
+  the player had opted out. Queued events and any pending session ends are dropped as before.
+
+### Fixed
+- **Signing out no longer loses the session's end.** Tokens were cleared before the analytics side
+  was told, so the close went out unauthenticated, was rejected, and was never retried — every
+  logout lost its session. The session is now closed before sign-out completes, and the queued
+  record covers the token-expiry and revoke paths too.
+- An explicit `EndSession()` left the crash marker in place, so a clean exit afterwards was reported
+  as a crash on the next launch. Every end path now clears it.
+- A registration answered with a success status but no session id sent the SDK into unbounded
+  recursion. It is now treated as a failed registration and retried later.
+
 ## [0.7.0] - 2026-07-21
 
 ### Added

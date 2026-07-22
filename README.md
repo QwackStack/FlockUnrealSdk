@@ -302,8 +302,18 @@ storm stays cheap.
 
 **Sessions** open when a player signs in and close on logout or quit, tracking duration, screen
 views, pauses, and FPS. Backgrounding pauses the session; returning after **Analytics Session
-Timeout** starts a fresh one. Bind `OnSessionStarted` / `OnSessionEnded` / `OnSessionPaused` /
-`OnSessionResumed` on `GetEvents()`, or read `GetAnalyticsSnapshot()` for live metrics.
+Timeout** starts a fresh one. Starting a session while one is open replaces it, closing the old one
+first. Bind `OnSessionStarted` / `OnSessionEnded` / `OnSessionPaused` / `OnSessionResumed` on
+`GetEvents()`, or read `GetAnalyticsSnapshot()` for live metrics.
+
+**A session end is never lost.** Every close is written to disk before it is sent, so quitting,
+signing out, losing the network, or crashing outright all cost delivery time rather than the record —
+whatever did not go out drains on the next flush or the next launch. Queued ends wait for a
+signed-in player rather than retrying against a closed door, so a game sitting on its title screen
+makes no analytics traffic at all. A run that dies with a session
+open is picked up on the following launch and closed at the last moment it was known to be alive, so
+a crashed session does not sit open on the backend forever. A session that could not be registered
+when it started (offline at sign-in, say) registers itself when its end is finally delivered.
 
 **Offline queue.** Entries are stored under the project's Saved directory and sent in batches on an
 interval, when the app is backgrounded, or when you call Flush. A failed send keeps the batch queued
@@ -315,9 +325,10 @@ foreground), with the lost session's id, an approximate time of death, and how m
 exceptions preceded it. Disabled in the editor, where stopping Play-In-Editor is not an app death.
 
 **Consent** is a gate, not a filter. With consent withheld there is no session and nothing is
-collected, not even on disk. The decision persists between runs; withdrawing it ends the session and
-discards anything queued. Granting it opens the session that sign-in could not — so in an opt-in
-flow, a player who agrees after signing in still gets a session.
+collected, not even on disk. The decision persists between runs; withdrawing it discards the session
+outright — it is not reported, not queued, and no `OnSessionEnded` is raised — along with anything
+already queued. Granting it opens the session that sign-in could not — so in an opt-in flow, a player
+who agrees after signing in still gets a session.
 
 ```cpp
 Sdk->SetAnalyticsConsent(true);            // persists; raises OnConsentChanged

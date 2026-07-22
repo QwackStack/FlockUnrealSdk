@@ -7,6 +7,7 @@
 #include "Analytics/FlockLifecyclePump.h"
 #include "Analytics/FlockSession.h"
 #include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
 
@@ -235,6 +236,132 @@ bool FFlockSessionFpsTest::RunTest(const FString& Parameters)
 	}
 
 	DeleteTempFile(StatePath);
+	return true;
+}
+
+/**
+ * The live-session record: what a run leaves behind when it dies without ending its session, and what
+ * the next launch can make of it. The counter half shares the same file, so both are checked together
+ * — a persistence change that silently reset every player's session count would otherwise pass.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSessionPersistenceTest, "Flock.Analytics.Session.Persistence",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSessionPersistenceTest::RunTest(const FString& Parameters)
+{
+	const FString StatePath = MakeTempStatePath();
+	FFlockAnalyticsConfig Config;
+	Config.bTrackFps = false;
+	const FFakeClock Clock;
+
+	{
+		FFlockSession Fresh(Config, StatePath, Clock.Get());
+		FFlockSessionSnapshot None;
+		TestFalse(TEXT("nothing to recover on a clean install"), Fresh.RecoverOrphanedSession(None));
+	}
+
+	// A run that dies mid-session: started, registered, played, heartbeat — and no End().
+	{
+		FFlockSession Dying(Config, StatePath, Clock.Get());
+		Dying.Start(TEXT("p-1"));
+		Dying.SetServerSessionId(TEXT("srv-9"));
+		Dying.Tick(30.f);
+		Dying.RecordScreenView(TEXT("MainMenu"));
+		Clock.Advance(30.0);
+		Dying.MarkHeartbeat();
+		Dying.PersistState();
+	}
+
+	{
+		FFlockSession NextLaunch(Config, StatePath, Clock.Get());
+		FFlockSessionSnapshot Orphan;
+		TestTrue(TEXT("orphan recovered"), NextLaunch.RecoverOrphanedSession(Orphan));
+		TestEqual(TEXT("carries the server id"), Orphan.ServerSessionId, TEXT("srv-9"));
+		TestEqual(TEXT("carries the player"), Orphan.PlayerId, TEXT("p-1"));
+		TestEqual(TEXT("duration as of the last heartbeat"), Orphan.DurationSeconds, 30.f);
+		TestEqual(TEXT("screens survived"), Orphan.ScreensViewed, 1);
+		TestEqual(TEXT("screen names survived"), Orphan.ScreenNames.Num(), 1);
+		TestFalse(TEXT("handed back closed"), Orphan.IsActive);
+		// Not "now": the app was dead for an unknown stretch, and the last heartbeat is the last
+		// moment it is honest to claim the session was alive.
+		TestEqual(TEXT("ended at the last heartbeat"), Orphan.EndTimeUtc, Orphan.LastHeartbeatUtc);
+		TestEqual(TEXT("counter carried across the crash"), NextLaunch.GetSessionNumber(), 1);
+
+		// Recovery deliberately does not clear — the caller spools the end first, then clears.
+		FFlockSessionSnapshot Again;
+		TestTrue(TEXT("still recoverable until cleared"), NextLaunch.RecoverOrphanedSession(Again));
+		NextLaunch.ClearPersistedSession();
+		TestFalse(TEXT("cleared"), NextLaunch.RecoverOrphanedSession(Again));
+	}
+
+	// Clearing the live record keeps the counter, so the next session numbers correctly.
+	{
+		FFlockSession AfterClear(Config, StatePath, Clock.Get());
+		TestEqual(TEXT("counter survives clearing"), AfterClear.GetSessionNumber(), 1);
+		AfterClear.Start(TEXT("p-1"));
+		TestEqual(TEXT("next session numbers on"), AfterClear.GetSessionNumber(), 2);
+		AfterClear.End();
+		AfterClear.ClearPersistedSession();
+
+		FFlockSessionSnapshot None;
+		TestFalse(TEXT("a clean end leaves no orphan"), AfterClear.RecoverOrphanedSession(None));
+	}
+	DeleteTempFile(StatePath);
+
+	// Died before the first heartbeat: the start time is all there is to close it at.
+	{
+		const FString EarlyPath = MakeTempStatePath();
+		{
+			FFlockSession Early(Config, EarlyPath, Clock.Get());
+			Early.Start(TEXT("p-3"));
+			Early.Tick(3.f);
+			Early.PersistState();
+		}
+		FFlockSession NextLaunch(Config, EarlyPath, Clock.Get());
+		FFlockSessionSnapshot Orphan;
+		TestTrue(TEXT("recovered without a heartbeat"), NextLaunch.RecoverOrphanedSession(Orphan));
+		TestEqual(TEXT("falls back to the start time"), Orphan.EndTimeUtc, Orphan.StartTimeUtc);
+		DeleteTempFile(EarlyPath);
+	}
+
+	// With persistence off nothing is recorded, but the counter still is — it is not the same concern.
+	{
+		FFlockAnalyticsConfig Off = Config;
+		Off.bPersistSessionOnDisk = false;
+		const FString OffPath = MakeTempStatePath();
+		{
+			FFlockSession Quiet(Off, OffPath, Clock.Get());
+			Quiet.Start(TEXT("p-4"));
+			Quiet.PersistState();
+			FFlockSessionSnapshot None;
+			TestFalse(TEXT("nothing recorded with persistence off"), Quiet.RecoverOrphanedSession(None));
+		}
+		FFlockSession NextLaunch(Off, OffPath, Clock.Get());
+		TestEqual(TEXT("counter still carried"), NextLaunch.GetSessionNumber(), 1);
+		DeleteTempFile(OffPath);
+	}
+
+	// A state file from before this feature existed: counter reads, no orphan, no complaint.
+	{
+		const FString LegacyPath = MakeTempStatePath();
+		FFileHelper::SaveStringToFile(TEXT("{\"session_number\":4}"), *LegacyPath);
+		FFlockSession Session(Config, LegacyPath, Clock.Get());
+		FFlockSessionSnapshot None;
+		TestEqual(TEXT("counter read from an older state file"), Session.GetSessionNumber(), 4);
+		TestFalse(TEXT("and it holds no orphan"), Session.RecoverOrphanedSession(None));
+		DeleteTempFile(LegacyPath);
+	}
+
+	// Corrupt state costs the count, never a crash — it is a statistic, not a correctness input.
+	{
+		const FString BadPath = MakeTempStatePath();
+		FFileHelper::SaveStringToFile(TEXT("{not json at all"), *BadPath);
+		FFlockSession Session(Config, BadPath, Clock.Get());
+		FFlockSessionSnapshot None;
+		TestFalse(TEXT("corrupt state recovers nothing"), Session.RecoverOrphanedSession(None));
+		TestEqual(TEXT("and the counter restarts"), Session.GetSessionNumber(), 0);
+		DeleteTempFile(BadPath);
+	}
 	return true;
 }
 
