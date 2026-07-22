@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
   `ErrorCode`, `ErrorData`, `ExtraData`) as one named argument rather than four positional ones, and
   gives Blueprint a single pin. **`FFlockMetadata`** builds the wire's string map from ints, floats
   and bools directly, so attaching a level or a count no longer means converting by hand.
+- **Blueprint metadata nodes.** Dragging off an *Extra Data* pin now offers *Flock Metadata
+  (Integer / Float / Boolean / String)* and *Make Flock Metadata* — chainable nodes that build the
+  map without hunting for *Make Map* or converting values to strings first. They write values
+  identically to the C++ builder.
 - **Automatic exception capture.** Engine `Error` and `Fatal` log lines become exception entries
   without any wiring, alongside a hard-crash hook for failures that never reach the log. Each one
   carries the callstack walked at the point of capture, with frames recorded as `Module+0xOffset`

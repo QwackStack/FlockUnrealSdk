@@ -267,7 +267,20 @@ your metadata reach the backend exactly as you write them.
 
 `FFlockMetadata` builds the string map the wire wants without an `FString::FromInt` at every call
 site — it takes ints, floats and bools directly and converts implicitly, so it drops into any call
-taking metadata. Blueprint uses Make Map, which is already ergonomic there.
+taking metadata.
+
+**In Blueprint**, drag off an *Extra Data* pin and the same builders appear as chainable nodes —
+*Flock Metadata (Integer)*, *(Float)*, *(Boolean)*, *(String)*, plus *Make Flock Metadata* to start a
+chain:
+
+```
+Make Flock Metadata → Flock Metadata (Integer) "level" 3 → Flock Metadata (Boolean) "flawless" true → Extra Data
+```
+
+Each takes a metadata map and returns one, so they chain and branch freely, and they write values
+identically to the C++ builder. Leaving an *Extra Data* pin unconnected is fine — you get empty
+metadata. On *Log Analytics Error*, right-click the **Details** pin and choose **Split Struct Pin** to
+get Logical Expression, Error Code, Error Data and Extra Data as separate pins.
 
 `FFlockLogDetails` carries the optional detail on an error or exception as one named argument:
 `LogicalExpression` (the invariant that failed), `ErrorCode` (yours), `ErrorData` (structured facts
