@@ -248,16 +248,35 @@ subsystem functions in Blueprint. Everything below is off when **Analytics Enabl
 ```cpp
 UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
 
-Sdk->LogAnalyticsEvent(TEXT("level_complete"), { { TEXT("level"), TEXT("3") } });
-Sdk->LogAnalyticsError(TEXT("Inventory desynced"), TEXT("ItemCount >= 0"), TEXT("INV_DESYNC"), {});
-Sdk->RecordScreenView(TEXT("MainMenu"));
+Sdk->LogAnalyticsEvent(TEXT("level_complete"),
+    FFlockMetadata().Add(TEXT("level"), 3).Add(TEXT("deaths"), 0).Add(TEXT("flawless"), true));
+
+FFlockLogDetails Details;
+Details.LogicalExpression = TEXT("ItemCount >= 0");
+Details.ErrorCode = TEXT("INV_DESYNC");
+Sdk->LogAnalyticsError(TEXT("Inventory desynced"), Details);
+
+Sdk->LogAnalyticsException(TEXT("Save failed"));   // callstack captured for you
+Sdk->RecordAnalyticsScreenView(TEXT("MainMenu"));
 ```
 
-**Logging.** `LogAnalyticsEvent` records a diagnostic, `LogAnalyticsError` a recoverable logic fault
-(with the invariant that failed and an error code), and `LogAnalyticsException` an exception with a
-stack trace. All three return immediately: the entry is written to disk and delivered later, so a
-call is cheap and nothing is lost to a crash or a dead network. Keys in the extra-data map reach the
-backend exactly as you write them.
+**Logging.** `LogAnalyticsEvent` records a diagnostic, `LogAnalyticsError` a recoverable logic fault,
+and `LogAnalyticsException` an exception. All three return immediately: the entry is written to disk
+and delivered later, so a call is cheap and nothing is lost to a crash or a dead network. Keys in
+your metadata reach the backend exactly as you write them.
+
+`FFlockMetadata` builds the string map the wire wants without an `FString::FromInt` at every call
+site — it takes ints, floats and bools directly and converts implicitly, so it drops into any call
+taking metadata. Blueprint uses Make Map, which is already ergonomic there.
+
+`FFlockLogDetails` carries the optional detail on an error or exception as one named argument:
+`LogicalExpression` (the invariant that failed), `ErrorCode` (yours), `ErrorData` (structured facts
+about *what* was wrong) and `ExtraData` (context about *where* the player was). Leave it default when
+you have nothing to add.
+
+**You do not need a stack trace to report an exception.** Leave the trace argument off and the SDK
+walks the callstack itself. Pass one only when you genuinely have something better — a script VM's
+stack, say.
 
 **Automatic exception capture.** Engine `Error` and `Fatal` log lines are reported as exceptions with
 no wiring, along with hard crashes that never reach the log. Each carries the callstack from the point

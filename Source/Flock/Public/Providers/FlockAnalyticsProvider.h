@@ -90,8 +90,13 @@ public:
 
 	// ── Sessions ──
 
-	/** Requires a player id: the backend makes it mandatory, so sessions begin after sign-in. */
-	void StartSession(const FString& InPlayerId, TFunction<void(TFlockResult<FString>)> OnComplete = nullptr);
+	/**
+	 * The backend requires a player id, so sessions begin after sign-in. Leave InPlayerId empty to
+	 * use the signed-in player — the SDK already knows who that is, so making every caller fetch and
+	 * pass it was pure ceremony.
+	 */
+	void StartSession(const FString& InPlayerId = FString(),
+		TFunction<void(TFlockResult<FString>)> OnComplete = nullptr);
 
 	void EndSession(EFlockSessionEndReason Reason = EFlockSessionEndReason::Manual,
 		TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete = nullptr);
@@ -106,13 +111,19 @@ public:
 
 	void LogEvent(const FString& Message, const TMap<FString, FString>& ExtraData = TMap<FString, FString>());
 
-	void LogError(const FString& Message, const FString& LogicalExpression = FString(),
-		const FString& ErrorCode = FString(), const TMap<FString, FString>& ErrorData = TMap<FString, FString>(),
-		const TMap<FString, FString>& ExtraData = TMap<FString, FString>());
+	void LogError(const FString& Message, const FFlockLogDetails& Details = FFlockLogDetails());
 
-	void LogException(const FString& Message, const FString& StackTrace,
-		const TMap<FString, FString>& ErrorData = TMap<FString, FString>(),
-		const TMap<FString, FString>& ExtraData = TMap<FString, FString>());
+	/**
+	 * Leave StackTrace empty and the SDK walks the callstack itself — which is almost always what
+	 * you want, because a caller rarely has one to hand. Requiring it produced exactly the failure
+	 * mode you would expect: callers passing a placeholder string, and exception reports arriving
+	 * with no diagnostic value.
+	 *
+	 * Pass a trace only when you genuinely have a better one (a script VM's stack, say) than the
+	 * native callstack at this point.
+	 */
+	void LogException(const FString& Message, const FString& StackTrace = FString(),
+		const FFlockLogDetails& Details = FFlockLogDetails());
 
 	void RecordScreenView(const FString& ScreenName);
 

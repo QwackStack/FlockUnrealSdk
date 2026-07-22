@@ -4,6 +4,7 @@
 
 #include "Analytics/FlockAnalyticsJson.h"
 #include "Analytics/FlockLogSink.h"
+#include "Analytics/FlockStackTrace.h"
 #include "Http/FlockEndpoints.h"
 #include "Http/FlockJsonUtils.h"
 #include "Misc/App.h"
@@ -329,30 +330,34 @@ void FFlockAnalyticsProvider::LogEvent(const FString& Message, const TMap<FStrin
 	QueueLogEvent(MoveTemp(Event));
 }
 
-void FFlockAnalyticsProvider::LogError(const FString& Message, const FString& LogicalExpression,
-	const FString& ErrorCode, const TMap<FString, FString>& ErrorData, const TMap<FString, FString>& ExtraData)
+void FFlockAnalyticsProvider::LogError(const FString& Message, const FFlockLogDetails& Details)
 {
 	FFlockLogEventRequest Event = MakeLogEvent(EFlockLogEventType::LogicError, Message);
-	Event.Data.LogicalExpression = LogicalExpression;
-	Event.Data.ErrorCode = ErrorCode;
+	Event.Data.LogicalExpression = Details.LogicalExpression;
+	Event.Data.ErrorCode = Details.ErrorCode;
 	Event.Data.ErrorMessage = Message;
-	Event.Data.ErrorData = ErrorData;
-	Event.Data.ExtraData = ExtraData;
+	Event.Data.ErrorData = Details.ErrorData;
+	Event.Data.ExtraData = Details.ExtraData;
 	QueueLogEvent(MoveTemp(Event));
 }
 
 void FFlockAnalyticsProvider::LogException(const FString& Message, const FString& StackTrace,
-	const TMap<FString, FString>& ErrorData, const TMap<FString, FString>& ExtraData)
+	const FFlockLogDetails& Details)
 {
 	FFlockLogEventRequest Event = MakeLogEvent(EFlockLogEventType::Exception, Message);
 	Event.Data.ErrorMessage = Message;
-	Event.Data.ErrorTraceback = StackTrace;
-	if (!StackTrace.IsEmpty())
+
+	// No trace supplied means walk one now. 3 frames drop the two inside the walker plus this
+	// function, so the first frame is the caller — verified against a printed trace, because an
+	// off-by-one here is invisible except by reading one. The automatic sink path always supplies its
+	// own, captured where the error was logged, so it never re-walks here.
+	Event.Data.ErrorTraceback = StackTrace.IsEmpty() ? FFlockStackTrace::Capture(/*FramesToSkip*/ 3) : StackTrace;
+	if (!Event.Data.ErrorTraceback.IsEmpty())
 	{
-		StackTrace.ParseIntoArrayLines(Event.Data.ErrorTracebackLines);
+		Event.Data.ErrorTraceback.ParseIntoArrayLines(Event.Data.ErrorTracebackLines);
 	}
-	Event.Data.ErrorData = ErrorData;
-	Event.Data.ExtraData = ExtraData;
+	Event.Data.ErrorData = Details.ErrorData;
+	Event.Data.ExtraData = Details.ExtraData;
 	QueueLogEvent(MoveTemp(Event));
 
 	// Exception pressure is context for the next launch's termination report.
@@ -371,9 +376,12 @@ void FFlockAnalyticsProvider::RecordScreenView(const FString& ScreenName)
 	Deps.Session->RecordScreenView(ScreenName);
 }
 
-void FFlockAnalyticsProvider::StartSession(const FString& InPlayerId,
+void FFlockAnalyticsProvider::StartSession(const FString& InPlayerIdOrEmpty,
 	TFunction<void(TFlockResult<FString>)> OnComplete)
 {
+	// Empty means "whoever is signed in" — the SDK already knows, so callers should not have to.
+	const FString InPlayerId = InPlayerIdOrEmpty.IsEmpty() ? AuthSessionRef->GetPlayerId() : InPlayerIdOrEmpty;
+
 	// Remembered before the consent gate, so a sign-in that happens while gated still leaves us able
 	// to open the session the moment consent arrives.
 	if (!InPlayerId.IsEmpty())
@@ -659,9 +667,11 @@ void FFlockAnalyticsProvider::DrainLogSink()
 	FFlockCapturedLog Captured;
 	while (LogSink->Dequeue(Captured))
 	{
-		TMap<FString, FString> ExtraData;
-		ExtraData.Add(TEXT("category"), Captured.Category.ToString());
-		LogException(Captured.Message, Captured.StackTrace, TMap<FString, FString>(), ExtraData);
+		FFlockLogDetails Details;
+		Details.ExtraData.Add(TEXT("category"), Captured.Category.ToString());
+		// The sink already walked the stack where the error happened; passing it here stops
+		// LogException walking a second, useless one rooted in the drain loop.
+		LogException(Captured.Message, Captured.StackTrace, Details);
 	}
 }
 

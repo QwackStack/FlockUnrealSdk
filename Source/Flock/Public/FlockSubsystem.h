@@ -144,19 +144,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "ExtraData"))
 	void LogAnalyticsEvent(const FString& Message, const TMap<FString, FString>& ExtraData);
 
-	/** Records a recoverable logic fault. LogicalExpression is the invariant that failed, e.g. "hp > 0". */
-	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "ExtraData"))
-	void LogAnalyticsError(const FString& Message, const FString& LogicalExpression, const FString& ErrorCode,
-		const TMap<FString, FString>& ExtraData);
+	/** Records a recoverable logic fault. Leave Details at its default if you have nothing to add. */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "Details"))
+	void LogAnalyticsError(const FString& Message, const FFlockLogDetails& Details);
 
-	/** Records an exception. Unhandled engine errors are captured automatically; this is for reported ones. */
-	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "ExtraData"))
+	/**
+	 * Records an exception. Unhandled engine errors are captured automatically; this is for ones you
+	 * report yourself. Leave Stack Trace empty and the SDK captures the callstack for you.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "Details"))
 	void LogAnalyticsException(const FString& Message, const FString& StackTrace,
-		const TMap<FString, FString>& ExtraData);
+		const FFlockLogDetails& Details);
 
 	/** Counts a screen/menu view against the current session. */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics")
-	void RecordScreenView(const FString& ScreenName);
+	void RecordAnalyticsScreenView(const FString& ScreenName);
 
 	/**
 	 * Grants or withdraws analytics consent, persisted across runs. Withdrawing ends the session and

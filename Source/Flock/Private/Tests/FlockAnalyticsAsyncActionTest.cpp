@@ -71,9 +71,11 @@ bool FFlockAnalyticsSubsystemGuardTest::RunTest(const FString& Parameters)
 
 	// None of these may crash.
 	Sdk->LogAnalyticsEvent(TEXT("early"), TMap<FString, FString>());
-	Sdk->LogAnalyticsError(TEXT("early"), TEXT("x"), TEXT("E1"), TMap<FString, FString>());
-	Sdk->LogAnalyticsException(TEXT("early"), TEXT("trace"), TMap<FString, FString>());
-	Sdk->RecordScreenView(TEXT("Screen"));
+	Sdk->LogAnalyticsError(TEXT("early"), FFlockLogDetails());
+	Sdk->LogAnalyticsException(TEXT("early"), TEXT("trace"), FFlockLogDetails());
+	// No trace supplied: must stay a safe no-op and must not walk a stack for a dropped entry.
+	Sdk->LogAnalyticsException(TEXT("early, no trace"), FString(), FFlockLogDetails());
+	Sdk->RecordAnalyticsScreenView(TEXT("Screen"));
 	Sdk->SetAnalyticsConsent(true);
 	Sdk->EraseLocalAnalyticsData();
 

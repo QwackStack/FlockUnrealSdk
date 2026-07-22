@@ -15,6 +15,7 @@
 
 #include "FlockSubsystem.h"
 #include "Analytics/FlockLogSink.h"
+#include "Analytics/FlockMetadata.h"
 #include "FlockLogger.h"
 #include "Engine/GameInstance.h"
 #include "HAL/IConsoleManager.h"
@@ -81,9 +82,17 @@ namespace
 						Analytics->RecordScreenView(TEXT("MainMenu"));
 						Analytics->RecordScreenView(TEXT("Shop"));
 						Analytics->LogEvent(TEXT("self-test event (signed in)"),
-							TMap<FString, FString>{ { TEXT("source"), TEXT("Flock.SelfTest") } });
-						Analytics->LogError(TEXT("self-test logic error"), TEXT("selfTest == true"), TEXT("SELF_TEST"));
-						Analytics->LogException(TEXT("self-test exception"), TEXT("at SelfTest()"));
+							FFlockMetadata().Add(TEXT("source"), TEXT("Flock.SelfTest")).Add(TEXT("sweep"), 2));
+
+						FFlockLogDetails ErrorDetails;
+						ErrorDetails.LogicalExpression = TEXT("selfTest == true");
+						ErrorDetails.ErrorCode = TEXT("SELF_TEST");
+						Analytics->LogError(TEXT("self-test logic error"), ErrorDetails);
+
+						// No stack trace argument: the SDK walks one. This used to pass a hand-written
+						// "at SelfTest()" placeholder, which is exactly the failure a required
+						// stack-trace parameter invites.
+						Analytics->LogException(TEXT("self-test exception"));
 
 						const FFlockSessionSnapshot Snapshot = Analytics->GetCurrentSnapshot();
 						Logger->LogInfo(FString::Printf(
@@ -298,7 +307,7 @@ namespace
 				Analytics->GetPendingEventCount()));
 
 			Analytics->LogEvent(TEXT("self-test event (signed out)"),
-				TMap<FString, FString>{ { TEXT("source"), TEXT("Flock.SelfTest") } });
+				FFlockMetadata().Add(TEXT("source"), TEXT("Flock.SelfTest")).Add(TEXT("signedIn"), false));
 			Logger->LogInfo(FString::Printf(
 				TEXT("Self-test: analytics spooled an entry while signed out -> pending=%d (delivered by the sweep after sign-in)."),
 				Analytics->GetPendingEventCount()));

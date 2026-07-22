@@ -11,6 +11,7 @@
 #include "FlockLogger.h"
 #include "HAL/FileManager.h"
 #include "Http/FlockHttpClient.h"
+#include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Providers/FlockAnalyticsProvider.h"
@@ -26,6 +27,17 @@ namespace FlockAnalyticsProviderTestHelpers
 		FFlockRetryPolicy Policy;
 		Policy.MaxRetries = 0;
 		return Policy;
+	}
+
+	/** Minimal signed-in-looking token so the auth session can report a player id. */
+	inline FString MakeTestJwt(const FString& PlayerId)
+	{
+		const int64 Exp = FDateTime::UtcNow().ToUnixTimestamp() + 3600;
+		FString Payload = FBase64::Encode(FString::Printf(TEXT("{\"sub\":\"%s\",\"exp\":%lld}"), *PlayerId, Exp));
+		Payload.ReplaceInline(TEXT("+"), TEXT("-"));
+		Payload.ReplaceInline(TEXT("/"), TEXT("_"));
+		Payload.ReplaceInline(TEXT("="), TEXT(""));
+		return FString::Printf(TEXT("h.%s.s"), *Payload);
 	}
 
 	inline FString TempDir()
@@ -211,7 +223,10 @@ bool FFlockAnalyticsLogShapesTest::RunTest(const FString& Parameters)
 	}
 	Fix.Cache->Clear();
 
-	Fix.Provider->LogError(TEXT("bad state"), TEXT("hp > 0"), TEXT("E7"));
+	FFlockLogDetails ErrorDetails;
+	ErrorDetails.LogicalExpression = TEXT("hp > 0");
+	ErrorDetails.ErrorCode = TEXT("E7");
+	Fix.Provider->LogError(TEXT("bad state"), ErrorDetails);
 	{
 		FFlockLogEventRequest Event;
 		TestTrue(TEXT("spooled"), Fix.FirstSpooled(Event));
@@ -238,7 +253,7 @@ bool FFlockAnalyticsLogShapesTest::RunTest(const FString& Parameters)
 		Fix.Deps.TerminationTracker->GetPendingExceptionCount(), 0);
 
 	Fix.Provider->StartSession(TEXT("p-1"));
-	Fix.Provider->LogException(TEXT("later boom"), FString());
+	Fix.Provider->LogException(TEXT("later boom"));
 	TestEqual(TEXT("noted against the tombstone once tracking"),
 		Fix.Deps.TerminationTracker->GetPendingExceptionCount(), 1);
 	return true;
@@ -316,6 +331,68 @@ bool FFlockAnalyticsAutoCaptureTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the captured error reached the spool"), bFound);
 
 	Fix.Provider->Shutdown();
+	return true;
+}
+
+/**
+ * A manual LogException with no trace must capture one. Before this, the parameter was required and
+ * the SDK's own self-test satisfied it with a hand-written "at SelfTest()" placeholder — so real
+ * reports arrived with nothing useful in them.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsManualTraceTest, "Flock.Analytics.Provider.ManualExceptionTrace",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsManualTraceTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+
+	// No stack trace argument at all.
+	Fix.Provider->LogException(TEXT("reported by hand"));
+
+	FFlockLogEventRequest Event;
+	TestTrue(TEXT("spooled"), Fix.FirstSpooled(Event));
+	TestTrue(TEXT("typed as an exception"), Event.Data.Type == EFlockLogEventType::Exception);
+	TestFalse(TEXT("callstack captured without being asked"), Event.Data.ErrorTraceback.IsEmpty());
+	TestTrue(TEXT("module-relative frames"),
+		Event.Data.ErrorTraceback.Contains(TEXT(".dll+0x")) ||
+		Event.Data.ErrorTraceback.Contains(TEXT(".exe+0x")));
+	TestTrue(TEXT("split into lines"), Event.Data.ErrorTracebackLines.Num() > 0);
+	// The first frame must be the caller, not LogException itself — an off-by-one in the skip count
+	// is invisible unless you read a trace, and it silently buries the useful frame.
+	TestTrue(TEXT("trace starts at the caller, not inside the SDK"),
+		!FlockTestAt(Event.Data.ErrorTracebackLines, 0).Contains(TEXT("FFlockAnalyticsProvider::LogException")));
+
+	// A caller who supplies a better trace keeps it — the SDK must not overwrite it.
+	Fix.Cache->Clear();
+	Fix.Provider->LogException(TEXT("from a script vm"), TEXT("at Foo()\nat Bar()"));
+	TestTrue(TEXT("spooled"), Fix.FirstSpooled(Event));
+	TestEqual(TEXT("supplied trace preserved"), Event.Data.ErrorTraceback, TEXT("at Foo()\nat Bar()"));
+	TestEqual(TEXT("and split as given"), Event.Data.ErrorTracebackLines.Num(), 2);
+	return true;
+}
+
+/** Empty player id means "whoever is signed in", so callers need not fetch it themselves. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsImplicitPlayerTest, "Flock.Analytics.Provider.ImplicitPlayerId",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsImplicitPlayerTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+
+	// Sign in so the auth session knows a player.
+	FString TokenError;
+	Fix.Session->SetTokens(MakeTestJwt(TEXT("p-implicit")), TEXT("r-1"), TokenError);
+	TestTrue(TEXT("session authenticated"), Fix.Session->IsAuthenticated());
+
+	bool bStarted = false;
+	Fix.Provider->StartSession(FString(), [&bStarted](TFlockResult<FString> Result) { bStarted = Result.bSuccess; });
+
+	TestTrue(TEXT("session started without being handed a player id"), bStarted);
+	TestTrue(TEXT("active"), Fix.Provider->HasActiveSession());
+	TestTrue(TEXT("attributed to the signed-in player"),
+		Fix.Fake->Requests.Last().JsonBody.Contains(TEXT("\"player_id\":\"p-implicit\"")));
 	return true;
 }
 

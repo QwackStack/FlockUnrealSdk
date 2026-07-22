@@ -207,25 +207,24 @@ void UFlockSubsystem::LogAnalyticsEvent(const FString& Message, const TMap<FStri
 	}
 }
 
-void UFlockSubsystem::LogAnalyticsError(const FString& Message, const FString& LogicalExpression,
-	const FString& ErrorCode, const TMap<FString, FString>& ExtraData)
+void UFlockSubsystem::LogAnalyticsError(const FString& Message, const FFlockLogDetails& Details)
 {
 	if (AnalyticsProvider.IsValid())
 	{
-		AnalyticsProvider->LogError(Message, LogicalExpression, ErrorCode, TMap<FString, FString>(), ExtraData);
+		AnalyticsProvider->LogError(Message, Details);
 	}
 }
 
 void UFlockSubsystem::LogAnalyticsException(const FString& Message, const FString& StackTrace,
-	const TMap<FString, FString>& ExtraData)
+	const FFlockLogDetails& Details)
 {
 	if (AnalyticsProvider.IsValid())
 	{
-		AnalyticsProvider->LogException(Message, StackTrace, TMap<FString, FString>(), ExtraData);
+		AnalyticsProvider->LogException(Message, StackTrace, Details);
 	}
 }
 
-void UFlockSubsystem::RecordScreenView(const FString& ScreenName)
+void UFlockSubsystem::RecordAnalyticsScreenView(const FString& ScreenName)
 {
 	if (AnalyticsProvider.IsValid())
 	{

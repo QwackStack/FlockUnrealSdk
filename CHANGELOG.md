@@ -11,10 +11,15 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - **Analytics** end to end (`FFlockAnalyticsProvider`, reached with
   `UFlockSubsystem::GetAnalyticsProvider()`): a diagnostic log API, session tracking, an offline
   spool with explicit flush, consent gating, and automatic crash reporting on the next launch.
-- **Log API.** `LogEvent` / `LogError` / `LogException` record diagnostics, recoverable logic faults
-  (with the invariant that failed and an error code), and exceptions with a stack trace. All three
-  are fire-and-forget at the call site: the entry is written to disk immediately and delivered on
-  the next flush, so a call costs nothing and nothing is lost to a crash or a dead network.
+- **Log API.** `LogEvent` / `LogError` / `LogException` record diagnostics, recoverable logic faults,
+  and exceptions. All three are fire-and-forget at the call site: the entry is written to disk
+  immediately and delivered on the next flush, so a call costs nothing and nothing is lost to a crash
+  or a dead network. **Reporting an exception needs no stack trace** — leave it off and the SDK walks
+  the callstack itself; pass one only when you have something better, such as a script VM's stack.
+- **`FFlockLogDetails`** carries the optional detail on an error or exception (`LogicalExpression`,
+  `ErrorCode`, `ErrorData`, `ExtraData`) as one named argument rather than four positional ones, and
+  gives Blueprint a single pin. **`FFlockMetadata`** builds the wire's string map from ints, floats
+  and bools directly, so attaching a level or a count no longer means converting by hand.
 - **Automatic exception capture.** Engine `Error` and `Fatal` log lines become exception entries
   without any wiring, alongside a hard-crash hook for failures that never reach the log. Each one
   carries the callstack walked at the point of capture, with frames recorded as `Module+0xOffset`
@@ -47,6 +52,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
   `Log Analytics Event` / `Error` / `Exception`, `Record Screen View`, `Set Analytics Consent`,
   `Has Analytics Consent`, `Has Active Analytics Session`, `Get Analytics Session Id`, and
   `Get Analytics Snapshot` on the subsystem. Every one is a safe no-op before the SDK is initialized.
+- Starting a session takes the signed-in player automatically — leave the player id empty and the
+  SDK uses whoever is signed in, rather than making every caller fetch and pass it.
 - **Automation tests** (`Flock.Analytics.*`, 91 in the suite): wire models and free-form key
   preservation, consent persistence and resolution, the spool's ordering/cap/persistence/resilience,
   session accounting and the lifecycle pump, crash-marker classification and folding, the log sink's

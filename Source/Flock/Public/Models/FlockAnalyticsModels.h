@@ -182,6 +182,36 @@ struct FLOCK_API FFlockLogEventData
 	TMap<FString, FString> ExtraData;
 };
 
+/**
+ * The optional detail on a logged error or exception — one named argument instead of four
+ * positional ones.
+ *
+ * Two same-typed maps sitting side by side in a parameter list are trivially swapped and the
+ * compiler cannot catch it, which is why these are named fields. It also gives Blueprint a single
+ * pin instead of four.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockLogDetails
+{
+	GENERATED_BODY()
+
+	/** The invariant that failed, e.g. `hp > 0`. Meaningful on errors. */
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString LogicalExpression;
+
+	/** Your own code for this fault, e.g. `INV_DESYNC`. Meaningful on errors. */
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString ErrorCode;
+
+	/** Structured facts about the fault itself — *what* was wrong (expected vs actual, ids, counts). */
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	TMap<FString, FString> ErrorData;
+
+	/** Context about the moment — *where* the player was and what they were doing. */
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	TMap<FString, FString> ExtraData;
+};
+
 /** One entry for `POST log_event/single`, and one element of the batch for `POST log_event`. */
 USTRUCT(BlueprintType)
 struct FLOCK_API FFlockLogEventRequest
