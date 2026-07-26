@@ -124,4 +124,117 @@ bool FFlockJsonUtilsOmitEmptyTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonArrayUnwrapTest, "Flock.Http.Json.ArrayUnwrap",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockJsonArrayUnwrapTest::RunTest(const FString& Parameters)
+{
+	// The enveloped-list shape: `result` is a bare array, the shape the config/patch list routes answer
+	// with. Each element goes through the same per-element parse, so snake keys still map to Pascal.
+	const FString Body = TEXT("{\"result\":[{\"id\":\"a\",\"release_type\":\"prod\"},{\"id\":\"b\"}]}");
+	TArray<FFlockGameVersionSchema> Items;
+	FString Error;
+	TestTrue(TEXT("array unwrap succeeds"), FFlockJsonUtils::UnwrapResultToArray(Body, Items, Error));
+	TestEqual(TEXT("two items"), Items.Num(), 2);
+	if (Items.Num() == 2)
+	{
+		TestEqual(TEXT("item 0 id"), Items[0].Id, FString(TEXT("a")));
+		TestEqual(TEXT("item 0 release_type mapped"), Items[0].ReleaseType, FString(TEXT("prod")));
+		TestEqual(TEXT("item 1 id"), Items[1].Id, FString(TEXT("b")));
+	}
+
+	// An empty result array is a valid, empty list — not a failure.
+	TArray<FFlockGameVersionSchema> Empty;
+	FString EmptyError;
+	TestTrue(TEXT("empty array succeeds"), FFlockJsonUtils::UnwrapResultToArray(TEXT("{\"result\":[]}"), Empty, EmptyError));
+	TestEqual(TEXT("no items"), Empty.Num(), 0);
+
+	// Missing result, a non-array result (the object shape), a non-object element, and malformed JSON all fail.
+	TArray<FFlockGameVersionSchema> Bad;
+	FString BadError;
+	TestFalse(TEXT("missing result fails"),
+		FFlockJsonUtils::UnwrapResultToArray(TEXT("{\"error\":{\"code\":\"x\"}}"), Bad, BadError));
+	TestFalse(TEXT("object result (not array) fails"),
+		FFlockJsonUtils::UnwrapResultToArray(TEXT("{\"result\":{\"id\":\"a\"}}"), Bad, BadError));
+	TestFalse(TEXT("non-object element fails"),
+		FFlockJsonUtils::UnwrapResultToArray(TEXT("{\"result\":[\"nope\"]}"), Bad, BadError));
+	TestFalse(TEXT("malformed body fails"),
+		FFlockJsonUtils::UnwrapResultToArray(TEXT("not json"), Bad, BadError));
+
+	return true;
+}
+
+namespace
+{
+	// A type declaring a static FromWireObject: proves HasCustomWireParse detects the custom path. Plain
+	// struct on purpose — the detector only inspects the static member, no USTRUCT reflection needed.
+	struct FFlockWireParseProbe
+	{
+		static bool FromWireObject(const TSharedRef<FJsonObject>&, FFlockWireParseProbe&, FString&) { return true; }
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonWireParseDetectionTest, "Flock.Http.Json.WireParseDetection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockJsonWireParseDetectionTest::RunTest(const FString& Parameters)
+{
+	// A type with a static FromWireObject is routed to its own parse; a reflection model is not. This is
+	// the switch that keeps config data out of TransformObjectKeys (which would rewrite dictionary keys).
+	TestTrue(TEXT("probe with FromWireObject detected"), FFlockJsonUtils::HasCustomWireParse<FFlockWireParseProbe>());
+	TestFalse(TEXT("reflection model not detected"), FFlockJsonUtils::HasCustomWireParse<FFlockGameVersionSchema>());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonPlainRoundTripTest, "Flock.Http.Json.PlainRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockJsonPlainRoundTripTest::RunTest(const FString& Parameters)
+{
+	// The snapshot round-trip is symmetric plain reflection (PascalCase, no snake transform): what goes in
+	// comes back unchanged, which is what lets a persisted model be re-read verbatim on the next launch.
+	FFlockGameVersionSchema In;
+	In.Id = TEXT("ver-1");
+	In.Name = TEXT("1.2.3");
+	In.ReleaseType = TEXT("prod");
+
+	FString Json;
+	TestTrue(TEXT("struct serializes"), FFlockJsonUtils::StructToPlainJson(In, Json));
+	// Plain form keeps PascalCase field names — it is not the wire form.
+	TestTrue(TEXT("plain keys are PascalCase"), Json.Contains(TEXT("\"Id\":\"ver-1\"")));
+	TestFalse(TEXT("no snake keys in plain form"), Json.Contains(TEXT("release_type")));
+
+	FFlockGameVersionSchema Out;
+	TestTrue(TEXT("struct round-trips"), FFlockJsonUtils::PlainJsonToStruct(Json, Out));
+	TestEqual(TEXT("id preserved"), Out.Id, In.Id);
+	TestEqual(TEXT("name preserved"), Out.Name, In.Name);
+	TestEqual(TEXT("release type preserved"), Out.ReleaseType, In.ReleaseType);
+
+	// Array form for a list snapshot.
+	TArray<FFlockGameVersionSchema> List;
+	List.Add(In);
+	FFlockGameVersionSchema Second;
+	Second.Id = TEXT("ver-2");
+	List.Add(Second);
+
+	FString ArrayJson;
+	TestTrue(TEXT("array serializes"), FFlockJsonUtils::ArrayToPlainJson(List, ArrayJson));
+	TestTrue(TEXT("array is an array"), ArrayJson.StartsWith(TEXT("[")));
+
+	TArray<FFlockGameVersionSchema> RoundTripped;
+	TestTrue(TEXT("array round-trips"), FFlockJsonUtils::ArrayFromPlainJson(ArrayJson, RoundTripped));
+	TestEqual(TEXT("two items back"), RoundTripped.Num(), 2);
+	if (RoundTripped.Num() == 2)
+	{
+		TestEqual(TEXT("item 0 id"), RoundTripped[0].Id, FString(TEXT("ver-1")));
+		TestEqual(TEXT("item 1 id"), RoundTripped[1].Id, FString(TEXT("ver-2")));
+	}
+
+	// A non-array body is rejected by the array reader.
+	TArray<FFlockGameVersionSchema> Bad;
+	TestFalse(TEXT("object rejected as array"), FFlockJsonUtils::ArrayFromPlainJson(TEXT("{\"Id\":\"x\"}"), Bad));
+
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

@@ -11,6 +11,7 @@
 #include "Serialization/JsonWriter.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "JsonObjectConverter.h"
+#include <type_traits>
 
 /**
  * JSON (de)serialization for the SDK wire format. Owns the one concern that UE's reflection JSON does
@@ -98,15 +99,116 @@ public:
 		return SnakeObj;
 	}
 
-	/** Transforms snake->Pascal keys and converts one already-parsed object into a USTRUCT. */
+	/**
+	 * True when T supplies its own wire parse — a static
+	 * `bool FromWireObject(const TSharedRef<FJsonObject>&, T&, FString&)` — instead of the reflection
+	 * path. Models whose members cannot arrive through reflection (a config's flattened opaque data, its
+	 * verbatim schema JSON) declare it; everything else leaves it off and takes the default path.
+	 */
+	template <typename T>
+	static constexpr bool HasCustomWireParse() { return TFromWireObjectDetector<T>::Value; }
+
+	/**
+	 * Transforms snake->Pascal keys and converts one already-parsed object into a USTRUCT. A type that
+	 * declares a static FromWireObject takes that path instead — the one place the choice is made, so
+	 * Get<T>/GetList<T>/UnwrapResult* and snapshot reads all honor it with no call-site changes. The
+	 * custom path owns its own key handling and must not be re-transformed here (a config's dictionary
+	 * keys are author data, not field names).
+	 */
 	template <typename T>
 	static bool WireObjectToStruct(const TSharedRef<FJsonObject>& Object, T& OutStruct, FString& OutError)
 	{
-		const TSharedRef<FJsonObject> Transformed = TransformObjectKeys(Object, /*bToPascal*/ true);
-		if (!FJsonObjectConverter::JsonObjectToUStruct(Transformed, T::StaticStruct(), &OutStruct, 0, 0))
+		if constexpr (HasCustomWireParse<T>())
 		{
-			OutError = TEXT("Malformed response body");
+			return T::FromWireObject(Object, OutStruct, OutError);
+		}
+		else
+		{
+			const TSharedRef<FJsonObject> Transformed = TransformObjectKeys(Object, /*bToPascal*/ true);
+			if (!FJsonObjectConverter::JsonObjectToUStruct(Transformed, T::StaticStruct(), &OutStruct, 0, 0))
+			{
+				OutError = TEXT("Malformed response body");
+				return false;
+			}
+			return true;
+		}
+	}
+
+	// ── Plain round-trip (snapshot persistence: symmetric, no snake<->Pascal transform) ──
+	// The offline snapshot store persists an already-parsed PascalCase model and reads it back later. That
+	// is an internal format, not the wire, so it must NOT run the key transform (which is one-directional
+	// by intent and would mangle a config's data on the way back). Every member therefore has to be
+	// reflectable — a model that hides data behind a custom wire parse keeps it in a reflectable field.
+
+	/** USTRUCT -> condensed plain JSON (PascalCase keys), for snapshot storage. */
+	template <typename T>
+	static bool StructToPlainJson(const T& Struct, FString& OutJson)
+	{
+		const TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
+		if (!FJsonObjectConverter::UStructToJsonObject(T::StaticStruct(), &Struct, Obj, 0, 0))
+		{
 			return false;
+		}
+		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+			TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&OutJson);
+		return FJsonSerializer::Serialize(Obj, Writer);
+	}
+
+	/** Plain JSON (PascalCase keys) -> USTRUCT, the inverse of StructToPlainJson. */
+	template <typename T>
+	static bool PlainJsonToStruct(const FString& Json, T& OutStruct)
+	{
+		TSharedPtr<FJsonObject> Root;
+		if (!TryParseObject(Json, Root) || !Root.IsValid())
+		{
+			return false;
+		}
+		return FJsonObjectConverter::JsonObjectToUStruct(Root.ToSharedRef(), T::StaticStruct(), &OutStruct, 0, 0);
+	}
+
+	/** TArray<USTRUCT> -> condensed plain JSON array, for snapshotting a list result. */
+	template <typename T>
+	static bool ArrayToPlainJson(const TArray<T>& Items, FString& OutJson)
+	{
+		TArray<TSharedPtr<FJsonValue>> Values;
+		Values.Reserve(Items.Num());
+		for (const T& Item : Items)
+		{
+			const TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
+			if (!FJsonObjectConverter::UStructToJsonObject(T::StaticStruct(), &Item, Obj, 0, 0))
+			{
+				return false;
+			}
+			Values.Add(MakeShared<FJsonValueObject>(Obj));
+		}
+		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+			TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&OutJson);
+		return FJsonSerializer::Serialize(Values, Writer);
+	}
+
+	/** Plain JSON array -> TArray<USTRUCT>, the inverse of ArrayToPlainJson. */
+	template <typename T>
+	static bool ArrayFromPlainJson(const FString& Json, TArray<T>& OutItems)
+	{
+		TSharedPtr<FJsonValue> Root;
+		const TSharedRef<TJsonReader<TCHAR>> Reader = TJsonReaderFactory<TCHAR>::Create(Json);
+		if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid() || Root->Type != EJson::Array)
+		{
+			return false;
+		}
+		OutItems.Reset();
+		for (const TSharedPtr<FJsonValue>& Elem : Root->AsArray())
+		{
+			if (!Elem.IsValid() || Elem->Type != EJson::Object)
+			{
+				return false;
+			}
+			T Item;
+			if (!FJsonObjectConverter::JsonObjectToUStruct(Elem->AsObject().ToSharedRef(), T::StaticStruct(), &Item, 0, 0))
+			{
+				return false;
+			}
+			OutItems.Add(Item);
 		}
 		return true;
 	}
@@ -122,6 +224,49 @@ public:
 			return false;
 		}
 		return WireObjectToStruct(Root.ToSharedRef(), OutStruct, OutError);
+	}
+
+	/**
+	 * Unwraps the {error, response, result} envelope where `result` is a JSON array, deserializing each
+	 * element into a T. The enveloped-list counterpart of UnwrapResultToStruct — five config/patch routes
+	 * answer with `result: [...]`, which UnwrapResultToStruct (object-only) would reject. A missing or
+	 * non-array `result`, or a non-object element, is a serialization failure. This is not the paginated
+	 * shape ({items,total,page,limit}) — see UnwrapPaginated.
+	 */
+	template <typename T>
+	static bool UnwrapResultToArray(const FString& Body, TArray<T>& OutArray, FString& OutError)
+	{
+		TSharedPtr<FJsonObject> Root;
+		if (!TryParseObject(Body, Root) || !Root.IsValid())
+		{
+			OutError = TEXT("Malformed response body");
+			return false;
+		}
+		const TArray<TSharedPtr<FJsonValue>>* ResultArray = nullptr;
+		if (!Root->TryGetArrayField(TEXT("result"), ResultArray))
+		{
+			OutError = TEXT("Invalid response from server (missing result)");
+			return false;
+		}
+		OutArray.Reset();
+		for (const TSharedPtr<FJsonValue>& Elem : *ResultArray)
+		{
+			// Check the type before AsObject(): on a non-object, FJsonValue::AsObject() returns a valid
+			// *empty* object (and logs an error) rather than null, so an IsValid() guard would silently
+			// accept a string/number element as an empty struct.
+			if (!Elem.IsValid() || Elem->Type != EJson::Object)
+			{
+				OutError = TEXT("Malformed response element");
+				return false;
+			}
+			T Item;
+			if (!WireObjectToStruct(Elem->AsObject().ToSharedRef(), Item, OutError))
+			{
+				return false;
+			}
+			OutArray.Add(Item);
+		}
+		return true;
 	}
 
 	/**
@@ -148,7 +293,10 @@ public:
 
 	/**
 	 * Unwraps a paginated list ({items, total, page, limit}), from `result` when enveloped or the root
-	 * otherwise. Provisional until the first list provider lands — the exact envelope nesting is confirmed then.
+	 * otherwise. Distinct from UnwrapResultToArray: the config/patch list routes answer with `result` as a
+	 * bare array (no items/total/page/limit wrapper), which the config provider confirmed is a separate
+	 * shape from this one — the two are not interchangeable. This stays for the routes that are genuinely
+	 * paginated.
 	 */
 	template <typename T>
 	static bool UnwrapPaginated(const FString& Body, TFlockPage<T>& OutPage, FString& OutError)
@@ -192,4 +340,21 @@ public:
 		return true;
 	}
 
+private:
+	/**
+	 * Detects a static `bool FromWireObject(const TSharedRef<FJsonObject>&, T&, FString&)` on T. Drives
+	 * the branch in WireObjectToStruct via HasCustomWireParse<T>().
+	 */
+	template <typename T, typename = void>
+	struct TFromWireObjectDetector
+	{
+		static constexpr bool Value = false;
+	};
+
+	template <typename T>
+	struct TFromWireObjectDetector<T, std::void_t<decltype(T::FromWireObject(
+		std::declval<const TSharedRef<FJsonObject>&>(), std::declval<T&>(), std::declval<FString&>()))>>
+	{
+		static constexpr bool Value = true;
+	};
 };

@@ -5,6 +5,31 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-07-26
+
+### Added
+- **Game config.** Fetch your game's config and patches — by id, by name, all patches, patches for a
+  config, and configs filtered by tag or by version tag — plus per-player resolved features. The one
+  you'll reach for is **Resolve Config Data**: it returns a config's effective values, applying the
+  patch for this game version if one exists and otherwise falling back to the config's own base data
+  (never empty defaults). Config values come back as an opaque handle you read with typed accessors.
+- **Game & version info.** Fetch the game record, this build's game version, and a version looked up
+  by name.
+- **Reading config values in Blueprint.** A **Get Config Int / Float / String / Bool / String Array**
+  library reads values off a resolved config by a dotted path (`stats.max_health`), each with a
+  fallback so the common read is one node. Names resolve whether you type the dashboard's
+  `snake_case` or the Pascal form. Plus **Has Field**, **Get Field Names**, **To Json String**, and
+  **Is Valid**. Blueprint async nodes cover every fetch (Get Config By Name/Id, Get Configs By Tag,
+  Resolve Config Data, Get Game, Get Game Version).
+- **Offline snapshot cache.** Successful config and game reads are cached to disk and served when the
+  network is unavailable, so a fetch survives an outage. Entries are scoped to the game version and
+  pruned when it changes; per-player features are deliberately never cached. Toggle it (and point it
+  at a custom directory) under **Project Settings → Flock SDK → Offline Cache**.
+
+### Changed
+- Concurrent requests for the same config are de-duplicated into a single backend call — several
+  Blueprints asking on screen-open cost one round trip, not one each.
+
 ## [0.8.0] - 2026-07-22
 
 ### Added

@@ -12,6 +12,8 @@
 #include "Http/FlockHttpClient.h"
 #include "Providers/FlockAnalyticsProvider.h"
 #include "Providers/FlockAuthProvider.h"
+#include "Providers/FlockConfigProvider.h"
+#include "Providers/FlockGameProvider.h"
 #include "FlockSubsystem.generated.h"
 
 class UFlockEvents;
@@ -185,6 +187,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics")
 	void EraseLocalAnalyticsData();
 
+	// ── Config & Game ──
+
+	/**
+	 * Game config + patches provider. Null before initialization and after shutdown. C++ API; Blueprint
+	 * uses the Flock config async nodes and UFlockGameConfigLibrary.
+	 */
+	FFlockConfigProvider* GetConfigProvider() const { return ConfigProvider.Get(); }
+
+	/** Game + version info provider. Null before initialization and after shutdown. */
+	FFlockGameProvider* GetGameProvider() const { return GameProvider.Get(); }
+
 	// ── Test seams (call before initialization; unused by games) ──
 
 	/** Routes SDK HTTP through the given adapter instead of the engine HTTP module. */
@@ -228,6 +241,14 @@ private:
 
 	/** Shared, not unique: the provider pins a weak reference to itself across flush continuations. */
 	TSharedPtr<FFlockAnalyticsProvider> AnalyticsProvider;
+
+	// Read-side offline cache, shared by the config and game providers. Built before them, pruned to the
+	// current game version at init. Null when the offline cache is disabled in settings.
+	TSharedPtr<FFlockSnapshotStore> SnapshotStore;
+
+	// Shared, not unique: continuations pin a weak self, matching the analytics provider.
+	TSharedPtr<FFlockConfigProvider> ConfigProvider;
+	TSharedPtr<FFlockGameProvider> GameProvider;
 
 	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
 	TSharedPtr<IFlockTokenStore> TestTokenStore;

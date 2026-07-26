@@ -84,8 +84,11 @@ namespace FlockEndpoints
 	inline FString GameConfigByName(const FString& Name) { return FString::Printf(TEXT("game_config/by-name/%s"), *Encode(Name)); }
 	inline FString GameConfigPlayerFeatures(const FString& PlayerId) { return FString::Printf(TEXT("game_config/player/%s/features"), *PlayerId); }
 	inline constexpr const TCHAR* GamePatch = TEXT("game_patch");
-	inline FString GamePatchById(const FString& ConfigId) { return FString::Printf(TEXT("game_patch/%s"), *ConfigId); }
-	inline FString GamePatchByConfig(const FString& SchemaId) { return FString::Printf(TEXT("game_patch/config/%s"), *SchemaId); }
+	// The path segment is a patch id, not a config id (a prior name here was misleading).
+	inline FString GamePatchById(const FString& PatchId) { return FString::Printf(TEXT("game_patch/%s"), *PatchId); }
+	inline FString GamePatchByConfig(const FString& ConfigId) { return FString::Printf(TEXT("game_patch/config/%s"), *ConfigId); }
+	// game_config/{id}/patches is a deliberate duplicate of game_patch/config/{id} — the config provider
+	// uses the latter, so this builder is intentionally absent. Don't "fill the gap" without a reason.
 
 	// Shop / inventory
 	inline constexpr const TCHAR* Shop = TEXT("shop");
