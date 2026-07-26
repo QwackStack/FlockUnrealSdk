@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.8.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.9.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -157,6 +157,20 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	AuthProvider = MakeUnique<FFlockAuthProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 		AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl());
 
+	// Read-side offline cache, shared by config and game. Built before them and pruned to the current game
+	// version so switching versions doesn't accumulate stale trees. Null when disabled in settings, in
+	// which case the providers degrade to plain fetches.
+	if (Settings->bEnableOfflineCache)
+	{
+		SnapshotStore = MakeShared<FFlockSnapshotStore>(Settings->OfflineCacheDirectory, LoggerRef, SdkVersion);
+		SnapshotStore->PruneOtherVersions(Config.GameVersionId);
+	}
+
+	ConfigProvider = MakeShared<FFlockConfigProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
+		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
+	GameProvider = MakeShared<FFlockGameProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
+		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
+
 	const FFlockAnalyticsConfig AnalyticsConfig = FFlockAnalyticsConfig::FromSettings(*Settings);
 	if (AnalyticsConfig.bEnabled)
 	{
@@ -291,6 +305,9 @@ void UFlockSubsystem::ShutdownSdk()
 		Events->OnLoggedOut.RemoveDynamic(this, &UFlockSubsystem::HandleAnalyticsLoggedOut);
 	}
 
+	ConfigProvider.Reset();
+	GameProvider.Reset();
+	SnapshotStore.Reset();
 	AuthProvider.Reset();
 	AuthSession.Reset();
 	HttpClient.Reset();

@@ -41,11 +41,37 @@ public:
 	virtual FFlockRequestHandle SendAsync(const FFlockHttpRequest& Request, TFunction<void(FFlockHttpResponse)> OnComplete) override
 	{
 		Requests.Add(Request);
-		if (OnComplete)
+		if (!OnComplete)
 		{
-			OnComplete(Resolve(Request));
+			return FFlockRequestHandle();
+		}
+		// Deferred mode records the completion instead of firing it, so a test can issue several calls
+		// before any resolves — the only way to exercise in-flight de-duplication with a fake that would
+		// otherwise complete synchronously. FlushPending() delivers them. Default (immediate) is unchanged.
+		const FFlockHttpResponse Response = Resolve(Request);
+		if (bDeferred)
+		{
+			Pending.Add([OnComplete, Response]() { OnComplete(Response); });
+		}
+		else
+		{
+			OnComplete(Response);
 		}
 		return FFlockRequestHandle();
+	}
+
+	/** When true, SendAsync queues completions instead of firing them. Flush with FlushPending(). */
+	bool bDeferred = false;
+
+	/** Delivers every queued completion (deferred mode) in order, then clears the queue. */
+	void FlushPending()
+	{
+		TArray<TFunction<void()>> ToRun = MoveTemp(Pending);
+		Pending.Reset();
+		for (TFunction<void()>& Run : ToRun)
+		{
+			Run();
+		}
 	}
 
 	// ── request-log query helpers ──
@@ -96,6 +122,7 @@ private:
 	};
 
 	TArray<FRoute> Routes;
+	TArray<TFunction<void()>> Pending;
 
 	FFlockHttpResponse Resolve(const FFlockHttpRequest& Request)
 	{

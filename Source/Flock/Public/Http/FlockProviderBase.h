@@ -9,13 +9,19 @@
 #include "Http/FlockRetryPolicy.h"
 #include "Http/FlockResult.h"
 #include "Http/FlockError.h"
+#include "Http/FlockJsonUtils.h"
+#include "Http/FlockSnapshotStore.h"
 #include "FlockLogger.h"
 
 /**
  * Base for SDK providers: it wraps a client call in the retry handler, offers small request guards,
  * and — when an auth session is attached — silently refreshes the access token and replays once when
- * an authenticated call fails with an Auth error. The remaining deferred concern, snapshot/offline
- * cache, slots in here with its own ticket.
+ * an authenticated call fails with an Auth error.
+ *
+ * It also owns the read-side offline snapshot: FetchWithSnapshot(List)/FetchAtScope run an operation and,
+ * with a store attached, cache the success and serve the last-known value when the network is down. The
+ * store is optional — without one (auth/analytics never attach it, offline cache disabled) every fetch is
+ * a plain Execute.
  */
 class FLOCK_API FFlockProviderBase
 {
@@ -39,6 +45,23 @@ public:
 	 */
 	void SetCallOrigin(const FString& InOrigin) { CallOrigin = InOrigin; }
 	const FString& GetCallOrigin() const { return CallOrigin; }
+
+	/**
+	 * Attaches the offline snapshot store and the game version that scopes its entries. Without this,
+	 * FetchWithSnapshot(List)/FetchAtScope degrade to a plain Execute. Set once at construction.
+	 */
+	void SetSnapshotStore(const TSharedPtr<FFlockSnapshotStore>& InStore, const FString& InGameVersionId)
+	{
+		SnapshotStore = InStore;
+		GameVersionId = InGameVersionId;
+	}
+
+	/**
+	 * Overrides the "is the server reachable" probe (defaults to always-reachable). UE has no dependable
+	 * cross-platform reachability signal, so the default always attempts the network and lets the failure
+	 * path serve cache; the seam lets tests force the offline branch deterministically.
+	 */
+	void SetReachabilityProbe(TFunction<bool()> InProbe) { ReachabilityProbe = MoveTemp(InProbe); }
 
 protected:
 	/** Enables silent refresh-on-auth-failure for this provider's calls. Unset = pass-through. */
@@ -122,6 +145,65 @@ protected:
 			bIdempotent, MaxRetriesOverride, IsExpectedFailure);
 	}
 
+	// ── Snapshot-backed fetches ──
+
+	/** Scope for a category's snapshots: "<GameVersionId>/<category>", so a version switch parks stale trees. */
+	FString GetSnapshotScope(const FString& Category) const
+	{
+		return FString::Printf(TEXT("%s/%s"), *GameVersionId, *Category);
+	}
+
+	/** Drops a whole category's snapshots (e.g. on a provider ClearCache). No-op without a store. */
+	void DeleteSnapshotCategory(const FString& Category)
+	{
+		if (SnapshotStore.IsValid())
+		{
+			SnapshotStore->DeleteScope(GetSnapshotScope(Category));
+		}
+	}
+
+	/**
+	 * Runs Operation and snapshots its success under "<version>/<Category>"/Key, serving the cached value
+	 * when the network is down. Three branches: cache + unreachable -> serve cache, no call; cache present
+	 * -> one attempt then cache on a non-permanent failure; no cache -> full retry budget, failure
+	 * propagates. A permanent failure (a 4xx that is an authoritative answer, e.g. a deleted config)
+	 * propagates even with a cache. Without a store this is a plain Execute.
+	 */
+	template <typename T>
+	FFlockRequestHandle FetchWithSnapshot(const FString& Category, const FString& Key,
+		FFlockRetryHandler::FOperation<T> Operation, const FString& Context, TFunction<void(TFlockResult<T>)> OnComplete)
+	{
+		return FetchAtScope<T>(GetSnapshotScope(Category), Key, MoveTemp(Operation), Context, MoveTemp(OnComplete));
+	}
+
+	/** FetchWithSnapshot for a list result (TArray<T>). Same policy; array (de)serialization for the cache. */
+	template <typename T>
+	FFlockRequestHandle FetchListWithSnapshot(const FString& Category, const FString& Key,
+		FFlockRetryHandler::FOperation<TArray<T>> Operation, const FString& Context, TFunction<void(TFlockResult<TArray<T>>)> OnComplete)
+	{
+		return FetchSnapshotCore<TArray<T>>(GetSnapshotScope(Category), Key, MoveTemp(Operation), Context,
+			[](const TArray<T>& Value, FString& Out) { return FFlockJsonUtils::ArrayToPlainJson(Value, Out); },
+			[](const FString& In, TArray<T>& Out) { return FFlockJsonUtils::ArrayFromPlainJson(In, Out); },
+			MoveTemp(OnComplete));
+	}
+
+	/**
+	 * FetchWithSnapshot at an explicit scope rather than a category — the escape hatch for a lookup that
+	 * runs before the version id is known (a by-name version resolve, kept on BootstrapScope).
+	 */
+	template <typename T>
+	FFlockRequestHandle FetchAtScope(const FString& Scope, const FString& Key,
+		FFlockRetryHandler::FOperation<T> Operation, const FString& Context, TFunction<void(TFlockResult<T>)> OnComplete)
+	{
+		return FetchSnapshotCore<T>(Scope, Key, MoveTemp(Operation), Context,
+			[](const T& Value, FString& Out) { return FFlockJsonUtils::StructToPlainJson(Value, Out); },
+			[](const FString& In, T& Out) { return FFlockJsonUtils::PlainJsonToStruct(In, Out); },
+			MoveTemp(OnComplete));
+	}
+
+	/** True when the server is considered reachable (default: always). */
+	bool IsServerReachable() const { return !ReachabilityProbe || ReachabilityProbe(); }
+
 	/** Reports a Validation failure and returns false when a required argument is empty. */
 	template <typename T>
 	bool RequireNotEmpty(const FString& Value, const FString& Name, const TFunction<void(TFlockResult<T>)>& OnComplete) const
@@ -143,7 +225,89 @@ protected:
 	FFlockRetryHandler RetryHandler;
 
 private:
+	/**
+	 * The one place the three-branch snapshot policy lives; the public fetches are thin type wrappers that
+	 * supply the (de)serialization for a single struct or a list. Serialize/Deserialize round-trip the
+	 * value through the snapshot's plain (PascalCase, no-transform) format.
+	 */
+	template <typename TValue>
+	FFlockRequestHandle FetchSnapshotCore(const FString& Scope, const FString& Key,
+		FFlockRetryHandler::FOperation<TValue> Operation, const FString& Context,
+		TFunction<bool(const TValue&, FString&)> Serialize, TFunction<bool(const FString&, TValue&)> Deserialize,
+		TFunction<void(TFlockResult<TValue>)> OnComplete)
+	{
+		const TSharedPtr<FFlockSnapshotStore> Store = SnapshotStore;
+		if (!Store.IsValid())
+		{
+			return Execute<TValue>(MoveTemp(Operation), MoveTemp(OnComplete), Context);
+		}
+
+		FString Cached;
+		const bool bHasCache = Store->TryRead(Scope, Key, Cached);
+
+		// Branch 1: a cache in hand and no connectivity — skip the network entirely.
+		if (bHasCache && !IsServerReachable())
+		{
+			TValue Value;
+			if (Deserialize(Cached, Value))
+			{
+				Logger->LogWarning(FString::Printf(TEXT("%s: serving cached snapshot (no connectivity)"), *Context));
+				if (OnComplete)
+				{
+					OnComplete(TFlockResult<TValue>::Ok(Value));
+				}
+				return FFlockRequestHandle();
+			}
+			// Unreadable cache: fall through and try the network after all.
+		}
+
+		// Branch 2/3: one attempt when a cache can catch a failure, full budget otherwise.
+		const int32 RetryBudget = bHasCache ? 0 : -1;
+		const TSharedRef<IFlockLogger> Log = Logger;
+		return Execute<TValue>(MoveTemp(Operation),
+			[OnComplete, Store, Scope, Key, Serialize, Deserialize, Cached, bHasCache, Context, Log](TFlockResult<TValue> Result)
+			{
+				if (Result.bSuccess)
+				{
+					FString Payload;
+					if (Serialize(Result.Value, Payload))
+					{
+						Store->Write(Scope, Key, Payload);
+					}
+					if (OnComplete)
+					{
+						OnComplete(Result);
+					}
+					return;
+				}
+
+				// A non-permanent failure with a cache to fall back on serves the cache; a permanent 4xx
+				// (an authoritative answer, e.g. the config was deleted) propagates regardless.
+				if (bHasCache && !FFlockError::IsPermanentStatus(Result.Error.StatusCode))
+				{
+					TValue Value;
+					if (Deserialize(Cached, Value))
+					{
+						Log->LogWarning(FString::Printf(TEXT("%s: serving cached snapshot (couldn't reach server)"), *Context));
+						if (OnComplete)
+						{
+							OnComplete(TFlockResult<TValue>::Ok(Value));
+						}
+						return;
+					}
+				}
+				if (OnComplete)
+				{
+					OnComplete(Result);
+				}
+			},
+			Context, /*bIdempotent*/ true, RetryBudget);
+	}
+
 	TSharedPtr<FFlockAuthSession> AuthSession;
+	TSharedPtr<FFlockSnapshotStore> SnapshotStore;
+	FString GameVersionId;
+	TFunction<bool()> ReachabilityProbe;
 	FString CallOrigin = TEXT("C++");
 };
 

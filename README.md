@@ -3,9 +3,9 @@
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
 > **Early release.** The SDK's boot/init foundation, the network transport (HTTP client, automatic
-> retry, typed errors), automatic edit-time Game Version baking, **player authentication**, and
-> **analytics** now ship. The remaining feature providers (config, player data, commands, shop,
-> assets) build on this next. See [Status](#status).
+> retry, typed errors), automatic edit-time Game Version baking, **player authentication**,
+> **analytics**, and **game config** (with an offline snapshot cache) now ship. The remaining feature
+> providers (player data, commands, shop, assets) build on this next. See [Status](#status).
 
 ## Contents
 
@@ -45,6 +45,12 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   persistence, automatic session restore, silent token refresh, and the account flows.
 - **Analytics** — a diagnostic log API, session tracking, automatic exception capture, an offline
   queue that survives crashes, consent gating, and next-launch crash reporting.
+- **Game config** — fetch configs and patches (by id, by name, by tag, by version tag) and resolve a
+  config's effective values (patch for this game version, else its base data). Read values in Blueprint
+  with typed accessors by dotted path, or bind them to your `USTRUCT` in C++. Plus the game record and
+  version info.
+- **Offline snapshot cache** — successful config and game reads are cached to disk, scoped to the game
+  version, and served when the network is down; toggleable in settings.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
 - **Blueprint-friendly** — the accessor, init, state, events, and error types are exposed to Blueprint.
 

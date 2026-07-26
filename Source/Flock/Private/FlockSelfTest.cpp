@@ -21,7 +21,11 @@
 #include "HAL/IConsoleManager.h"
 #include "Http/FlockResult.h"
 #include "Models/FlockAuthModels.h"
+#include "Models/FlockConfigModels.h"
+#include "Models/FlockGameModels.h"
 #include "Providers/FlockAuthProvider.h"
+#include "Providers/FlockConfigProvider.h"
+#include "Providers/FlockGameProvider.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
 
@@ -36,6 +40,10 @@ namespace
 	const TCHAR* const DemoName = TEXT("PlayerUE");
 	const TCHAR* const DemoCode = TEXT("123456UE");
 	const TCHAR* const DemoNewPassword = TEXT("new-pwUE");
+
+	// Configs to pull by name in the config sweep. These must exist on your backend for this game
+	// version; the sweep narrates a clean "failed" line for any that don't, rather than aborting.
+	const TCHAR* const DemoConfigNames[] = { TEXT("GameplayTest"), TEXT("TestConfig") };
 
 	/**
 	 * Drives the analytics session lifecycle against the configured backend, then hands off to
@@ -254,6 +262,78 @@ namespace
 			});
 	}
 
+	/**
+	 * Game + config reads against the configured backend. These routes are public (no sign-in gate), so
+	 * this runs signed out as independent one-shots that narrate their own result — it does not own
+	 * teardown. Each completion captures the raw providers (kept alive by the caller's AddToRoot) and the
+	 * logger, never `this`. The config leg lists what tags return, then resolves the first config's data —
+	 * the patch-else-config path — and prints a preview of the flattened values.
+	 */
+	void RunConfigSweep(FFlockGameProvider* Game, FFlockConfigProvider* Config, const TSharedRef<IFlockLogger>& Logger)
+	{
+		if (Game != nullptr)
+		{
+			Game->GetGame([Logger](TFlockResult<FFlockGameSchema> Result)
+			{
+				Logger->LogInfo(Result.bSuccess
+					? FString::Printf(TEXT("Self-test: game -> id=%s name='%s' stage=%s"), *Result.Value.Id, *Result.Value.Name, *Result.Value.Stage)
+					: FString::Printf(TEXT("Self-test: game -> failed (%s)"), *Result.Error.Message));
+			});
+
+			Game->GetGameVersion([Logger](TFlockResult<FFlockGameVersionSchema> Result)
+			{
+				Logger->LogInfo(Result.bSuccess
+					? FString::Printf(TEXT("Self-test: game version -> id=%s name='%s'"), *Result.Value.Id, *Result.Value.Name)
+					: FString::Printf(TEXT("Self-test: game version -> failed (%s)"), *Result.Error.Message));
+			});
+		}
+
+		if (Config != nullptr)
+		{
+			// An overview of what this game version has, so a name miss below is easy to diagnose.
+			Config->GetConfigsByTag(EFlockConfigTag::Any, [Logger](TFlockResult<TArray<FFlockGameConfigSchema>> Result)
+			{
+				Logger->LogInfo(Result.bSuccess
+					? FString::Printf(TEXT("Self-test: configs by tag(Any) -> %d config(s)."), Result.Value.Num())
+					: FString::Printf(TEXT("Self-test: configs by tag(Any) -> failed (%s)"), *Result.Error.Message));
+			});
+
+			// Pull each known config by name (game_config/by-name/{name}), then resolve its effective data
+			// — the patch for this game version if one exists, else the config's own base values.
+			for (const TCHAR* const RawName : DemoConfigNames)
+			{
+				const FString ConfigName = RawName;
+				Config->GetConfigByName(ConfigName, [Config, ConfigName, Logger](TFlockResult<FFlockGameConfigSchema> Result)
+				{
+					if (!Result.bSuccess)
+					{
+						Logger->LogInfo(FString::Printf(
+							TEXT("Self-test: config by name '%s' -> failed (%s)"), *ConfigName, *Result.Error.Message));
+						return;
+					}
+					Logger->LogInfo(FString::Printf(
+						TEXT("Self-test: config by name '%s' -> id=%s tag=%s fields=%d"),
+						*ConfigName, *Result.Value.Id, *Result.Value.Tag, Result.Value.Data.GetFieldNames().Num()));
+
+					const FString ConfigId = Result.Value.Id;
+					Config->ResolveConfigData(ConfigId, [ConfigName, ConfigId, Logger](TFlockResult<FFlockGameConfigData> DataResult)
+					{
+						if (!DataResult.bSuccess)
+						{
+							Logger->LogInfo(FString::Printf(
+								TEXT("Self-test: resolve '%s' -> failed (%s)"), *ConfigName, *DataResult.Error.Message));
+							return;
+						}
+						const FString Preview = DataResult.Value.ToJsonString().Left(300);
+						Logger->LogInfo(FString::Printf(
+							TEXT("Self-test: resolve '%s' (id=%s) -> %d field(s); data=%s"),
+							*ConfigName, *ConfigId, DataResult.Value.GetFieldNames().Num(), *Preview));
+					});
+				});
+			}
+		}
+	}
+
 	void RunFlockSelfTest()
 	{
 		// Verbose logger so every breadcrumb prints, regardless of project settings.
@@ -356,6 +436,12 @@ namespace
 			Logger->LogInfo(TEXT("Self-test: analytics is off in Project Settings > Flock SDK; skipping the analytics sweep."));
 		}
 
+		// ── Config & Game (signed out) ──
+		// Public routes, so this runs before sign-in. Independent one-shots; the auth chain still owns
+		// teardown, and the subsystem stays rooted until it fires, so these late arrivals are safe.
+		Logger->LogInfo(TEXT("Self-test: config + game sweep (public routes, signed out)."));
+		RunConfigSweep(Sdk->GetGameProvider(), Sdk->GetConfigProvider(), Logger);
+
 		Logger->LogInfo(TEXT("Self-test: Logout to start from a clean signed-out state (safe when already signed out)."));
 		Sdk->Logout();
 
@@ -384,7 +470,7 @@ namespace
 
 	FAutoConsoleCommand GFlockSelfTestCommand(
 		TEXT("Flock.SelfTest"),
-		TEXT("Drives the Flock SDK surface (boot/init + auth) and narrates each step to the log (development builds only)."),
+		TEXT("Drives the Flock SDK surface (boot/init + config/game + auth + analytics) and narrates each step to the log (development builds only)."),
 		FConsoleCommandDelegate::CreateStatic(&RunFlockSelfTest));
 }
 

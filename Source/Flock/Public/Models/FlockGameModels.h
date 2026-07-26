@@ -34,3 +34,38 @@ struct FLOCK_API FFlockGameVersionSchema
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString UpdatedAt;
 };
+
+/**
+ * A game record from the backend (OpenAPI `GameSchema`). A plain reflected model — the enveloped `game`
+ * route unwraps into it and the snake_case wire maps via FFlockJsonUtils (read_me -> ReadMe, studio_id ->
+ * StudioId). Dates stay raw ISO-8601 strings, consistent with FFlockGameVersionSchema.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockGameSchema
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Id;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ReadMe;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Stage;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString StudioId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString CreatedAt;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString UpdatedAt;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString DeletedAt;
+};

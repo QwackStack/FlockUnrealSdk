@@ -78,6 +78,41 @@ public:
 		return Send<T>(TEXT("DELETE"), Url, Headers, FString(), /*bHasBody*/ false, /*bUnwrap*/ true, MoveTemp(OnComplete));
 	}
 
+	/**
+	 * Enveloped GET whose `result` is a JSON array, returning TArray<T>. For the config/patch list routes,
+	 * whose result is a bare array — not the {items,total,page,limit} paginated shape (see GetPaged).
+	 */
+	template <typename T>
+	FFlockRequestHandle GetList(const FString& Url, const TMap<FString, FString>& Headers, TFunction<void(TFlockResult<TArray<T>>)> OnComplete)
+	{
+		FFlockHttpRequest Request = MakeRequest(TEXT("GET"), Url, Headers, FString(), /*bHasBody*/ false);
+		Logger->LogDebug(FString::Printf(TEXT("GET %s"), *Url));
+
+		const TSharedRef<FFlockHttpClient> Self = AsShared();
+		return Adapter->SendAsync(Request, [Self, OnComplete](FFlockHttpResponse Response)
+		{
+			if (!OnComplete)
+			{
+				return;
+			}
+			FFlockError Error;
+			FString SuccessBody;
+			if (!Self->ClassifyResponse(Response, Error, SuccessBody))
+			{
+				OnComplete(TFlockResult<TArray<T>>::Fail(Error));
+				return;
+			}
+			TArray<T> Items;
+			FString ParseError;
+			if (!FFlockJsonUtils::UnwrapResultToArray(SuccessBody, Items, ParseError))
+			{
+				OnComplete(TFlockResult<TArray<T>>::Fail(FFlockError::Make(EFlockErrorType::Serialization, ParseError, Response.StatusCode, SuccessBody)));
+				return;
+			}
+			OnComplete(TFlockResult<TArray<T>>::Ok(Items));
+		});
+	}
+
 	// ── Bare verbs (deserialize the whole body, for non-enveloped endpoints) ──
 
 	template <typename T>
