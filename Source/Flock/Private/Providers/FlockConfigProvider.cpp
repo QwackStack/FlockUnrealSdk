@@ -398,11 +398,13 @@ void FFlockConfigProvider::GetConfigsByVersionTag(EFlockConfigTag Tag, TFunction
 
 void FFlockConfigProvider::GetPlayerFeatures(const FString& PlayerId, TFunction<void(TFlockResult<FFlockGameConfigSchema>)> OnComplete)
 {
-	if (!RequireNotEmpty(PlayerId, TEXT("Player ID"), OnComplete))
+	// Empty = the signed-in player, matching every other Player ID argument in the SDK.
+	const FString ResolvedPlayerId = PlayerId.IsEmpty() ? Session->GetPlayerId() : PlayerId;
+	if (!RequireNotEmpty(ResolvedPlayerId, TEXT("Player ID (sign in first)"), OnComplete))
 	{
 		return;
 	}
-	if (const FFlockGameConfigSchema* Cached = PlayerFeaturesByPlayer.Find(PlayerId))
+	if (const FFlockGameConfigSchema* Cached = PlayerFeaturesByPlayer.Find(ResolvedPlayerId))
 	{
 		if (OnComplete)
 		{
@@ -411,14 +413,14 @@ void FFlockConfigProvider::GetPlayerFeatures(const FString& PlayerId, TFunction<
 		return;
 	}
 
-	const FString Key = FString::Printf(TEXT("game_config_features_%s"), *PlayerId);
+	const FString Key = FString::Printf(TEXT("game_config_features_%s"), *ResolvedPlayerId);
 	if (!ConfigInFlight.Register(Key, MoveTemp(OnComplete)))
 	{
 		return;
 	}
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
-	const FString Url = MakeUrl(FlockEndpoints::GameConfigPlayerFeatures(PlayerId));
+	const FString Url = MakeUrl(FlockEndpoints::GameConfigPlayerFeatures(ResolvedPlayerId));
 	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
 
@@ -428,7 +430,7 @@ void FFlockConfigProvider::GetPlayerFeatures(const FString& PlayerId, TFunction<
 		{
 			return ClientRef->Get<FFlockGameConfigSchema>(Url, Headers, MoveTemp(OnAttempt));
 		},
-		[WeakSelf, Key, PlayerId](TFlockResult<FFlockGameConfigSchema> Result)
+		[WeakSelf, Key, ResolvedPlayerId](TFlockResult<FFlockGameConfigSchema> Result)
 		{
 			const TSharedPtr<FFlockConfigProvider> Self = WeakSelf.Pin();
 			if (!Self.IsValid())
@@ -437,14 +439,14 @@ void FFlockConfigProvider::GetPlayerFeatures(const FString& PlayerId, TFunction<
 			}
 			if (Result.bSuccess)
 			{
-				Self->PlayerFeaturesByPlayer.Add(PlayerId, Result.Value);
+				Self->PlayerFeaturesByPlayer.Add(ResolvedPlayerId, Result.Value);
 			}
 			Self->ConfigInFlight.Complete(Key, Result);
 		},
 		TEXT("Fetch player features"));
 }
 
-void FFlockConfigProvider::ResolveConfigData(const FString& ConfigId, TFunction<void(TFlockResult<FFlockGameConfigData>)> OnComplete)
+void FFlockConfigProvider::ResolveConfigData(const FString& ConfigId, TFunction<void(TFlockResult<FFlockStructuredData>)> OnComplete)
 {
 	if (!RequireNotEmpty(ConfigId, TEXT("Config ID"), OnComplete))
 	{
@@ -465,7 +467,7 @@ void FFlockConfigProvider::ResolveConfigData(const FString& ConfigId, TFunction<
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockGameConfigData>::Ok(PatchResult.Value[0].Data));
+					OnComplete(TFlockResult<FFlockStructuredData>::Ok(PatchResult.Value[0].Data));
 				}
 				return;
 			}
@@ -474,7 +476,7 @@ void FFlockConfigProvider::ResolveConfigData(const FString& ConfigId, TFunction<
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockGameConfigData>::Fail(PatchResult.Error));
+					OnComplete(TFlockResult<FFlockStructuredData>::Fail(PatchResult.Error));
 				}
 				return;
 			}
@@ -488,11 +490,11 @@ void FFlockConfigProvider::ResolveConfigData(const FString& ConfigId, TFunction<
 					}
 					if (ConfigResult.bSuccess)
 					{
-						OnComplete(TFlockResult<FFlockGameConfigData>::Ok(ConfigResult.Value.Data));
+						OnComplete(TFlockResult<FFlockStructuredData>::Ok(ConfigResult.Value.Data));
 					}
 					else
 					{
-						OnComplete(TFlockResult<FFlockGameConfigData>::Fail(ConfigResult.Error));
+						OnComplete(TFlockResult<FFlockStructuredData>::Fail(ConfigResult.Error));
 					}
 				});
 		});

@@ -16,12 +16,12 @@
  * error. This surface is wider than the C++ provider's "public" intent on purpose — without codegen a graph
  * needs by-name / by-tag fetches to read config at all.
  *
- * Read values off a returned FFlockGameConfigData with UFlockGameConfigLibrary.
+ * Read values off a returned FFlockStructuredData with UFlockStructuredDataLibrary.
  */
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockConfigPin, const FFlockGameConfigSchema&, Config, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockConfigListPin, const TArray<FFlockGameConfigSchema>&, Configs, const FFlockError&, Error);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockConfigDataPin, const FFlockGameConfigData&, Data, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockConfigDataPin, const FFlockStructuredData&, Data, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockGamePin, const FFlockGameSchema&, Game, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockGameVersionPin, const FFlockGameVersionSchema&, Version, const FFlockError&, Error);
 
@@ -106,7 +106,7 @@ public:
 	virtual void Activate() override;
 
 private:
-	void Complete(const TFlockResult<FFlockGameConfigData>& Result);
+	void Complete(const TFlockResult<FFlockStructuredData>& Result);
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
@@ -138,6 +138,37 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+};
+
+/**
+ * Fetches a player's resolved feature flags (empty Player Id = the signed-in player). Never cached
+ * across calls the way a config is — features are re-resolved rather than served stale.
+ */
+UCLASS()
+class FLOCK_API UFlockGetPlayerFeaturesAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockConfigPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockConfigPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Get Player Features"), Category = "Flock|Config")
+	static UFlockGetPlayerFeaturesAction* GetPlayerFeatures(UObject* WorldContextObject, const FString& PlayerId);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockGameConfigSchema>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+
+	FString PlayerId;
 };
 
 /** Fetches a game version — this build's version, or one looked up by name. */

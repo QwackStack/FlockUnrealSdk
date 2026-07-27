@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.10.1");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.11.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -170,6 +170,9 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
 	GameProvider = MakeShared<FFlockGameProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
+	// No analytics dependency, so it slots in with config/game rather than after the analytics block.
+	PlayerProvider = MakeShared<FFlockPlayerProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
+		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
 
 	const FFlockAnalyticsConfig AnalyticsConfig = FFlockAnalyticsConfig::FromSettings(*Settings);
 	if (AnalyticsConfig.bEnabled)
@@ -315,6 +318,7 @@ void UFlockSubsystem::ShutdownSdk()
 	ConfigProvider.Reset();
 	GameProvider.Reset();
 	ShopProvider.Reset();
+	PlayerProvider.Reset();
 	SnapshotStore.Reset();
 	AuthProvider.Reset();
 	AuthSession.Reset();
@@ -391,6 +395,12 @@ void UFlockSubsystem::Logout()
 	if (AnalyticsProvider.IsValid())
 	{
 		AnalyticsProvider->EndSession(EFlockSessionEndReason::Logout);
+	}
+	// Drop the signed-out player's cached data so a later sign-in never reads a stale row. Templates and
+	// their snapshot are game-version-scoped, not player-scoped, so they are left intact.
+	if (PlayerProvider.IsValid())
+	{
+		PlayerProvider->ClearPlayerDataCache();
 	}
 	AuthProvider->Logout();
 }

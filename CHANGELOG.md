@@ -5,6 +5,54 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-07-27
+
+### Added
+- **Player data & templates.** Read a player's saved data. Fetch a data row by id, a page of rows
+  (optionally filtered to one player), or resolve the signed-in player's row for a template — by the
+  template's id or by its tag (e.g. "currency", "achievement"). A player's rows are paginated and cached
+  in memory on the first read, then served locally until you sign out or clear the cache. Player
+  templates (the schema + default data for each kind of record) are fetched all-at-once or by
+  id/name/tag; the all-templates read is cached in memory and backed by the offline snapshot. A
+  row's/template's structured `data` comes back as a handle you read by dotted path (see below).
+- **Player bans.** Fetch a player's ban record (empty player id = the signed-in player). Always fetched
+  fresh (never cached), and an unbanned player is a normal success with an empty record; per-feature
+  bans are keyed by feature name.
+- **Blueprint.** Async nodes for the whole surface — Get Player Data By Id, Get All Player Data, Get My
+  Data By Template / By Tag, Get Player Templates, Get Player Template By Id / By Name / By Tag, Get
+  Template Player Data, and Get Player Ban.
+- **Blueprint: `Flock Get Player Features`.** Per-player resolved feature flags were C++-only; they now
+  have an async node like the rest of the config surface. Leave **Player Id** empty for the signed-in
+  player.
+- **Blueprint convenience nodes (no "Get Flock Subsystem" needed).** A new `UFlockLibrary` exposes the
+  fire-and-forget analytics calls and the auth/session/lifecycle state as static nodes that resolve the
+  SDK from the calling graph's world context — `Flock Log Event` / `Log Error` / `Log Exception`,
+  `Record Screen View`, `Set/Has Analytics Consent`, `Get Analytics Session Id/Snapshot`, `Is
+  Authenticated`, `Get Player Id`, `Logout`, `Is Initialized`, `Get Game Id`, `Get Events`, and more. So
+  logging an event is one node, like the async provider nodes, instead of grabbing the subsystem and
+  wiring it into a Target pin. The subsystem methods stay for C++ and existing graphs.
+
+### Changed
+- **The opaque structured-data handle is now `FFlockStructuredData`** (was `FFlockGameConfigData`), and
+  its Blueprint reader is **`UFlockStructuredDataLibrary`** (was `UFlockGameConfigLibrary`; its nodes are
+  now Get Data Int/Float/String/Bool/String Array, Has Data Field, Get Data Field Names, Data To Json
+  String, Is Data Valid). One handle is shared by game config, patches, and player data/templates — the
+  same dotted-path reads over any of them. Config reads are unchanged in behaviour; only the type and
+  node names moved.
+
+  **Migration (breaking).** C++: replace `FFlockGameConfigData` with `FFlockStructuredData` and
+  `UFlockGameConfigLibrary::GetConfigInt(...)` with `UFlockStructuredDataLibrary::GetDataInt(...)` (same
+  for Float/String/Bool/StringArray, `HasConfigField`→`HasDataField`, `GetConfigFieldNames`→
+  `GetDataFieldNames`, `ConfigDataToJsonString`→`DataToJsonString`, `IsConfigDataValid`→`IsValidData`).
+  Blueprint: graphs using the old *Get Config Int* / *Has Config Field* / … nodes will show them as
+  missing after upgrading — replace each with its *Get Data \** equivalent and reconnect the pin. Cached
+  offline snapshots are **not** affected (they are keyed by field name, not type name).
+- Signing out now drops the signed-out player's cached data. Templates and their offline snapshot are
+  kept — they are game-version-scoped, not player-specific.
+- `GetPlayerFeatures` now treats an empty Player Id as "the signed-in player" (previously a Validation
+  error), matching every other Player Id argument in the SDK. Signed out it is still a Validation
+  failure, raised before any request.
+
 ## [0.10.1] - 2026-07-27
 
 ### Changed

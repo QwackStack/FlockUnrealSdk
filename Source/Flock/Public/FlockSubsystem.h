@@ -14,6 +14,7 @@
 #include "Providers/FlockAuthProvider.h"
 #include "Providers/FlockConfigProvider.h"
 #include "Providers/FlockGameProvider.h"
+#include "Providers/FlockPlayerProvider.h"
 #include "Providers/FlockShopProvider.h"
 #include "FlockSubsystem.generated.h"
 
@@ -29,9 +30,8 @@ class UFlockEvents;
  * Initialization is synchronous and needs no network: the Game Version ID is resolved and baked at
  * edit time (Tools > Flock > Resolve Game Version), and runtime init uses it directly.
  *
- * The Authentication provider is wired (with automatic session restore after init); the remaining
- * feature providers (Config / Game / Player / Commands / Shop / Asset / Analytics) land in later
- * releases.
+ * The Authentication provider is wired (with automatic session restore after init), along with the
+ * Config, Game, Player, Shop, and Analytics providers; Commands and Asset land in later releases.
  */
 UCLASS()
 class FLOCK_API UFlockSubsystem : public UGameInstanceSubsystem
@@ -192,7 +192,7 @@ public:
 
 	/**
 	 * Game config + patches provider. Null before initialization and after shutdown. C++ API; Blueprint
-	 * uses the Flock config async nodes and UFlockGameConfigLibrary.
+	 * uses the Flock config async nodes and UFlockStructuredDataLibrary.
 	 */
 	FFlockConfigProvider* GetConfigProvider() const { return ConfigProvider.Get(); }
 
@@ -206,6 +206,14 @@ public:
 	 * C++ API; Blueprint uses the Flock shop async nodes.
 	 */
 	FFlockShopProvider* GetShopProvider() const { return ShopProvider.Get(); }
+
+	// ── Player ──
+
+	/**
+	 * Player data + templates + bans provider. Null before initialization and after shutdown. C++ API;
+	 * Blueprint uses the Flock player async nodes.
+	 */
+	FFlockPlayerProvider* GetPlayerProvider() const { return PlayerProvider.Get(); }
 
 	// ── Test seams (call before initialization; unused by games) ──
 
@@ -259,6 +267,7 @@ private:
 	TSharedPtr<FFlockConfigProvider> ConfigProvider;
 	TSharedPtr<FFlockGameProvider> GameProvider;
 	TSharedPtr<FFlockShopProvider> ShopProvider;
+	TSharedPtr<FFlockPlayerProvider> PlayerProvider;
 
 	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
 	TSharedPtr<IFlockTokenStore> TestTokenStore;

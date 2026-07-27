@@ -4,9 +4,9 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 
 > **Early release.** The SDK's boot/init foundation, the network transport (HTTP client, automatic
 > retry, typed errors), automatic edit-time Game Version baking, **player authentication**,
-> **analytics**, **game config** (with an offline snapshot cache), and the **shop** (catalog, purchase,
-> inventory) now ship. The remaining feature providers (player data, commands, assets) build on this
-> next. See [Status](#status).
+> **analytics**, **game config** (with an offline snapshot cache), the **shop** (catalog, purchase,
+> inventory), and **player data & templates** (with bans) now ship. The remaining feature providers
+> (commands, assets) build on this next. See [Status](#status).
 
 ## Contents
 
@@ -20,6 +20,7 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 - [Logging & debugging](#logging--debugging)
 - [Authentication](#authentication)
 - [Analytics](#analytics)
+- [Player data & templates](#player-data--templates)
 - [Testing](#testing)
 - [Status](#status)
 
@@ -54,10 +55,16 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   item for a player, and read a player's inventory. Catalog reads are cached and snapshot-backed; a
   purchase is money-safe (never retried on an ambiguous failure, never queued) and reports the
   transaction for revenue metrics; inventory is always fetched fresh.
-- **Offline snapshot cache** — successful config, game, and shop-catalog reads are cached to disk,
-  scoped to the game version, and served when the network is down; toggleable in settings.
+- **Player data & templates** — read a player's saved data (by row id, a page of rows, or the signed-in
+  player's row for a template by the template's id or tag), browse the player templates that define those
+  records, and check a player's ban status. A player's rows are paginated once and cached; templates are
+  cached and snapshot-backed.
+- **Offline snapshot cache** — successful config, game, shop-catalog, and player-template reads are cached
+  to disk, scoped to the game version, and served when the network is down; toggleable in settings.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
-- **Blueprint-friendly** — the accessor, init, state, events, and error types are exposed to Blueprint.
+- **Blueprint-friendly** — every provider call is a self-contained async node, and the fire-and-forget
+  calls plus auth/session state are one-node too (no "Get Flock Subsystem" needed). Events, error types,
+  and structured data all read from Blueprint.
 
 ## Requirements
 
@@ -155,8 +162,21 @@ if (UFlockSubsystem* Flock = UFlockSubsystem::Get(WorldContextObject))
 `UFlockSubsystem::Get(WorldContext)` is a convenience wrapper over
 `GetGameInstance()->GetSubsystem<UFlockSubsystem>()`; either works.
 
-**Blueprint:** use **Get Flock Subsystem** (or the built-in **Get Game Instance Subsystem** node), then
-call `Is Initialized`, `Get Game Version Id`, etc. For events, call **Get Events** and bind there.
+**Blueprint: you usually don't need to get the subsystem at all.** Every node resolves the SDK from the
+graph it's called in, so a call is one node with no Target pin to wire:
+
+- **Provider calls** are async nodes with success/failure pins — `Flock Login With Email`,
+  `Flock Get Config By Name`, `Flock Get Shop Items`, `Flock Get My Data By Tag`, `Flock Purchase`, … .
+  Each fires exactly one pin, and fails with a Validation error if the SDK isn't initialized.
+- **Fire-and-forget calls and state reads** are plain nodes — `Flock Log Event`, `Flock Record Screen
+  View`, `Flock Set Analytics Consent`, `Flock Is Authenticated`, `Flock Get Player Id`, `Flock Logout`,
+  `Flock Is Initialized`, `Flock Get Events`, … . All are safe no-ops (or return defaults) before init,
+  so they never need an "is ready" guard.
+
+Search the node menu for **Flock** to see the full set. The subsystem is still there via **Get Flock
+Subsystem** if you prefer a Target pin, and you *do* need it for one-time setup — `Initialize From
+Settings`, `Initialize With Config`, and `Shutdown Sdk`, which are deliberately not duplicated as
+free-floating nodes.
 
 ## SDK events
 
@@ -252,8 +272,10 @@ Implement `IFlockTokenStore` to plug in platform keychain storage.
 
 ## Analytics
 
-Reach it with `UFlockSubsystem::GetAnalyticsProvider()` in C++, or the *Flock | Analytics* nodes and
-subsystem functions in Blueprint. Everything below is off when **Analytics Enabled** is unticked in
+Reach it with `UFlockSubsystem::GetAnalyticsProvider()` in C++, or the *Flock | Analytics* nodes in
+Blueprint — `Flock Log Event`, `Flock Log Error`, `Flock Log Exception`, `Flock Record Screen View`,
+`Flock Set Analytics Consent`, `Flock Flush Analytics`, and the session nodes, none of which need the
+subsystem wired in. Everything below is off when **Analytics Enabled** is unticked in
 *Project Settings → Plugins → Flock SDK*.
 
 ```cpp
@@ -281,17 +303,26 @@ site — it takes ints, floats and bools directly and converts implicitly, so it
 taking metadata.
 
 **In Blueprint**, drag off an *Extra Data* pin and the same builders appear as chainable nodes —
-*Flock Metadata (Integer)*, *(Float)*, *(Boolean)*, *(String)*, plus *Make Flock Metadata* to start a
-chain:
+*Flock Metadata (Integer)*, *(Float)*, *(Boolean)*, *(String)*. Add one node per field and chain them:
 
 ```
-Make Flock Metadata → Flock Metadata (Integer) "level" 3 → Flock Metadata (Boolean) "flawless" true → Extra Data
+Flock Metadata (Integer) "level" 3 → Flock Metadata (Boolean) "flawless" true → Extra Data
 ```
 
-Each takes a metadata map and returns one, so they chain and branch freely, and they write values
-identically to the C++ builder. Leaving an *Extra Data* pin unconnected is fine — you get empty
-metadata. On *Log Analytics Error*, right-click the **Details** pin and choose **Split Struct Pin** to
-get Logical Expression, Error Code, Error Data and Extra Data as separate pins.
+**The first node needs nothing wired into its own Metadata pin** — leaving it empty starts a fresh map,
+so a single field is a single node. (*Make Flock Metadata* exists to produce an explicitly empty map;
+you don't need it to begin a chain.) Each node copies the map coming in and adds its one key, so the
+chain reads left to right, mixes types freely, and writes values identically to the C++ builder. Keys
+are a map, so order doesn't matter — but if two nodes use the same key, the **last one wins**. Leaving
+an *Extra Data* pin unconnected is fine — you get empty metadata.
+
+On *Flock Log Error*, right-click the **Details** pin and choose **Split Struct Pin** to get Logical
+Expression, Error Code, Error Data and Extra Data as separate pins.
+
+> If a logged event never reaches the backend, check consent first: logging is **silently dropped**
+> without it, and entries are spooled to disk rather than sent immediately. Call `Flock Set Analytics
+> Consent (true)` once, and use `Flock Flush Analytics` to drain the spool now instead of waiting for
+> the next interval.
 
 `FFlockLogDetails` carries the optional detail on an error or exception as one named argument:
 `LogicalExpression` (the invariant that failed), `ErrorCode` (yours), `ErrorData` (structured facts
@@ -353,6 +384,51 @@ or tick it for an opt-in flow where nothing is collected until you call `SetAnal
 > Analytics timestamps come from the device clock, so they are wrong if the player's clock is wrong.
 > Session durations are unaffected — they are measured from frame deltas, not clock readings.
 
+## Player data & templates
+
+A **player template** defines a kind of per-player record — a currency wallet, an achievement set — with
+its schema and default values. A **player data** row is one player's values for one template.
+
+**Blueprint** — the *Flock | Player* nodes: `Flock Get My Data By Template`, `Flock Get My Data By Tag`,
+`Flock Get Player Data By Id`, `Flock Get All Player Data`, `Flock Get Player Templates`, `Flock Get
+Player Template By Id / By Name / By Tag`, `Flock Get Template Player Data`, and `Flock Get Player Ban`.
+Read values off a returned row's **Data** pin with the *Get Data Int / Float / String / Bool / String
+Array* nodes (dotted path + fallback).
+
+**C++** — everything lives on the player provider:
+
+```cpp
+UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+
+// The signed-in player's wallet, found by the template's tag:
+Sdk->GetPlayerProvider()->GetMyDataByTag(TEXT("currency"),
+    [](TFlockResult<FFlockPlayerData> Result)
+    {
+        if (Result.bSuccess)
+        {
+            int32 Coins = 0;
+            Result.Value.Data.TryGetInt(TEXT("coins"), Coins);
+        }
+    });
+```
+
+Things worth knowing:
+
+- **"My data" needs a signed-in player.** `GetMyDataByTemplate` / `ByTag` resolve the current player and
+  fail with a Validation error when signed out. The first call paginates *all* of that player's rows and
+  caches them, so asking for a second template afterwards costs nothing.
+- **No row is not an error.** A player who has never written to a template comes back as a success with
+  an empty record (empty `Id`), not a failure — check `Id` rather than the result flag.
+- **A ban is always fetched fresh** and is never cached, because it can change server-side at any moment.
+  An unbanned player is likewise a normal success with an empty record; `IsBanned()` tells them apart.
+  Per-feature bans are keyed by feature name in the record's `Data` map.
+- **Signing out drops the cached rows** so the next player never reads the previous one's data. Templates
+  and their offline snapshot survive — they belong to the game version, not the player.
+- **Reading structured data** — a row's and a template's `data` both come back as an `FFlockStructuredData`
+  handle, the same type game config uses. Read it by dotted path (`TryGetInt("stats.level")`, exact match
+  first, then the flattened PascalCase name), or bind the whole thing to your own `USTRUCT` with
+  `GetDataAs<T>()`.
+
 ## Testing
 
 Automation tests live beside each feature and are grouped under the `Flock.` prefix. Run them from
@@ -365,16 +441,19 @@ UnrealEditor-Cmd.exe <YourProject>.uproject -ExecCmds="Automation RunTests Flock
 ## Status
 
 Shipping: the boot/init foundation, the HTTP transport, automatic version baking, the SDK event hub,
-player authentication, analytics, game config (with the offline snapshot cache), and the shop
-(catalog, purchase, inventory). Not yet wired:
+player authentication, analytics, game config (with the offline snapshot cache), the shop
+(catalog, purchase, inventory), and player data & templates (with bans). Not yet wired:
 
-- **Remaining feature providers.** Player data, commands, and assets build on the same
-  HTTP layer and land in later releases — the transport, retry, typed error model, and endpoint
-  registry they need are already in place.
+- **Remaining feature providers.** Commands and assets build on the same HTTP layer and land in later
+  releases — the transport, retry, typed error model, and endpoint registry they need are already in
+  place.
 - **Analytics gameplay events.** This release ships the diagnostic log API (event/error/exception) and
   purchase/transaction reporting (with the shop); custom gameplay event tracking arrives later.
-- **Blueprint call nodes.** The generic HTTP client is C++-only (it's templated); typed Blueprint
-  async nodes arrive per-operation with each provider, as they have for auth and analytics.
+- **Typed schema codegen.** Config and player-template data is read by dotted path or bound to a
+  `USTRUCT` you write yourself; generated typed accessors arrive later.
+- **A few Blueprint gaps.** Config *patch* reads (all patches, by id, by config) and configs by version
+  tag are C++-only for now — in Blueprint, `Flock Resolve Config Data` already returns the patched-or-base
+  values, which is what most graphs want. Provider cache clearing is also C++-only.
 
 See [CHANGELOG.md](CHANGELOG.md) for the version history.
 

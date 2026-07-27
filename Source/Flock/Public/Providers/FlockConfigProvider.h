@@ -4,49 +4,14 @@
 
 #include "CoreMinimal.h"
 #include "Auth/FlockAuthSession.h"
+#include "Http/FlockInFlight.h"
 #include "Http/FlockProviderBase.h"
 #include "Models/FlockConfigModels.h"
 
 /**
- * De-duplicates concurrent asks for one key: the first caller starts the fetch, later callers queue, and
- * the single result fans out to all. With Blueprint async nodes in play, several widgets asking for the
- * same config on screen-open is the norm, so this collapses N identical round trips into one.
- */
-template <typename T>
-class TFlockInFlight
-{
-public:
-	/** Registers OnComplete under Key. Returns true only for the first caller — the one that starts the fetch. */
-	bool Register(const FString& Key, TFunction<void(TFlockResult<T>)> OnComplete)
-	{
-		TArray<TFunction<void(TFlockResult<T>)>>& Waiters = Map.FindOrAdd(Key);
-		const bool bFirst = Waiters.Num() == 0;
-		Waiters.Add(MoveTemp(OnComplete));
-		return bFirst;
-	}
-
-	/** Delivers Result to every caller waiting on Key and clears it. */
-	void Complete(const FString& Key, const TFlockResult<T>& Result)
-	{
-		TArray<TFunction<void(TFlockResult<T>)>> Waiters;
-		Map.RemoveAndCopyValue(Key, Waiters);
-		for (TFunction<void(TFlockResult<T>)>& Waiter : Waiters)
-		{
-			if (Waiter)
-			{
-				Waiter(Result);
-			}
-		}
-	}
-
-private:
-	TMap<FString, TArray<TFunction<void(TFlockResult<T>)>>> Map;
-};
-
-/**
  * Game config + patches. Fetches (all patches, patch by id, patches by config, config by id/name, configs
  * by tag / version tag, player features) and the patch-else-config resolver behind ResolveConfigData —
- * which is the codegen entry point: it returns the resolved values as an opaque FFlockGameConfigData, so
+ * which is the codegen entry point: it returns the resolved values as an opaque FFlockStructuredData, so
  * the resolution policy stays out of the caller's type.
  *
  * Every read is memoized in-process and (except player features) backed by the offline snapshot, so a
@@ -77,14 +42,17 @@ public:
 	void GetConfigsByTag(EFlockConfigTag Tag, TFunction<void(TFlockResult<TArray<FFlockGameConfigSchema>>)> OnComplete);
 	void GetConfigsByVersionTag(EFlockConfigTag Tag, TFunction<void(TFlockResult<TArray<FFlockGameConfigSchema>>)> OnComplete);
 
-	/** Per-player resolved features. Memoized per player, but never snapshotted — stale features are worse than a refetch. */
+	/**
+	 * Per-player resolved features (empty PlayerId = the signed-in player; Validation when signed out).
+	 * Memoized per player, but never snapshotted — stale features are worse than a refetch.
+	 */
 	void GetPlayerFeatures(const FString& PlayerId, TFunction<void(TFlockResult<FFlockGameConfigSchema>)> OnComplete);
 
 	/**
 	 * Resolves a config's current values: the patch for this game version if one exists, otherwise the
 	 * config's own base data (never empty defaults). The codegen entry point.
 	 */
-	void ResolveConfigData(const FString& ConfigId, TFunction<void(TFlockResult<FFlockGameConfigData>)> OnComplete);
+	void ResolveConfigData(const FString& ConfigId, TFunction<void(TFlockResult<FFlockStructuredData>)> OnComplete);
 
 	/** Drops every in-process cache and the config snapshot category, so the next fetch hits the backend. */
 	void ClearCache();
