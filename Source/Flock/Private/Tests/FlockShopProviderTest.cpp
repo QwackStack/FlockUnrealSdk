@@ -182,12 +182,16 @@ bool FFlockShopGetByIdTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("id parsed"), Shop.Id, FString(TEXT("shop-1")));
 	TestEqual(TEXT("game_version_id -> GameVersionId"), Shop.GameVersionId, FString(TEXT("ver-1")));
 	TestEqual(TEXT("data.web_shop_url -> WebShopUrl"), Shop.Data.WebShopUrl, FString(TEXT("https://w")));
-	TestTrue(TEXT("free-form stats kept verbatim"), Shop.Data.StatsJson.Contains(TEXT("visits")));
+	int32 Visits = 0;
+	TestTrue(TEXT("stats.visits read via handle (no manual parse)"), Shop.Data.Stats.TryGetInt(TEXT("visits"), Visits));
+	TestEqual(TEXT("stats.visits value"), Visits, 5);
 	if (TestEqual(TEXT("one nested item"), Shop.ShopItems.Num(), 1))
 	{
 		TestEqual(TEXT("nested item id"), Shop.ShopItems[0].Id, FString(TEXT("item-1")));
 		TestEqual(TEXT("nested item price"), Shop.ShopItems[0].Price, 100);
-		TestTrue(TEXT("nested item free-form data kept verbatim"), Shop.ShopItems[0].DataJson.Contains(TEXT("rarity")));
+		FString Rarity;
+		TestTrue(TEXT("nested item data.rarity read via handle"), Shop.ShopItems[0].Data.TryGetString(TEXT("rarity"), Rarity));
+		TestEqual(TEXT("nested item data.rarity value"), Rarity, FString(TEXT("epic")));
 	}
 
 	Fx.Provider->GetById(TEXT("shop-1"), [&](TFlockResult<FFlockShop> R) {});
@@ -276,6 +280,14 @@ bool FFlockShopGetAllSnapshotTest::RunTest(const FString& Parameters)
 		if (TestEqual(TEXT("snapshot preserved items"), Page.Items.Num(), 1))
 		{
 			TestEqual(TEXT("snapshot preserved shop id"), Page.Items[0].Id, FString(TEXT("shop-1")));
+			// The opaque-data handle must survive the snapshot round-trip (it stores JSON in a reflected field).
+			if (Page.Items[0].ShopItems.Num() > 0)
+			{
+				FString Rarity;
+				TestTrue(TEXT("free-form data survived the snapshot round-trip"),
+					Page.Items[0].ShopItems[0].Data.TryGetString(TEXT("rarity"), Rarity));
+				TestEqual(TEXT("snapshot data.rarity value"), Rarity, FString(TEXT("epic")));
+			}
 		}
 	}
 	Cleanup(Dir);
@@ -298,7 +310,9 @@ bool FFlockShopItemsByShopTest::RunTest(const FString& Parameters)
 	if (TestEqual(TEXT("one item"), Items.Num(), 1))
 	{
 		TestEqual(TEXT("item id"), Items[0].Id, FString(TEXT("item-1")));
-		TestTrue(TEXT("item free-form data kept verbatim"), Items[0].DataJson.Contains(TEXT("rarity")));
+		FString Rarity;
+		TestTrue(TEXT("item data.rarity read via handle"), Items[0].Data.TryGetString(TEXT("rarity"), Rarity));
+		TestEqual(TEXT("item data.rarity value"), Rarity, FString(TEXT("epic")));
 	}
 
 	// A patch id lands in the query and keys a distinct cache entry (a second request).

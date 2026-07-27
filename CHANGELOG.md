@@ -5,6 +5,16 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-07-27
+
+### Changed
+- **Shop free-form data is now read with typed accessors instead of a raw JSON string.** A shop's
+  `stats` and a shop item's `data` (open, game-authored objects) come back as an `FFlockJsonData`
+  handle: read values by dotted path with `TryGetInt/Float/String/Bool/String Array`, `HasField`, and
+  `GetFieldNames` in C++, or the new **UFlockJsonDataLibrary** nodes (Get Json Int/Float/String/Bool/…)
+  in Blueprint — no hand-written JSON parsing. Replaces the previous `DataJson` / `StatsJson` strings on
+  `FFlockShopItem` / `FFlockShopData`. The blob still round-trips the offline snapshot untouched.
+
 ## [0.10.0] - 2026-07-26
 
 ### Added
