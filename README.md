@@ -4,8 +4,9 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 
 > **Early release.** The SDK's boot/init foundation, the network transport (HTTP client, automatic
 > retry, typed errors), automatic edit-time Game Version baking, **player authentication**,
-> **analytics**, and **game config** (with an offline snapshot cache) now ship. The remaining feature
-> providers (player data, commands, shop, assets) build on this next. See [Status](#status).
+> **analytics**, **game config** (with an offline snapshot cache), and the **shop** (catalog, purchase,
+> inventory) now ship. The remaining feature providers (player data, commands, assets) build on this
+> next. See [Status](#status).
 
 ## Contents
 
@@ -49,8 +50,12 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   config's effective values (patch for this game version, else its base data). Read values in Blueprint
   with typed accessors by dotted path, or bind them to your `USTRUCT` in C++. Plus the game record and
   version info.
-- **Offline snapshot cache** — successful config and game reads are cached to disk, scoped to the game
-  version, and served when the network is down; toggleable in settings.
+- **Shop** — browse shops and items (all shops, by id or name, a single item, a shop's items), buy an
+  item for a player, and read a player's inventory. Catalog reads are cached and snapshot-backed; a
+  purchase is money-safe (never retried on an ambiguous failure, never queued) and reports the
+  transaction for revenue metrics; inventory is always fetched fresh.
+- **Offline snapshot cache** — successful config, game, and shop-catalog reads are cached to disk,
+  scoped to the game version, and served when the network is down; toggleable in settings.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
 - **Blueprint-friendly** — the accessor, init, state, events, and error types are exposed to Blueprint.
 
@@ -360,13 +365,14 @@ UnrealEditor-Cmd.exe <YourProject>.uproject -ExecCmds="Automation RunTests Flock
 ## Status
 
 Shipping: the boot/init foundation, the HTTP transport, automatic version baking, the SDK event hub,
-player authentication, and analytics. Not yet wired:
+player authentication, analytics, game config (with the offline snapshot cache), and the shop
+(catalog, purchase, inventory). Not yet wired:
 
-- **Remaining feature providers.** Config, player data, commands, shop, and assets build on the same
+- **Remaining feature providers.** Player data, commands, and assets build on the same
   HTTP layer and land in later releases — the transport, retry, typed error model, and endpoint
   registry they need are already in place.
-- **Analytics gameplay events.** This release ships the diagnostic log API (event/error/exception);
-  custom gameplay event tracking and purchase/transaction reporting arrive with the shop provider.
+- **Analytics gameplay events.** This release ships the diagnostic log API (event/error/exception) and
+  purchase/transaction reporting (with the shop); custom gameplay event tracking arrives later.
 - **Blueprint call nodes.** The generic HTTP client is C++-only (it's templated); typed Blueprint
   async nodes arrive per-operation with each provider, as they have for auth and analytics.
 

@@ -1,8 +1,8 @@
 // Copyright 2022, Qwacks. All Rights Reserved.
 
 // A dev-only console command that drives the Flock SDK surface and narrates each step to the log,
-// so you can watch boot/init, authentication, and analytics behavior against your configured Flock
-// backend.
+// so you can watch boot/init, config/game, authentication, shop, and analytics behavior against your
+// configured Flock backend.
 // It initializes from Project Settings > Flock SDK (API URL, key, and the resolved Game Version),
 // so it needs valid settings and a reachable backend to get past init. Run from the editor or
 // in-game console: `Flock.SelfTest` (also works via -ExecCmds in a development build).
@@ -23,9 +23,11 @@
 #include "Models/FlockAuthModels.h"
 #include "Models/FlockConfigModels.h"
 #include "Models/FlockGameModels.h"
+#include "Models/FlockShopModels.h"
 #include "Providers/FlockAuthProvider.h"
 #include "Providers/FlockConfigProvider.h"
 #include "Providers/FlockGameProvider.h"
+#include "Providers/FlockShopProvider.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
 
@@ -153,12 +155,141 @@ namespace
 			});
 	}
 
+	/**
+	 * Public shop catalog reads against the configured backend, signed out — the leg only a real backend
+	 * can prove, because it exercises all three shop wire shapes at once: paginated `GetAll`, the bare
+	 * shop-by-id read, and the enveloped-list items-by-shop. Independent one-shots that narrate their own
+	 * result; does not own teardown.
+	 */
+	void RunShopSweep(FFlockShopProvider* Shop, const TSharedRef<IFlockLogger>& Logger)
+	{
+		if (Shop == nullptr)
+		{
+			return;
+		}
+
+		Shop->GetAll(1, 50, [Shop, Logger](TFlockResult<FFlockShopPage> Result)
+		{
+			if (!Result.bSuccess)
+			{
+				Logger->LogInfo(FString::Printf(TEXT("Self-test: shops (paginated) -> failed (%s)"), *Result.Error.Message));
+				return;
+			}
+			Logger->LogInfo(FString::Printf(TEXT("Self-test: shops (paginated) -> %d shop(s) (total %d)."),
+				Result.Value.Items.Num(), Result.Value.Total));
+			if (Result.Value.Items.Num() == 0)
+			{
+				return;
+			}
+
+			const FFlockShop& First = Result.Value.Items[0];
+			Logger->LogInfo(FString::Printf(TEXT("Self-test: first shop -> id=%s name='%s' items=%d"),
+				*First.Id, *First.Name, First.ShopItems.Num()));
+
+			const FString ShopId = First.Id;
+			// Bare shop-by-id (proves the raw verb, not the envelope).
+			Shop->GetById(ShopId, [ShopId, Logger](TFlockResult<FFlockShop> ByIdResult)
+			{
+				Logger->LogInfo(ByIdResult.bSuccess
+					? FString::Printf(TEXT("Self-test: shop by id %s -> name='%s'"), *ShopId, *ByIdResult.Value.Name)
+					: FString::Printf(TEXT("Self-test: shop by id %s -> failed (%s)"), *ShopId, *ByIdResult.Error.Message));
+			});
+			// Enveloped-list items-by-shop (proves the GetList path).
+			Shop->GetItemsByShop(ShopId, FString(), [ShopId, Logger](TFlockResult<TArray<FFlockShopItem>> ItemsResult)
+			{
+				Logger->LogInfo(ItemsResult.bSuccess
+					? FString::Printf(TEXT("Self-test: items for shop %s -> %d item(s)"), *ShopId, ItemsResult.Value.Num())
+					: FString::Printf(TEXT("Self-test: items for shop %s -> failed (%s)"), *ShopId, *ItemsResult.Error.Message));
+			});
+		});
+	}
+
+	/**
+	 * Signed-in shop sweep against the configured backend: list the catalog, buy the first item found,
+	 * then read the player's inventory — a fresh (never-cached) read that shows the new entry. A purchase
+	 * failure (e.g. insufficient funds) still proves the wiring: the request reaches the backend and a
+	 * coded error comes back. The analytics transactions around the purchase are fire-and-forget, so this
+	 * narration never waits on them. Hands off to Next, which continues the signed-in chain.
+	 */
+	void RunShopSignedInSweep(FFlockShopProvider* Shop, const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Next)
+	{
+		if (Shop == nullptr)
+		{
+			Next();
+			return;
+		}
+
+		Shop->GetAll(1, 50, [Shop, Logger, Next](TFlockResult<FFlockShopPage> ShopsResult)
+		{
+			// The first shop item across the catalog is the purchase candidate.
+			FString ItemId;
+			FString ItemName;
+			if (ShopsResult.bSuccess)
+			{
+				for (const FFlockShop& S : ShopsResult.Value.Items)
+				{
+					for (const FFlockShopItem& Item : S.ShopItems)
+					{
+						if (!Item.Id.IsEmpty())
+						{
+							ItemId = Item.Id;
+							ItemName = Item.Name;
+							break;
+						}
+					}
+					if (!ItemId.IsEmpty())
+					{
+						break;
+					}
+				}
+			}
+			Logger->LogInfo(ShopsResult.bSuccess
+				? FString::Printf(TEXT("Self-test: shop catalog (signed in) -> %d shop(s); purchase candidate: %s"),
+					ShopsResult.Value.Items.Num(), ItemId.IsEmpty() ? TEXT("(none found)") : *ItemName)
+				: FString::Printf(TEXT("Self-test: shop catalog (signed in) -> failed (%s)"), *ShopsResult.Error.Message));
+
+			// A fresh inventory read (never cached), reused after the purchase to show the new entry.
+			auto ReadInventory = [Shop, Logger, Next]()
+			{
+				Shop->GetPlayerInventory(FString(), 1, 50, [Logger, Next](TFlockResult<FFlockPlayerInventoryPage> InvResult)
+				{
+					Logger->LogInfo(InvResult.bSuccess
+						? FString::Printf(TEXT("Self-test: player inventory -> %d item(s) on this page (total %d)"),
+							InvResult.Value.Items.Num(), InvResult.Value.Total)
+						: FString::Printf(TEXT("Self-test: player inventory -> failed (%s)"), *InvResult.Error.Message));
+					Next();
+				});
+			};
+
+			if (ItemId.IsEmpty())
+			{
+				Logger->LogInfo(TEXT("Self-test: no shop item to purchase; reading inventory only."));
+				ReadInventory();
+				return;
+			}
+
+			Logger->LogInfo(FString::Printf(
+				TEXT("Self-test: purchasing shop item '%s' (%s) for the signed-in player."), *ItemName, *ItemId));
+			Shop->Purchase(ItemId, FString(), [Logger, ReadInventory](TFlockResult<FFlockPlayerInventory> PurchaseResult)
+			{
+				Logger->LogInfo(PurchaseResult.bSuccess
+					? FString::Printf(TEXT("Self-test: purchase -> owned inventory entry %s (status=%s)"),
+						*PurchaseResult.Value.Id, *PurchaseResult.Value.Status)
+					: FString::Printf(
+						TEXT("Self-test: purchase -> failed (%s); wiring still proven — a coded error means the request reached the backend."),
+						*PurchaseResult.Error.Message));
+				// Inventory is never cached, so this shows the post-purchase state.
+				ReadInventory();
+			});
+		});
+	}
+
 	// Runs the auth surface against the configured backend. The register -> login flow is chained (login
-	// fires on register success OR "already registered") and hands off to the analytics sweep — which
-	// calls Teardown when it finishes; the other calls are independent one-shots that narrate their own
-	// result. Every completion captures shared refs / the raw providers (kept alive by the caller's
-	// AddToRoot until Teardown), never `this`, so a late arrival stays safe.
-	void RunAuthSweep(FFlockAuthProvider& AuthRef, FFlockAnalyticsProvider* Analytics,
+	// fires on register success OR "already registered") and hands off to the signed-in shop sweep and
+	// then the analytics sweep — which calls Teardown when it finishes; the other calls are independent
+	// one-shots that narrate their own result. Every completion captures shared refs / the raw providers
+	// (kept alive by the caller's AddToRoot until Teardown), never `this`, so a late arrival stays safe.
+	void RunAuthSweep(FFlockAuthProvider& AuthRef, FFlockAnalyticsProvider* Analytics, FFlockShopProvider* Shop,
 		const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Teardown)
 	{
 		FFlockAuthProvider* Auth = &AuthRef;
@@ -208,7 +339,7 @@ namespace
 		// chain authenticates, to get a real answer instead of a server 401. Teardown runs on whichever
 		// branch ends the chain, so the subsystem outlives every async round trip.
 		Auth->RegisterWithEmail(DemoEmail, DemoPassword, DemoName,
-			[Auth, Analytics, Logger, Teardown, NarrateAction](TFlockResult<FFlockRegisterResult> Result)
+			[Auth, Analytics, Shop, Logger, Teardown, NarrateAction](TFlockResult<FFlockRegisterResult> Result)
 			{
 				if (!Result.bSuccess)
 				{
@@ -222,7 +353,7 @@ namespace
 					: TEXT("Self-test: email register -> registered + signed in; logging in to confirm."));
 
 				Auth->LoginWithEmail(DemoEmail, DemoPassword,
-					[Auth, Analytics, Logger, Teardown, NarrateAction](TFlockResult<FFlockPlayerLoginResponse> LoginResult)
+					[Auth, Analytics, Shop, Logger, Teardown, NarrateAction](TFlockResult<FFlockPlayerLoginResponse> LoginResult)
 					{
 						if (!LoginResult.bSuccess)
 						{
@@ -237,25 +368,31 @@ namespace
 
 						// Signed in from here: the bearer rides along automatically.
 						Auth->SendEmailVerification(
-							[Auth, Analytics, PlayerId, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> SendResult)
+							[Auth, Analytics, Shop, PlayerId, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> SendResult)
 							{
 								NarrateAction(TEXT("send email verification (signed in)"), SendResult);
 
 								// The real code arrives by email, so this placeholder is expected to be
 								// rejected — a code error here still proves the authenticated round trip.
 								Auth->VerifyEmail(DemoCode,
-									[Analytics, PlayerId, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> VerifyResult)
+									[Analytics, Shop, PlayerId, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> VerifyResult)
 									{
 										NarrateAction(TEXT("verify email (signed in, placeholder code)"), VerifyResult);
 
-										// Analytics needs a signed-in player, so it runs here and owns
-										// the teardown from this point.
-										if (Analytics != nullptr)
+										// Shop purchase + inventory and the analytics sweep both need a signed-in
+										// player, so they run here. The shop sweep goes first and hands off to
+										// analytics (which owns teardown), so the chain — and the subsystem — stays
+										// alive across every round trip.
+										TFunction<void()> AfterShop = [Analytics, PlayerId, Logger, Teardown]()
 										{
-											RunAnalyticsSweep(*Analytics, PlayerId, Logger, Teardown);
-											return;
-										}
-										Teardown();
+											if (Analytics != nullptr)
+											{
+												RunAnalyticsSweep(*Analytics, PlayerId, Logger, Teardown);
+												return;
+											}
+											Teardown();
+										};
+										RunShopSignedInSweep(Shop, Logger, AfterShop);
 									});
 							});
 					});
@@ -442,6 +579,10 @@ namespace
 		Logger->LogInfo(TEXT("Self-test: config + game sweep (public routes, signed out)."));
 		RunConfigSweep(Sdk->GetGameProvider(), Sdk->GetConfigProvider(), Logger);
 
+		// Shop catalog is public too; the purchase + inventory legs need sign-in and run in the auth chain.
+		Logger->LogInfo(TEXT("Self-test: shop catalog sweep (public routes, signed out)."));
+		RunShopSweep(Sdk->GetShopProvider(), Logger);
+
 		Logger->LogInfo(TEXT("Self-test: Logout to start from a clean signed-out state (safe when already signed out)."));
 		Sdk->Logout();
 
@@ -463,14 +604,14 @@ namespace
 			return;
 		}
 
-		RunAuthSweep(*Auth, Analytics, Logger, Teardown);
-		Logger->LogInfo(TEXT("Self-test: auth sweep dispatched; the analytics session sweep runs once it signs in, "
-			"and teardown follows that."));
+		RunAuthSweep(*Auth, Analytics, Sdk->GetShopProvider(), Logger, Teardown);
+		Logger->LogInfo(TEXT("Self-test: auth sweep dispatched; the signed-in shop and analytics sweeps run once "
+			"it signs in, and teardown follows those."));
 	}
 
 	FAutoConsoleCommand GFlockSelfTestCommand(
 		TEXT("Flock.SelfTest"),
-		TEXT("Drives the Flock SDK surface (boot/init + config/game + auth + analytics) and narrates each step to the log (development builds only)."),
+		TEXT("Drives the Flock SDK surface (boot/init + config/game + auth + shop + analytics) and narrates each step to the log (development builds only)."),
 		FConsoleCommandDelegate::CreateStatic(&RunFlockSelfTest));
 }
 

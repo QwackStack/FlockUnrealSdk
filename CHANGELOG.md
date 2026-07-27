@@ -5,6 +5,26 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-07-26
+
+### Added
+- **Shop.** Browse your game's shops and items, buy an item, and read a player's inventory. Fetch all
+  shops (paged), a shop by id or by name, a single item, or the items in a shop (optionally as of a
+  patch). Catalog reads are cached in memory and backed by the offline snapshot, so a second read is
+  free and a fetch survives an outage. A shop's and an item's free-form `data` comes back as verbatim
+  JSON you parse in-game.
+- **Purchase.** Buy a shop item for the signed-in player (or a named one). A purchase is money-moving,
+  so it is never retried on an ambiguous failure and never queued — the outcome surfaces so you can
+  decide. Around a purchase the SDK records a Started / Purchased / Failed transaction for revenue
+  metrics; that recording is best-effort and never blocks or fails the purchase.
+- **Player inventory.** Fetch a page of a player's owned items. Inventory changes on every purchase,
+  so it is always fetched fresh (never cached) — offline it fails rather than reporting stale ownership.
+- **Recording transactions.** `RecordTransaction` sends a purchase to the analytics backend for
+  revenue/LTV/ARPU metrics. Requires a signed-in player; sent immediately (not spooled).
+- **Blueprint.** Async nodes for the whole surface — Get All Shops, Get Shop By Id / By Name, Get
+  Shop Item, Get Shop Items, Purchase, and Get Player Inventory. An empty Player Id means "the
+  signed-in player".
+
 ## [0.9.0] - 2026-07-26
 
 ### Added
