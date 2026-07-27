@@ -15,7 +15,7 @@
  * UE reflection has no equivalent of a heterogeneous map-of-anything, so the object is held as a JSON
  * string (reflectable, so it round-trips the offline snapshot untouched) and read through typed
  * dotted-path accessors — no manual JSON parsing at the call site, and Blueprint gets the same reads via
- * UFlockJsonDataLibrary. This is the general-purpose sibling of the config handle FFlockGameConfigData:
+ * UFlockJsonDataLibrary. This is the general-purpose sibling of the config handle FFlockStructuredData:
  * that one additionally flattens a config's DataField tree and carries codegen hooks; this one is a plain
  * pass-through for any provider's free-form data.
  *

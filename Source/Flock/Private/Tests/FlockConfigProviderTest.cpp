@@ -9,6 +9,7 @@
 #include "HAL/FileManager.h"
 #include "Http/FlockHttpClient.h"
 #include "Http/FlockSnapshotStore.h"
+#include "Misc/Base64.h"
 #include "Misc/Paths.h"
 #include "Providers/FlockConfigProvider.h"
 #include "Tests/Support/FlockFakeTransport.h"
@@ -47,6 +48,17 @@ namespace FlockConfigProviderTestHelpers
 			FString::Printf(TEXT("cfg_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
 	}
 
+	/** Minimal signed-in-looking token so the auth session reports a player id. */
+	inline FString MakeTestJwt(const FString& PlayerId)
+	{
+		const int64 Exp = FDateTime::UtcNow().ToUnixTimestamp() + 3600;
+		FString Payload = FBase64::Encode(FString::Printf(TEXT("{\"sub\":\"%s\",\"exp\":%lld}"), *PlayerId, Exp));
+		Payload.ReplaceInline(TEXT("+"), TEXT("-"));
+		Payload.ReplaceInline(TEXT("/"), TEXT("_"));
+		Payload.ReplaceInline(TEXT("="), TEXT(""));
+		return FString::Printf(TEXT("h.%s.s"), *Payload);
+	}
+
 	struct FFixture
 	{
 		FString Dir;
@@ -69,6 +81,12 @@ namespace FlockConfigProviderTestHelpers
 			}
 			Provider = MakeShared<FFlockConfigProvider>(Client, NoRetry(), MakeShared<FFlockNullLogger>(),
 				Session, TEXT("http://x/v1"), Snapshot, TEXT("ver-1"));
+		}
+
+		void SignIn(const FString& PlayerId = TEXT("player-a"))
+		{
+			FString Error;
+			Session->SetTokens(MakeTestJwt(PlayerId), TEXT("r-1"), Error);
 		}
 	};
 
@@ -189,7 +207,7 @@ bool FFlockConfigProviderResolvePatchTest::RunTest(const FString& Parameters)
 
 	int32 Health = 0;
 	bool bDone = false;
-	Fx.Provider->ResolveConfigData(TEXT("cfg-1"), [&](TFlockResult<FFlockGameConfigData> R)
+	Fx.Provider->ResolveConfigData(TEXT("cfg-1"), [&](TFlockResult<FFlockStructuredData> R)
 	{
 		bDone = R.bSuccess;
 		R.Value.TryGetInt(TEXT("MaxHealth"), Health);
@@ -215,7 +233,7 @@ bool FFlockConfigProviderResolveFallbackTest::RunTest(const FString& Parameters)
 
 	int32 Health = 0;
 	bool bDone = false;
-	Fx.Provider->ResolveConfigData(TEXT("cfg-1"), [&](TFlockResult<FFlockGameConfigData> R)
+	Fx.Provider->ResolveConfigData(TEXT("cfg-1"), [&](TFlockResult<FFlockStructuredData> R)
 	{
 		bDone = R.bSuccess;
 		R.Value.TryGetInt(TEXT("MaxHealth"), Health);
@@ -236,7 +254,7 @@ bool FFlockConfigProviderResolveFailTest::RunTest(const FString& Parameters)
 	Fx.Fake->On(TEXT("game_patch/config"), FFlockFakeTransport::Offline());
 
 	bool bFailed = false;
-	Fx.Provider->ResolveConfigData(TEXT("cfg-1"), [&](TFlockResult<FFlockGameConfigData> R) { bFailed = !R.bSuccess; });
+	Fx.Provider->ResolveConfigData(TEXT("cfg-1"), [&](TFlockResult<FFlockStructuredData> R) { bFailed = !R.bSuccess; });
 	TestTrue(TEXT("resolve fails when the patch fetch fails and nothing is cached"), bFailed);
 
 	Cleanup(Fx.Dir);
@@ -359,6 +377,45 @@ bool FFlockConfigProviderPermanentTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("permanent failure propagates past the cache"), bFailed);
 	}
 	Cleanup(Dir);
+	return true;
+}
+
+// An empty Player Id means "the signed-in player", matching every other Player ID argument in the SDK —
+// so the Blueprint node's Player Id pin can be left blank. Signed out, it is a Validation failure with no
+// request, rather than a call to a malformed /player//features URL.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConfigProviderPlayerFeaturesDefaultTest, "Flock.Config.Provider.PlayerFeaturesDefaultsToSignedInPlayer",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockConfigProviderPlayerFeaturesDefaultTest::RunTest(const FString& Parameters)
+{
+	{
+		// Signed in: an empty id resolves to the session's player and rides the URL.
+		FFixture Fx;
+		Fx.SignIn(TEXT("player-a"));
+		Fx.Fake->On(TEXT("player/player-a/features"), FFlockFakeTransport::Ok(ConfigBody));
+
+		bool bDone = false;
+		Fx.Provider->GetPlayerFeatures(FString(), [&](TFlockResult<FFlockGameConfigSchema> R) { bDone = R.bSuccess; });
+		TestTrue(TEXT("empty id resolves to the signed-in player"), bDone);
+		TestEqual(TEXT("signed-in player id used in the URL"), Fx.Fake->CountTo(TEXT("player/player-a/features")), 1);
+
+		// An explicit id still wins over the session's.
+		Fx.Fake->On(TEXT("player/other/features"), FFlockFakeTransport::Ok(ConfigBody));
+		Fx.Provider->GetPlayerFeatures(TEXT("other"), [&](TFlockResult<FFlockGameConfigSchema> R) {});
+		TestEqual(TEXT("explicit id overrides the session"), Fx.Fake->CountTo(TEXT("player/other/features")), 1);
+
+		Cleanup(Fx.Dir);
+	}
+	{
+		// Signed out: Validation, short-circuited before any request.
+		FFixture Fx;
+		bool bFailed = false;
+		Fx.Provider->GetPlayerFeatures(FString(), [&](TFlockResult<FFlockGameConfigSchema> R)
+			{ bFailed = !R.bSuccess && R.Error.Type == EFlockErrorType::Validation; });
+		TestTrue(TEXT("signed out -> validation"), bFailed);
+		TestEqual(TEXT("no request"), Fx.Fake->Requests.Num(), 0);
+		Cleanup(Fx.Dir);
+	}
 	return true;
 }
 

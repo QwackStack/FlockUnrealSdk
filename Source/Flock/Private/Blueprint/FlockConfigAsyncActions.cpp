@@ -169,13 +169,13 @@ void UFlockResolveConfigDataAction::Activate()
 	FFlockConfigProvider* Provider = ResolveConfig(WorldContextObject, Error);
 	if (!Provider)
 	{
-		Complete(TFlockResult<FFlockGameConfigData>::Fail(Error));
+		Complete(TFlockResult<FFlockStructuredData>::Fail(Error));
 		return;
 	}
 
 	TWeakObjectPtr<UFlockResolveConfigDataAction> WeakThis(this);
 	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
-	Provider->ResolveConfigData(ConfigId, [WeakThis](TFlockResult<FFlockGameConfigData> Result)
+	Provider->ResolveConfigData(ConfigId, [WeakThis](TFlockResult<FFlockStructuredData> Result)
 	{
 		if (UFlockResolveConfigDataAction* Self = WeakThis.Get())
 		{
@@ -184,7 +184,7 @@ void UFlockResolveConfigDataAction::Activate()
 	});
 }
 
-void UFlockResolveConfigDataAction::Complete(const TFlockResult<FFlockGameConfigData>& Result)
+void UFlockResolveConfigDataAction::Complete(const TFlockResult<FFlockStructuredData>& Result)
 {
 	if (Result.bSuccess)
 	{
@@ -192,7 +192,7 @@ void UFlockResolveConfigDataAction::Complete(const TFlockResult<FFlockGameConfig
 	}
 	else
 	{
-		OnFailure.Broadcast(FFlockGameConfigData(), Result.Error);
+		OnFailure.Broadcast(FFlockStructuredData(), Result.Error);
 	}
 	SetReadyToDestroy();
 }
@@ -298,6 +298,50 @@ void UFlockGetGameVersionAction::Complete(const TFlockResult<FFlockGameVersionSc
 	else
 	{
 		OnFailure.Broadcast(FFlockGameVersionSchema(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
+// ─────────────────────────── Get Player Features ───────────────────────────
+
+UFlockGetPlayerFeaturesAction* UFlockGetPlayerFeaturesAction::GetPlayerFeatures(UObject* WorldContextObject, const FString& PlayerId)
+{
+	UFlockGetPlayerFeaturesAction* Action = NewObject<UFlockGetPlayerFeaturesAction>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->PlayerId = PlayerId;
+	return Action;
+}
+
+void UFlockGetPlayerFeaturesAction::Activate()
+{
+	FFlockError Error;
+	FFlockConfigProvider* Provider = ResolveConfig(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockGameConfigSchema>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockGetPlayerFeaturesAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	Provider->GetPlayerFeatures(PlayerId, [WeakThis](TFlockResult<FFlockGameConfigSchema> Result)
+	{
+		if (UFlockGetPlayerFeaturesAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockGetPlayerFeaturesAction::Complete(const TFlockResult<FFlockGameConfigSchema>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(FFlockGameConfigSchema(), Result.Error);
 	}
 	SetReadyToDestroy();
 }

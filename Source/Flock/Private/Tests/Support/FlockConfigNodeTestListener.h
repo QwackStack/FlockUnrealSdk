@@ -32,7 +32,7 @@ public:
 	void HandleConfigListPin(const TArray<FFlockGameConfigSchema>& Configs, const FFlockError& Error) { ++ConfigListPinCount; LastError = Error; }
 
 	UFUNCTION()
-	void HandleConfigDataPin(const FFlockGameConfigData& Data, const FFlockError& Error) { ++ConfigDataPinCount; LastError = Error; }
+	void HandleConfigDataPin(const FFlockStructuredData& Data, const FFlockError& Error) { ++ConfigDataPinCount; LastError = Error; }
 
 	UFUNCTION()
 	void HandleGamePin(const FFlockGameSchema& Game, const FFlockError& Error) { ++GamePinCount; LastError = Error; }

@@ -453,7 +453,7 @@ namespace
 						*ConfigName, *Result.Value.Id, *Result.Value.Tag, Result.Value.Data.GetFieldNames().Num()));
 
 					const FString ConfigId = Result.Value.Id;
-					Config->ResolveConfigData(ConfigId, [ConfigName, ConfigId, Logger](TFlockResult<FFlockGameConfigData> DataResult)
+					Config->ResolveConfigData(ConfigId, [ConfigName, ConfigId, Logger](TFlockResult<FFlockStructuredData> DataResult)
 					{
 						if (!DataResult.bSuccess)
 						{

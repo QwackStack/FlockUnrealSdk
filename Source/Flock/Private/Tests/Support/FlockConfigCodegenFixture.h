@@ -7,7 +7,7 @@
 
 /**
  * Stand-ins for what codegen will emit from a config schema: reflected USTRUCTs with PascalCase fields.
- * They exist so a test can prove FFlockGameConfigData::GetDataAs<T> binds the shapes a real generated
+ * They exist so a test can prove FFlockStructuredData::GetDataAs<T> binds the shapes a real generated
  * config has — a nested struct, a list, and a dictionary — end to end. Defining them here (not in the
  * test .cpp) is required: UHT only processes reflected types declared in headers. Not guarded by
  * WITH_AUTOMATION_TESTS on purpose — UHT generates their registration unconditionally.
