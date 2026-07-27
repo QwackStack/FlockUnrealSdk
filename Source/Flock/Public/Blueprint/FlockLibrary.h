@@ -93,6 +93,16 @@ public:
 		DisplayName = "Flock Logout"))
 	static void Logout(const UObject* WorldContextObject);
 
+	// ── Commands ──
+
+	/**
+	 * Offline commands waiting to be replayed for the signed-in player — for a "syncing…" indicator. Money
+	 * commands are never queued, so this never counts one. Zero before initialization.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (WorldContext = "WorldContextObject",
+		DisplayName = "Flock Get Pending Command Count"))
+	static int32 GetPendingCommandCount(const UObject* WorldContextObject);
+
 	// ── Lifecycle / info ──
 
 	UFUNCTION(BlueprintPure, Category = "Flock", meta = (WorldContext = "WorldContextObject",

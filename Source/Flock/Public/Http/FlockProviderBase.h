@@ -153,6 +153,13 @@ protected:
 		return FString::Printf(TEXT("%s/%s"), *GameVersionId, *Category);
 	}
 
+	/**
+	 * The snapshot store itself, for the one provider that needs to write something other than a fetch
+	 * result: the command provider persists its offline queue through it. May be null (cache disabled) —
+	 * callers must handle that, which for the queue means "offline writes are not durable this run".
+	 */
+	const TSharedPtr<FFlockSnapshotStore>& GetSnapshotStore() const { return SnapshotStore; }
+
 	/** Drops a whole category's snapshots (e.g. on a provider ClearCache). No-op without a store. */
 	void DeleteSnapshotCategory(const FString& Category)
 	{

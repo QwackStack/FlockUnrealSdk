@@ -5,7 +5,35 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
-## [0.11.0] - 2026-07-27
+## [0.12.0] - 2026-07-27
+
+### Added
+- **Game commands.** The server-validated way to change a player's data. `Update Player Data` writes a
+  set of fields onto a data row, `Update Player Data Field` writes a single one, `Unlock Achievement`
+  unlocks an achievement on the player's achievements row, and `Add Game Funds` credits their wallet.
+  The achievement and wallet calls resolve the right row for you from the player template tagged
+  "achievement" / "currency", so there is no id to look up first. Every command answers with the whole
+  updated row, and that row is written straight back into the player cache — so a read right after a
+  write sees the new values, not the old ones.
+- **Offline queue with automatic replay.** A data update, field update, or achievement unlock made with
+  no connectivity is saved to disk, applied optimistically to the cached row so your UI stays honest,
+  and replayed in order when the connection returns. The queue belongs to the player who made the
+  writes — signing in as someone else never replays them — and survives quitting the game. Replays
+  happen automatically on sign-in, on returning to the foreground, and when connectivity comes back;
+  `Flock Flush Pending Commands` triggers one by hand, and `Flock Get Pending Command Count` drives a
+  "syncing…" indicator. A write the server permanently rejects is dropped (with the optimistic value
+  rolled back) rather than blocking everything behind it; a temporary failure keeps everything queued.
+- **Money is handled differently, on purpose.** `Add Game Funds` is never queued offline — it fails so
+  you can tell the player — and is never re-sent after an ambiguous failure, because a request that
+  timed out may already have credited the account. No offline grants, no double credits.
+- **Blueprint.** Async nodes for the whole surface — Flock Update Player Data, Update Player Data
+  Field, Unlock Achievement, Add Game Funds, Flush Pending Commands — plus a new
+  `UFlockCommandDataLibrary` for building the values to write. Drag off a Data pin and chain
+  `Set Command Int / Float / String / Bool / String Array` (and `Set Command Json` for a nested shape);
+  values keep their real type on the wire instead of all becoming strings. Field names are sent exactly
+  as you type them.
+
+
 
 ### Added
 - **Player data & templates.** Read a player's saved data. Fetch a data row by id, a page of rows

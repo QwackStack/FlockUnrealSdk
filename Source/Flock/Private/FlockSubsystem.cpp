@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.11.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.12.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -117,6 +117,13 @@ void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 		AnalyticsProvider->Initialize();
 	}
 
+	// Also before the restore: the restore raises OnAuthenticated, which is what replays a queue left by
+	// the previous run, and that needs the pump's triggers already live.
+	if (CommandProvider.IsValid())
+	{
+		CommandProvider->Initialize();
+	}
+
 	// Resume any persisted session in the background; the outcome surfaces via
 	// OnSessionRestored / OnAuthenticated rather than a return value.
 	AuthProvider->TryRestoreSession(nullptr);
@@ -207,6 +214,13 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
 	ShopProvider->SetAnalyticsProvider(AnalyticsProvider);
 
+	// After the player provider, which it writes mutated rows back through. Signing in is one of its
+	// auto-flush triggers; the other two come from its own lifecycle pump, started in Initialize() below.
+	CommandProvider = MakeShared<FFlockCommandProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
+		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
+	CommandProvider->SetPlayerProvider(PlayerProvider);
+	GetEvents()->OnAuthenticated.AddDynamic(this, &UFlockSubsystem::HandleCommandsAuthenticated);
+
 	return true;
 }
 
@@ -215,6 +229,14 @@ void UFlockSubsystem::HandleAnalyticsAuthenticated(const FFlockAuthInfo& Info)
 	if (AnalyticsProvider.IsValid() && GetDefault<UFlockConfig>()->bAnalyticsAutoStartSession)
 	{
 		AnalyticsProvider->StartSession(Info.PlayerId);
+	}
+}
+
+void UFlockSubsystem::HandleCommandsAuthenticated(const FFlockAuthInfo& Info)
+{
+	if (CommandProvider.IsValid())
+	{
+		CommandProvider->FlushPendingWrites();
 	}
 }
 
@@ -309,10 +331,18 @@ void UFlockSubsystem::ShutdownSdk()
 		AnalyticsProvider->Shutdown();
 		AnalyticsProvider.Reset();
 	}
+	// Same reason: stop the pump while the provider is alive rather than leaving it to the destructor.
+	// Anything still queued stays on disk and replays next run.
+	if (CommandProvider.IsValid())
+	{
+		CommandProvider->Shutdown();
+		CommandProvider.Reset();
+	}
 	if (Events != nullptr)
 	{
 		Events->OnAuthenticated.RemoveDynamic(this, &UFlockSubsystem::HandleAnalyticsAuthenticated);
 		Events->OnLoggedOut.RemoveDynamic(this, &UFlockSubsystem::HandleAnalyticsLoggedOut);
+		Events->OnAuthenticated.RemoveDynamic(this, &UFlockSubsystem::HandleCommandsAuthenticated);
 	}
 
 	ConfigProvider.Reset();
@@ -380,6 +410,11 @@ FString UFlockSubsystem::GetPlayerId() const
 bool UFlockSubsystem::IsRestoringSession() const
 {
 	return AuthProvider.IsValid() && AuthProvider->IsRestoringSession();
+}
+
+int32 UFlockSubsystem::GetPendingCommandCount() const
+{
+	return CommandProvider.IsValid() ? CommandProvider->GetPendingWriteCount() : 0;
 }
 
 void UFlockSubsystem::Logout()

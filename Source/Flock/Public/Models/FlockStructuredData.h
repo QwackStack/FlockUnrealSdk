@@ -9,7 +9,8 @@
 #include "FlockStructuredData.generated.h"
 
 /**
- * A provider's resolved structured data as an opaque, read-only handle. The backend delivers such data as a
+ * A provider's resolved structured data as an opaque, read-mostly handle (OverlayFields is the single write
+ * path, for the optimistic row an offline command leaves). The backend delivers such data as a
  * recursive list[DataField] tree (each node typed object/list/dict/scalar); this collapses it once, at
  * parse, into a single flat JSON object — the UE analog of the canonical SDK's ToFlatObject — and holds
  * that. Shared across features: a game config's/patch's `data` and a player template's/row's `data` all use
@@ -41,6 +42,17 @@ struct FLOCK_API FFlockStructuredData
 
 	/** True when there is a parsed, non-empty data object. */
 	bool IsValid() const;
+
+	/**
+	 * Overlays top-level fields onto the flattened data — the one write path on an otherwise read-only
+	 * handle, used for the optimistic row a queued offline command leaves behind.
+	 *
+	 * Each incoming key replaces an existing field matched exact-first-then-Pascal (the same resolution the
+	 * dotted reads use, so a caller's "max_health" updates the flattened "MaxHealth"), or is added verbatim
+	 * when nothing matches. Rebuilds FlatJson rather than mutating the cached parse, because copies of a
+	 * handle share that parse — overwriting it in place would rewrite data other copies still hold.
+	 */
+	void OverlayFields(const TSharedRef<FJsonObject>& Fields);
 
 	/** The flattened data as a JSON string (empty when there is none). */
 	FString ToJsonString() const { return FlatJson; }
