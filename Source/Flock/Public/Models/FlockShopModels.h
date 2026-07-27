@@ -4,14 +4,15 @@
 
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
+#include "Models/FlockJsonData.h"
 #include "FlockShopModels.generated.h"
 
 /**
  * A shop's `data` object (OpenAPI ShopDataSchema). The two URL members are typed; `stats` is an open
- * dict on the wire (Dictionary<string, object> upstream), which a USTRUCT cannot hold — it is captured
- * verbatim as a JSON string (StatsJson), the same posture the config models take for opaque payloads.
+ * dict on the wire (Dictionary<string, object> upstream), which a USTRUCT cannot hold — it is exposed as
+ * an FFlockJsonData handle, read with typed dotted-path getters (C++) or UFlockJsonDataLibrary (Blueprint).
  * Not routed through the reflection wire path (its parent supplies a custom parse), so it needs no
- * FromWireObject of its own; StatsJson is a plain FString and round-trips a snapshot by reflection.
+ * FromWireObject of its own; FFlockJsonData round-trips a snapshot by reflection.
  */
 USTRUCT(BlueprintType)
 struct FLOCK_API FFlockShopData
@@ -24,19 +25,19 @@ struct FLOCK_API FFlockShopData
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString PwaShopUrl;
 
-	/** The free-form `stats` object as verbatim JSON (empty when absent). Parse in-game. */
+	/** The free-form `stats` object (empty when absent). Read with TryGet* / UFlockJsonDataLibrary. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
-	FString StatsJson;
+	FFlockJsonData Stats;
 
 	/** Builds the data block from a wire `data` object (null/absent → an empty block). */
 	static FFlockShopData FromWire(const TSharedPtr<FJsonObject>& Object);
 };
 
 /**
- * A shop item (OpenAPI ShopItemSchema). Its `data` is an open dict on the wire, kept verbatim as
- * DataJson — so the model declares its own FromWireObject (picked up by FFlockJsonUtils) instead of the
- * reflection path, which would rewrite the author-supplied `data` keys through the snake->Pascal
- * transform. Every other member is a regular scalar.
+ * A shop item (OpenAPI ShopItemSchema). Its `data` is an open dict on the wire, exposed as an
+ * FFlockJsonData handle — so the model declares its own FromWireObject (picked up by FFlockJsonUtils)
+ * instead of the reflection path, which would rewrite the author-supplied `data` keys through the
+ * snake->Pascal transform. Every other member is a regular scalar.
  */
 USTRUCT(BlueprintType)
 struct FLOCK_API FFlockShopItem
@@ -64,9 +65,9 @@ struct FLOCK_API FFlockShopItem
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString Currency;
 
-	/** The free-form `data` object as verbatim JSON (empty when absent). Parse in-game. */
+	/** The free-form `data` object (empty when absent). Read with TryGet* / UFlockJsonDataLibrary. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
-	FString DataJson;
+	FFlockJsonData Data;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString CreatedAt;

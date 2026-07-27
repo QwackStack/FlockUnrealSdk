@@ -16,7 +16,7 @@
  * matching the config/game nodes — a graph needs the full surface to build a shop UI.
  *
  * An empty Player Id means "the signed-in player" (Purchase, Get Player Inventory). Read a shop/item's
- * free-form data off the DataJson / StatsJson strings on the returned structs.
+ * free-form data off the FFlockJsonData handle (Data / Stats) with the UFlockJsonDataLibrary nodes.
  */
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockShopPagePin, const FFlockShopPage&, Page, const FFlockError&, Error);

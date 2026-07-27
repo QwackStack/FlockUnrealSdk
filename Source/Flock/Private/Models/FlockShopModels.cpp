@@ -2,24 +2,6 @@
 
 #include "Models/FlockShopModels.h"
 
-#include "Http/FlockJsonUtils.h"
-#include "Policies/CondensedJsonPrintPolicy.h"
-#include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h"
-
-namespace
-{
-	/** Serializes a JSON value to a condensed string — used to keep a free-form `data`/`stats` verbatim. */
-	FString SerializeValue(const TSharedRef<FJsonValue>& Value)
-	{
-		FString Out;
-		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
-			TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
-		FJsonSerializer::Serialize(Value, FString(), Writer);
-		return Out;
-	}
-}
-
 FFlockShopData FFlockShopData::FromWire(const TSharedPtr<FJsonObject>& Object)
 {
 	FFlockShopData Result;
@@ -31,12 +13,8 @@ FFlockShopData FFlockShopData::FromWire(const TSharedPtr<FJsonObject>& Object)
 	Object->TryGetStringField(TEXT("web_shop_url"), Result.WebShopUrl);
 	Object->TryGetStringField(TEXT("pwa_shop_url"), Result.PwaShopUrl);
 
-	// `stats` is an open dict — author-supplied keys, kept verbatim (never case-transformed).
-	const TSharedPtr<FJsonValue> Stats = Object->TryGetField(TEXT("stats"));
-	if (Stats.IsValid() && Stats->Type != EJson::Null)
-	{
-		Result.StatsJson = SerializeValue(Stats.ToSharedRef());
-	}
+	// `stats` is an open dict — kept verbatim inside the handle (author keys never case-transformed).
+	Result.Stats = FFlockJsonData::FromJson(Object->TryGetField(TEXT("stats")));
 	return Result;
 }
 
@@ -52,12 +30,8 @@ bool FFlockShopItem::FromWireObject(const TSharedRef<FJsonObject>& Object, FFloc
 	Object->TryGetStringField(TEXT("created_at"), OutStruct.CreatedAt);
 	Object->TryGetStringField(TEXT("updated_at"), OutStruct.UpdatedAt);
 
-	// `data` is an open dict — keep verbatim rather than routing its keys through the wire transform.
-	const TSharedPtr<FJsonValue> Data = Object->TryGetField(TEXT("data"));
-	if (Data.IsValid() && Data->Type != EJson::Null)
-	{
-		OutStruct.DataJson = SerializeValue(Data.ToSharedRef());
-	}
+	// `data` is an open dict — kept verbatim inside the handle rather than routed through the wire transform.
+	OutStruct.Data = FFlockJsonData::FromJson(Object->TryGetField(TEXT("data")));
 	return true;
 }
 
