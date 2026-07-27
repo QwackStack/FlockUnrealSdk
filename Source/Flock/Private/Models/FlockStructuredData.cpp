@@ -129,6 +129,37 @@ bool FFlockStructuredData::IsValid() const
 	return ResolveObject().IsValid();
 }
 
+void FFlockStructuredData::OverlayFields(const TSharedRef<FJsonObject>& Fields)
+{
+	// Fresh object rather than the cached parse: copies share that parse, so mutating it would leak this
+	// write into handles that were never overlaid.
+	TSharedRef<FJsonObject> Merged = MakeShared<FJsonObject>();
+	if (const TSharedPtr<FJsonObject> Existing = ResolveObject())
+	{
+		Merged->Values = Existing->Values;
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Fields->Values)
+	{
+		// Exact-then-Pascal, matching ResolvePath: the caller may type either the dashboard's snake_case
+		// field name or the flattened Pascal one, and both must land on the same field.
+		FString TargetKey = Pair.Key;
+		if (!Merged->Values.Contains(TargetKey))
+		{
+			const FString PascalKey = FFlockJsonUtils::SnakeToPascal(Pair.Key);
+			if (Merged->Values.Contains(PascalKey))
+			{
+				TargetKey = PascalKey;
+			}
+		}
+		Merged->SetField(TargetKey, Pair.Value);
+	}
+
+	FlatJson = SerializeObject(Merged);
+	bParsed = false;
+	CachedObject.Reset();
+}
+
 TSharedPtr<FJsonObject> FFlockStructuredData::ResolveObject() const
 {
 	if (!bParsed)

@@ -12,6 +12,7 @@
 #include "Http/FlockHttpClient.h"
 #include "Providers/FlockAnalyticsProvider.h"
 #include "Providers/FlockAuthProvider.h"
+#include "Providers/FlockCommandProvider.h"
 #include "Providers/FlockConfigProvider.h"
 #include "Providers/FlockGameProvider.h"
 #include "Providers/FlockPlayerProvider.h"
@@ -31,7 +32,7 @@ class UFlockEvents;
  * edit time (Tools > Flock > Resolve Game Version), and runtime init uses it directly.
  *
  * The Authentication provider is wired (with automatic session restore after init), along with the
- * Config, Game, Player, Shop, and Analytics providers; Commands and Asset land in later releases.
+ * Config, Game, Player, Shop, Commands, and Analytics providers; Asset lands in a later release.
  */
 UCLASS()
 class FLOCK_API UFlockSubsystem : public UGameInstanceSubsystem
@@ -215,6 +216,21 @@ public:
 	 */
 	FFlockPlayerProvider* GetPlayerProvider() const { return PlayerProvider.Get(); }
 
+	// ── Commands ──
+
+	/**
+	 * Game commands (player-data mutations) provider. Null before initialization and after shutdown. C++
+	 * API; Blueprint uses the Flock command async nodes and UFlockCommandDataLibrary.
+	 */
+	FFlockCommandProvider* GetCommandProvider() const { return CommandProvider.Get(); }
+
+	/**
+	 * How many offline commands are waiting to be replayed for the signed-in player — for a "syncing…"
+	 * indicator. Zero before initialization. Money commands are never queued, so this never counts one.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock|Commands")
+	int32 GetPendingCommandCount() const;
+
 	// ── Test seams (call before initialization; unused by games) ──
 
 	/** Routes SDK HTTP through the given adapter instead of the engine HTTP module. */
@@ -236,6 +252,13 @@ private:
 
 	UFUNCTION()
 	void HandleAnalyticsLoggedOut();
+
+	/**
+	 * Signing in is the third auto-flush trigger (the provider's own pump covers foreground and reconnect):
+	 * a queue is player-scoped, so the moment a player is known is the moment their writes can replay.
+	 */
+	UFUNCTION()
+	void HandleCommandsAuthenticated(const FFlockAuthInfo& Info);
 
 	/** The active logger, lazily defaulted from the project's Enable Debug Logs setting when unset. */
 	IFlockLogger& GetLogger();
@@ -268,6 +291,7 @@ private:
 	TSharedPtr<FFlockGameProvider> GameProvider;
 	TSharedPtr<FFlockShopProvider> ShopProvider;
 	TSharedPtr<FFlockPlayerProvider> PlayerProvider;
+	TSharedPtr<FFlockCommandProvider> CommandProvider;
 
 	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
 	TSharedPtr<IFlockTokenStore> TestTokenStore;

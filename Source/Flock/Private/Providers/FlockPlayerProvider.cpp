@@ -372,6 +372,71 @@ void FFlockPlayerProvider::GetBan(const FString& PlayerId, TFunction<void(TFlock
 		TEXT("Get player ban"));
 }
 
+// ────────────────────────── Game-commands write-through seam ───────────────────
+
+void FFlockPlayerProvider::ApplyServerPlayerData(const FFlockPlayerData& Row)
+{
+	if (Row.Id.IsEmpty() || Row.PlayerId.IsEmpty() || Row.PlayerTemplateId.IsEmpty())
+	{
+		return;
+	}
+	// Only fold into a map that already exists. Creating one here would mark the player as "fully cached"
+	// off a single row, and every other template would then read as absent without a refetch.
+	if (TMap<FString, FFlockPlayerData>* Rows = PlayerDataByPlayer.Find(Row.PlayerId))
+	{
+		Rows->Add(Row.PlayerTemplateId, Row);
+	}
+}
+
+bool FFlockPlayerProvider::TryGetCachedRow(const FString& PlayerDataId, FFlockPlayerData& OutRow) const
+{
+	if (PlayerDataId.IsEmpty())
+	{
+		return false;
+	}
+	for (const TPair<FString, TMap<FString, FFlockPlayerData>>& Player : PlayerDataByPlayer)
+	{
+		for (const TPair<FString, FFlockPlayerData>& Entry : Player.Value)
+		{
+			if (Entry.Value.Id == PlayerDataId)
+			{
+				OutRow = Entry.Value;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+void FFlockPlayerProvider::EvictPlayerCacheByRow(const FString& PlayerDataId)
+{
+	if (PlayerDataId.IsEmpty())
+	{
+		return;
+	}
+	// Owner resolved first, removed after: dropping an entry mid-iteration would invalidate the walk.
+	FString OwningPlayerId;
+	for (const TPair<FString, TMap<FString, FFlockPlayerData>>& Player : PlayerDataByPlayer)
+	{
+		for (const TPair<FString, FFlockPlayerData>& Entry : Player.Value)
+		{
+			if (Entry.Value.Id == PlayerDataId)
+			{
+				OwningPlayerId = Player.Key;
+				break;
+			}
+		}
+		if (!OwningPlayerId.IsEmpty())
+		{
+			break;
+		}
+	}
+	if (!OwningPlayerId.IsEmpty())
+	{
+		PlayerDataByPlayer.Remove(OwningPlayerId);
+	}
+}
+
 void FFlockPlayerProvider::ClearCache()
 {
 	TemplatesById.Reset();

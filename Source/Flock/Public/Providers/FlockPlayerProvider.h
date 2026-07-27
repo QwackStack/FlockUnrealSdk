@@ -20,8 +20,9 @@
  * Bans and the by-id / list / paged data reads are never cached: a ban is security state that can change
  * server-side at any moment (same rule as inventory), and a direct data read is always fresh.
  *
- * The write-through path Unity carries for the game-commands provider (pushing a server-returned row into
- * the cache) is intentionally absent until that provider lands here.
+ * The game-commands provider writes back through this cache: ApplyServerPlayerData folds a mutated row in,
+ * TryGetCachedRow reads the row a queued offline write overlays, and EvictPlayerCacheByRow drops a player's
+ * rows when an optimistic write turns out to have been rejected.
  *
  * Completion-lambda rule: capture shared refs / weak self / values only — never `this`. Continuations that
  * re-enter the provider pin a TWeakPtr to itself, so teardown with requests in flight is safe.
@@ -79,6 +80,26 @@ public:
 	 * server-side at any time. An unbanned player is a success with an empty record (see FFlockPlayerBan).
 	 */
 	void GetBan(const FString& PlayerId, TFunction<void(TFlockResult<FFlockPlayerBan>)> OnComplete);
+
+	// ── Game-commands write-through seam ──
+
+	/**
+	 * Pushes a server-returned row into the per-player cache so a read straight after a mutation sees the
+	 * new values instead of the pre-write ones. No-op for a row with no id, player, or template — those
+	 * can't be keyed. Only touches a player whose rows are already cached: seeding a partial map would make
+	 * the next GetMyDataByTemplate answer "no row" for every template that hasn't been fetched.
+	 */
+	void ApplyServerPlayerData(const FFlockPlayerData& Row);
+
+	/** The cached row with this id, across every cached player; false when it isn't cached. */
+	bool TryGetCachedRow(const FString& PlayerDataId, FFlockPlayerData& OutRow) const;
+
+	/**
+	 * Drops the cached rows of whichever player owns this row, so the next read refetches authoritative
+	 * state. The whole player map goes, not the single row: the per-player cache is all-or-nothing, so a
+	 * map missing one row would read as "that template has no row" rather than triggering a refetch.
+	 */
+	void EvictPlayerCacheByRow(const FString& PlayerDataId);
 
 	/** Drops every in-process cache and the player-template snapshot category, so the next fetch hits the backend. */
 	void ClearCache();

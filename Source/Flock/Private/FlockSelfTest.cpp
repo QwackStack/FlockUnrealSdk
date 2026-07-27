@@ -1,8 +1,8 @@
 // Copyright 2022, Qwacks. All Rights Reserved.
 
 // A dev-only console command that drives the Flock SDK surface and narrates each step to the log,
-// so you can watch boot/init, config/game, authentication, shop, and analytics behavior against your
-// configured Flock backend.
+// so you can watch boot/init, config/game, authentication, shop, commands, and analytics behavior
+// against your configured Flock backend.
 // It initializes from Project Settings > Flock SDK (API URL, key, and the resolved Game Version),
 // so it needs valid settings and a reachable backend to get past init. Run from the editor or
 // in-game console: `Flock.SelfTest` (also works via -ExecCmds in a development build).
@@ -16,17 +16,24 @@
 #include "FlockSubsystem.h"
 #include "Analytics/FlockLogSink.h"
 #include "Analytics/FlockMetadata.h"
+#include "Dom/JsonObject.h"
 #include "FlockLogger.h"
 #include "Engine/GameInstance.h"
 #include "HAL/IConsoleManager.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "Http/FlockResult.h"
 #include "Models/FlockAuthModels.h"
+#include "Models/FlockCommandModels.h"
 #include "Models/FlockConfigModels.h"
 #include "Models/FlockGameModels.h"
+#include "Models/FlockPlayerModels.h"
 #include "Models/FlockShopModels.h"
 #include "Providers/FlockAuthProvider.h"
+#include "Providers/FlockCommandProvider.h"
 #include "Providers/FlockConfigProvider.h"
 #include "Providers/FlockGameProvider.h"
+#include "Providers/FlockPlayerProvider.h"
 #include "Providers/FlockShopProvider.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
@@ -46,6 +53,30 @@ namespace
 	// Configs to pull by name in the config sweep. These must exist on your backend for this game
 	// version; the sweep narrates a clean "failed" line for any that don't, rather than aborting.
 	const TCHAR* const DemoConfigNames[] = { TEXT("GameplayTest"), TEXT("TestConfig") };
+
+	// Commands sweep. The currency name is a last-resort fallback only: the sweep reads the wallet row and
+	// takes a currency the player actually holds, so it adapts to whatever the "currency" template declares
+	// instead of guessing. The achievement name is expected to be absent from a real achievement template;
+	// that rejection is coded, so it still proves the authenticated round trip, and it is narrated as such.
+	const TCHAR* const DemoCurrencyFallback = TEXT("coins");
+	const TCHAR* const DemoAchievement = TEXT("self_test_achievement_UE");
+
+	/** Funds granted by the commands sweep. Deliberately the smallest non-zero amount — this is real money movement on a real backend. */
+	constexpr int32 DemoFundsAmount = 1;
+
+	/**
+	 * The providers the signed-in leg of the chain hands along. Bundled because that leg is a stack of
+	 * nested completions, and threading one raw pointer per feature through all of them turns every capture
+	 * list into a list of everything. Raw pointers: the subsystem owning them is rooted until teardown.
+	 * Any of them may be null (a feature switched off in settings) — each sweep checks its own.
+	 */
+	struct FSignedInSweeps
+	{
+		FFlockAnalyticsProvider* Analytics = nullptr;
+		FFlockShopProvider* Shop = nullptr;
+		FFlockCommandProvider* Commands = nullptr;
+		FFlockPlayerProvider* Players = nullptr;
+	};
 
 	/**
 	 * Drives the analytics session lifecycle against the configured backend, then hands off to
@@ -284,12 +315,384 @@ namespace
 		});
 	}
 
+	/**
+	 * Failure narration for the command legs. A command can fail two very different ways and the terse
+	 * message reads identically for both, so this prints the server's error code and its own wording: a
+	 * *coded* rejection (game_command.template_validation_failed) means the body was understood and the
+	 * values were refused — the wiring is proven. An uncoded 422 is FastAPI rejecting the body's shape,
+	 * which is a real SDK bug and must not be read as "the backend just didn't like my value".
+	 */
+	FString DescribeCommandFailure(const FFlockError& Error)
+	{
+		if (Error.Code.IsEmpty())
+		{
+			return FString::Printf(
+				TEXT("%s [NO ERROR CODE — if this is a 422 the request body shape was rejected, not its values] body=%s"),
+				*Error.Message, *Error.Body.Left(300));
+		}
+		return FString::Printf(TEXT("%s [code=%s] %s"), *Error.Message, *Error.Code, *Error.ServerMessage);
+	}
+
+	/**
+	 * What the commands sweep read off the player's wallet row before writing anything back. Derived rather
+	 * than hardcoded, because the sweep must write values the row's own template will accept — a made-up
+	 * field or currency only ever produces a coded rejection, which proves the transport and nothing else.
+	 */
+	struct FWalletProbe
+	{
+		FString RowId;
+
+		/** A field of the row, named as the *template* declares it, with its current value kept verbatim. */
+		FString FieldName;
+		FFlockCommandValue FieldValue;
+
+		/** Every declared field with its current value — writing this back is a no-op the template accepts. */
+		FFlockCommandData EchoBag;
+
+		/**
+		 * A currency the wallet actually holds. `AddGameFunds` wants the currency's own name (a leaf inside
+		 * the wallet's currency map), not the name of the map — passing the map yields
+		 * `game_command.currency_not_found`, which is how this was found in the first place.
+		 */
+		FString CurrencyName;
+	};
+
+	/** Reads a structured-data handle back into a JSON object; null when it holds nothing parseable. */
+	TSharedPtr<FJsonObject> ParseStructured(const FFlockStructuredData& Data)
+	{
+		const FString Json = Data.ToJsonString();
+		if (Json.IsEmpty())
+		{
+			return nullptr;
+		}
+		TSharedPtr<FJsonObject> Parsed;
+		const TSharedRef<TJsonReader<TCHAR>> Reader = TJsonReaderFactory<TCHAR>::Create(Json);
+		return (FJsonSerializer::Deserialize(Reader, Parsed) && Parsed.IsValid()) ? Parsed : nullptr;
+	}
+
+	/**
+	 * The field names a template declares, read from its verbatim `schema` — the names the backend validates
+	 * a write against.
+	 *
+	 * This matters more than it looks. A row's flattened data exposes those same fields snake->Pascal cased
+	 * ("game_currencies" reads back as "GameCurrencies") so a codegen struct can bind by reflection, and the
+	 * dotted reads accept either spelling. A **write** has no such tolerance: the server matches the template
+	 * exactly, so writing the name GetFieldNames() handed you earns
+	 * `game_command.template_validation_failed`. The schema is where the real names live, so the sweep takes
+	 * them from there rather than from the row it just read.
+	 */
+	TArray<FString> ReadSchemaFieldNames(const FFlockPlayerTemplateSchema& Template)
+	{
+		TArray<FString> Names;
+		if (Template.SchemaJson.IsEmpty())
+		{
+			return Names;
+		}
+		TArray<TSharedPtr<FJsonValue>> Fields;
+		const TSharedRef<TJsonReader<TCHAR>> Reader = TJsonReaderFactory<TCHAR>::Create(Template.SchemaJson);
+		if (!FJsonSerializer::Deserialize(Reader, Fields))
+		{
+			return Names;
+		}
+		for (const TSharedPtr<FJsonValue>& Element : Fields)
+		{
+			const TSharedPtr<FJsonObject> Field = Element.IsValid() ? Element->AsObject() : nullptr;
+			FString FieldName;
+			if (Field.IsValid() && Field->TryGetStringField(TEXT("field_name"), FieldName) && !FieldName.IsEmpty())
+			{
+				Names.Add(FieldName);
+			}
+		}
+		return Names;
+	}
+
+	/**
+	 * Derives the write targets from the wallet row and the template that governs it. False when the two
+	 * cannot be lined up — no declared fields, or no readable data on the row.
+	 */
+	bool ProbeWallet(const FFlockPlayerData& Row, const FFlockPlayerTemplateSchema& Template, FWalletProbe& OutProbe)
+	{
+		const TSharedPtr<FJsonObject> Object = ParseStructured(Row.Data);
+		const TArray<FString> DeclaredNames = ReadSchemaFieldNames(Template);
+		if (!Object.IsValid() || DeclaredNames.Num() == 0)
+		{
+			return false;
+		}
+
+		OutProbe.RowId = Row.Id;
+		for (const FString& Declared : DeclaredNames)
+		{
+			// The row's key is the flattened spelling; the write's key must be the declared one. Look up
+			// exact-first-then-Pascal, exactly as the dotted reads do.
+			TSharedPtr<FJsonValue> Value = Object->TryGetField(Declared);
+			if (!Value.IsValid())
+			{
+				Value = Object->TryGetField(FFlockJsonUtils::SnakeToPascal(Declared));
+			}
+			if (!Value.IsValid())
+			{
+				continue; // declared but never written by this player — nothing to echo back
+			}
+
+			// FromJsonValue keeps the value exactly as the server sent it, so the echo write is type-correct.
+			OutProbe.EchoBag.Set(Declared, FFlockCommandValue::FromJsonValue(Value));
+
+			if (OutProbe.FieldName.IsEmpty())
+			{
+				OutProbe.FieldName = Declared;
+				OutProbe.FieldValue = FFlockCommandValue::FromJsonValue(Value);
+			}
+			// The first nested object is the currency map; its first key is a currency the wallet holds.
+			if (OutProbe.CurrencyName.IsEmpty() && Value->Type == EJson::Object)
+			{
+				const TSharedPtr<FJsonObject> Inner = Value->AsObject();
+				if (Inner.IsValid() && Inner->Values.Num() > 0)
+				{
+					TArray<FString> InnerKeys;
+					Inner->Values.GetKeys(InnerKeys);
+					OutProbe.CurrencyName = InnerKeys[0];
+				}
+			}
+		}
+		if (OutProbe.FieldName.IsEmpty())
+		{
+			return false;
+		}
+		if (OutProbe.CurrencyName.IsEmpty())
+		{
+			// A flat wallet: the declared field names are themselves the currencies.
+			OutProbe.CurrencyName = OutProbe.FieldName;
+		}
+		return true;
+	}
+
+	/**
+	 * The half of the commands surface that only shows itself with no connectivity, forced here through the
+	 * provider's reachability seam rather than by unplugging anything: a data write queues and replays,
+	 * while a funds grant is refused outright. That asymmetry is the whole money rule, and it is invisible
+	 * in a normal online run.
+	 *
+	 * The queued write is the same no-op field write the online leg already made, so replaying it changes
+	 * nothing on the backend — the point is the delivery, not the value.
+	 */
+	void RunCommandsOfflineSweep(FFlockCommandProvider* Commands, const FWalletProbe& Probe,
+		const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Next)
+	{
+		Logger->LogInfo(TEXT("Self-test: forcing the reachability probe offline to exercise the command queue."));
+		Commands->SetReachabilityProbe([]() { return false; });
+
+		const int32 Before = Commands->GetPendingWriteCount();
+
+		// Money first, because the interesting outcome is the refusal.
+		Commands->AddGameFunds(Probe.CurrencyName, DemoFundsAmount,
+			[Commands, Probe, Before, Logger, Next](TFlockResult<FFlockPlayerData> FundsResult)
+			{
+				Logger->LogInfo(FundsResult.bSuccess
+					? FString(TEXT("Self-test: add game funds (offline) -> UNEXPECTEDLY succeeded; money must never be sent while unreachable."))
+					: FString::Printf(TEXT("Self-test: add game funds (offline) -> refused as designed (%s: %s)"),
+						FundsResult.Error.Type == EFlockErrorType::Connection ? TEXT("Connection") : TEXT("other"),
+						*FundsResult.Error.Message));
+				Logger->LogInfo(FString::Printf(
+					TEXT("Self-test: queue after the refused grant -> %d (unchanged from %d; money is never queued)."),
+					Commands->GetPendingWriteCount(), Before));
+
+				// A data write in the same state does queue, and answers with the optimistically-updated row.
+				Commands->UpdatePlayerDataField(Probe.RowId, Probe.FieldName, Probe.FieldValue,
+					[Commands, Logger, Next](TFlockResult<FFlockPlayerData> QueuedResult)
+					{
+						const int32 Queued = Commands->GetPendingWriteCount();
+						Logger->LogInfo(QueuedResult.bSuccess
+							? FString::Printf(TEXT("Self-test: field write (offline) -> queued, returned the optimistic row %s; pending=%d"),
+								*QueuedResult.Value.Id, Queued)
+							: FString::Printf(TEXT("Self-test: field write (offline) -> failed (%s)"), *QueuedResult.Error.Message));
+
+						Logger->LogInfo(TEXT("Self-test: restoring the reachability probe and flushing the queue."));
+						Commands->SetReachabilityProbe(nullptr);
+
+						Commands->FlushPendingWrites([Commands, Queued, Logger, Next](TFlockResult<int32> FlushResult)
+						{
+							if (FlushResult.bSuccess)
+							{
+								// Delivered and dropped both empty the queue, and only the first is a success —
+								// reporting one number would read as "nothing happened" for either.
+								const int32 Remaining = Commands->GetPendingWriteCount();
+								const int32 Dropped = FMath::Max(0, Queued - FlushResult.Value - Remaining);
+								Logger->LogInfo(FString::Printf(
+									TEXT("Self-test: flush -> delivered %d, dropped %d (permanently rejected), still queued %d"),
+									FlushResult.Value, Dropped, Remaining));
+							}
+							else
+							{
+								Logger->LogInfo(FString::Printf(TEXT("Self-test: flush -> failed (%s)"), *FlushResult.Error.Message));
+							}
+							Next();
+						});
+					});
+			});
+	}
+
+	/**
+	 * Game commands against the configured backend. Runs signed in — every command resolves a row belonging
+	 * to the current player — so it is chained off the auth sweep, between the shop and analytics legs.
+	 *
+	 * The data writes are deliberately non-destructive: they put the wallet's own current values straight
+	 * back, with the types the server sent, so what is proven is the round trip and the cache write-through
+	 * rather than a change nobody asked for. The funds grant is the exception — it moves real currency, by
+	 * the smallest amount that is still a grant, because the wallet resolution and the non-idempotent post
+	 * are exactly what a fake cannot prove.
+	 *
+	 * On a failure the coded error is printed: a coded rejection means the body was understood and the values
+	 * were refused (wiring proven), while an uncoded 422 means the body's *shape* was rejected — an SDK bug.
+	 * See DescribeCommandFailure.
+	 */
+	void RunCommandsSweep(FFlockCommandProvider* Commands, FFlockPlayerProvider* Players,
+		const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Next)
+	{
+		if (Commands == nullptr || Players == nullptr)
+		{
+			Logger->LogInfo(TEXT("Self-test: command or player provider unavailable; skipping the commands sweep."));
+			Next();
+			return;
+		}
+
+		// The template first, then the player's row for it. A game would normally just call GetMyDataByTag,
+		// but the template is what declares the field names a write has to use, so the sweep needs both.
+		Players->GetTemplateByTag(TEXT("currency"),
+			[Commands, Players, Logger, Next](TFlockResult<FFlockPlayerTemplateSchema> TemplateResult)
+			{
+				if (!TemplateResult.bSuccess)
+				{
+					Logger->LogInfo(FString::Printf(
+						TEXT("Self-test: currency template (tag 'currency') -> failed (%s); skipping the commands sweep."),
+						*TemplateResult.Error.Message));
+					Next();
+					return;
+				}
+
+				const FFlockPlayerTemplateSchema Template = TemplateResult.Value;
+				Logger->LogInfo(FString::Printf(
+					TEXT("Self-test: currency template -> id=%s name='%s' declares [%s]"),
+					*Template.Id, *Template.Name, *FString::Join(ReadSchemaFieldNames(Template), TEXT(", "))));
+
+				Players->GetMyDataByTemplate(Template.Id,
+					[Commands, Template, Logger, Next](TFlockResult<FFlockPlayerData> WalletResult)
+					{
+						if (!WalletResult.bSuccess)
+						{
+							Logger->LogInfo(FString::Printf(
+								TEXT("Self-test: wallet row (tag 'currency') -> failed (%s); skipping the commands sweep."),
+								*WalletResult.Error.Message));
+							Next();
+							return;
+						}
+						if (WalletResult.Value.Id.IsEmpty())
+						{
+							// A success with an empty record is "this player has no row yet", not an error.
+							Logger->LogInfo(TEXT("Self-test: wallet row (tag 'currency') -> none for this player; "
+								"skipping the commands sweep (create a 'currency'-tagged player template to exercise it)."));
+							Next();
+							return;
+						}
+
+						FWalletProbe Probe;
+						if (!ProbeWallet(WalletResult.Value, Template, Probe))
+						{
+							Logger->LogInfo(FString::Printf(
+								TEXT("Self-test: wallet row %s and its template don't line up (no declared field with a value); "
+									"skipping the commands sweep."),
+								*WalletResult.Value.Id));
+							Next();
+							return;
+						}
+
+						Logger->LogInfo(FString::Printf(
+							TEXT("Self-test: wallet row -> id=%s template=%s write-field='%s' currency='%s'"),
+							*Probe.RowId, *WalletResult.Value.PlayerTemplateId, *Probe.FieldName, *Probe.CurrencyName));
+						// The row's shape as read (flattened, PascalCase) next to the name a write must use, because
+						// the difference between the two is the whole trap.
+						Logger->LogInfo(FString::Printf(TEXT("Self-test: wallet data (as read) =%s"),
+							*WalletResult.Value.Data.ToJsonString().Left(300)));
+
+						// 1) The whole-bag write: every field put back exactly as it came, so the template validates
+						//    it and nothing changes. The returned row is the server's, written into the player cache.
+						Commands->UpdatePlayerData(Probe.RowId, Probe.EchoBag,
+							[Commands, Probe, Logger, Next](TFlockResult<FFlockPlayerData> BagResult)
+							{
+								Logger->LogInfo(BagResult.bSuccess
+									? FString::Printf(TEXT("Self-test: data write (%d field(s) echoed) -> row %s updated_at=%s"),
+										Probe.EchoBag.GetFieldNames().Num(), *BagResult.Value.Id, *BagResult.Value.UpdatedAt)
+									: FString::Printf(TEXT("Self-test: data write -> failed (%s)"),
+										*DescribeCommandFailure(BagResult.Error)));
+
+								// 2) The single-field route, same value, same type.
+								Commands->UpdatePlayerDataField(Probe.RowId, Probe.FieldName, Probe.FieldValue,
+									[Commands, Probe, Logger, Next](TFlockResult<FFlockPlayerData> FieldResult)
+									{
+										Logger->LogInfo(FieldResult.bSuccess
+											? FString::Printf(TEXT("Self-test: field write '%s'=%s -> row %s"),
+												*Probe.FieldName, *Probe.FieldValue.ToJsonString().Left(80), *FieldResult.Value.Id)
+											: FString::Printf(TEXT("Self-test: field write -> failed (%s)"),
+												*DescribeCommandFailure(FieldResult.Error)));
+
+										// 3) The money path. No player-data id is passed: the wallet is resolved from
+										//    the "currency"-tagged template, and the post is non-idempotent.
+										Logger->LogInfo(FString::Printf(
+											TEXT("Self-test: granting %d '%s' — real currency movement, non-idempotent by design."),
+											DemoFundsAmount, *Probe.CurrencyName));
+										Commands->AddGameFunds(Probe.CurrencyName, DemoFundsAmount,
+											[Commands, Probe, Logger, Next](TFlockResult<FFlockPlayerData> FundsResult)
+											{
+												Logger->LogInfo(FundsResult.bSuccess
+													? FString::Printf(TEXT("Self-test: add game funds -> row %s, wallet now %s"),
+														*FundsResult.Value.Id, *FundsResult.Value.Data.ToJsonString().Left(200))
+													: FString::Printf(TEXT("Self-test: add game funds -> failed (%s)"),
+														*DescribeCommandFailure(FundsResult.Error)));
+
+												// 4) The achievement row is resolved by tag too, so a missing template
+												//    narrates cleanly instead of needing an id nobody has. The demo name
+												//    is expected to be absent from a real template — that rejection is
+												//    coded, so it still proves the authenticated round trip.
+												Commands->UnlockAchievement(DemoAchievement,
+													[Commands, Probe, Logger, Next](TFlockResult<FFlockPlayerData> UnlockResult)
+													{
+														if (UnlockResult.bSuccess)
+														{
+															Logger->LogInfo(FString::Printf(TEXT("Self-test: unlock achievement '%s' -> row %s"),
+																DemoAchievement, *UnlockResult.Value.Id));
+														}
+														else if (UnlockResult.Error.Code == TEXT("game_command.achievement_not_found"))
+														{
+															// The expected outcome, and not a failure of anything the SDK does:
+															// reaching this error means the "achievement"-tagged template was
+															// resolved, the player's row was found, and the body was understood.
+															// Only the demo name is absent — and the sweep deliberately does not
+															// unlock a real one, because that cannot be undone.
+															Logger->LogInfo(FString::Printf(
+																TEXT("Self-test: unlock achievement '%s' -> rejected as expected (%s); ")
+																TEXT("template + row resolution and the round trip are proven."),
+																DemoAchievement, *UnlockResult.Error.ServerMessage));
+														}
+														else
+														{
+															Logger->LogInfo(FString::Printf(TEXT("Self-test: unlock achievement '%s' -> failed (%s)"),
+																DemoAchievement, *DescribeCommandFailure(UnlockResult.Error)));
+														}
+
+														RunCommandsOfflineSweep(Commands, Probe, Logger, Next);
+													});
+											});
+								});
+						});
+					});
+			});
+	}
+
 	// Runs the auth surface against the configured backend. The register -> login flow is chained (login
 	// fires on register success OR "already registered") and hands off to the signed-in shop sweep and
 	// then the analytics sweep — which calls Teardown when it finishes; the other calls are independent
 	// one-shots that narrate their own result. Every completion captures shared refs / the raw providers
 	// (kept alive by the caller's AddToRoot until Teardown), never `this`, so a late arrival stays safe.
-	void RunAuthSweep(FFlockAuthProvider& AuthRef, FFlockAnalyticsProvider* Analytics, FFlockShopProvider* Shop,
+	void RunAuthSweep(FFlockAuthProvider& AuthRef, const FSignedInSweeps& Sweeps,
 		const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Teardown)
 	{
 		FFlockAuthProvider* Auth = &AuthRef;
@@ -339,7 +742,7 @@ namespace
 		// chain authenticates, to get a real answer instead of a server 401. Teardown runs on whichever
 		// branch ends the chain, so the subsystem outlives every async round trip.
 		Auth->RegisterWithEmail(DemoEmail, DemoPassword, DemoName,
-			[Auth, Analytics, Shop, Logger, Teardown, NarrateAction](TFlockResult<FFlockRegisterResult> Result)
+			[Auth, Sweeps, Logger, Teardown, NarrateAction](TFlockResult<FFlockRegisterResult> Result)
 			{
 				if (!Result.bSuccess)
 				{
@@ -353,7 +756,7 @@ namespace
 					: TEXT("Self-test: email register -> registered + signed in; logging in to confirm."));
 
 				Auth->LoginWithEmail(DemoEmail, DemoPassword,
-					[Auth, Analytics, Shop, Logger, Teardown, NarrateAction](TFlockResult<FFlockPlayerLoginResponse> LoginResult)
+					[Auth, Sweeps, Logger, Teardown, NarrateAction](TFlockResult<FFlockPlayerLoginResponse> LoginResult)
 					{
 						if (!LoginResult.bSuccess)
 						{
@@ -368,31 +771,36 @@ namespace
 
 						// Signed in from here: the bearer rides along automatically.
 						Auth->SendEmailVerification(
-							[Auth, Analytics, Shop, PlayerId, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> SendResult)
+							[Auth, Sweeps, PlayerId, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> SendResult)
 							{
 								NarrateAction(TEXT("send email verification (signed in)"), SendResult);
 
 								// The real code arrives by email, so this placeholder is expected to be
 								// rejected — a code error here still proves the authenticated round trip.
 								Auth->VerifyEmail(DemoCode,
-									[Analytics, Shop, PlayerId, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> VerifyResult)
+									[Sweeps, PlayerId, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> VerifyResult)
 									{
 										NarrateAction(TEXT("verify email (signed in, placeholder code)"), VerifyResult);
 
-										// Shop purchase + inventory and the analytics sweep both need a signed-in
-										// player, so they run here. The shop sweep goes first and hands off to
-										// analytics (which owns teardown), so the chain — and the subsystem — stays
-										// alive across every round trip.
-										TFunction<void()> AfterShop = [Analytics, PlayerId, Logger, Teardown]()
+										// The shop purchase/inventory, the command writes, and the analytics
+										// sweep all need a signed-in player, so they run here, in that order:
+										// shop -> commands -> analytics, which owns teardown. Chaining rather
+										// than firing them together keeps the subsystem alive across every
+										// round trip, and keeps the narration readable.
+										TFunction<void()> AfterCommands = [Sweeps, PlayerId, Logger, Teardown]()
 										{
-											if (Analytics != nullptr)
+											if (Sweeps.Analytics != nullptr)
 											{
-												RunAnalyticsSweep(*Analytics, PlayerId, Logger, Teardown);
+												RunAnalyticsSweep(*Sweeps.Analytics, PlayerId, Logger, Teardown);
 												return;
 											}
 											Teardown();
 										};
-										RunShopSignedInSweep(Shop, Logger, AfterShop);
+										TFunction<void()> AfterShop = [Sweeps, Logger, AfterCommands]()
+										{
+											RunCommandsSweep(Sweeps.Commands, Sweeps.Players, Logger, AfterCommands);
+										};
+										RunShopSignedInSweep(Sweeps.Shop, Logger, AfterShop);
 									});
 							});
 					});
@@ -604,14 +1012,20 @@ namespace
 			return;
 		}
 
-		RunAuthSweep(*Auth, Analytics, Sdk->GetShopProvider(), Logger, Teardown);
-		Logger->LogInfo(TEXT("Self-test: auth sweep dispatched; the signed-in shop and analytics sweeps run once "
-			"it signs in, and teardown follows those."));
+		FSignedInSweeps Sweeps;
+		Sweeps.Analytics = Analytics;
+		Sweeps.Shop = Sdk->GetShopProvider();
+		Sweeps.Commands = Sdk->GetCommandProvider();
+		Sweeps.Players = Sdk->GetPlayerProvider();
+
+		RunAuthSweep(*Auth, Sweeps, Logger, Teardown);
+		Logger->LogInfo(TEXT("Self-test: auth sweep dispatched; the signed-in shop, commands, and analytics sweeps "
+			"run once it signs in, and teardown follows those."));
 	}
 
 	FAutoConsoleCommand GFlockSelfTestCommand(
 		TEXT("Flock.SelfTest"),
-		TEXT("Drives the Flock SDK surface (boot/init + config/game + auth + shop + analytics) and narrates each step to the log (development builds only)."),
+		TEXT("Drives the Flock SDK surface (boot/init + config/game + auth + shop + commands + analytics) and narrates each step to the log (development builds only)."),
 		FConsoleCommandDelegate::CreateStatic(&RunFlockSelfTest));
 }
 

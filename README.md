@@ -5,8 +5,9 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 > **Early release.** The SDK's boot/init foundation, the network transport (HTTP client, automatic
 > retry, typed errors), automatic edit-time Game Version baking, **player authentication**,
 > **analytics**, **game config** (with an offline snapshot cache), the **shop** (catalog, purchase,
-> inventory), and **player data & templates** (with bans) now ship. The remaining feature providers
-> (commands, assets) build on this next. See [Status](#status).
+> inventory), **player data & templates** (with bans), and **game commands** (player-data mutations with
+> an offline queue) now ship. The remaining feature provider (assets) builds on this next. See
+> [Status](#status).
 
 ## Contents
 
@@ -21,6 +22,7 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 - [Authentication](#authentication)
 - [Analytics](#analytics)
 - [Player data & templates](#player-data--templates)
+- [Game commands](#game-commands)
 - [Testing](#testing)
 - [Status](#status)
 
@@ -59,6 +61,11 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   player's row for a template by the template's id or tag), browse the player templates that define those
   records, and check a player's ban status. A player's rows are paginated once and cached; templates are
   cached and snapshot-backed.
+- **Game commands** — the server-validated way to change a player's data: write a set of fields or a
+  single field onto a data row, unlock an achievement, or add funds to a wallet. Every command returns
+  the updated row and writes it back into the player cache. Data writes queue offline and replay
+  automatically; funds never do — a grant fails rather than being queued, and is never re-sent after an
+  ambiguous failure.
 - **Offline snapshot cache** — successful config, game, shop-catalog, and player-template reads are cached
   to disk, scoped to the game version, and served when the network is down; toggleable in settings.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
@@ -429,6 +436,54 @@ Things worth knowing:
   first, then the flattened PascalCase name), or bind the whole thing to your own `USTRUCT` with
   `GetDataAs<T>()`.
 
+## Game commands
+
+Commands are the only way to change a player's data: the server validates the write against the
+template and answers with the whole updated row, which the SDK writes back into the player cache — so a
+read straight after a write sees the new values.
+
+**Blueprint** — the *Flock | Commands* nodes: `Flock Update Player Data`, `Flock Update Player Data
+Field`, `Flock Unlock Achievement`, `Flock Add Game Funds`, and `Flock Flush Pending Commands`. Build the
+values to write by dragging off the **Data** pin and chaining *Set Command Int / Float / String / Bool /
+String Array* (there is also *Set Command Json* for a nested shape, and *Command Value (…)* for the
+single-field node). `Flock Get Pending Command Count` drives a "syncing…" indicator.
+
+**C++** — everything lives on the command provider:
+
+```cpp
+UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+
+Sdk->GetCommandProvider()->UpdatePlayerData(RowId,
+    FFlockCommandData().Set(TEXT("coins"), 250).Set(TEXT("prestige"), true),
+    [](TFlockResult<FFlockPlayerData> Result) { /* Result.Value is the updated row */ });
+
+// The wallet row is resolved from the "currency"-tagged template — no id to look up first.
+Sdk->GetCommandProvider()->AddGameFunds(TEXT("coins"), 250, OnComplete);
+```
+
+Things worth knowing:
+
+- **Field names go out verbatim — use the template's names, not the ones you read back.** The SDK never
+  case-transforms a write key, because only you know what the backend stores. Note that a *read* is not
+  symmetric with a write here: a row's flattened data exposes `game_currencies` as `GameCurrencies` (so a
+  struct can bind to it), and the dotted getters accept either spelling. A write has no such tolerance —
+  the server matches the template exactly, so writing the name `Get Data Field Names` handed you is
+  rejected with `game_command.template_validation_failed`. Write the name as the template declares it.
+  (`FFlockPlayerTemplateSchema::SchemaJson` carries the declared names verbatim if you need to look them
+  up at runtime; `Flock.SelfTest`'s commands sweep does exactly that.)
+- **Values keep their type.** An int stays an int and a bool stays a bool on the wire — the builder is
+  not a string map.
+- **Data writes queue offline.** An update or achievement unlock made with no connectivity is saved to
+  disk, applied optimistically to the cached row, and replayed in order when the connection returns —
+  automatically on sign-in, on returning to the foreground, and on reconnect. The queue belongs to the
+  player who made the writes and survives quitting the game.
+- **Money does not.** `AddGameFunds` fails with a Connection error when the server is unreachable rather
+  than queueing, and is never re-sent after an ambiguous failure (a timeout may mean the credit already
+  landed). No offline grants, no double credits.
+- **A rejected write is dropped, not retried forever.** If the server permanently rejects a queued write
+  (a 4xx), it is discarded and the optimistic value rolled back, so it can't block everything behind it.
+  A temporary failure — or an expired session — keeps the whole queue for the next attempt.
+
 ## Testing
 
 Automation tests live beside each feature and are grouped under the `Flock.` prefix. Run them from
@@ -442,11 +497,11 @@ UnrealEditor-Cmd.exe <YourProject>.uproject -ExecCmds="Automation RunTests Flock
 
 Shipping: the boot/init foundation, the HTTP transport, automatic version baking, the SDK event hub,
 player authentication, analytics, game config (with the offline snapshot cache), the shop
-(catalog, purchase, inventory), and player data & templates (with bans). Not yet wired:
+(catalog, purchase, inventory), player data & templates (with bans), and game commands (with the
+offline queue). Not yet wired:
 
-- **Remaining feature providers.** Commands and assets build on the same HTTP layer and land in later
-  releases — the transport, retry, typed error model, and endpoint registry they need are already in
-  place.
+- **Remaining feature provider.** Assets build on the same HTTP layer and land in a later release — the
+  transport, retry, typed error model, and endpoint registry they need are already in place.
 - **Analytics gameplay events.** This release ships the diagnostic log API (event/error/exception) and
   purchase/transaction reporting (with the shop); custom gameplay event tracking arrives later.
 - **Typed schema codegen.** Config and player-template data is read by dotted path or bound to a

@@ -81,6 +81,12 @@ void UFlockLibrary::EraseLocalAnalyticsData(const UObject* WorldContextObject)
 	}
 }
 
+int32 UFlockLibrary::GetPendingCommandCount(const UObject* WorldContextObject)
+{
+	UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
+	return Sdk ? Sdk->GetPendingCommandCount() : 0;
+}
+
 bool UFlockLibrary::IsAuthenticated(const UObject* WorldContextObject)
 {
 	UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
