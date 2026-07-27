@@ -14,6 +14,7 @@
 #include "Providers/FlockAuthProvider.h"
 #include "Providers/FlockConfigProvider.h"
 #include "Providers/FlockGameProvider.h"
+#include "Providers/FlockShopProvider.h"
 #include "FlockSubsystem.generated.h"
 
 class UFlockEvents;
@@ -198,6 +199,14 @@ public:
 	/** Game + version info provider. Null before initialization and after shutdown. */
 	FFlockGameProvider* GetGameProvider() const { return GameProvider.Get(); }
 
+	// ── Shop ──
+
+	/**
+	 * Shop catalog + purchase + inventory provider. Null before initialization and after shutdown.
+	 * C++ API; Blueprint uses the Flock shop async nodes.
+	 */
+	FFlockShopProvider* GetShopProvider() const { return ShopProvider.Get(); }
+
 	// ── Test seams (call before initialization; unused by games) ──
 
 	/** Routes SDK HTTP through the given adapter instead of the engine HTTP module. */
@@ -249,6 +258,7 @@ private:
 	// Shared, not unique: continuations pin a weak self, matching the analytics provider.
 	TSharedPtr<FFlockConfigProvider> ConfigProvider;
 	TSharedPtr<FFlockGameProvider> GameProvider;
+	TSharedPtr<FFlockShopProvider> ShopProvider;
 
 	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
 	TSharedPtr<IFlockTokenStore> TestTokenStore;

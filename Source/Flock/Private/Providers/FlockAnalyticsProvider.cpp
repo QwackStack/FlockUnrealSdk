@@ -391,6 +391,68 @@ void FFlockAnalyticsProvider::RecordScreenView(const FString& ScreenName)
 	Deps.Session->RecordScreenView(ScreenName);
 }
 
+void FFlockAnalyticsProvider::RecordTransaction(const FFlockAnalyticsTransactionRequest& InRequest,
+	TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete)
+{
+	// The backend requires a player id on the body, so this is gated on sign-in (a spec-driven gate,
+	// not one inferred from a 401): a pre-auth call fails here rather than 401'ing on the wire.
+	if (!AuthSessionRef->IsAuthenticated())
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::Make(EFlockErrorType::Auth,
+				TEXT("RecordTransaction requires a signed-in player"))));
+		}
+		return;
+	}
+	if (InRequest.Amount < 0.0)
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::Make(EFlockErrorType::Validation,
+				FString::Printf(TEXT("Transaction amount must be non-negative, got: %f"), InRequest.Amount))));
+		}
+		return;
+	}
+
+	FFlockAnalyticsTransactionRequest Request = InRequest;
+	if (Request.PlayerId.IsEmpty())
+	{
+		Request.PlayerId = AuthSessionRef->GetPlayerId();
+	}
+	if (Request.SessionId.IsEmpty())
+	{
+		Request.SessionId = GetCurrentSessionId();
+	}
+	if (Request.CreatedAt.IsEmpty())
+	{
+		Request.CreatedAt = FDateTime::UtcNow().ToIso8601();
+	}
+
+	FString Body;
+	if (!FFlockJsonUtils::StructToWireJson(Request, Body, /*bOmitEmptyStrings*/ true))
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::Make(EFlockErrorType::Serialization,
+				TEXT("Failed to serialize transaction"))));
+		}
+		return;
+	}
+
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = AuthSessionRef;
+	const FString Url = AnalyticsUrl(FlockEndpoints::AnalyticsTransactions);
+
+	// Bare route: the response is a free-form object nobody reads, so success is the 2xx.
+	Execute<FFlockAnalyticsAck>(
+		[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnAttempt)
+		{
+			return ClientRef->PostJsonRaw<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
+		},
+		MoveTemp(OnComplete), TEXT("Record transaction"));
+}
+
 void FFlockAnalyticsProvider::StartSession(const FString& InPlayerIdOrEmpty,
 	TFunction<void(TFlockResult<FString>)> OnComplete)
 {

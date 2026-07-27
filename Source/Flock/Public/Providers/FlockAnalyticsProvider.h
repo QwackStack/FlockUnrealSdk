@@ -147,6 +147,19 @@ public:
 
 	void RecordScreenView(const FString& ScreenName);
 
+	// ── Transactions ──
+
+	/**
+	 * Records a monetary transaction (`POST analytics/transactions`) for revenue/LTV metrics.
+	 * Unlike the log_event calls this is sent immediately, not spooled, and it requires a signed-in
+	 * player — the backend needs a player id, so a pre-auth call fails with Auth rather than being
+	 * queued. PlayerId, SessionId and CreatedAt are filled from the current session when left empty.
+	 * A negative Amount is rejected as Validation. The shop provider drives this around a purchase
+	 * (best-effort); games may also call it directly.
+	 */
+	void RecordTransaction(const FFlockAnalyticsTransactionRequest& Request,
+		TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete = nullptr);
+
 	/**
 	 * Drains everything queued, batch by batch, until it is empty or a send fails. Session ends go
 	 * first — they are small, rare, and the most valuable record, so a quit's remaining time must not

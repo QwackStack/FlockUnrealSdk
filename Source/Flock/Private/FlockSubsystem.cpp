@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.9.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.10.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -197,6 +197,13 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		GetEvents()->OnAuthenticated.AddDynamic(this, &UFlockSubsystem::HandleAnalyticsAuthenticated);
 		GetEvents()->OnLoggedOut.AddDynamic(this, &UFlockSubsystem::HandleAnalyticsLoggedOut);
 	}
+
+	// After the analytics block so the shop can record purchase transactions through it. The reference is
+	// weak and may be null (analytics disabled) — the shop provider skips recording when it can't pin it.
+	ShopProvider = MakeShared<FFlockShopProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
+		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
+	ShopProvider->SetAnalyticsProvider(AnalyticsProvider);
+
 	return true;
 }
 
@@ -307,6 +314,7 @@ void UFlockSubsystem::ShutdownSdk()
 
 	ConfigProvider.Reset();
 	GameProvider.Reset();
+	ShopProvider.Reset();
 	SnapshotStore.Reset();
 	AuthProvider.Reset();
 	AuthSession.Reset();

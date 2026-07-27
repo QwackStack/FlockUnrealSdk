@@ -280,6 +280,58 @@ struct FLOCK_API FFlockSessionEndRequest
 };
 
 /**
+ * Body for `POST analytics/transactions` — a purchase recorded for revenue/LTV metrics. PlayerId and
+ * Amount are the only members the backend requires; the optional strings are dropped from the body when
+ * empty (StructToWireJson with bOmitEmptyStrings). Fixed-field, so the snake_case wire transform is safe
+ * here (unlike a log event's caller-supplied maps). The shop provider drives this around a purchase; it
+ * can also be sent directly. See FFlockAnalyticsProvider::RecordTransaction.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockAnalyticsTransactionRequest
+{
+	GENERATED_BODY()
+
+	/** Resolved to the signed-in player when left empty. */
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString PlayerId;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	double Amount = 0.0;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString CurrencyId;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString CurrencyCode = TEXT("USD");
+
+	/** Resolved to the running session when left empty. */
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString SessionId;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString ShopItemId;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	int32 Quantity = 1;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString TransactionType = TEXT("purchase");
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString Status = TEXT("completed");
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString PaymentProvider;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString ExternalTransactionId;
+
+	/** ISO-8601 UTC. Stamped when the record is created when left empty. */
+	UPROPERTY(BlueprintReadWrite, Category = "Flock")
+	FString CreatedAt;
+};
+
+/**
  * Stand-in for the analytics routes that answer with a free-form object nobody reads (session end,
  * log event delivery). Deserializing into an empty struct succeeds against any object body, which
  * is what makes these calls fire-and-forget: success is the 2xx, not the payload.
