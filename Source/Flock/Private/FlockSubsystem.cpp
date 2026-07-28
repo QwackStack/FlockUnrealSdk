@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.12.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.13.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -82,6 +82,17 @@ void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 		{
 			Events->SetLogger(Logger);
 		}
+	}
+
+	// Raise the log category so debug breadcrumbs actually reach the console.
+	//
+	// Without this, Enable Debug Logs appears to do nothing: LogDebug writes at Verbose, LogFlock is
+	// declared at Log, and UE filters anything below a category's verbosity — so every breadcrumb was
+	// built, formatted, and then dropped. Raised, never lowered, so a `Log LogFlock Verbose` typed at the
+	// console still wins when the setting is off.
+	if (Config.bEnableDebugLogs && LogFlock.GetVerbosity() < ELogVerbosity::Verbose)
+	{
+		LogFlock.SetVerbosity(ELogVerbosity::Verbose);
 	}
 
 	// Misuse guard for an already-initialized SDK. Don't broadcast a

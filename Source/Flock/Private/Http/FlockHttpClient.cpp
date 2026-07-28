@@ -97,3 +97,40 @@ bool FFlockHttpClient::ClassifyResponse(const FFlockHttpResponse& Response, FFlo
 	OutSuccessBody = Response.Body;
 	return true;
 }
+
+FString FFlockHttpClient::LogRequest(const FString& Method, const FString& Url) const
+{
+	const FString Origin = FFlockCallOrigin::Get();
+	Logger->LogDebug(FString::Printf(TEXT("-> %s %s [%s]"), *Method, *Url, *Origin));
+	return Origin;
+}
+
+void FFlockHttpClient::LogResponse(const FString& Method, const FString& Url, const FFlockHttpResponse& Response,
+	double StartedAtSeconds, const FString& Origin) const
+{
+	const double ElapsedMs = (FPlatformTime::Seconds() - StartedAtSeconds) * 1000.0;
+
+	if (Response.Result == EFlockHttpResult::Success && Response.StatusCode < 400)
+	{
+		Logger->LogDebug(FString::Printf(TEXT("<- %d %s %s (%.0f ms, %d bytes) [%s]"),
+			Response.StatusCode, *Method, *Url, ElapsedMs, Response.Body.Len(), *Origin));
+		return;
+	}
+
+	// Warning, not debug: someone chasing a failure has usually not turned debug logs on yet, and a
+	// silent failure is the thing that sends them here in the first place. The body carries the server's
+	// coded error, which is the single most useful line in the whole trace — and on a failure it is an
+	// error document, not user data.
+	const FString Detail = Response.Body.IsEmpty()
+		? FString(TEXT("no response body"))
+		: Response.Body.Left(512);
+
+	if (Response.Result != EFlockHttpResult::Success)
+	{
+		Logger->LogWarning(FString::Printf(TEXT("<- %s %s [%s] failed to reach the server after %.0f ms: %s"),
+			*Method, *Url, *Origin, ElapsedMs, *Detail));
+		return;
+	}
+	Logger->LogWarning(FString::Printf(TEXT("<- %d %s %s (%.0f ms) [%s]: %s"),
+		Response.StatusCode, *Method, *Url, ElapsedMs, *Origin, *Detail));
+}

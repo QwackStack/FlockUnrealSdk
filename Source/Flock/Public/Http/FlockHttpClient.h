@@ -86,11 +86,13 @@ public:
 	FFlockRequestHandle GetList(const FString& Url, const TMap<FString, FString>& Headers, TFunction<void(TFlockResult<TArray<T>>)> OnComplete)
 	{
 		FFlockHttpRequest Request = MakeRequest(TEXT("GET"), Url, Headers, FString(), /*bHasBody*/ false);
-		Logger->LogDebug(FString::Printf(TEXT("GET %s"), *Url));
+		const FString Origin = LogRequest(TEXT("GET"), Url);
 
 		const TSharedRef<FFlockHttpClient> Self = AsShared();
-		return Adapter->SendAsync(Request, [Self, OnComplete](FFlockHttpResponse Response)
+		const double StartedAt = FPlatformTime::Seconds();
+		return Adapter->SendAsync(Request, [Self, OnComplete, Url, StartedAt, Origin](FFlockHttpResponse Response)
 		{
+			Self->LogResponse(TEXT("GET"), Url, Response, StartedAt, Origin);
 			if (!OnComplete)
 			{
 				return;
@@ -146,11 +148,13 @@ public:
 	FFlockRequestHandle GetPaged(const FString& Url, const TMap<FString, FString>& Headers, TFunction<void(TFlockResult<TFlockPage<T>>)> OnComplete)
 	{
 		FFlockHttpRequest Request = MakeRequest(TEXT("GET"), Url, Headers, FString(), /*bHasBody*/ false);
-		Logger->LogDebug(FString::Printf(TEXT("GET %s"), *Url));
+		const FString Origin = LogRequest(TEXT("GET"), Url);
 
 		const TSharedRef<FFlockHttpClient> Self = AsShared();
-		return Adapter->SendAsync(Request, [Self, OnComplete](FFlockHttpResponse Response)
+		const double StartedAt = FPlatformTime::Seconds();
+		return Adapter->SendAsync(Request, [Self, OnComplete, Url, StartedAt, Origin](FFlockHttpResponse Response)
 		{
+			Self->LogResponse(TEXT("GET"), Url, Response, StartedAt, Origin);
 			if (!OnComplete)
 			{
 				return;
@@ -217,11 +221,15 @@ private:
 		const FString& Body, bool bHasBody, bool bUnwrap, TFunction<void(TFlockResult<T>)> OnComplete)
 	{
 		FFlockHttpRequest Request = MakeRequest(Method, Url, Headers, Body, bHasBody);
-		Logger->LogDebug(FString::Printf(TEXT("%s %s"), *Method, *Url));
+		const FString Origin = LogRequest(Method, Url);
 
 		const TSharedRef<FFlockHttpClient> Self = AsShared();
-		return Adapter->SendAsync(Request, [Self, bUnwrap, OnComplete](FFlockHttpResponse Response)
+		const double StartedAt = FPlatformTime::Seconds();
+		// Method, Url and Origin are captured by value: they are references into the caller's frame (and,
+		// for the origin, ambient state that moves on), while this completion runs long after both.
+		return Adapter->SendAsync(Request, [Self, bUnwrap, OnComplete, Method, Url, StartedAt, Origin](FFlockHttpResponse Response)
 		{
+			Self->LogResponse(Method, Url, Response, StartedAt, Origin);
 			if (!OnComplete)
 			{
 				return;
@@ -245,6 +253,31 @@ private:
 		}
 		return Send<TResp>(Method, Url, Headers, Json, /*bHasBody*/ true, bUnwrap, MoveTemp(OnComplete));
 	}
+
+	// ── Call tracing ──
+	//
+	// Every SDK network call funnels through the three send sites above, so logging here covers the whole
+	// surface — no provider has to remember to. Method and URL only: a request body would put the
+	// password from `player/login` and the bearer from every other route into a log file someone will
+	// paste into a bug report.
+
+	/**
+	 * "-> GET /v1/game_config/... [Blueprint 'bpTest']" before the request goes out.
+	 *
+	 * **Returns the origin it stamped**, which the caller carries into the completion. Re-reading the
+	 * ambient origin when the response lands would attribute it to whatever call started in the meantime;
+	 * taking a copy here means the two halves of a trace always name the same caller.
+	 */
+	FString LogRequest(const FString& Method, const FString& Url) const;
+
+	/**
+	 * "<- 200 GET /v1/... (34 ms, 12 bytes) [Blueprint 'bpTest']" on the way back.
+	 *
+	 * Debug on success, **warning on failure** — a call that failed is worth seeing without having turned
+	 * debug logs on first, which is the situation someone is in precisely when they need it.
+	 */
+	void LogResponse(const FString& Method, const FString& Url, const FFlockHttpResponse& Response,
+		double StartedAtSeconds, const FString& Origin) const;
 
 	TSharedRef<IFlockHttpAdapter> Adapter;
 	TSharedRef<IFlockLogger> Logger;

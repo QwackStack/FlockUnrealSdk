@@ -5,6 +5,85 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-07-28
+
+### Added
+- **Typed Blueprint code generation.** **Tools > Flock > Sync Schemas** fetches this game version's player
+  templates, game configs, and shops, and generates typed Blueprint assets from them — no C++, no
+  toolchain, no compile, no editor restart. Everything lands in `Content/Flock/Generated` (configurable).
+  There is also a `Flock.SyncSchemas` console command for headless or scripted runs.
+- **Generated structs.** One Blueprint struct per player template and game config, with real typed pins —
+  ints, floats, strings, bools, arrays, string-keyed maps, and nested objects as their own structs. Break
+  one open in a graph instead of reading values by string path.
+- **Generated enums.** `FlockShopItemId`, `FlockCurrencyId`, and `FlockAchievementId`, so you pick a shop
+  item or an achievement from a dropdown instead of typing an id that is only checked at runtime.
+- **A one-node read per game config and player template.** `Get Gameplay` fetches, converts, and hands
+  back the typed struct with `Completed` / `Failed` exec pins and an `Error` — no id to pass, no separate
+  fetch to wire. These are Blueprint macros, so they belong in event graphs; the library is parented to
+  Actor, covering Actors, ActorComponents and the Level Blueprint.
+- **A one-node write per player template.** `Get Currencies` also hands out the row id, and
+  `Save Currencies` takes it back with the struct — so a read-modify-write is `Get`, the engine's
+  *Set members in struct*, and `Save`, with no strings anywhere. The row id is an output rather than a
+  hidden detail because it identifies this player's row and nothing else can supply it. Game configs get
+  no `Save`. Note that `Save` sends the whole struct, so always `Get` first: a struct built from scratch
+  writes `0` or `""` over every field you did not fill.
+- **A one-node command per family.** `Purchase`, `Unlock Achievement`, and `Add Funds`, each taking the
+  matching generated enum, so the lookup is no longer nested inside the SDK's own node. `Add Funds` bakes
+  the `currency`-tagged template id and skips the runtime tag scan.
+- **Tools > Flock > Clean Generated** (and `Flock.CleanGenerated`) removes every generated asset and the
+  manifest. Blueprints still referencing a generated struct or enum are listed before anything is deleted.
+- **A CI commandlet.** `UnrealEditor-Cmd.exe <project> "-run=FlockEditor.FlockCodegen" -mode=verify`
+  answers `0` when the committed assets match the backend, `2` on drift, and `1` when it could not run —
+  an unreachable backend or bad settings. Keeping those last two apart is the point: a network blip must
+  not read as "your generated code is stale". `-mode=sync` regenerates instead.
+- **Generated function library.** The pieces the macros are built from, useful on their own: each
+  template's and config's id as a constant, `Read …` / `Make … Update` conversions between a fetched row
+  and its typed struct, and lookups turning a picked enum member into the id the SDK sends. Grouped in the
+  action menu under `Flock > Generated > Ids / Structs / Lookups`.
+- **Content catalog asset.** A read-only asset listing every template, config, shop, item, currency, and
+  achievement the backend declares — select it in the Content Browser to browse your content model
+  without code or a dashboard login. It is regenerated on every sync and never referenced at runtime, so
+  it is not included in packaged builds.
+- **Drift detection.** Each sync records what it generated for. The editor warns on startup when your
+  generated assets are for a different game version than the one baked into project settings.
+
+- **Every network call is traced.** Requests log as `-> GET <url> [Blueprint 'bpTest']` and responses as
+  `<- 200 GET <url> (34 ms, 1892 bytes) [Blueprint 'bpTest']`, from one place in the HTTP client, so no
+  feature can forget to. Network lines name their caller the same way provider lines already did, and the
+  origin is captured when the request goes out — a slow call stays attributed to the graph that made it.
+  Bodies are deliberately not logged — the sign-in body carries a password and the rest carry a bearer
+  token. A failure response is the exception: its first 512 characters are included, because that is the
+  server's coded error and the single most useful line in the trace.
+
+### Fixed
+- **A generated struct with a nested object now writes correctly.** Unreal's JSON converter lower-cases
+  the first letter of every name it emits, which reached the members of a *nested* struct and the keys of
+  a map — but not the top level, where the SDK sets the keys itself. So a template field declared
+  `Level: { Map, Stage }` went out as `{"Level":{"map":…,"stage":…}}` and the server rejected the write
+  for a required property the graph had visibly set. Names are now emitted exactly as declared, at every
+  depth.
+
+- **Enable Debug Logs now actually shows anything.** Debug breadcrumbs are written at `Verbose`, but the
+  `LogFlock` category is declared at `Log`, so Unreal built every line and then filtered it out — the
+  setting appeared to do nothing. Initialization now raises the category when the setting is on. It only
+  raises, so `Log LogFlock Verbose` typed at the console still works with the setting off.
+- **A failed HTTP call is now visible without debug logs on.** Failures log at warning level with the
+  server's reason, and an unreachable server is worded differently from a rejected request — they need
+  different fixes.
+
+### Changed
+- **Generated struct members carry the field names your template declares.** This is what lets an update
+  built from a generated struct be accepted by the server: a field declared `game_currencies` reads back
+  as `GameCurrencies`, and writing that spelling is rejected. The generated conversions handle the
+  difference so you never see it.
+- A field name that cannot be a Blueprint member (a space, a dot, a leading digit) is **skipped with a
+  warning** rather than renamed — a renamed field would silently produce updates the server rejects.
+  Rename it on the dashboard to use it from Blueprint.
+- A field whose shape Blueprint cannot express falls back to an opaque JSON handle, with a warning naming
+  it, instead of being guessed at.
+- **Game configs get a read but no update builder.** A config is game-wide and changed from the dashboard;
+  offering a client-side write would have been offering a call the server always rejects.
+
 ## [0.12.0] - 2026-07-27
 
 ### Added

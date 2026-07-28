@@ -22,6 +22,11 @@ public class FlockEditor : ModuleRules
 			}
 			);
 
+		// The editor tests reuse the runtime module's automation fakes (FFlockFakeTransport), so the
+		// schema fetcher can be driven end to end without a backend. Test-support headers only — nothing
+		// here includes runtime private implementation.
+		PrivateIncludePaths.Add(System.IO.Path.Combine(ModuleDirectory, "..", "Flock", "Private"));
+
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
@@ -37,6 +42,12 @@ public class FlockEditor : ModuleRules
 				// here directly, not just inherited transitively through Flock.
 				"Json",
 				"JsonUtilities",
+				// The CI commandlet has no engine loop, so it ticks FHttpManager itself — otherwise a
+				// request issued inside it never completes.
+				"HTTP",
+				// FEdGraphPinType / UEdGraphSchema_K2 — the pin types a generated Blueprint struct's
+				// members are declared with (codegen struct spike).
+				"BlueprintGraph",
 			}
 			);
 	}

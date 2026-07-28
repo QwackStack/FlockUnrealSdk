@@ -67,6 +67,17 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Codegen")
 	FString GeneratedCodePath = TEXT("Source/FlockGenerated");
 
+	/**
+	 * Content folder where the Codegen step writes generated *assets* — the content catalog, and (for a
+	 * Blueprint target) the generated structs, enums, and function library. Separate from
+	 * GeneratedCodePath because assets have to live under Content to be assets at all, while generated
+	 * C++ has to live under Source to be compiled.
+	 *
+	 * Flock-owned in the same way: regenerating replaces what is in here.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Codegen")
+	FString GeneratedContentPath = TEXT("/Game/Flock/Generated");
+
 	// ──────────────────────────────── General ─────────────────────────────────
 
 	/** Enable detailed debug logging. */

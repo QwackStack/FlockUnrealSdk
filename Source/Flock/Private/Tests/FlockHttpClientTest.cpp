@@ -9,6 +9,7 @@
 #include "Models/FlockGameModels.h"
 #include "FlockLogger.h"
 #include "Tests/Support/FlockFakeTransport.h"
+#include "Tests/Support/FlockRecordingLogger.h"
 
 namespace
 {
@@ -168,6 +169,107 @@ bool FFlockHttpClientPostJsonTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("method"), Fake->Requests.Last().Method, FString(TEXT("POST")));
 	TestEqual(TEXT("body passed through"), Fake->Requests.Last().JsonBody, FString(TEXT("{\"login_type\":\"email\"}")));
 	TestTrue(TEXT("has body"), Fake->Requests.Last().bHasBody);
+	return true;
+}
+
+
+// ── Every call is traced, so a graph that does nothing visible can still be accounted for ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientTraceTest, "Flock.Http.Client.TracesEveryCall",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientTraceTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> Client = MakeShared<FFlockHttpClient>(Fake, Log);
+
+	Fake->On(TEXT("version"), FFlockFakeTransport::Status(200, TEXT("{\"result\":{\"id\":\"v1\"}}")));
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/version"), {},
+		[](TFlockResult<FFlockGameVersionSchema>) {});
+
+	// Both halves. The request line alone was already there and is not the gap — a call that went out and
+	// never came back looks identical to one that succeeded without it.
+	TestTrue(TEXT("the request is traced"),
+		FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("-> GET http://x/version")));
+	TestTrue(TEXT("and so is the response"),
+		FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("<- 200 GET http://x/version")));
+	TestEqual(TEXT("a success stays out of the warning channel"), Log->Warnings.Num(), 0);
+
+	// A failure is a warning, not a debug line: whoever is chasing one has usually not enabled debug
+	// logging yet, which is exactly why they cannot see what went wrong.
+	const TSharedRef<FFlockRecordingLogger> FailLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> FailClient = MakeShared<FFlockHttpClient>(Fake, FailLog);
+	Fake->On(TEXT("boom"), FFlockFakeTransport::Status(422, TEXT("{\"error\":\"template_validation_failed\"}")));
+	FailClient->Get<FFlockGameVersionSchema>(TEXT("http://x/boom"), {},
+		[](TFlockResult<FFlockGameVersionSchema>) {});
+
+	TestTrue(TEXT("a failed call warns"),
+		FFlockRecordingLogger::AnyContains(FailLog->Warnings, TEXT("<- 422 GET http://x/boom")));
+	// The server's coded reason is the most useful line in the trace, so it must survive into the log.
+	TestTrue(TEXT("and carries the server's reason"),
+		FFlockRecordingLogger::AnyContains(FailLog->Warnings, TEXT("template_validation_failed")));
+
+	// An unreachable server is distinguishable from a rejection — different fix, so different wording.
+	const TSharedRef<FFlockRecordingLogger> OfflineLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> OfflineClient = MakeShared<FFlockHttpClient>(Fake, OfflineLog);
+	Fake->On(TEXT("gone"), FFlockFakeTransport::Offline());
+	OfflineClient->Get<FFlockGameVersionSchema>(TEXT("http://x/gone"), {},
+		[](TFlockResult<FFlockGameVersionSchema>) {});
+
+	TestTrue(TEXT("an unreachable server says so"),
+		FFlockRecordingLogger::AnyContains(OfflineLog->Warnings, TEXT("failed to reach the server")));
+
+	return true;
+}
+
+// ── The trace names its caller, on both halves, and cannot be misattributed by a later call ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientOriginTest, "Flock.Http.Client.TraceNamesTheCaller",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientOriginTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> Client = MakeShared<FFlockHttpClient>(Fake, Log);
+	Fake->On(TEXT("thing"), FFlockFakeTransport::Status(200, TEXT("{\"result\":{\"id\":\"v1\"}}")));
+
+	// Default attribution, for a call the SDK makes on its own behalf (a token refresh, a session ping).
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/thing"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("an SDK-internal call is attributed to C++"),
+		FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("[C++]")));
+
+	// What a Blueprint node's origin scope publishes. The provider sets this; the HTTP layer sits below
+	// the provider and can only see it because it is ambient.
+	FFlockCallOrigin::Set(TEXT("Blueprint 'bpTest'"));
+	const TSharedRef<FFlockRecordingLogger> BpLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> BpClient = MakeShared<FFlockHttpClient>(Fake, BpLog);
+	BpClient->Get<FFlockGameVersionSchema>(TEXT("http://x/thing"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+
+	// Both halves, or a failing call names its caller on the line that says it succeeded and not on the
+	// one that says it failed.
+	TestTrue(TEXT("the request names the graph"),
+		FFlockRecordingLogger::AnyContains(BpLog->Debugs, TEXT("-> GET http://x/thing [Blueprint 'bpTest']")));
+	TestTrue(TEXT("and so does the response"),
+		FFlockRecordingLogger::AnyContains(BpLog->Debugs, TEXT("<- 200 GET http://x/thing (")));
+	TestTrue(TEXT("the response carries the origin too"),
+		FFlockRecordingLogger::AnyContains(BpLog->Debugs, TEXT("[Blueprint 'bpTest']")));
+
+	// The reason the origin is copied at request time rather than read when the response lands: by then
+	// some other call has usually started, and re-reading would attribute this response to that caller.
+	const TSharedRef<FFlockRecordingLogger> DeferredLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> DeferredClient = MakeShared<FFlockHttpClient>(Fake, DeferredLog);
+	Fake->bDeferred = true;
+	DeferredClient->Get<FFlockGameVersionSchema>(TEXT("http://x/thing"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	FFlockCallOrigin::Set(TEXT("Blueprint 'somethingElse'"));
+	Fake->FlushPending();
+	Fake->bDeferred = false;
+
+	TestTrue(TEXT("a late response keeps the origin it was sent with"),
+		FFlockRecordingLogger::AnyContains(DeferredLog->Debugs, TEXT("<- 200 GET http://x/thing (")));
+	TestFalse(TEXT("and is not attributed to whatever started meanwhile"),
+		FFlockRecordingLogger::AnyContains(DeferredLog->Debugs, TEXT("somethingElse")));
+
+	FFlockCallOrigin::Set(TEXT("C++"));
 	return true;
 }
 
