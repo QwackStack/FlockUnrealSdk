@@ -1,5 +1,6 @@
 {
 	"FileVersion": 3,
+	"EngineVersion": "5.5.0",
 	"Version": 15,
 	"VersionName": "0.14.0",
 	"FriendlyName": "Flock SDK",
@@ -11,7 +12,7 @@
 	"MarketplaceURL": "",
 	"SupportURL": "mailto:support@qwacks.com",
 	"CanContainContent": true,
-	"IsBetaVersion": false,
+	"IsBetaVersion": true,
 	"IsExperimentalVersion": false,
 	"Installed": false,
 	"Modules": [

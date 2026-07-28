@@ -1,0 +1,45 @@
+name: Release
+
+# Publishes the plugin zip when a version tag is pushed:
+#
+#     git tag v0.14.0 && git push origin v0.14.0
+#
+# The archive is built with `git archive`, so it contains exactly the tracked files and nothing else —
+# no Binaries/, Intermediate/ or Saved/ can leak in, because they are never committed. The `--prefix`
+# is what makes the zip drop straight into a project: it nests everything under FlockUnrealSdk/, so
+# extracting into `YourProject/Plugins/` lands the plugin where Unreal expects it.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the plugin version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PLUGIN=$(grep -o '"VersionName": *"[^"]*"' Flock.uplugin | cut -d'"' -f4)
+          echo "tag=$TAG  Flock.uplugin=$PLUGIN"
+          # A tag that disagrees with the manifest ships a download whose version is a lie, and the
+          # mismatch is invisible until someone reports a bug against the wrong release.
+          if [ "$TAG" != "$PLUGIN" ]; then
+            echo "::error::Tag v$TAG does not match VersionName $PLUGIN in Flock.uplugin"
+            exit 1
+          fi
+
+      - name: Build the plugin archive
+        run: git archive --format=zip --prefix=FlockUnrealSdk/ -o "FlockUnrealSdk-${GITHUB_REF_NAME}.zip" HEAD
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: FlockUnrealSdk-*.zip
+          generate_release_notes: true

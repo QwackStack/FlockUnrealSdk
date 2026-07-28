@@ -1,4 +1,4 @@
-// Copyright 2022, Qwacks. All Rights Reserved.
+// Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 // A dev-only console command that drives the Flock SDK surface and narrates each step to the log,
 // so you can watch boot/init, config/game, authentication, shop, commands, and analytics behavior
