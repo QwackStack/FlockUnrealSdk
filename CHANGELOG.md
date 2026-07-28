@@ -5,6 +5,52 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-07-28
+
+### Added
+- **A C++ code generation target.** A new **Codegen Target** setting picks what a schema sync emits:
+  `Blueprint` (the default, unchanged) or `C++`. The C++ target writes a generated module under
+  `Source/FlockGenerated`, registers it in your `.uproject`, and emits a `USTRUCT` per template and
+  config, a `UENUM` for shop items / currencies / achievements, and a typed call surface over them.
+- **Typed C++ accessors.** `FFlockGenerated::GetPlayerLevel(...)`, `SavePlayerLevel(...)`,
+  `GetGameplay(...)`, `Purchase(...)`, `UnlockAchievement(...)`, `AddFunds(...)`. Every function resolves
+  the SDK from a world context object, so no call site holds a subsystem or a provider, and ids are baked
+  so none is typed by hand. A call made before the SDK is initialized fails through its callback.
+- **Generated C++ structs are `BlueprintType`**, so a graph in a C++-target project still sees the typed
+  types and can drive them through *Flock Data To Struct* / *Flock Struct To Command Data*.
+
+### Changed
+- **Generated C++ members read as idiomatic C++.** A field declared `game_currencies` becomes
+  `GameCurrencies`, and a name that is not a legal identifier at all (`200`, `class`) becomes one
+  (`_200`, `Class`) instead of being skipped. The declared name is carried in a generated lookup table
+  that the SDK consults at every nesting depth, so writes still go out under the names your template
+  declares. Nothing is registered by hand — codegen emits the table and the module that installs it.
+- **`Get <Template>` hands back the row id beside the struct rather than inside it**, matching the
+  Blueprint target. A row id member would show up in a Break node as though it were template data, and the
+  write path would need to exclude it by special case.
+- **Switching target clears the other one's output** on the next sync. The generated C++ *module skeleton*
+  is always kept — deleting it would leave a registered module with no sources, so a project that switched
+  away would stop building. Removing Blueprint assets needs the editor's referencer check, so a headless
+  sync reports what it could not remove instead of leaving duplicates unmentioned.
+- **Clean Generated** now removes both targets' output, keeping the module skeleton and resetting its
+  manifest header rather than deleting it.
+
+- **The signed-in player no longer has to be passed.** `Purchase`, `Get Player Inventory`,
+  `Get All Player Data`, `Get Player Ban`, and `Get Player Features` all resolved an empty player id to
+  the signed-in player already; now C++ has overloads that omit the argument entirely, and the Blueprint
+  `Player Id` pins are collapsed into each node's advanced section. Reading or acting for *another*
+  player is still there, just no longer the thing you see first.
+- **`GetMyData(Page, Limit, ...)`** joins the player provider. On `GetAllData` an empty player id means
+  *every* player, so the signed-in case needed its own name rather than an overload that looks like the
+  admin read.
+
+### Notes
+- A C++ sync **does not build or restart for you**. Unreal cannot adopt new reflection data into a running
+  editor, so the restart is unavoidable however the build is started; the sync writes sources, registers
+  the module, and says what to do next.
+- A **Blueprint-only project is refused**, with a message naming the way out, rather than being silently
+  converted into a C++ project.
+
 ## [0.13.0] - 2026-07-28
 
 ### Added

@@ -53,9 +53,13 @@ CLAUDE.local.md
 # graphify knowledge graph output (local-only)
 graphify-out/
 
-# Maintainer-only docs (specs/plans) — kept local, not shipped
+# Documentation splits two ways, and the split is the point:
+#   Documentation/  — the shipped guides the README links to. Committed.
+#   docs/           — maintainer-only specs and plans. Local, never shipped.
+# Ignoring docs/ wholesale rather than docs/superpowers/ so anything dropped in there
+# is private by default; a working note should never need a .gitignore edit to stay local.
 Documentation~/
-docs/superpowers/
+docs/
 
 # ────────────────────────────────────────────────────────────
 #  OS cruft

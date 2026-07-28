@@ -76,6 +76,20 @@ void FFlockPlayerProvider::GetAllData(const FString& PlayerId, int32 Page, int32
 		MoveTemp(OnComplete), TEXT("Fetch player data list"));
 }
 
+void FFlockPlayerProvider::GetMyData(int32 Page, int32 Limit,
+	TFunction<void(TFlockResult<FFlockPlayerDataPage>)> OnComplete)
+{
+	// Resolved here rather than passed through empty, because empty means *all players* on the underlying
+	// call — the opposite of what this overload promises. Signed out is a Validation failure, not a
+	// silent whole-game read.
+	const FString PlayerId = Session->GetPlayerId();
+	if (!RequireNotEmpty(PlayerId, TEXT("Current Player ID (sign in first)"), OnComplete))
+	{
+		return;
+	}
+	GetAllData(PlayerId, Page, Limit, MoveTemp(OnComplete));
+}
+
 void FFlockPlayerProvider::GetMyDataByTemplate(const FString& PlayerTemplateId, TFunction<void(TFlockResult<FFlockPlayerData>)> OnComplete)
 {
 	if (!RequireNotEmpty(PlayerTemplateId, TEXT("Player Template ID"), OnComplete))

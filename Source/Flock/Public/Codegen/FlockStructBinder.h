@@ -47,11 +47,42 @@ public:
 	static FFlockCommandData ToCommandData(const UStruct* Struct, const void* StructMemory);
 
 	/**
-	 * ToCommandData with an explicit member → declared-name map, for generated C++ structs whose members
-	 * are PascalCase. A member absent from the map falls back to its own name.
+	 * ToCommandData with an explicit member → declared-name map for the **top level**, for a caller that
+	 * has one in hand. Nested structs still resolve through the registry below.
 	 */
 	static FFlockCommandData ToCommandData(const UStruct* Struct, const void* StructMemory,
 		const TMap<FString, FString>& DeclaredNameByMember);
+
+	// ── The wire-name registry ────────────────────────────────────────────────
+	//
+	// Generated C++ members are PascalCase (`GameCurrencies`) while the server matches the template's
+	// declared name (`game_currencies`), so the two have to be mapped — at **every depth**, because a
+	// nested object's members face the same server check as a top-level one.
+	//
+	// **Registered as data, not as `UPROPERTY` metadata.** `FField`'s metadata map lives behind
+	// `#if WITH_METADATA` and is stripped from a packaged build, so a meta-driven mapping would work in
+	// the editor and silently write the wrong names in a shipping build — the worst failure shape this
+	// SDK has, and one already paid for once. A registry survives every build configuration.
+	//
+	// **Nothing calls these by hand.** Codegen emits the table and a module implementation that registers
+	// it from `StartupModule`, and writes the `.uproject` entry that loads that module — so the mapping is
+	// installed before any gameplay code runs. They are public only because the generated module is a
+	// separate module from `Flock` and has to reach in.
+	//
+	// A struct that is not registered — every Blueprint-tier `UUserDefinedStruct`, whose members are
+	// already named for the template — falls back to authored names, so nothing has to opt in.
+
+	/** Authored member name → the name the template declares. */
+	using FWireNameMap = TMap<FString, FString>;
+
+	static void RegisterWireNames(const UScriptStruct* Struct, FWireNameMap Names);
+	static void UnregisterWireNames(const UScriptStruct* Struct);
+
+	/** Null when the struct was never registered, which means "members are already wire-named". */
+	static const FWireNameMap* FindWireNames(const UScriptStruct* Struct);
+
+	/** Clears every registration. For tests; a module's shutdown unregisters its own. */
+	static void ResetWireNames();
 
 	/**
 	 * A member's authored name: the display name for a Blueprint struct (stripping the GUID suffix the

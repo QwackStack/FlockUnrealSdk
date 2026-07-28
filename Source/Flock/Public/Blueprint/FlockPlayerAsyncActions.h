@@ -70,7 +70,7 @@ public:
 	FFlockPlayerDataPagePin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get All Player Data"), Category = "Flock|Player")
+		DisplayName = "Flock Get All Player Data", AdvancedDisplay = "PlayerId"), Category = "Flock|Player")
 	static UFlockGetAllPlayerDataAction* GetAllPlayerData(UObject* WorldContextObject, const FString& PlayerId,
 		int32 Page = 1, int32 Limit = 100);
 
@@ -228,7 +228,7 @@ public:
 	FFlockPlayerBanPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Player Ban"), Category = "Flock|Player")
+		DisplayName = "Flock Get Player Ban", AdvancedDisplay = "PlayerId"), Category = "Flock|Player")
 	static UFlockGetPlayerBanAction* GetPlayerBan(UObject* WorldContextObject, const FString& PlayerId);
 
 	virtual void Activate() override;

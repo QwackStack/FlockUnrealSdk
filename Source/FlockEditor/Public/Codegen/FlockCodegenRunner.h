@@ -43,6 +43,17 @@ public:
 		/** True when the backend cut a new version under the configured name since the last bake. */
 		bool bBakeStale = false;
 
+		// ── C++ target only ──
+
+		/** True when this run emitted a generated C++ module rather than Blueprint assets. */
+		bool bCppTarget = false;
+
+		/** The generated module's name, so the summary can name what needs rebuilding. */
+		FString ModuleName;
+
+		/** True when the .uproject gained the module entry on this run — the first sync after switching. */
+		bool bProjectFilePatched = false;
+
 		/** A one-line summary for a toast; the detail goes to the log. */
 		FString Describe() const;
 	};

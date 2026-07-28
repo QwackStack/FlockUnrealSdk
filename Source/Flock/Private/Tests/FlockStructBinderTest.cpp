@@ -246,4 +246,50 @@ bool FFlockBinderNestedNamesTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+
+// -- A registered wire name maps a Pascal member to its declared name, both directions --
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockBinderWireNameTest, "Flock.Codegen.Binder.HonoursRegisteredWireNames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockBinderWireNameTest::RunTest(const FString& Parameters)
+{
+	// FFlockFeatureBan stands in for a generated C++ struct: its members are Pascal (`BanDuration`) while
+	// a template would declare them snake (`ban_duration`). Registering that mapping is exactly what the
+	// generated module does on startup.
+	FFlockStructBinder::RegisterWireNames(FFlockFeatureBan::StaticStruct(), {
+		{ TEXT("Reason"), TEXT("why_banned") },
+		{ TEXT("BanDuration"), TEXT("ban_duration") },
+	});
+
+	// Write: the declared name goes out, not the member's own spelling. Without this the server rejects
+	// the write for a property the caller can see is set.
+	FFlockFeatureBan Ban;
+	Ban.Reason = TEXT("cheating");
+	Ban.BanDuration = TEXT("7d");
+	const FString Json = FFlockStructBinder::ToCommandData(FFlockFeatureBan::StaticStruct(), &Ban).ToJsonString();
+	AddInfo(Json);
+
+	auto Has = [&Json](const TCHAR* Needle) { return Json.Contains(Needle, ESearchCase::CaseSensitive); };
+	TestTrue(TEXT("the declared name is written"), Has(TEXT("\"why_banned\"")));
+	TestFalse(TEXT("and the member name is not"), Has(TEXT("\"Reason\"")));
+	TestTrue(TEXT("a snake declared name too"), Has(TEXT("\"ban_duration\"")));
+
+	// Read: the same mapping resolves the other way, so a fetch fills the Pascal member from the
+	// declared key. A one-directional map would bind nothing and look exactly like an absent field.
+	FFlockFeatureBan RoundTrip;
+	FFlockStructuredData Source;
+	Source.FlatJson = TEXT("{\"why_banned\":\"botting\",\"ban_duration\":\"30d\"}");
+	FFlockStructBinder::FillStruct(FFlockFeatureBan::StaticStruct(), &RoundTrip, Source);
+	TestEqual(TEXT("the member fills from the declared key"), RoundTrip.Reason, FString(TEXT("botting")));
+	TestEqual(TEXT("including a snake one"), RoundTrip.BanDuration, FString(TEXT("30d")));
+
+	// Unregistering restores the fallback: members are their own wire names, which is the Blueprint tier.
+	FFlockStructBinder::UnregisterWireNames(FFlockFeatureBan::StaticStruct());
+	const FString Plain = FFlockStructBinder::ToCommandData(FFlockFeatureBan::StaticStruct(), &Ban).ToJsonString();
+	TestTrue(TEXT("an unregistered struct writes its member names"),
+		Plain.Contains(TEXT("\"Reason\""), ESearchCase::CaseSensitive));
+
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

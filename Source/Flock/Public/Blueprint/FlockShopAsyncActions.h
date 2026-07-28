@@ -159,7 +159,7 @@ public:
 	FFlockPlayerInventoryPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Purchase"), Category = "Flock|Shop")
+		DisplayName = "Flock Purchase", AdvancedDisplay = "PlayerId"), Category = "Flock|Shop")
 	static UFlockPurchaseAction* Purchase(UObject* WorldContextObject, const FString& ShopItemId, const FString& PlayerId);
 
 	virtual void Activate() override;
@@ -188,7 +188,7 @@ public:
 	FFlockPlayerInventoryPagePin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Player Inventory"), Category = "Flock|Shop")
+		DisplayName = "Flock Get Player Inventory", AdvancedDisplay = "PlayerId"), Category = "Flock|Shop")
 	static UFlockGetPlayerInventoryAction* GetPlayerInventory(UObject* WorldContextObject, const FString& PlayerId,
 		int32 Page = 1, int32 Limit = 100);
 

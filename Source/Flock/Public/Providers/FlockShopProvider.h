@@ -69,9 +69,28 @@ public:
 	void Purchase(const FString& ShopItemId, const FString& PlayerId,
 		TFunction<void(TFlockResult<FFlockPlayerInventory>)> OnComplete);
 
+	/**
+	 * Buys for the **signed-in player** — the overload nearly every call site wants.
+	 *
+	 * An overload rather than a defaulted parameter because the callback trails: C++ cannot default a
+	 * middle argument, so without this every ordinary purchase has to spell out `FString()` to say
+	 * "whoever is signed in", which reads like an oversight rather than a choice.
+	 */
+	void Purchase(const FString& ShopItemId, TFunction<void(TFlockResult<FFlockPlayerInventory>)> OnComplete)
+	{
+		Purchase(ShopItemId, FString(), MoveTemp(OnComplete));
+	}
+
 	/** A page of a player's owned items (empty PlayerId = the signed-in player). Never cached. */
 	void GetPlayerInventory(const FString& PlayerId, int32 Page, int32 Limit,
 		TFunction<void(TFlockResult<FFlockPlayerInventoryPage>)> OnComplete);
+
+	/** The signed-in player's inventory. See the Purchase overload for why this is not a default argument. */
+	void GetPlayerInventory(int32 Page, int32 Limit,
+		TFunction<void(TFlockResult<FFlockPlayerInventoryPage>)> OnComplete)
+	{
+		GetPlayerInventory(FString(), Page, Limit, MoveTemp(OnComplete));
+	}
 
 	/** Drops every in-process cache and the shop snapshot category, so the next fetch hits the backend. */
 	void ClearCache();

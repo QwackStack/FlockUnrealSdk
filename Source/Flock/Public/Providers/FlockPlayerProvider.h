@@ -47,6 +47,15 @@ public:
 		TFunction<void(TFlockResult<FFlockPlayerDataPage>)> OnComplete);
 
 	/**
+	 * A page of the **signed-in player's** rows.
+	 *
+	 * Note this is not the same default as the PlayerId overload, where empty means *every* player — an
+	 * admin-shaped read. Naming the common case explicitly keeps a caller from reaching for the other one
+	 * and quietly paging the whole game's data.
+	 */
+	void GetMyData(int32 Page, int32 Limit, TFunction<void(TFlockResult<FFlockPlayerDataPage>)> OnComplete);
+
+	/**
 	 * The signed-in player's data row for a template. Paginates and caches all of the player's rows on the
 	 * first call (any template), then serves from memory until ClearCache. A successful fetch with no row
 	 * for the template yields Ok with an empty record (empty Id) — the mirror of Unity's null return.

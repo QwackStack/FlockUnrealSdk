@@ -48,6 +48,9 @@ public class FlockEditor : ModuleRules
 				// FEdGraphPinType / UEdGraphSchema_K2 — the pin types a generated Blueprint struct's
 				// members are declared with (codegen struct spike).
 				"BlueprintGraph",
+				// FProjectDescriptor — the C++ codegen target registers its generated module in the
+				// .uproject, and the engine's own descriptor keeps that file canonical.
+				"Projects",
 			}
 			);
 	}

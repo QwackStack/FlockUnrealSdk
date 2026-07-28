@@ -157,7 +157,7 @@ public:
 	FFlockConfigPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Player Features"), Category = "Flock|Config")
+		DisplayName = "Flock Get Player Features", AdvancedDisplay = "PlayerId"), Category = "Flock|Config")
 	static UFlockGetPlayerFeaturesAction* GetPlayerFeatures(UObject* WorldContextObject, const FString& PlayerId);
 
 	virtual void Activate() override;
