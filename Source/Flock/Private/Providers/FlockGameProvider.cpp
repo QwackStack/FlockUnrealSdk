@@ -1,4 +1,4 @@
-// Copyright 2022, Qwacks. All Rights Reserved.
+// Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Providers/FlockGameProvider.h"
 

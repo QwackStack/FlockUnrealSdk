@@ -74,11 +74,23 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 
 ## Installation
 
-1. Copy the `FlockUnrealSdk` folder into your project's `Plugins/` directory
-   (`YourProject/Plugins/FlockUnrealSdk/`).
-2. Right-click your `.uproject` → **Generate Visual Studio project files**.
-3. Rebuild the project (the plugin's `Flock` runtime and `FlockEditor` editor modules compile with it).
-4. The plugin is enabled by default. Verify under **Edit → Plugins → Online Platform → Flock SDK**.
+**Download: [github.com/QwackStack/FlockUnrealSdk/releases](https://github.com/QwackStack/FlockUnrealSdk/releases)**
+
+Get the plugin into your project one of two ways:
+
+- **Extract the release zip** into your project's `Plugins/` folder. The archive nests everything under
+  `FlockUnrealSdk/`, so you end up with `YourProject/Plugins/FlockUnrealSdk/` and nothing to rename.
+- **Clone the repo** into the same place, if you want to track it with git:
+  `git clone https://github.com/QwackStack/FlockUnrealSdk.git YourProject/Plugins/FlockUnrealSdk`
+
+Then, either way:
+
+1. Right-click your `.uproject` → **Generate Visual Studio project files**.
+2. Rebuild the project. The plugin's `Flock` runtime and `FlockEditor` editor modules compile with it.
+3. The plugin is enabled by default — verify under **Edit → Plugins → Online Platform → Flock SDK**.
+
+Each release is built from the tagged source, so it contains no compiled binaries: you build it once with
+your project, against your engine version and toolchain.
 
 ## Requirements
 
@@ -286,7 +298,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the version history.
 
 ## License
 
-Copyright 2022, Qwacks. All Rights Reserved.
+MIT — see [LICENSE.md](LICENSE.md).
 
 ## Support
 

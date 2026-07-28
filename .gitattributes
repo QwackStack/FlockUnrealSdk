@@ -1,0 +1,8 @@
+# Files that belong in the repo but not in a release archive.
+#
+# `git archive` builds the download from tracked files, so the zip is clean by construction — no
+# Binaries/, Intermediate/ or Saved/ can leak into it, because they were never committed. These are the
+# few things that *are* committed but mean nothing to someone dropping the plugin into their project.
+.gitignore      export-ignore
+.gitattributes  export-ignore
+.github/        export-ignore
