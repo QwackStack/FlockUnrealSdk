@@ -20,6 +20,19 @@ public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 
+	/**
+	 * Tools > Flock > Sync Schemas: fetch the backend schema and regenerate everything from it. Public
+	 * because the `Flock.SyncSchemas` console command shares it — the menu cannot be driven headlessly,
+	 * and a sync has to be verifiable against a real backend.
+	 */
+	static void OnSyncSchemas();
+
+	/**
+	 * Tools > Flock > Clean Generated: delete everything a sync wrote. Public for the same reason as
+	 * OnSyncSchemas — `Flock.CleanGenerated` shares it.
+	 */
+	static void OnCleanGenerated();
+
 private:
 	void RegisterMenus();
 	static void OnResolveGameVersion();

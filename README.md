@@ -5,9 +5,9 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 > **Early release.** The SDK's boot/init foundation, the network transport (HTTP client, automatic
 > retry, typed errors), automatic edit-time Game Version baking, **player authentication**,
 > **analytics**, **game config** (with an offline snapshot cache), the **shop** (catalog, purchase,
-> inventory), **player data & templates** (with bans), and **game commands** (player-data mutations with
-> an offline queue) now ship. The remaining feature provider (assets) builds on this next. See
-> [Status](#status).
+> inventory), **player data & templates** (with bans), **game commands** (player-data mutations with an
+> offline queue), and **typed Blueprint code generation** now ship. The remaining feature provider
+> (assets) builds on this next. See [Status](#status).
 
 ## Contents
 
@@ -23,6 +23,7 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 - [Analytics](#analytics)
 - [Player data & templates](#player-data--templates)
 - [Game commands](#game-commands)
+- [Code generation](#code-generation)
 - [Testing](#testing)
 - [Status](#status)
 
@@ -66,6 +67,9 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   the updated row and writes it back into the player cache. Data writes queue offline and replay
   automatically; funds never do — a grant fails rather than being queued, and is never re-sent after an
   ambiguous failure.
+- **Code generation** — one menu click turns your backend's templates, configs, and shops into typed
+  Blueprint structs, enums, and one-node reads, writes, and purchases. No C++, no toolchain, no compile
+  step.
 - **Offline snapshot cache** — successful config, game, shop-catalog, and player-template reads are cached
   to disk, scoped to the game version, and served when the network is down; toggleable in settings.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
@@ -206,6 +210,34 @@ Two things to know:
 
 The SDK routes every breadcrumb and error through a logger. Turn on **Enable Debug Logs** in the
 settings for verbose output under the `LogFlock` category; warnings and errors always surface.
+
+Turning it on also raises the `LogFlock` category to `Verbose` so the breadcrumbs actually reach the
+console — it only ever raises, so `Log LogFlock Verbose` typed at the console still works with the
+setting off.
+
+**Every network call is traced**, and each line names the caller — `[C++]`, or the graph it came from —
+the same way provider lines do:
+
+```
+[Flock SDK] -> GET http://localhost:8001/v1/player_data?player_id=01KY... [Blueprint 'bpTest']
+[Flock SDK] <- 200 GET http://localhost:8001/v1/player_data?player_id=01KY... (34 ms, 2060 bytes) [Blueprint 'bpTest']
+```
+
+The origin is captured when the request goes out, not when the response lands, so a slow call is still
+attributed to the graph that made it rather than to whatever started in the meantime.
+
+A call that fails is logged as a **warning**, with the server's own reason, and does not need debug logs
+turned on — you are usually chasing a failure precisely because you couldn't see it:
+
+```
+[Flock SDK] <- 422 POST .../game_command/update_player_data (28 ms) [Blueprint 'bpTest']: {"detail":{"code":"game_command.template_validation_failed",...}}
+[Flock SDK] <- POST .../analytics/sessions [C++] failed to reach the server after 5001 ms: connection refused
+```
+
+Request and response **bodies are not logged**. The sign-in body carries a password and every other
+request carries a bearer token, and a log is the thing people paste into bug reports. Failure responses
+are the exception — the first 512 characters are included, because that is the server's error document,
+not user data.
 
 Inject your own logger (e.g. to feed an on-screen debugger or telemetry) by implementing `IFlockLogger`:
 
@@ -484,6 +516,106 @@ Things worth knowing:
   (a 4xx), it is discarded and the optimistic value rolled back, so it can't block everything behind it.
   A temporary failure — or an expired session — keeps the whole queue for the next attempt.
 
+## Code generation
+
+**Tools > Flock > Sync Schemas** fetches this game version's player templates, game configs, and shops and
+generates typed Blueprint assets from them, into `Content/Flock/Generated`. There is no C++ involved: no
+toolchain, no compile, no editor restart. (`Flock.SyncSchemas` does the same from the console.)
+
+What you get:
+
+- **A struct per template and config** with real typed pins — ints, floats, strings, bools, arrays,
+  string-keyed maps, and nested objects as their own structs.
+- **`FlockShopItemId`, `FlockCurrencyId`, `FlockAchievementId`** — pick an item or an achievement from a
+  dropdown instead of typing an id.
+- **One node per config and template** — `Get Gameplay`, `Get Currencies`, `Save Currencies`. Each carries
+  its own fetch and id, and answers with `Completed` / `Failed` exec pins, the typed struct, and an
+  `Error`. (These are macros, so they live in event graphs; the library is parented to Actor, covering
+  Actors, ActorComponents and the Level Blueprint.)
+- **One node per command** — `Purchase`, `Unlock Achievement`, `Add Funds`, each taking the matching
+  generated enum. `Add Funds` also bakes your `currency`-tagged template id, so it skips the lookup the
+  SDK would otherwise do at runtime.
+- **A function library**: each template's and config's id as a constant, `Read …` / `Make … Update`
+  conversions between a fetched row and its typed struct, and lookups turning a picked enum member into
+  the id the SDK sends. Grouped under `Flock > Generated > Ids / Structs / Lookups`.
+- **A content catalog asset** listing everything the backend declares — select it in the Content Browser
+  to browse your content model with no code and no dashboard login.
+
+Reading a game config is **one node** — the fetch, its id, and the conversion are all inside it:
+
+```
+Get Gameplay  ─exec─►  Completed ──►  Struct (typed)
+                       Failed ──►     Error
+```
+
+Break that struct for typed pins.
+
+### Changing a player's data
+
+A read-modify-write is `Get <Template>` → the engine's **Set members in struct** → `Save <Template>`:
+
+1. Place `Get Currencies` and `Save Currencies`.
+2. Drag off `Get`'s **Struct** pin and add **Set members in Currencies Template**, between the two.
+3. Select that node and, in the **Details** panel, tick the members you want to write. Each ticked member
+   gets an input pin; type or wire the new value in.
+4. Run execution through all three, wire the modified struct into `Save`'s **Struct**, and wire `Get`'s
+   **Row Id** into `Save`'s **Row Id**.
+
+`Get` hands out the row id because `Save` needs it and nothing else can supply it — it identifies this
+player's row. Pass it straight through.
+
+Two things about that middle node:
+
+- **Unticked members are left untouched**, keeping whatever `Get` fetched. Ticking is how you say "write
+  this one", so the members you never think about stay as they are.
+- **`Save` sends the whole struct**, not just the members you ticked. That is why the `Get` is not
+  optional: build a struct from scratch with *Make* instead and every field you didn't fill goes to the
+  server as `0` or `""`, overwriting the row.
+
+Unreal shows Set-members pins unticked by default and gives no way to change that, which is worth knowing
+rather than working around — the tick is the difference between "don't change this" and "set this to
+nothing".
+
+Every generated node is built from pieces you can also use directly, if you want to assemble a chain by
+hand:
+
+```
+Flock Resolve Config Data (Config Id ← Gameplay Config Id)
+  → Read Gameplay Config  →  Break Gameplay Config
+```
+
+**Tools > Flock > Clean Generated** removes everything a sync wrote. Any Blueprint still referencing a
+generated struct or enum is listed before anything is deleted.
+
+For CI, a commandlet gives you an exit code:
+
+```bash
+UnrealEditor-Cmd.exe <YourProject>.uproject "-run=FlockEditor.FlockCodegen" -mode=verify -unattended -nullrhi
+```
+
+`verify` is read-only and answers `0` when the committed assets match the backend, `2` when the schema has
+drifted, and `1` when it could not run at all — an unreachable backend or bad settings. Those last two are
+kept apart on purpose: a network blip should not send anyone off to regenerate perfectly good output.
+`-mode=sync` (the default) regenerates instead, and answers `0` or `1`.
+
+Things worth knowing:
+
+- **Generated members carry the names your template declares.** That is what makes an update built from a
+  generated struct acceptable to the server — a field declared `game_currencies` reads back as
+  `GameCurrencies`, and writing that spelling is rejected. The generated conversions hide the difference.
+- **Regenerating replaces what it owns.** Treat `Content/Flock/Generated` as Flock's; a sync rewrites it.
+  **Commit the folder** — your Blueprints hold hard references to the generated structs, so a teammate
+  cloning a repo without them gets broken graphs until they sync.
+- **Game configs are read-only.** They get a `Get …` and a `Read …`, but no `Save` and no update builder:
+  configs are game-wide and changed from the dashboard, not by a client.
+- **A field name that cannot be a Blueprint member** (a space, a dot, a leading digit) is skipped with a
+  warning rather than renamed, because renaming it would silently produce updates the server rejects.
+  Rename it on the dashboard to use it from Blueprint.
+- **The editor warns when your generated assets are stale** — that is, generated for a different game
+  version than the one baked into project settings. Re-sync.
+- **Nothing generated is referenced at runtime except what you use**, and the catalog never is, so it
+  stays out of packaged builds.
+
 ## Testing
 
 Automation tests live beside each feature and are grouped under the `Flock.` prefix. Run them from
@@ -497,15 +629,16 @@ UnrealEditor-Cmd.exe <YourProject>.uproject -ExecCmds="Automation RunTests Flock
 
 Shipping: the boot/init foundation, the HTTP transport, automatic version baking, the SDK event hub,
 player authentication, analytics, game config (with the offline snapshot cache), the shop
-(catalog, purchase, inventory), player data & templates (with bans), and game commands (with the
-offline queue). Not yet wired:
+(catalog, purchase, inventory), player data & templates (with bans), game commands (with the
+offline queue), and typed Blueprint code generation. Not yet wired:
 
 - **Remaining feature provider.** Assets build on the same HTTP layer and land in a later release — the
   transport, retry, typed error model, and endpoint registry they need are already in place.
 - **Analytics gameplay events.** This release ships the diagnostic log API (event/error/exception) and
   purchase/transaction reporting (with the shop); custom gameplay event tracking arrives later.
-- **Typed schema codegen.** Config and player-template data is read by dotted path or bound to a
-  `USTRUCT` you write yourself; generated typed accessors arrive later.
+- **Typed codegen for C++.** Code generation produces Blueprint assets. C++ still reads a row by dotted
+  path or binds it to a `USTRUCT` you write yourself (`GetDataAs<T>`); generated C++ types would need a
+  compile step and are not currently emitted.
 - **A few Blueprint gaps.** Config *patch* reads (all patches, by id, by config) and configs by version
   tag are C++-only for now — in Blueprint, `Flock Resolve Config Data` already returns the patched-or-base
   values, which is what most graphs want. Provider cache clearing is also C++-only.

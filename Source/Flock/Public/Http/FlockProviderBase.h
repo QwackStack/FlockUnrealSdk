@@ -42,8 +42,17 @@ public:
 	 * Defaults to "C++"; the Blueprint async nodes set it for the duration of their dispatch via
 	 * FFlockCallOriginScope. Safe because dispatch is synchronous and game-thread only: the origin is
 	 * folded into the log strings before the call returns, so overlapping async calls can't mix it up.
+	 *
+	 * Also published ambiently (FFlockCallOrigin) so the HTTP layer underneath can stamp the same origin
+	 * onto its request/response trace — otherwise a provider line names the caller and the network lines
+	 * below it do not, which is the half that matters when a call fails. FFlockCallOriginScope restores
+	 * both on the way out, because it restores through this setter.
 	 */
-	void SetCallOrigin(const FString& InOrigin) { CallOrigin = InOrigin; }
+	void SetCallOrigin(const FString& InOrigin)
+	{
+		CallOrigin = InOrigin;
+		FFlockCallOrigin::Set(InOrigin);
+	}
 	const FString& GetCallOrigin() const { return CallOrigin; }
 
 	/**

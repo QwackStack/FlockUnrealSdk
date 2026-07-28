@@ -3,6 +3,22 @@
 #include "FlockLogger.h"
 #include "Flock.h"
 
+namespace
+{
+	/** Defaults to C++ so a call made before any Blueprint scope is still attributed, not left blank. */
+	FString GCallOrigin = TEXT("C++");
+}
+
+const FString& FFlockCallOrigin::Get()
+{
+	return GCallOrigin;
+}
+
+void FFlockCallOrigin::Set(const FString& Origin)
+{
+	GCallOrigin = Origin;
+}
+
 void FFlockUnrealLogger::LogDebug(const FString& Message)
 {
 	if (bVerbose)

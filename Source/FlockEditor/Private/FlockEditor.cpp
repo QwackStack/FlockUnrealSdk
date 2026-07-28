@@ -1,7 +1,10 @@
 // Copyright 2022, Qwacks. All Rights Reserved.
 
 #include "FlockEditor.h"
+#include "Codegen/FlockCodegenRunner.h"
+#include "Framework/Notifications/NotificationManager.h"
 #include "Guards/FlockPlayModeGuard.h"
+#include "Widgets/Notifications/SNotificationList.h"
 #include "Version/FlockVersionResolver.h"
 #include "Version/FlockVersionLookup.h"
 #include "Version/FlockHttpVersionLookup.h"
@@ -65,6 +68,86 @@ void FFlockEditorModule::RegisterMenus()
 		LOCTEXT("ResolveGameVersionTooltip", "Resolve the Game Version name to its ID and bake it into project settings, so runtime init needs no network."),
 		FSlateIcon(),
 		FUIAction(FExecuteAction::CreateStatic(&FFlockEditorModule::OnResolveGameVersion)));
+
+	Section.AddMenuEntry(
+		"FlockSyncSchemas",
+		LOCTEXT("SyncSchemas", "Sync Schemas"),
+		LOCTEXT("SyncSchemasTooltip",
+			"Fetch this game version's player templates, game configs, and shops, and regenerate the typed "
+			"Blueprint structs, enums, and function library from them."),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateStatic(&FFlockEditorModule::OnSyncSchemas)));
+
+	Section.AddMenuEntry(
+		"FlockCleanGenerated",
+		LOCTEXT("CleanGenerated", "Clean Generated"),
+		LOCTEXT("CleanGeneratedTooltip",
+			"Delete every asset a schema sync generated, and the manifest recording it. Blueprints "
+			"referencing a generated struct or enum will be listed before anything is removed."),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateStatic(&FFlockEditorModule::OnCleanGenerated)));
+}
+
+namespace
+{
+	/**
+	 * The same sync as the menu entry, reachable without a UI. Two reasons it exists: the menu path cannot
+	 * be driven headlessly, so this is how a sync is verified against a real backend; and it is the entry
+	 * point the CI commandlet wraps.
+	 */
+	FAutoConsoleCommand GFlockSyncSchemasCommand(
+		TEXT("Flock.SyncSchemas"),
+		TEXT("Fetches this game version's schemas and regenerates the typed Blueprint assets from them."),
+		FConsoleCommandDelegate::CreateStatic(&FFlockEditorModule::OnSyncSchemas));
+
+	FAutoConsoleCommand GFlockCleanGeneratedCommand(
+		TEXT("Flock.CleanGenerated"),
+		TEXT("Deletes every generated Flock asset and the codegen manifest."),
+		FConsoleCommandDelegate::CreateStatic(&FFlockEditorModule::OnCleanGenerated));
+}
+
+void FFlockEditorModule::OnCleanGenerated()
+{
+	// Confirmation on: this deletes assets a project's Blueprints may reference, and the engine's own
+	// prompt is what lists those referencers.
+	const FFlockCodegenRunner::FCleanResult Result = FFlockCodegenRunner::Clean(/*bShowConfirmation*/ true);
+	const FString Summary = Result.Describe();
+	UE_LOG(LogFlockEditor, Log, TEXT("%s"), *Summary);
+
+	FNotificationInfo Info(FText::FromString(Summary));
+	Info.ExpireDuration = Result.bSucceeded ? 6.f : 10.f;
+	if (const TSharedPtr<SNotificationItem> Item = FSlateNotificationManager::Get().AddNotification(Info))
+	{
+		Item->SetCompletionState(Result.bSucceeded ? SNotificationItem::CS_Success : SNotificationItem::CS_Fail);
+		Item->ExpireAndFadeout();
+	}
+}
+
+void FFlockEditorModule::OnSyncSchemas()
+{
+	FFlockCodegenRunner::Sync(FFlockCodegenRunner::FOnSyncComplete::CreateLambda(
+		[](const FFlockCodegenRunner::FRunResult& Result)
+		{
+			const FString Summary = Result.Describe();
+			if (Result.bSucceeded)
+			{
+				UE_LOG(LogFlockEditor, Log, TEXT("%s"), *Summary);
+			}
+			else
+			{
+				UE_LOG(LogFlockEditor, Error, TEXT("%s"), *Summary);
+			}
+
+			// Warnings are already in the log in full; the toast carries the headline so a sync that half
+			// worked cannot look like one that fully worked.
+			FNotificationInfo Info(FText::FromString(Summary));
+			Info.ExpireDuration = Result.bSucceeded ? 6.f : 10.f;
+			if (const TSharedPtr<SNotificationItem> Item = FSlateNotificationManager::Get().AddNotification(Info))
+			{
+				Item->SetCompletionState(Result.bSucceeded ? SNotificationItem::CS_Success : SNotificationItem::CS_Fail);
+				Item->ExpireAndFadeout();
+			}
+		}));
 }
 
 void FFlockEditorModule::OnResolveGameVersion()
@@ -105,6 +188,10 @@ void FFlockEditorModule::OnEditorInitialized(double /*Duration*/)
 	{
 		TryAutoResolve(TEXT("unresolved on editor startup"));
 	}
+
+	// Cheap drift check: compares the generated manifest against the baked version id, no network. Silent
+	// when codegen has never run, so a project that does not use it hears nothing.
+	FFlockCodegenRunner::WarnIfBakedVersionDrifted();
 }
 
 void FFlockEditorModule::TryAutoResolve(const TCHAR* Reason)
