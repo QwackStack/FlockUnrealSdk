@@ -5,6 +5,9 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Codegen/FlockCatalogBuilder.h"
 #include "Codegen/FlockCodegenPaths.h"
+#include "Codegen/FlockCppModuleEmitter.h"
+#include "Codegen/FlockCppAccessorEmitter.h"
+#include "Codegen/FlockCppTypeEmitter.h"
 #include "Codegen/FlockEnumEmitter.h"
 #include "Codegen/FlockFunctionLibraryEmitter.h"
 #include "Codegen/FlockMacroLibraryEmitter.h"
@@ -16,16 +19,65 @@
 #include "HAL/FileManager.h"
 #include "ObjectTools.h"
 
+namespace
+{
+	/**
+	 * Deletes every asset under a generated content path.
+	 *
+	 * Through ObjectTools rather than the file system, because that raises the engine's own referencer
+	 * prompt — a Blueprint holding a hard reference to a generated struct is exactly the case this must
+	 * not break silently.
+	 */
+	/** How many assets are still under a path, to tell a completed delete from a refused one. */
+	int32 CountContentAssets(const FString& PackageRoot)
+	{
+		FAssetRegistryModule& RegistryModule =
+			FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+		TArray<FAssetData> Assets;
+		RegistryModule.Get().GetAssetsByPath(FName(*PackageRoot), Assets, /*bRecursive*/ true);
+		return Assets.Num();
+	}
+
+	int32 DeleteContentAssets(const FString& PackageRoot, bool bShowConfirmation)
+	{
+		FAssetRegistryModule& RegistryModule =
+			FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+		IAssetRegistry& Registry = RegistryModule.Get();
+		// Nothing forces a scan of a path no one has browsed, and an unscanned root reports zero assets.
+		Registry.ScanPathsSynchronous({ PackageRoot }, /*bForceRescan*/ true);
+
+		TArray<FAssetData> Assets;
+		Registry.GetAssetsByPath(FName(*PackageRoot), Assets, /*bRecursive*/ true);
+		return Assets.Num() > 0 ? ObjectTools::DeleteAssets(Assets, bShowConfirmation) : 0;
+	}
+}
+
 FString FFlockCodegenRunner::FRunResult::Describe() const
 {
 	if (!bSucceeded)
 	{
 		return FString::Printf(TEXT("Flock schema sync failed: %s"), *Error);
 	}
+	const FString WarningSuffix = Warnings.Num() > 0
+		? FString::Printf(TEXT(" (%d warning(s))"), Warnings.Num())
+		: FString();
+
+	if (bCppTarget)
+	{
+		// Says what to do next rather than implying it is usable now. The editor cannot adopt new
+		// reflection data, so the types in this module do not exist until the project is rebuilt and
+		// reopened — promising otherwise would be a lie the first compile error exposes.
+		return FString::Printf(
+			TEXT("Flock schemas synced for %s — %d template(s), %d config(s), %d shop(s) -> module '%s'%s. ")
+			TEXT("Rebuild the project and restart the editor to use the generated types.%s"),
+			*GameVersionId, TemplateCount, ConfigCount, ShopCount, *ModuleName,
+			bProjectFilePatched ? TEXT(" (registered in the .uproject)") : TEXT(""), *WarningSuffix);
+	}
+
 	return FString::Printf(
 		TEXT("Flock schemas synced for %s — %d template(s), %d config(s), %d shop(s) -> %d struct(s), %d enum(s), %d function(s), %d macro(s)%s"),
 		*GameVersionId, TemplateCount, ConfigCount, ShopCount, StructCount, EnumCount, FunctionCount, MacroCount,
-		Warnings.Num() > 0 ? *FString::Printf(TEXT(" (%d warning(s))"), Warnings.Num()) : TEXT(""));
+		*WarningSuffix);
 }
 
 FFlockCodegenRunner::FRunResult FFlockCodegenRunner::EmitAll(const FFlockSchemaSnapshot& Snapshot,
@@ -38,12 +90,91 @@ FFlockCodegenRunner::FRunResult FFlockCodegenRunner::EmitAll(const FFlockSchemaS
 	Result.ShopCount = Snapshot.Shops.Num();
 	Result.bBakeStale = Snapshot.IsBakeStale();
 
+	const UFlockConfig* Settings = GetDefault<UFlockConfig>();
+	const EFlockCodegenTarget Target = Settings ? Settings->CodegenTarget : EFlockCodegenTarget::Blueprint;
+
+	// The C++ skeleton goes first, and a failure here aborts before anything else runs. A generated module
+	// that will not compile breaks the whole project's build rather than one feature, so there is no
+	// "best effort" version of this step — unlike an asset emitter, where four of five is still useful.
+	if (Target == EFlockCodegenTarget::Cpp)
+	{
+		const FFlockCppModuleEmitter::FEmitResult Module =
+			FFlockCppModuleEmitter::EmitForProject(GeneratedCodeRoot, FFlockCodegenManifest::FromSnapshot(Snapshot));
+		Result.Warnings.Append(Module.Warnings);
+		if (!Module.bSucceeded)
+		{
+			Result.Error = Module.Error;
+			return Result;
+		}
+		Result.bCppTarget = true;
+		Result.ModuleName = Module.ModuleName;
+		Result.bProjectFilePatched = Module.bProjectFilePatched;
+
+		// Clear the other target's output. The two overlap in the action menu, so leaving the Blueprint
+		// assets behind would show two entries for every entity — and the stale one would keep working,
+		// which is worse than it failing. Done before the catalog is written, which both targets share.
+		//
+		// Reported rather than assumed: deleting an asset runs the engine's referencer check, which needs
+		// a real editor — headlessly (the CI commandlet) it refuses, and silently leaving the duplicates
+		// behind would be the worst outcome of the three.
+		DeleteContentAssets(ContentPath, /*bShowConfirmation*/ false);
+		if (CountContentAssets(ContentPath) > 0)
+		{
+			Result.Warnings.Add(FString::Printf(
+				TEXT("The Blueprint target's generated assets are still in '%s' and will appear in the action ")
+				TEXT("menu alongside the C++ types. Run Tools > Flock > Clean Generated from the editor to ")
+				TEXT("remove them — deleting assets needs the editor's referencer check, so it cannot be done ")
+				TEXT("from a commandlet."), *ContentPath));
+		}
+
+		// Types into a module already known to compile. Warnings here name a field that degraded or was
+		// skipped, which is the same contract as the Blueprint emitters — the headers still build.
+		const FFlockCppTypeEmitter::FEmitResult Types =
+			FFlockCppTypeEmitter::Emit(Snapshot, GeneratedCodeRoot, Module.ModuleName);
+		Result.Warnings.Append(Types.Warnings);
+		Result.StructCount = Types.StructCount;
+		Result.EnumCount = Types.EnumCount;
+		if (!Types.bSucceeded)
+		{
+			Result.Error = Types.Error;
+			return Result;
+		}
+
+		// Accessors after the types, because they name those struct types in their signatures — and after
+		// the type emitter's wipe, which owns every header in Public and would otherwise delete this one.
+		const FFlockCppAccessorEmitter::FEmitResult Accessors =
+			FFlockCppAccessorEmitter::Emit(Snapshot, GeneratedCodeRoot, Module.ModuleName);
+		Result.Warnings.Append(Accessors.Warnings);
+		Result.FunctionCount = Accessors.FunctionCount;
+		if (!Accessors.bSucceeded)
+		{
+			Result.Error = Accessors.Error;
+			return Result;
+		}
+	}
+
 	// The catalog first: it is the browsable record of what this sync saw, and is useful even if a later
 	// emitter has trouble.
 	FString CatalogError;
 	if (!FFlockCatalogBuilder::Save(Snapshot, ContentPath, CatalogError))
 	{
 		Result.Warnings.Add(FString::Printf(TEXT("Content catalog: %s"), *CatalogError));
+	}
+
+	// The Blueprint asset emitters below run only for the Blueprint target. The two targets overlap in
+	// the action menu — a generated UFUNCTION and a generated Blueprint library function appear under the
+	// same name — so a project gets one or the other, never both.
+	if (Target == EFlockCodegenTarget::Blueprint)
+	{
+	// The C++ types go, for the same reason and with the same asymmetry: the module *skeleton* stays, so
+	// a project that switched away still compiles without a .uproject edit or a rebuild.
+	{
+		FString SwitchError;
+		if (!FFlockCppModuleEmitter::RemoveGeneratedTypes(GeneratedCodeRoot,
+			FFlockCppModuleEmitter::ModuleNameFromRoot(GeneratedCodeRoot), /*bResetManifest*/ true, SwitchError))
+		{
+			Result.Warnings.Add(SwitchError);
+		}
 	}
 
 	// Structs before the library: the library bakes struct *types* into its pins, which a name cannot
@@ -108,11 +239,12 @@ FFlockCodegenRunner::FRunResult FFlockCodegenRunner::EmitAll(const FFlockSchemaS
 	{
 		Result.Warnings.Add(MacroError);
 	}
+	} // Blueprint target
 
 	// The manifest last, and only if something was actually emitted: it is the claim that generated output
 	// exists and matches this schema, so writing it after a failed run would make a later drift check
 	// report "up to date" about assets that were never written.
-	if (Result.StructCount == 0 && Result.EnumCount == 0 && Result.FunctionCount == 0)
+	if (!Result.bCppTarget && Result.StructCount == 0 && Result.EnumCount == 0 && Result.FunctionCount == 0)
 	{
 		Result.bSucceeded = false;
 		Result.Error = TEXT("Nothing was generated. Check the warnings, or whether this game version declares any templates, configs, or shops.");
@@ -220,33 +352,23 @@ FFlockCodegenRunner::FCleanResult FFlockCodegenRunner::CleanAt(const FString& Co
 		return Result;
 	}
 
-	// The registry may never have looked inside the generated folder — nothing forces a scan of a path no
-	// one has browsed — so an unscanned root would report zero assets and "clean" nothing.
-	FAssetRegistryModule& RegistryModule =
-		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	IAssetRegistry& Registry = RegistryModule.Get();
-	Registry.ScanPathsSynchronous({ Root }, /*bForceRescan*/ true);
+	Result.AssetsDeleted = DeleteContentAssets(Root, bShowConfirmation);
 
-	TArray<FAssetData> Assets;
-	Registry.GetAssetsByPath(FName(*Root), Assets, /*bRecursive*/ true);
-
-	if (Assets.Num() > 0)
-	{
-		// FAssetData rather than loaded objects on purpose: DeleteAssets loads only what it needs and runs
-		// the referencer check itself, which is the whole reason for going through it.
-		Result.AssetsDeleted = ObjectTools::DeleteAssets(Assets, bShowConfirmation);
-		// A confirmation the user declined comes back as zero, which is a cancel rather than a failure —
-		// and the manifest must then stay, or the drift check would report never-generated for assets that
-		// are still there.
-		if (Result.AssetsDeleted == 0)
-		{
-			Result.Error = TEXT("Nothing was deleted. The assets may still be referenced, or the confirmation was cancelled.");
-			return Result;
-		}
-	}
-
+	// The C++ side too, whichever target is currently selected — a Clean should leave nothing generated
+	// behind, and a project that has switched targets may hold output from both.
 	if (!GeneratedRoot.IsEmpty())
 	{
+		const FString ModuleName = FFlockCppModuleEmitter::ModuleNameFromRoot(GeneratedRoot);
+		FString TypeError;
+		// The skeleton stays: deleting the .Build.cs would leave a registered module with no sources, so a
+		// cleaned project would not build at all.
+		if (!FFlockCppModuleEmitter::RemoveGeneratedTypes(GeneratedRoot, ModuleName,
+			/*bResetManifest*/ true, TypeError))
+		{
+			Result.Error = TypeError;
+			return Result;
+		}
+
 		const FString ManifestPath = FFlockCodegenPaths::ManifestPath(GeneratedRoot);
 		if (IFileManager::Get().FileExists(*ManifestPath))
 		{

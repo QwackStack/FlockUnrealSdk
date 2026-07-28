@@ -2,6 +2,8 @@
 
 #include "Codegen/FlockStructEmitter.h"
 
+#include "Codegen/FlockSchemaTypes.h"
+
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "EdGraphSchema_K2.h"
 #include "FileHelpers.h"
@@ -19,7 +21,7 @@ const TCHAR* const FFlockStructEmitter::ConfigSuffix = TEXT("Config");
 namespace
 {
 	/** Guards against a schema that nests into itself; real ones are shallow. */
-	constexpr int32 MaxNestingDepth = 8;
+	constexpr int32 MaxNestingDepth = FFlockSchemaTypes::MaxNestingDepth;
 
 	FEdGraphPinType SimplePin(const FName& Category, const FName& SubCategory = NAME_None)
 	{
@@ -39,81 +41,36 @@ namespace
 	}
 
 	/**
-	 * Scalar wire type → pin type. Datetimes stay strings: the whole SDK carries ISO-8601 timestamps as
-	 * FString (CreatedAt/UpdatedAt on every model), and diverging here would make generated models
-	 * inconsistent with hand-written ones.
+	 * Scalar kind → pin type.
+	 *
+	 * The wire-type *table* lives in FFlockSchemaTypes so the C++ target cannot drift from this one about
+	 * which types exist; only the mapping to Blueprint's own type system stays here.
 	 */
 	bool TryMapScalar(const FString& WireType, FEdGraphPinType& OutPin)
 	{
-		FString Type = WireType.TrimStartAndEnd().ToLower();
-		// A trailing '?' marks the field as nullable on the dashboard ("datetime?"), which says nothing
-		// about its type. Blueprint has no nullable scalar anyway — an unset field simply stays at its
-		// default — so the marker is dropped rather than making the type unrecognizable. Found by syncing
-		// a real backend: without this, every optional field degraded to an opaque JSON handle.
-		Type.RemoveFromEnd(TEXT("?"));
-		if (Type == TEXT("string") || Type == TEXT("str") || Type == TEXT("text")
-			|| Type == TEXT("datetime") || Type == TEXT("date") || Type == TEXT("timestamp"))
+		switch (FFlockSchemaTypes::Classify(WireType))
 		{
+		case EFlockSchemaKind::String:
 			OutPin = SimplePin(UEdGraphSchema_K2::PC_String);
 			return true;
-		}
-		if (Type == TEXT("int") || Type == TEXT("integer"))
-		{
+		case EFlockSchemaKind::Int:
 			OutPin = SimplePin(UEdGraphSchema_K2::PC_Int);
 			return true;
-		}
-		if (Type == TEXT("long") || Type == TEXT("int64"))
-		{
+		case EFlockSchemaKind::Int64:
 			OutPin = SimplePin(UEdGraphSchema_K2::PC_Int64);
 			return true;
-		}
-		if (Type == TEXT("float"))
-		{
+		case EFlockSchemaKind::Float:
 			OutPin = SimplePin(UEdGraphSchema_K2::PC_Real, UEdGraphSchema_K2::PC_Float);
 			return true;
-		}
-		if (Type == TEXT("double") || Type == TEXT("number"))
-		{
+		case EFlockSchemaKind::Double:
 			OutPin = SimplePin(UEdGraphSchema_K2::PC_Real, UEdGraphSchema_K2::PC_Double);
 			return true;
-		}
-		if (Type == TEXT("bool") || Type == TEXT("boolean"))
-		{
+		case EFlockSchemaKind::Bool:
 			OutPin = SimplePin(UEdGraphSchema_K2::PC_Boolean);
 			return true;
+		default:
+			return false;
 		}
-		return false;
-	}
-
-	TArray<TSharedPtr<FJsonValue>> ParseSchemaArray(const FString& SchemaJson)
-	{
-		TArray<TSharedPtr<FJsonValue>> Entries;
-		if (!SchemaJson.IsEmpty())
-		{
-			const TSharedRef<TJsonReader<TCHAR>> Reader = TJsonReaderFactory<TCHAR>::Create(SchemaJson);
-			FJsonSerializer::Deserialize(Reader, Entries);
-		}
-		return Entries;
-	}
-
-	/** A field's `schema` child, as a list (object body) or a single descriptor (list/dict element). */
-	TArray<TSharedPtr<FJsonValue>> ChildEntries(const TSharedRef<FJsonObject>& Field)
-	{
-		TArray<TSharedPtr<FJsonValue>> Children;
-		const TSharedPtr<FJsonValue> Child = Field->TryGetField(TEXT("schema"));
-		if (!Child.IsValid())
-		{
-			return Children;
-		}
-		if (Child->Type == EJson::Array)
-		{
-			Children = Child->AsArray();
-		}
-		else if (Child->Type == EJson::Object)
-		{
-			Children.Add(Child);
-		}
-		return Children;
 	}
 
 	// Forward declaration: resolving a field's type can require building a nested struct, which resolves
@@ -146,7 +103,7 @@ namespace
 
 		if (Type == TEXT("object"))
 		{
-			const TArray<TSharedPtr<FJsonValue>> Children = ChildEntries(Field);
+			const TArray<TSharedPtr<FJsonValue>> Children = FFlockSchemaTypes::ChildEntries(Field);
 			if (Children.IsEmpty())
 			{
 				OutWarnings.Add(FString::Printf(
@@ -166,7 +123,7 @@ namespace
 
 		if (Type == TEXT("list") || Type == TEXT("array") || Type == TEXT("dict"))
 		{
-			const TArray<TSharedPtr<FJsonValue>> Children = ChildEntries(Field);
+			const TArray<TSharedPtr<FJsonValue>> Children = FFlockSchemaTypes::ChildEntries(Field);
 			const TSharedPtr<FJsonObject> Element = Children.IsEmpty() ? nullptr : Children[0]->AsObject();
 			if (!Element.IsValid())
 			{
@@ -325,7 +282,7 @@ bool FFlockStructEmitter::IsUsableMemberName(const FString& DeclaredName)
 UUserDefinedStruct* FFlockStructEmitter::BuildStruct(UObject* Outer, const FString& StructName,
 	const FString& SchemaJson, TArray<FString>& OutWarnings)
 {
-	return BuildStructFromEntries(Outer, StructName, ParseSchemaArray(SchemaJson), /*Depth*/ 0, OutWarnings);
+	return BuildStructFromEntries(Outer, StructName, FFlockSchemaTypes::ParseSchemaArray(SchemaJson), /*Depth*/ 0, OutWarnings);
 }
 
 FFlockStructEmitter::FEmitResult FFlockStructEmitter::BuildAll(const FFlockSchemaSnapshot& Snapshot, UObject* Outer)

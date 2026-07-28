@@ -7,6 +7,24 @@
 #include "FlockConfig.generated.h"
 
 /**
+ * What a schema sync emits.
+ *
+ * Blueprint is the default because it is the one that costs nothing: assets appear immediately, with no
+ * C++ toolchain, no compile, and no editor restart. C++ adds compile-time typing and IntelliSense, and
+ * Blueprint still sees the generated types afterwards — but only once the project has been rebuilt and
+ * the editor reopened, because a running editor cannot adopt new reflection data.
+ */
+UENUM()
+enum class EFlockCodegenTarget : uint8
+{
+	/** Blueprint structs, enums, and one-node macros. No compile step. */
+	Blueprint UMETA(DisplayName = "Blueprint (assets, no compile)"),
+
+	/** A generated C++ module. Requires a rebuild and an editor restart after each sync. */
+	Cpp UMETA(DisplayName = "C++ (generated module, needs a rebuild)"),
+};
+
+/**
  * Flock SDK settings for this project.
  *
  * Set your API credentials and game identity under "Required", then adjust the analytics,
@@ -77,6 +95,16 @@ public:
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Codegen")
 	FString GeneratedContentPath = TEXT("/Game/Flock/Generated");
+
+	/**
+	 * What a schema sync generates.
+	 *
+	 * The two targets overlap — a generated `UFUNCTION` and a generated Blueprint library function both
+	 * appear in the action menu under the same name — so this picks one rather than emitting both, and
+	 * changing it removes the other target's output on the next sync.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Codegen")
+	EFlockCodegenTarget CodegenTarget = EFlockCodegenTarget::Blueprint;
 
 	// ──────────────────────────────── General ─────────────────────────────────
 
