@@ -197,6 +197,10 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Asset Cache", meta = (ClampMin = "0"))
 	int32 AssetDownloadRetryCount = 3;
 
+	/** How many asset downloads may be in flight at once. The rest queue. Clamped to at least 1. */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Asset Cache", meta = (ClampMin = "1"))
+	int32 AssetMaxConcurrentDownloads = 4;
+
 	// ────────────────────────────── Offline Cache ─────────────────────────────
 
 	/** Snapshot read-API responses to disk and serve them when the network is unavailable. Disable on WebGL. */

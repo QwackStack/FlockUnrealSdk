@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.15.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.16.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -232,6 +232,17 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	CommandProvider->SetPlayerProvider(PlayerProvider);
 	GetEvents()->OnAuthenticated.AddDynamic(this, &UFlockSubsystem::HandleCommandsAuthenticated);
 
+	// Assets are game-version scoped rather than player scoped, so nothing here is cleared on logout — the
+	// snapshot store's PruneOtherVersions above already parks a previous version's index. The binary cache
+	// is its own directory under the persistent download path, deliberately not the snapshot store: that
+	// one is JSON-payload only and unbudgeted, which is the wrong shape for a hundred megabytes of images.
+	AssetProvider = MakeShared<FFlockAssetProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
+		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId,
+		FlockCreateHttpAssetDownloader(LoggerRef),
+		MakeShared<FFlockAssetCache>(Settings->AssetCacheDirectory, Settings->AssetCacheMaxSizeMB, LoggerRef));
+	AssetProvider->Configure(Settings->bEnableAssetCache, static_cast<float>(Settings->AssetDownloadTimeoutSeconds),
+		Settings->AssetDownloadRetryCount, Settings->AssetMaxConcurrentDownloads);
+
 	// Supply the reachability probe every snapshot-backed provider has always had a seam for and never a
 	// production value for — left null, IsServerReachable() answered "reachable" unconditionally, so the
 	// branch that serves cache *without* a call could only ever fire in a test. One shared latch on the
@@ -247,6 +258,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		PlayerProvider->SetReachabilityProbe(Probe);
 		ShopProvider->SetReachabilityProbe(Probe);
 		CommandProvider->SetReachabilityProbe(Probe);
+		AssetProvider->SetReachabilityProbe(Probe);
 	}
 
 	return true;
@@ -377,6 +389,7 @@ void UFlockSubsystem::ShutdownSdk()
 	GameProvider.Reset();
 	ShopProvider.Reset();
 	PlayerProvider.Reset();
+	AssetProvider.Reset();
 	SnapshotStore.Reset();
 	AuthProvider.Reset();
 	AuthSession.Reset();

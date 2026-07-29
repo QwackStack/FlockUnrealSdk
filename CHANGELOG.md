@@ -5,6 +5,37 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-07-29
+
+### Added
+- **Assets.** Fetch the asset list for your game version, look one up by name or id, and download it —
+  as a texture, as text, as raw bytes, or as a file on disk. Blueprint gets one node per flavour, each
+  taking a single pin that accepts either a name or an id, with a progress pin alongside the usual
+  success and failure pins. C++ gets the same surface on `GetAssetProvider()`.
+- **Downloads stream to disk instead of being held in memory.** A large asset costs the disk write and a
+  socket buffer rather than its full size in RAM, so a few hundred megabytes of downloadable content no
+  longer has to fit in the heap twice on its way to the cache.
+- **Downloaded bytes are cached on disk, keyed by asset and version.** A second read of the same version
+  never touches the network; re-uploading an asset supersedes the old copy only once the new one has
+  landed. The cache has a size budget with least-recently-used eviction, and a download larger than the
+  whole budget is fetched but deliberately left uncached rather than evicting everything else.
+- **An expired download link recovers by itself.** Download URLs are signed and time-limited, so one held
+  in the offline cache can go stale. A refused download now refreshes that single record and retries once
+  with the new link, instead of failing and making you refetch by hand.
+- `Flock Preload Assets` / `Flock Preload All Assets` warm the cache for a loading screen, reporting
+  progress and how many landed. Individual failures don't fail the batch.
+- `Flock Is Asset Cached`, `Flock Get Uncached Assets`, `Flock Get Cached Asset Path`,
+  `Flock Get Asset Cache Directory` and `Flock Clear Asset Cache` answer without a network call.
+- **Asset Max Concurrent Downloads** setting (default 4) caps how many transfers run at once; the rest
+  queue. The existing Asset Cache settings are now live — they had nothing reading them before this
+  release.
+
+### Notes
+- There is no sound-wave download flavour. The engine has no way to turn compressed audio (mp3, ogg)
+  into a playable sound at runtime, and supporting only uncompressed WAV would fail silently on exactly
+  the files a content server usually holds. Use `Flock Download Asset File` and hand the path to whatever
+  imports audio in your project.
+
 ## [0.15.0] - 2026-07-29
 
 ### Added
