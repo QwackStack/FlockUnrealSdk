@@ -264,8 +264,14 @@ a graph can branch on a failure without matching strings.
 ## Offline caching
 
 Successful config, game, shop-catalog, and player-template reads are snapshotted to disk, scoped to the
-game version, and served when the server is unreachable — the server is always tried first, and there are
-no TTLs. Toggle it with **Enable Offline Cache** in settings.
+game version, and served when the server is unreachable. There are no TTLs — an entry lives until a fresh
+success replaces it. Toggle it with **Enable Offline Cache** in settings.
+
+The server is tried first, with one exception: once a request has failed because the server could not be
+reached at all, the SDK serves cached reads directly for a short window instead of waiting out calls that
+cannot succeed. Any answer from the server — including an error — ends that window immediately, and it
+lapses on its own regardless, so the next read always re-tests the network. A slow or failing server is
+not treated as being offline; only a request that never reached it is.
 
 Bans, player inventory, and purchases are never cached: they are security or money state that can change
 server-side at any moment. Player data rows are cached per player and dropped on sign-out.

@@ -42,10 +42,23 @@ public:
 	/** Drops one entry. Called after a successful send. Unknown handles are ignored. */
 	virtual void Remove(const FString& Handle) = 0;
 
-	/** Oldest-first, capped at MaxCount. Entries stay spooled until explicitly Removed. */
-	virtual void PeekBatch(int32 MaxCount, TArray<FString>& OutHandles, TArray<FString>& OutPayloads) const = 0;
+	/**
+	 * Oldest-first, capped at MaxCount. Entries stay spooled until explicitly Removed.
+	 *
+	 * An entry that cannot be read is surfaced with an **empty payload** rather than skipped, so the
+	 * caller's existing "this will never be deliverable" path drops it. Skipping instead would leave a
+	 * handle no caller can ever Remove, holding a cap slot for the life of the install. Non-const because
+	 * an implementation may need to track failures across calls to tell "busy right now" from "gone".
+	 */
+	virtual void PeekBatch(int32 MaxCount, TArray<FString>& OutHandles, TArray<FString>& OutPayloads) = 0;
 
-	/** Every handle, oldest first — the retag-after-auth pass walks this. */
+	/**
+	 * Every handle, oldest first. Diagnostics and tests — there is no production caller.
+	 *
+	 * It is not a retag-after-auth hook: a log event here carries no player id (log_event declares no
+	 * security and its body has no player field), so there is nothing to reattribute. The one retag this
+	 * SDK needs is FFlockSession::SetPlayerId, on the live session.
+	 */
 	virtual TArray<FString> AllHandles() const = 0;
 
 	/** Drops everything. Backs the "erase my analytics data" path. */

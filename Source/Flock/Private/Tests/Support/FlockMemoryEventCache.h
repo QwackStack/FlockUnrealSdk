@@ -70,7 +70,12 @@ public:
 		Payloads.Remove(Handle);
 	}
 
-	virtual void PeekBatch(int32 MaxCount, TArray<FString>& OutHandles, TArray<FString>& OutPayloads) const override
+	/**
+	 * No unreadable-entry branch, unlike the file cache: a payload held in a TMap is either present (and
+	 * readable) or was Removed. The file cache's two-strike drop covers a failure mode that only exists on
+	 * disk, and its own tests cover it against a temp directory.
+	 */
+	virtual void PeekBatch(int32 MaxCount, TArray<FString>& OutHandles, TArray<FString>& OutPayloads) override
 	{
 		OutHandles.Reset();
 		OutPayloads.Reset();

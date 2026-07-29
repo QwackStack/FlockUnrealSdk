@@ -34,6 +34,37 @@ TSharedRef<FFlockHttpClient> FFlockHttpClient::CreateDefault(float TimeoutSecond
 	return MakeShared<FFlockHttpClient>(Adapter, Logger, TimeoutSeconds);
 }
 
+void FFlockHttpClient::NoteReachability(const FFlockHttpResponse& Response)
+{
+	switch (Response.Result)
+	{
+	case EFlockHttpResult::Success:
+		// The exchange completed. Any status at all — 200, 401, 500 — took a round trip, so the network
+		// is up whatever the server thought of the request.
+		OfflineSinceSeconds = -1.0;
+		break;
+	case EFlockHttpResult::ConnectionError:
+		// No HTTP response: DNS, refused, or no route. Re-latch on every such failure rather than only
+		// the first, so a long offline stretch keeps extending the window instead of lapsing mid-outage.
+		OfflineSinceSeconds = FPlatformTime::Seconds();
+		break;
+	case EFlockHttpResult::Timeout:
+	case EFlockHttpResult::Cancelled:
+		// Neither says anything about reachability. See NoteReachability's declaration for why a timeout
+		// must not latch.
+		break;
+	}
+}
+
+bool FFlockHttpClient::IsLikelyOffline() const
+{
+	if (OfflineSinceSeconds < 0.0)
+	{
+		return false;
+	}
+	return (FPlatformTime::Seconds() - OfflineSinceSeconds) < OfflineLatchSeconds;
+}
+
 bool FFlockHttpClient::ClassifyResponse(const FFlockHttpResponse& Response, FFlockError& OutError, FString& OutSuccessBody) const
 {
 	switch (Response.Result)

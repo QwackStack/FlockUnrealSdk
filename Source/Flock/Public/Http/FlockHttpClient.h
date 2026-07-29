@@ -35,6 +35,29 @@ public:
 	/** Builds a client over the default engine-HTTP adapter, hiding the HTTP module from callers. */
 	static TSharedRef<FFlockHttpClient> CreateDefault(float TimeoutSeconds, const TSharedRef<IFlockLogger>& Logger);
 
+	// ── Reachability latch ──
+	//
+	// The offline signal the snapshot layer runs on. It lives here because this is the one object every
+	// provider shares and the only one that sees a transport failure at all: below it the adapter has no
+	// notion of the SDK, above it a provider only ever receives an already-classified FFlockError.
+	//
+	// Deliberately not a platform query. FPlatformMisc's network APIs answer Unknown on too many targets
+	// to build a policy on, so the SDK stops asking the platform and reads the signal it already produces.
+
+	/**
+	 * True when the last completed request could not reach the server *at all* and the latch has not yet
+	 * lapsed. Wired into FFlockProviderBase::SetReachabilityProbe by the subsystem; a client nobody has
+	 * sent a request through reads as online.
+	 *
+	 * "Likely" is honest: this is a latch over the last observed outcome, not a live probe. It is used to
+	 * skip a call that cannot succeed, never to fail one — so a stale true costs a cache hit that was
+	 * already the fallback, and a stale false costs one attempt.
+	 */
+	bool IsLikelyOffline() const;
+
+	/** Shortens the re-probe window so a test needn't wait it out. */
+	void SetOfflineLatchSecondsForTesting(float InSeconds) { OfflineLatchSeconds = InSeconds; }
+
 	// ── Enveloped verbs (unwrap `result` into T) ──
 
 	template <typename T>
@@ -92,6 +115,7 @@ public:
 		const double StartedAt = FPlatformTime::Seconds();
 		return Adapter->SendAsync(Request, [Self, OnComplete, Url, StartedAt, Origin](FFlockHttpResponse Response)
 		{
+			Self->NoteReachability(Response);
 			Self->LogResponse(TEXT("GET"), Url, Response, StartedAt, Origin);
 			if (!OnComplete)
 			{
@@ -154,6 +178,7 @@ public:
 		const double StartedAt = FPlatformTime::Seconds();
 		return Adapter->SendAsync(Request, [Self, OnComplete, Url, StartedAt, Origin](FFlockHttpResponse Response)
 		{
+			Self->NoteReachability(Response);
 			Self->LogResponse(TEXT("GET"), Url, Response, StartedAt, Origin);
 			if (!OnComplete)
 			{
@@ -194,6 +219,21 @@ private:
 	/** Transport + status mapping + coded-error/Retry-After parse. Returns true on 2xx (OutSuccessBody set). */
 	bool ClassifyResponse(const FFlockHttpResponse& Response, FFlockError& OutError, FString& OutSuccessBody) const;
 
+	/**
+	 * Folds one completion into the offline latch. Called from each of the three send sites, alongside the
+	 * response trace, so it sees every call the SDK makes.
+	 *
+	 * Only EFlockHttpResult::Success and ConnectionError move it, and Success means *the exchange
+	 * completed* — a 500 or a 401 clears the latch exactly as firmly as a 200, because either one took a
+	 * round trip and so proves the network works.
+	 *
+	 * Timeout deliberately does nothing: a slow server is not a dead network, and the two mistakes are not
+	 * symmetric. A false offline serves stale cache without ever attempting the network; a false online
+	 * costs one attempt and then falls back correctly. So the latch under-reports offline on purpose.
+	 * Cancelled says nothing about the network either — the caller stopped it.
+	 */
+	void NoteReachability(const FFlockHttpResponse& Response);
+
 	template <typename T>
 	TFlockResult<T> ParseInto(const FFlockHttpResponse& Response, bool bUnwrap) const
 	{
@@ -229,6 +269,7 @@ private:
 		// for the origin, ambient state that moves on), while this completion runs long after both.
 		return Adapter->SendAsync(Request, [Self, bUnwrap, OnComplete, Method, Url, StartedAt, Origin](FFlockHttpResponse Response)
 		{
+			Self->NoteReachability(Response);
 			Self->LogResponse(Method, Url, Response, StartedAt, Origin);
 			if (!OnComplete)
 			{
@@ -282,4 +323,19 @@ private:
 	TSharedRef<IFlockHttpAdapter> Adapter;
 	TSharedRef<IFlockLogger> Logger;
 	float TimeoutSeconds;
+
+	/**
+	 * FPlatformTime::Seconds() at which the latch was set; negative means "not latched". Monotonic rather
+	 * than wall-clock, so a device clock jump can't strand the latch — the same reason session duration is
+	 * accumulated from tick deltas.
+	 */
+	double OfflineSinceSeconds = -1.0;
+
+	/**
+	 * How long the latch holds before a read is allowed through to re-test the network for real. A constant
+	 * with a test setter rather than a project setting, on the same reasoning as MaxCachedSessionEnds: a
+	 * safety behaviour, not something a game tunes. Expiry is also what makes the latch self-healing — it
+	 * lapses on its own, so it can never stick permanently even if nothing ever succeeds again.
+	 */
+	float OfflineLatchSeconds = 30.f;
 };
