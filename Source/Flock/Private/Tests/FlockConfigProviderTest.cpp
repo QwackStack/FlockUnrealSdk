@@ -357,6 +357,60 @@ bool FFlockConfigProviderUnreachableTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConfigProviderLatchDrivesOfflineTest, "Flock.Config.Provider.HttpLatchDrivesOfflineBranch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockConfigProviderLatchDrivesOfflineTest::RunTest(const FString& Parameters)
+{
+	// The test above forces the probe directly, which pins the *policy* but would keep passing if nothing
+	// ever supplied a probe in production — which is exactly the bug this branch fixes. This one wires the
+	// probe the way UFlockSubsystem does and lets a real connection failure through the real client set it,
+	// so it pins the *wiring*: latch -> probe -> no-call branch.
+	const FString Dir = TempRoot();
+	{
+		FFixture Warm(true, Dir);
+		Warm.Fake->On(TEXT("game_config/cfg-1"), FFlockFakeTransport::Ok(ConfigBody));
+		Warm.Provider->GetConfigById(TEXT("cfg-1"), [&](TFlockResult<FFlockGameConfigSchema> R) {});
+	}
+	{
+		FFixture Cold(true, Dir);
+		const TSharedRef<FFlockHttpClient> ClientRef = Cold.Client;
+		Cold.Provider->SetReachabilityProbe([ClientRef]() { return !ClientRef->IsLikelyOffline(); });
+
+		TestFalse(TEXT("nothing has failed yet, so the probe reads reachable"), ClientRef->IsLikelyOffline());
+
+		// Some unrelated call hits a dead network. That is the only thing that should be needed.
+		Cold.Fake->On(TEXT("something_else"), FFlockFakeTransport::Offline());
+		ClientRef->Get<FFlockGameConfigSchema>(TEXT("http://x/v1/something_else"), {},
+			[](TFlockResult<FFlockGameConfigSchema>) {});
+		TestTrue(TEXT("the failure latched the client offline"), ClientRef->IsLikelyOffline());
+
+		// The route is wired to succeed — so if the branch does not fire, this test passes for the wrong
+		// reason and the request count catches it.
+		Cold.Fake->On(TEXT("game_config/cfg-1"), FFlockFakeTransport::Ok(ConfigBody));
+		bool bDone = false;
+		FFlockGameConfigSchema Value;
+		Cold.Provider->GetConfigById(TEXT("cfg-1"), [&](TFlockResult<FFlockGameConfigSchema> R)
+		{
+			bDone = R.bSuccess;
+			Value = R.Value;
+		});
+		TestTrue(TEXT("served from cache"), bDone);
+		TestEqual(TEXT("and it is the cached config"), Value.Id, FString(TEXT("cfg-1")));
+		TestEqual(TEXT("no network call was made"), Cold.Fake->CountTo(TEXT("game_config/cfg-1")), 0);
+
+		// Once the server answers again the latch clears and normal fetching resumes.
+		ClientRef->Get<FFlockGameConfigSchema>(TEXT("http://x/v1/something_else"), {},
+			[](TFlockResult<FFlockGameConfigSchema>) {});
+		Cold.Fake->On(TEXT("something_else"), FFlockFakeTransport::Ok(TEXT("{\"result\":{}}")));
+		ClientRef->Get<FFlockGameConfigSchema>(TEXT("http://x/v1/something_else"), {},
+			[](TFlockResult<FFlockGameConfigSchema>) {});
+		TestFalse(TEXT("a reachable server clears the latch"), ClientRef->IsLikelyOffline());
+	}
+	Cleanup(Dir);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConfigProviderPermanentTest, "Flock.Config.Provider.PermanentPropagatesWithCache",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 

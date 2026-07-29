@@ -5,6 +5,31 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-07-29
+
+### Added
+- **The offline cache now skips calls it knows cannot succeed.** When a request fails because the server
+  could not be reached at all, cached reads are served directly for a short window rather than each one
+  waiting out a request that has no chance of completing. Previously every offline read paid a full
+  timeout before falling back to its snapshot; the fallback was correct, just slow. `Add Game Funds` gets
+  the same benefit — its refusal to queue a grant while unreachable is now immediate.
+- Any answer from the server ends that window at once, **including an error**: a 500 or a 401 still took a
+  round trip, so the network is up whatever the server thought of the request. The window also lapses on
+  its own, so the next read always re-tests the network for real.
+
+### Fixed
+- **A crash while writing a spooled analytics entry could leave a truncated file behind.** Entries are now
+  written to a temp file and moved into place, and any temp left over from an interrupted write is swept
+  at startup — matching how the snapshot cache has always written.
+- **A spooled analytics entry that became permanently unreadable held its slot forever**, counting against
+  the cache limit for the life of the install and being skipped on every flush. Such an entry is now
+  dropped after two consecutive failed reads. Two rather than one so a file that is briefly locked — by a
+  virus scanner or a backup agent — costs a retry instead of a good event.
+
+### Changed
+- A slow server is no longer treated as an offline one. Only a request that never reached the server marks
+  the connection as down; a timeout, a validation failure, or any other response does not.
+
 ## [0.14.0] - 2026-07-28
 
 ### Added

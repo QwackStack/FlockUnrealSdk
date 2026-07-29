@@ -183,18 +183,137 @@ bool FFlockEventCacheResilienceTest::RunTest(const FString& Parameters)
 		FFlockFileEventCache Cache(TEXT("log_events"), 100, Root);
 		TestEqual(TEXT("foreign file ignored"), Cache.PendingCount(), 2);
 
-		// An entry deleted underneath us is skipped, not fatal, and the batch still delivers the rest.
+		// An entry deleted underneath us is not fatal, and the batch still delivers the rest. It is passed
+		// over on the first failure rather than dropped — see ReclaimsUnreadableEntries for why the second
+		// failure behaves differently.
 		TArray<FString> AllHandles = Cache.AllHandles();
 		IFileManager::Get().Delete(*FPaths::Combine(Directory, FlockTestAt(AllHandles, 0) + TEXT(".json")));
 
 		TArray<FString> Handles;
 		TArray<FString> Payloads;
 		Cache.PeekBatch(10, Handles, Payloads);
-		TestEqual(TEXT("skips the vanished entry"), Payloads.Num(), 1);
+		TestEqual(TEXT("passes over the vanished entry on the first failure"), Payloads.Num(), 1);
 		TestEqual(TEXT("delivers the survivor"), FlockTestAt(Payloads, 0), TEXT("{\"n\":2}"));
 
 		FString Ignored;
 		TestFalse(TEXT("read of a vanished entry fails cleanly"), Cache.Read(FlockTestAt(AllHandles, 0), Ignored));
+	}
+
+	DeleteTempRoot(Root);
+	return true;
+}
+
+/**
+ * An entry that can never be read again must leave the queue. Skipping it forever — the old behaviour —
+ * stranded a handle no caller could Remove, holding one of MaxCachedEvents slots for the life of the
+ * install. Two strikes rather than one so a momentary lock costs a retry, not a good event.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockEventCacheReclaimTest, "Flock.Analytics.Cache.ReclaimsUnreadableEntries",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockEventCacheReclaimTest::RunTest(const FString& Parameters)
+{
+	const FString Root = MakeTempRoot();
+	const FString Directory = FPaths::Combine(Root, TEXT("log_events"));
+	{
+		FFlockFileEventCache Cache(TEXT("log_events"), 100, Root);
+		Cache.Enqueue(TEXT("{\"n\":1}"));
+		Cache.Enqueue(TEXT("{\"n\":2}"));
+
+		TArray<FString> AllHandles = Cache.AllHandles();
+		const FString Doomed = FlockTestAt(AllHandles, 0);
+		IFileManager::Get().Delete(*FPaths::Combine(Directory, Doomed + TEXT(".json")));
+
+		TArray<FString> Handles;
+		TArray<FString> Payloads;
+
+		Cache.PeekBatch(10, Handles, Payloads);
+		TestEqual(TEXT("first failure passes it over"), Handles.Num(), 1);
+		TestFalse(TEXT("and does not surface it"), Handles.Contains(Doomed));
+		TestEqual(TEXT("it still holds its slot"), Cache.PendingCount(), 2);
+
+		// Second consecutive failure: hand it over with an empty payload. Nothing can parse that, so the
+		// caller's existing "never deliverable" path drops it — no new policy in the provider.
+		Cache.PeekBatch(10, Handles, Payloads);
+		TestEqual(TEXT("second failure surfaces it"), Handles.Num(), 2);
+		const int32 DoomedIndex = Handles.IndexOfByKey(Doomed);
+		TestTrue(TEXT("the unreadable handle is in the batch"), DoomedIndex != INDEX_NONE);
+		if (DoomedIndex != INDEX_NONE)
+		{
+			TestTrue(TEXT("carried as an empty payload"), FlockTestAt(Payloads, DoomedIndex).IsEmpty());
+		}
+
+		// Which is what lets the caller reclaim the slot.
+		Cache.Remove(Doomed);
+		TestEqual(TEXT("slot reclaimed"), Cache.PendingCount(), 1);
+
+		Cache.PeekBatch(10, Handles, Payloads);
+		TestEqual(TEXT("only the good entry remains"), Handles.Num(), 1);
+		TestEqual(TEXT("and it is intact"), FlockTestAt(Payloads, 0), TEXT("{\"n\":2}"));
+	}
+
+	// A readable entry never accumulates strikes: a success resets the count, so an entry that fails once
+	// and then reads fine is not dropped on its next unrelated hiccup.
+	{
+		FFlockFileEventCache Cache(TEXT("log_events"), 100, Root);
+		TArray<FString> Handles;
+		TArray<FString> Payloads;
+		for (int32 Pass = 0; Pass < 5; ++Pass)
+		{
+			Cache.PeekBatch(10, Handles, Payloads);
+		}
+		TestEqual(TEXT("a readable entry survives repeated peeks"), Cache.PendingCount(), 1);
+		TestEqual(TEXT("still delivered"), Payloads.Num(), 1);
+	}
+
+	DeleteTempRoot(Root);
+	return true;
+}
+
+/**
+ * A crash between opening the file and finishing the write must not leave a truncated entry behind. The
+ * snapshot store has always written temp-then-move; the spool did not, which was an inconsistency inside
+ * the SDK rather than a decision.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockEventCacheAtomicWriteTest, "Flock.Analytics.Cache.EnqueueIsCrashAtomic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockEventCacheAtomicWriteTest::RunTest(const FString& Parameters)
+{
+	const FString Root = MakeTempRoot();
+	const FString Directory = FPaths::Combine(Root, TEXT("log_events"));
+	FString GoodHandle;
+
+	{
+		FFlockFileEventCache Cache(TEXT("log_events"), 100, Root);
+		GoodHandle = Cache.Enqueue(TEXT("{\"n\":1}"));
+		TestFalse(TEXT("enqueued"), GoodHandle.IsEmpty());
+
+		// No temp file survives a completed write.
+		TArray<FString> Temps;
+		IFileManager::Get().FindFiles(Temps, *FPaths::Combine(Directory, TEXT("*.tmp")), true, false);
+		TestEqual(TEXT("a finished write leaves no temp behind"), Temps.Num(), 0);
+	}
+
+	// Stand in for the crash: a temp file that never got moved into place.
+	FFileHelper::SaveStringToFile(FString(TEXT("{\"n\":2")),
+		*FPaths::Combine(Directory, TEXT("0000000000001_deadbeef.json.tmp")));
+
+	{
+		FFlockFileEventCache Reloaded(TEXT("log_events"), 100, Root);
+		TestEqual(TEXT("the uncommitted write is not an entry"), Reloaded.PendingCount(), 1);
+
+		TArray<FString> Handles;
+		TArray<FString> Payloads;
+		Reloaded.PeekBatch(10, Handles, Payloads);
+		TestEqual(TEXT("only the committed entry is delivered"), Payloads.Num(), 1);
+		TestEqual(TEXT("intact"), FlockTestAt(Payloads, 0), TEXT("{\"n\":1}"));
+		TestEqual(TEXT("under its original handle"), FlockTestAt(Handles, 0), GoodHandle);
+
+		// And it is swept, not merely ignored, so a crash loop cannot fill the directory.
+		TArray<FString> Temps;
+		IFileManager::Get().FindFiles(Temps, *FPaths::Combine(Directory, TEXT("*.tmp")), true, false);
+		TestEqual(TEXT("the stray temp is swept at construction"), Temps.Num(), 0);
 	}
 
 	DeleteTempRoot(Root);

@@ -66,11 +66,21 @@ public:
 	}
 
 	/**
-	 * Overrides the "is the server reachable" probe (defaults to always-reachable). UE has no dependable
-	 * cross-platform reachability signal, so the default always attempts the network and lets the failure
-	 * path serve cache; the seam lets tests force the offline branch deterministically.
+	 * Sets the "is the server reachable" probe. UFlockSubsystem wires this to FFlockHttpClient's offline
+	 * latch for every snapshot-backed provider; tests use it to force the offline branch deterministically.
+	 *
+	 * Unset it degrades to always-reachable, which is correct-but-slow: the network is always attempted and
+	 * cache is served from the failure path instead of before the call. A provider built outside the
+	 * subsystem (the editor's version lookup) runs that way on purpose.
 	 */
 	void SetReachabilityProbe(TFunction<bool()> InProbe) { ReachabilityProbe = MoveTemp(InProbe); }
+
+	/**
+	 * The probe currently installed, so a caller that overrides it temporarily can put back what was
+	 * there. Resetting to null is *not* the way to restore it — null means always-reachable, which stopped
+	 * being the production default once the subsystem started supplying the HTTP client's latch.
+	 */
+	const TFunction<bool()>& GetReachabilityProbe() const { return ReachabilityProbe; }
 
 protected:
 	/** Enables silent refresh-on-auth-failure for this provider's calls. Unset = pass-through. */

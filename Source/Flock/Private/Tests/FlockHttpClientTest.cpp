@@ -273,4 +273,95 @@ bool FFlockHttpClientOriginTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── Reachability latch ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientOfflineLatchTest, "Flock.Http.Client.OfflineLatch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientOfflineLatchTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockHttpClient> Client = MakeClient(Fake);
+	const FString Url = TEXT("http://x/test");
+
+	auto Send = [&](const FFlockHttpResponse& Response)
+	{
+		Fake->On(TEXT("test"), Response);
+		Client->Get<FFlockGameVersionSchema>(Url, {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	};
+
+	TestFalse(TEXT("a client nobody has sent through reads as online"), Client->IsLikelyOffline());
+
+	Send(FFlockFakeTransport::Offline());
+	TestTrue(TEXT("a connection failure latches offline"), Client->IsLikelyOffline());
+
+	// The point of the whole rule: the server answering *at all* proves the network works, whatever it
+	// thought of the request. A 500 has to clear the latch as firmly as a 200 would.
+	Send(FFlockFakeTransport::Status(500, TEXT("")));
+	TestFalse(TEXT("a 500 clears it — the server answered"), Client->IsLikelyOffline());
+
+	Send(FFlockFakeTransport::Offline());
+	TestTrue(TEXT("latched again"), Client->IsLikelyOffline());
+	Send(FFlockFakeTransport::Status(401, TEXT("")));
+	TestFalse(TEXT("a 401 clears it too"), Client->IsLikelyOffline());
+
+	Send(FFlockFakeTransport::Ok(TEXT("{\"result\":{}}")));
+	TestFalse(TEXT("and so does a success"), Client->IsLikelyOffline());
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientTimeoutDoesNotLatchTest, "Flock.Http.Client.TimeoutDoesNotLatchOffline",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientTimeoutDoesNotLatchTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockHttpClient> Client = MakeClient(Fake);
+
+	// A slow server is not a dead network, and the two mistakes are not symmetric: a false offline serves
+	// stale cache without ever attempting the network, while a false online costs one attempt. So only a
+	// genuine "couldn't reach it" latches.
+	Fake->On(TEXT("test"), FFlockFakeTransport::Timeout());
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestFalse(TEXT("a timeout does not latch offline"), Client->IsLikelyOffline());
+
+	// Nor does a cancellation — the caller stopped it, the network never said anything.
+	FFlockHttpResponse Cancelled;
+	Cancelled.Result = EFlockHttpResult::Cancelled;
+	Fake->On(TEXT("test"), Cancelled);
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestFalse(TEXT("nor does a cancellation"), Client->IsLikelyOffline());
+
+	// And a timeout must not *clear* a latch either — it carries no information in either direction.
+	Fake->On(TEXT("test"), FFlockFakeTransport::Offline());
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	Fake->On(TEXT("test"), FFlockFakeTransport::Timeout());
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("a timeout leaves an existing latch alone"), Client->IsLikelyOffline());
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientOfflineLatchExpiresTest, "Flock.Http.Client.OfflineLatchExpires",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientOfflineLatchExpiresTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockHttpClient> Client = MakeClient(Fake);
+
+	// Expiry is what makes the latch self-healing: without it, a device that went offline once and never
+	// completed another request would serve cache forever, because only a completion can clear it.
+	Client->SetOfflineLatchSecondsForTesting(0.05f);
+	Fake->On(TEXT("test"), FFlockFakeTransport::Offline());
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("latched"), Client->IsLikelyOffline());
+
+	FPlatformProcess::Sleep(0.1f);
+	TestFalse(TEXT("the latch lapses so the next read re-tests the network for real"), Client->IsLikelyOffline());
+
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

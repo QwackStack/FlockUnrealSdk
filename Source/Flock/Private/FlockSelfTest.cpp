@@ -479,13 +479,17 @@ namespace
 		const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Next)
 	{
 		Logger->LogInfo(TEXT("Self-test: forcing the reachability probe offline to exercise the command queue."));
+		// Keep the real one to put back afterwards. Clearing it to null would not restore the default — it
+		// would leave the provider always-reachable for the rest of the session, silently disabling the
+		// offline branch the subsystem wired up.
+		TSharedRef<TFunction<bool()>> RealProbe = MakeShared<TFunction<bool()>>(Commands->GetReachabilityProbe());
 		Commands->SetReachabilityProbe([]() { return false; });
 
 		const int32 Before = Commands->GetPendingWriteCount();
 
 		// Money first, because the interesting outcome is the refusal.
 		Commands->AddGameFunds(Probe.CurrencyName, DemoFundsAmount,
-			[Commands, Probe, Before, Logger, Next](TFlockResult<FFlockPlayerData> FundsResult)
+			[Commands, Probe, Before, Logger, Next, RealProbe](TFlockResult<FFlockPlayerData> FundsResult)
 			{
 				Logger->LogInfo(FundsResult.bSuccess
 					? FString(TEXT("Self-test: add game funds (offline) -> UNEXPECTEDLY succeeded; money must never be sent while unreachable."))
@@ -498,7 +502,7 @@ namespace
 
 				// A data write in the same state does queue, and answers with the optimistically-updated row.
 				Commands->UpdatePlayerDataField(Probe.RowId, Probe.FieldName, Probe.FieldValue,
-					[Commands, Logger, Next](TFlockResult<FFlockPlayerData> QueuedResult)
+					[Commands, Logger, Next, RealProbe](TFlockResult<FFlockPlayerData> QueuedResult)
 					{
 						const int32 Queued = Commands->GetPendingWriteCount();
 						Logger->LogInfo(QueuedResult.bSuccess
@@ -507,7 +511,7 @@ namespace
 							: FString::Printf(TEXT("Self-test: field write (offline) -> failed (%s)"), *QueuedResult.Error.Message));
 
 						Logger->LogInfo(TEXT("Self-test: restoring the reachability probe and flushing the queue."));
-						Commands->SetReachabilityProbe(nullptr);
+						Commands->SetReachabilityProbe(*RealProbe);
 
 						Commands->FlushPendingWrites([Commands, Queued, Logger, Next](TFlockResult<int32> FlushResult)
 						{

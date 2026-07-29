@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.14.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.15.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -231,6 +231,23 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
 	CommandProvider->SetPlayerProvider(PlayerProvider);
 	GetEvents()->OnAuthenticated.AddDynamic(this, &UFlockSubsystem::HandleCommandsAuthenticated);
+
+	// Supply the reachability probe every snapshot-backed provider has always had a seam for and never a
+	// production value for — left null, IsServerReachable() answered "reachable" unconditionally, so the
+	// branch that serves cache *without* a call could only ever fire in a test. One shared latch on the
+	// HTTP client, since a provider cannot classify a transport failure and every provider sends through it.
+	//
+	// Done here, after the last provider is built and before anything can fetch. The command provider is
+	// included for AddGameFunds, which must refuse rather than queue when the server is unreachable.
+	{
+		const TSharedRef<FFlockHttpClient> ClientRef = HttpClient.ToSharedRef();
+		auto Probe = [ClientRef]() { return !ClientRef->IsLikelyOffline(); };
+		ConfigProvider->SetReachabilityProbe(Probe);
+		GameProvider->SetReachabilityProbe(Probe);
+		PlayerProvider->SetReachabilityProbe(Probe);
+		ShopProvider->SetReachabilityProbe(Probe);
+		CommandProvider->SetReachabilityProbe(Probe);
+	}
 
 	return true;
 }

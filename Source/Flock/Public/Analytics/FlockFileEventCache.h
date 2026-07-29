@@ -40,16 +40,27 @@ public:
 	virtual bool Read(const FString& Handle, FString& OutPayload) const override;
 	virtual void Replace(const FString& Handle, const FString& Payload) override;
 	virtual void Remove(const FString& Handle) override;
-	virtual void PeekBatch(int32 MaxCount, TArray<FString>& OutHandles, TArray<FString>& OutPayloads) const override;
+	virtual void PeekBatch(int32 MaxCount, TArray<FString>& OutHandles, TArray<FString>& OutPayloads) override;
 	virtual TArray<FString> AllHandles() const override;
 	virtual void Clear() override;
 
+	/** How many consecutive read failures an entry gets before it is surfaced as undeliverable. */
+	static constexpr int32 ReadFailuresBeforeDrop = 2;
+
 private:
 	FString PathForHandle(const FString& Handle) const;
+	/** Where a write lands before it is moved onto PathForHandle. */
+	FString TempPathForHandle(const FString& Handle) const;
 	/** Monotonic within a run, and sortable across runs, so age order survives a restart. */
 	FString MakeHandle();
 	/** Trims from the front until the cap is satisfied. */
 	void EvictToCap();
+	/**
+	 * Writes via a temp file and moves it into place, so a crash mid-write cannot leave a truncated entry
+	 * that the next run loads, counts against the cap, and only discards once a flush tries to parse it.
+	 * Same idiom as FFlockSnapshotStore::Write.
+	 */
+	bool WriteAtomic(const FString& Handle, const FString& Payload) const;
 
 	FString Directory;
 	int32 MaxEntries = 0;
@@ -57,4 +68,10 @@ private:
 	TArray<FString> Handles;
 	/** Disambiguates entries minted inside the same millisecond. */
 	uint32 Sequence = 0;
+	/**
+	 * Consecutive failed reads per handle, cleared by a successful read. Two strikes rather than one so a
+	 * momentary lock — a virus scanner, a backup agent — costs a retry instead of a good event: a
+	 * single-strike rule would trade the slot leak for silent data loss.
+	 */
+	TMap<FString, int32> ReadFailures;
 };
