@@ -16,6 +16,7 @@
 #include "Providers/FlockConfigProvider.h"
 #include "Providers/FlockGameProvider.h"
 #include "Providers/FlockPlayerProvider.h"
+#include "Providers/FlockAssetProvider.h"
 #include "Providers/FlockShopProvider.h"
 #include "FlockSubsystem.generated.h"
 
@@ -208,6 +209,14 @@ public:
 	 */
 	FFlockShopProvider* GetShopProvider() const { return ShopProvider.Get(); }
 
+	// ── Assets ──
+
+	/**
+	 * Asset metadata + binary downloads with an on-disk cache. Null before initialization and after
+	 * shutdown. C++ API; Blueprint uses the Flock asset async nodes.
+	 */
+	FFlockAssetProvider* GetAssetProvider() const { return AssetProvider.Get(); }
+
 	// ── Player ──
 
 	/**
@@ -290,6 +299,7 @@ private:
 	TSharedPtr<FFlockConfigProvider> ConfigProvider;
 	TSharedPtr<FFlockGameProvider> GameProvider;
 	TSharedPtr<FFlockShopProvider> ShopProvider;
+	TSharedPtr<FFlockAssetProvider> AssetProvider;
 	TSharedPtr<FFlockPlayerProvider> PlayerProvider;
 	TSharedPtr<FFlockCommandProvider> CommandProvider;
 

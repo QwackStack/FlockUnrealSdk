@@ -62,11 +62,16 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   the updated row and writes it back into the player cache. Data writes queue offline and replay
   automatically; funds never do — a grant fails rather than being queued, and is never re-sent after an
   ambiguous failure.
+- **Assets** — list the assets for your game version, look one up by name or id, and download it as a
+  texture, as text, as raw bytes, or as a file. Transfers stream to disk rather than into memory, land in
+  a size-budgeted on-disk cache keyed by asset and version, and recover on their own when a signed
+  download link expires. Preload warms the cache for a loading screen.
 - **Code generation** — one menu click turns your backend's templates, configs, and shops into typed
   structs, enums, and one-node reads, writes, and purchases. Blueprint by default, with no toolchain and
   no compile step; switch the target to emit a generated C++ module instead.
-- **Offline snapshot cache** — successful config, game, shop-catalog, and player-template reads are cached
-  to disk, scoped to the game version, and served when the network is down; toggleable in settings.
+- **Offline snapshot cache** — successful config, game, shop-catalog, player-template, and asset-list reads
+  are cached to disk, scoped to the game version, and served when the network is down; toggleable in
+  settings.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
 - **Blueprint-friendly** — every provider call is a self-contained async node, and the fire-and-forget
   calls plus auth/session state are one-node too (no "Get Flock Subsystem" needed). Events, error types,
@@ -239,6 +244,7 @@ so you can read only the half you work in.
 | [Player data & templates](Documentation/player-data.md) | Reads by id/template/tag, templates, pagination, bans |
 | [Game commands](Documentation/game-commands.md) | Updating a row, achievements, funds, the offline queue and its money-safety rules |
 | [Shop](Documentation/shop.md) | Shops and items, purchase and its money-safety contract, player inventory |
+| [Assets](Documentation/assets.md) | Listing and resolving assets, the four download flavours, preloading, the binary cache |
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, logs and events, transactions, consent, crash detection |
 | [SDK events](Documentation/events.md) | The event hub — lifecycle, auth, and session events |
