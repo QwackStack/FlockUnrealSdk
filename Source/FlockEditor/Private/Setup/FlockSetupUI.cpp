@@ -94,26 +94,25 @@ void FFlockSetupUI::SummonIfNeeded()
 	const TArray<FFlockSetupFinding> Findings = FFlockSetupContext::Evaluate();
 	const FFlockSummonContext Context = FFlockSetupContext::BuildSummonContext(Findings);
 
-	if (!FFlockSummonPolicy::ShouldSummon(Context))
+	// Both halves come from the policy. This function used to decide for itself when to record the
+	// seen-state and got it wrong for headless runs, silently consuming the developer's one-shot notice.
+	const FFlockSummonDecision Decision = FFlockSummonPolicy::Decide(Context);
+
+	if (Decision.bOpenPanel)
 	{
-		// Still record the SDK version, or a developer who was never interrupted would be treated as a
-		// first add on every subsequent launch.
+		UE_LOG(LogFlockEditor, Log, TEXT("Flock: opening the setup panel (%s)."),
+			Context.bFirstAdd ? TEXT("first run") : TEXT("setup needs attention"));
+
+		OpenPanel();
+		FFlockSetupContext::MarkSummoned();
+	}
+
+	if (Decision.bRecordSeen)
+	{
 		if (UFlockEditorUserSettings* Settings = UFlockEditorUserSettings::Get())
 		{
 			Settings->MarkSeen(UFlockSubsystem::SdkVersion);
 		}
-		return;
-	}
-
-	UE_LOG(LogFlockEditor, Log, TEXT("Flock: opening the setup panel (%s)."),
-		Context.bFirstAdd ? TEXT("first run") : TEXT("setup needs attention"));
-
-	OpenPanel();
-	FFlockSetupContext::MarkSummoned();
-
-	if (UFlockEditorUserSettings* Settings = UFlockEditorUserSettings::Get())
-	{
-		Settings->MarkSeen(UFlockSubsystem::SdkVersion);
 	}
 }
 

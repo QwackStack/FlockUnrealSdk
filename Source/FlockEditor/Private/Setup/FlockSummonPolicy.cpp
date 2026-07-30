@@ -2,6 +2,26 @@
 
 #include "Setup/FlockSummonPolicy.h"
 
+FFlockSummonDecision FFlockSummonPolicy::Decide(const FFlockSummonContext& Context)
+{
+	FFlockSummonDecision Decision;
+
+	// Headless outranks everything: a commandlet or an unattended build must never raise UI, and — the
+	// part that is easy to miss — must not record that the developer has seen anything either. Nobody
+	// was watching. Writing the seen-state here consumes a one-shot notice that no human ever got.
+	if (Context.bHeadless)
+	{
+		return Decision; // both false
+	}
+
+	// From here a human is at the keyboard, so whatever we decide about the panel, this session counts as
+	// having had the chance to see it. Without this a healthy project would summon on every single launch.
+	Decision.bRecordSeen = true;
+	Decision.bOpenPanel = ShouldSummon(Context);
+
+	return Decision;
+}
+
 bool FFlockSummonPolicy::ShouldSummon(const FFlockSummonContext& Context)
 {
 	// Headless outranks everything: a commandlet or an unattended build must never raise UI, whatever
