@@ -110,8 +110,11 @@ your project, against your engine version and toolchain.
 
 Flock is a **code plugin**: it ships C++ source and no binaries, so something has to compile it. A
 Blueprint-only project has no `Source/` folder and nothing to compile it *with*, so adding Flock makes
-your project a C++ project. That is a one-time, one-click change and it does not mean you have to write
-any C++ — your game stays entirely in Blueprint.
+your project a C++ project.
+
+You never have to write any C++ — your game stays entirely in Blueprint, and the conversion itself is a
+couple of clicks. What it does change is that the project needs a compiler from then on, which is worth
+understanding before you start rather than after.
 
 **1. Install the C++ toolchain.** Unreal does not bundle a compiler. On Windows you need
 **Visual Studio 2022** with the **Game development with C++** workload, which pulls in the MSVC compiler
@@ -119,6 +122,11 @@ and the Windows SDK. In the Visual Studio Installer, that workload also offers a
 installer** optional component — tick it; it wires up the pieces Unreal expects. Community edition is
 free and sufficient. (Verified against Visual Studio Community 2022 17.14.) On macOS this is Xcode with
 its command-line tools; on Linux, the engine's bundled clang toolchain.
+
+**Worth knowing before you commit to this:** the toolchain is needed by *everyone on the team who builds
+the project*, not just whoever installs the plugin. Compiled output lives in `Binaries/`, which is
+normally excluded from source control, so each machine builds its own copy. On a team with more designers
+than programmers, that is the real cost of a code plugin — not the one-time conversion below.
 
 **2. Give the project a `Source/` folder.** With Flock in `Plugins/`, open the project and use
 **Tools → New C++ Class**, pick `None` as the parent, and accept the defaults. This is the standard way
@@ -134,6 +142,12 @@ order above is toolchain first.
 **Generate Visual Studio project files** and building from your IDE. After that, Flock behaves like any
 other plugin; you only rebuild again when you change engine version or update the plugin.
 
+**Is a no-toolchain option coming?** It's planned, not available. A plugin can be consumed without any
+compiler when it ships binaries already built against your exact engine version, and that means producing
+and verifying a separate build per supported engine. Flock is deliberately not claiming support it hasn't
+compiled, so until that pipeline exists, the toolchain is required. No date — when it lands it will be
+announced on the releases page.
+
 > **Codegen note.** Flock's schema codegen has two targets, and the default — **Blueprint** — is the one
 > to keep. It emits Blueprint assets with no compile step and works in any project. The **C++** target
 > writes a generated module and needs `Source/` to already contain a build target, so on a project that
@@ -144,8 +158,9 @@ other plugin; you only rebuild again when you change engine version or update th
 
 - **Unreal Engine 5.5.** This is the only version the SDK is built and tested against; see
   [CHANGELOG.md](CHANGELOG.md) for how support widens.
-- **A C++ toolchain**, because the plugin ships source rather than binaries — Visual Studio 2022 with the
-  *Game development with C++* workload on Windows, Xcode on macOS.
+- **A C++ toolchain on every machine that builds the project** — Visual Studio 2022 with the
+  *Game development with C++* workload on Windows, Xcode on macOS. The plugin ships source rather than
+  binaries, and build output isn't usually committed, so each developer compiles their own copy.
 - **A C++ project.** Blueprint-only projects work fine, but need converting once — see
   [Blueprint-only projects](#blueprint-only-projects) above. No C++ authoring is required afterwards.
 
