@@ -60,9 +60,15 @@ jobs:
 
           # One auditable place for engine-conditional code. A guard that leaks elsewhere is one nobody
           # will find when the floor moves.
-          STRAY=$(grep -rn --include='*.h' --include='*.cpp' \
-                    -e 'UE_VERSION_OLDER_THAN' -e 'UE_VERSION_NEWER_THAN' -e 'ENGINE_MINOR_VERSION' \
-                    Source/ | grep -v 'Source/Flock/Public/Misc/FlockEngineCompat.h' || true)
+          #
+          # The pattern covers every way C++ can branch on engine version: the two comparison macros in
+          # Misc/EngineVersionComparison.h (there are only two - NEWER_THAN and OLDER_THAN), and all
+          # three raw version macros from Runtime/Launch/Resources/Version.h. An earlier version of this
+          # check listed only MINOR, so a guard written on MAJOR or PATCH passed silently.
+          GUARD_PATTERN='UE_VERSION_(NEWER|OLDER)_THAN|ENGINE_(MAJOR|MINOR|PATCH)_VERSION'
+
+          STRAY=$(grep -rnE --include='*.h' --include='*.cpp' "$GUARD_PATTERN" Source/ \
+                    | grep -v 'Source/Flock/Public/Misc/FlockEngineCompat.h' || true)
 
           if [ -n "$STRAY" ]; then
             echo "::error::Engine-version guards found outside FlockEngineCompat.h:"
@@ -70,4 +76,17 @@ jobs:
             exit 1
           fi
 
-          echo "No stray version guards."
+          echo "No stray version guards in C++."
+
+          # Build rules are the one deliberate exception, and it is an allowance rather than an oversight.
+          # UBT decides things a C++ header cannot express - which modules to link, which definitions to
+          # set - so `Target.Version` branching in a .Build.cs has nowhere else to live. Listed rather
+          # than banned, so it stays visible when the floor moves.
+          BUILD_RULES=$(grep -rnE --include='*.Build.cs' 'Target\.Version' Source/ || true)
+
+          if [ -n "$BUILD_RULES" ]; then
+            echo "Engine-version branching in build rules (allowed - review when changing the floor):"
+            echo "$BUILD_RULES"
+          else
+            echo "No engine-version branching in build rules."
+          fi
