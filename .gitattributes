@@ -6,3 +6,9 @@
 .gitignore      export-ignore
 .gitattributes  export-ignore
 .github/        export-ignore
+
+# Maintainer tooling, for the same reason .github/ is excluded: it verifies the *claim* this repo makes
+# about engine support, which is a release-engineering concern. Someone dropping the plugin into their
+# project has no use for it, and a stray .ps1 in a plugin folder invites the question of whether they
+# are meant to run it.
+Tooling/        export-ignore

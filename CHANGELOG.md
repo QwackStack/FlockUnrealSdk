@@ -5,7 +5,11 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
-## [0.17.0] - 2026-07-30
+## [1.0.0] - 2026-07-30
+
+**First stable release.** The versions below it are the development history and were never published;
+1.0.0 is the first release on GitHub. Nothing is removed or renamed relative to 0.16.0 — the version
+number is a statement that the feature set is complete and the API is one we intend to keep.
 
 ### Added
 - **A Flock panel.** A dockable editor tab (`Window > Tools > Flock`, or `Tools > Flock > Flock Panel`)
