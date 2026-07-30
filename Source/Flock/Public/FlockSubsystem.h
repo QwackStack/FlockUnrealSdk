@@ -10,6 +10,9 @@
 #include "FlockLogger.h"
 #include "Http/FlockHttpAdapter.h"
 #include "Http/FlockHttpClient.h"
+// Included from the SDK's front door so an unsupported engine fails with the compat header's message
+// first, rather than somewhere in the middle of a wall of unrelated errors.
+#include "Misc/FlockEngineCompat.h"
 #include "Providers/FlockAnalyticsProvider.h"
 #include "Providers/FlockAuthProvider.h"
 #include "Providers/FlockCommandProvider.h"
@@ -239,6 +242,18 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "Flock|Commands")
 	int32 GetPendingCommandCount() const;
+
+	// ── Connectivity ──
+
+	/**
+	 * Whether the last SDK request failed to reach the server at all — for an "offline" indicator.
+	 *
+	 * The HTTP client's offline latch, which only a request that never reached the server sets, and any
+	 * completed exchange clears (error statuses included: a 500 took a round trip). Self-healing, so it
+	 * can never stick. False before initialization.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock")
+	bool IsLikelyOffline() const;
 
 	// ── Test seams (call before initialization; unused by games) ──
 

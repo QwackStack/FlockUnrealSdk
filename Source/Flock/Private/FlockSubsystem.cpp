@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("0.16.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("0.17.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -456,6 +456,11 @@ bool UFlockSubsystem::IsRestoringSession() const
 int32 UFlockSubsystem::GetPendingCommandCount() const
 {
 	return CommandProvider.IsValid() ? CommandProvider->GetPendingWriteCount() : 0;
+}
+
+bool UFlockSubsystem::IsLikelyOffline() const
+{
+	return HttpClient.IsValid() && HttpClient->IsLikelyOffline();
 }
 
 void UFlockSubsystem::Logout()

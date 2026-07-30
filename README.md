@@ -11,6 +11,8 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 - [Requirements](#requirements)
 - [Setup](#setup)
   - [Baking the Game Version](#baking-the-game-version)
+  - [Checking your credentials](#checking-your-credentials)
+  - [While playing](#while-playing)
 - [Initialization](#initialization)
   - [Automatic](#automatic-default)
   - [Manual](#manual)
@@ -33,6 +35,11 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 - **Automatic version baking** — the Game Version ID resolves and bakes itself when you edit your
   settings (or on editor load if unresolved), with a Play-In-Editor setup guard and a packaging build
   guard. No manual step required; a manual **Resolve Game Version** action is still available.
+- **A setup panel that tells you what's wrong** — a dockable Flock tab listing every setup problem with
+  the button that fixes it, mirrored as a banner on the settings page. It opens itself only when
+  something needs doing, never blocks the editor, and stays silent on a correctly configured project.
+  **Test Connection** names the specific credential the backend rejected. During Play In Editor the same
+  tab shows live SDK state — signed-in player, analytics session, offline queue, connectivity.
 - **HTTP transport** — an instance HTTP client over the engine HTTP module with automatic retry
   (exponential backoff + jitter, `Retry-After` aware) and a callback + result surface (no C++
   exceptions). JSON is (de)serialized to/from your `USTRUCT` models, unwrapping the backend envelope.
@@ -105,7 +112,15 @@ your project, against your engine version and toolchain.
 
 ## Setup
 
-Open **Project Settings → Plugins → Flock SDK Settings**. Required values:
+The first time you open a project with the plugin installed, the **Flock** panel opens itself. It lists
+whatever is missing and gives you the fields and buttons to fix it, so you can configure the SDK without
+knowing where anything lives. Reopen it any time from **Tools → Flock → Flock Panel**.
+
+It only opens on its own when there is something to act on — a broken setup, or your first time in the
+project. A correctly configured project never sees it unprompted, and it is never a modal dialog.
+
+Everything below can be done from that panel, or directly in
+**Project Settings → Plugins → Flock SDK Settings**. Required values:
 
 - **API URL** — Flock API endpoint (default: `https://api-flock.qwacks.com`)
 - **API Key** — your Flock API key
@@ -122,6 +137,21 @@ The Game Version ID bakes **automatically**: it resolves whenever you fill in or
 name but no baked ID. It writes the ID into `DefaultGame.ini` (the read-only **Game Version ID** field on
 the settings panel), so runtime init never contacts the server. You can also force a resolve any time with
 **Tools → Flock → Resolve Game Version**.
+
+### Checking your credentials
+
+**Test Connection** in the Flock panel makes one authenticated round-trip and reports which credential is
+at fault rather than a generic failure: an unreachable API URL, a rejected API key, or a Game Version name
+that doesn't exist on this game. It also reads back the game your API key belongs to and warns if your
+**Game Name** disagrees with it — that name is never sent to the server, but it keys the saved-login
+store, so correcting it later signs existing players out.
+
+### While playing
+
+The Flock panel switches to a live view during Play In Editor: whether the SDK initialized, the signed-in
+player, the analytics session and consent state, how many offline commands are queued, connectivity, and a
+running list of SDK events. If Flock isn't set up when you press Play, the warning names every blocking
+problem and links straight to the panel.
 
 ## Initialization
 

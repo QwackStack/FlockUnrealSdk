@@ -31,12 +31,15 @@ void FFlockHttpVersionLookup::Resolve(const FString& ApiUrl, const FString& ApiK
 		{
 			if (!Result.bSuccess)
 			{
-				OnComplete.ExecuteIfBound(FFlockResolveResult::Fail(Result.Error.Message));
+				// Carry the typed error, not just its message: the connection probe needs the error type
+				// and HTTP status to say *which* credential was refused.
+				OnComplete.ExecuteIfBound(FFlockResolveResult::FailWith(Result.Error));
 				return;
 			}
 			if (Result.Value.Id.IsEmpty())
 			{
-				OnComplete.ExecuteIfBound(FFlockResolveResult::Fail(TEXT("Server returned no Game Version ID.")));
+				OnComplete.ExecuteIfBound(FFlockResolveResult::FailWith(FFlockError::Make(
+					EFlockErrorType::Serialization, TEXT("Server returned no Game Version ID."))));
 				return;
 			}
 			OnComplete.ExecuteIfBound(FFlockResolveResult::Ok(Result.Value.Id));

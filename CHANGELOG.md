@@ -5,6 +5,54 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-07-30
+
+### Added
+- **A Flock panel.** A dockable editor tab (`Window > Tools > Flock`, or `Tools > Flock > Flock Panel`)
+  listing everything that is wrong with your setup, each with the button that fixes it. Credentials are
+  editable inline and save to `DefaultGame.ini`, so a new project can be configured without leaving it.
+- **The same status on the settings page.** Project Settings > Flock SDK now carries a banner above its
+  properties reporting the same findings. Wherever you look, you get the same answer — the panel and the
+  settings page cannot tell you different things about the same project.
+- **The panel opens itself only when there is something to do.** It appears when setup is actually broken,
+  or the first time you open a project with the plugin in it, and stays quiet otherwise. It is never
+  modal, never blocks the editor, and a healthy project on a fresh clone sees nothing at all. Any notice
+  can be muted per-developer, which silences the interruption without hiding the finding.
+- **Test Connection tells you which credential is wrong.** It checks the API URL, the key, and the game
+  version against the backend and reports the specific failure — unreachable host, rejected key, or no
+  version by that name — instead of one undifferentiated "request failed". It also reads back the game
+  your API key belongs to and warns when your Game Name disagrees with it.
+- **The panel shows live SDK state during Play In Editor.** It switches to initialization state, the
+  signed-in player, the analytics session, consent, the offline command queue, and connectivity, plus a
+  running list of SDK events as they happen. Previously the editor went dark the moment you hit Play.
+- `Is Likely Offline` on the subsystem, for an offline indicator in your own UI. Reports the HTTP layer's
+  offline latch: only a request that never reached the server sets it, any completed exchange clears it.
+- **The plugin's own icon** on the Flock tab and menu entry, with meaningful icons on the menu actions.
+
+### Changed
+- **The Play-In-Editor warning now lists everything blocking the session**, not just the first problem it
+  found, and carries an "Open Flock" link straight to the panel rather than naming a menu path to hunt for.
+- **Packaging is blocked by any setup error**, not only an unresolved Game Version.
+- Per-developer editor state (last-seen SDK version, muted notices) lives in
+  `EditorPerProjectUserSettings` rather than the committed `DefaultGame.ini`, so one developer upgrading
+  or muting a notice no longer changes what the rest of the team sees.
+- The edit-time version resolve now carries its typed error rather than flattening it to a sentence,
+  which is what lets the connection test name a specific credential.
+
+### Fixed
+- **A build could package successfully with credentials that no longer worked.** The packaging guard only
+  ever checked whether the Game Version ID was present. Because that ID is baked once by a successful
+  resolve, clearing or rotating the API key afterwards left a project that packaged clean and then failed
+  to initialize at runtime.
+
+### Engine support
+- The supported engine version is now stated in one place and checked. `Flock.uplugin`, the README, and a
+  new compile-time floor must agree, and a CI job fails the build when they drift apart. Compiling
+  against an older engine now fails with one line naming the problem instead of a wall of unrelated errors.
+- `Tooling/Build-AllEngines.ps1` builds against every installed engine at or above the floor and reports
+  what it could **not** cover, failing when the declared floor was never verified. Support is still
+  **Unreal Engine 5.5** — unchanged, because 5.5 is what has actually been compiled.
+
 ## [0.16.0] - 2026-07-29
 
 ### Added

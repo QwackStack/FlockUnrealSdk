@@ -53,6 +53,10 @@ CLAUDE.local.md
 # graphify knowledge graph output (local-only)
 graphify-out/
 
+# Brainstorming mockups from the design sessions behind docs/superpowers/specs/. Local working
+# material, same as docs/ - useful while a design is live, meaningless to a consumer of the plugin.
+.superpowers/
+
 # Documentation splits two ways, and the split is the point:
 #   Documentation/  — the shipped guides the README links to. Committed.
 #   docs/           — maintainer-only specs and plans. Local, never shipped.

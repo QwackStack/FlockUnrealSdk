@@ -1,0 +1,73 @@
+name: Consistency
+
+# The engine claim is stated in three places that can drift apart silently: the plugin manifest, the
+# README, and the compat header's floor. Bump one, forget another, and the mismatch is invisible until a
+# user on the wrong engine files a bug.
+#
+# This needs no Unreal Engine, which is the point — GitHub-hosted runners have none, so anything
+# requiring a compiler has to be a self-hosted runner or a container image. Full multi-engine builds are
+# `Tooling/Build-AllEngines.ps1`, run locally before tagging.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  engine-claim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The engine claim agrees across manifest, README, and compat header
+        run: |
+          set -euo pipefail
+
+          PLUGIN_FULL=$(grep -o '"EngineVersion": *"[^"]*"' Flock.uplugin | cut -d'"' -f4)
+          PLUGIN="${PLUGIN_FULL%.*}"   # 5.5.0 -> 5.5
+
+          # -oE, not -oP: PCRE is unavailable in some grep builds/locales, and a check that only runs on
+          # one machine is not a check.
+          COMPAT_H="Source/Flock/Public/Misc/FlockEngineCompat.h"
+          MAJOR=$(grep -oE '#define[[:space:]]+FLOCK_ENGINE_FLOOR_MAJOR[[:space:]]+[0-9]+' "$COMPAT_H" | grep -oE '[0-9]+$')
+          MINOR=$(grep -oE '#define[[:space:]]+FLOCK_ENGINE_FLOOR_MINOR[[:space:]]+[0-9]+' "$COMPAT_H" | grep -oE '[0-9]+$')
+          COMPAT="${MAJOR}.${MINOR}"
+
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ]; then
+            echo "::error::Could not read the floor from $COMPAT_H — the macros were renamed or removed."
+            exit 1
+          fi
+
+          echo "Flock.uplugin EngineVersion : $PLUGIN_FULL  -> $PLUGIN"
+          echo "FlockEngineCompat.h floor   : $COMPAT"
+
+          if [ "$PLUGIN" != "$COMPAT" ]; then
+            echo "::error::Flock.uplugin claims UE $PLUGIN but the compat header's floor is $COMPAT."
+            exit 1
+          fi
+
+          # The README is what a prospective user reads before installing; it is part of the claim.
+          if ! grep -q "Unreal Engine $PLUGIN" README.md; then
+            echo "::error::README.md does not state 'Unreal Engine $PLUGIN' in its Requirements."
+            exit 1
+          fi
+
+          echo "Engine claim is consistent at UE $PLUGIN."
+
+      - name: Version guards live only in the compat header
+        run: |
+          set -euo pipefail
+
+          # One auditable place for engine-conditional code. A guard that leaks elsewhere is one nobody
+          # will find when the floor moves.
+          STRAY=$(grep -rn --include='*.h' --include='*.cpp' \
+                    -e 'UE_VERSION_OLDER_THAN' -e 'UE_VERSION_NEWER_THAN' -e 'ENGINE_MINOR_VERSION' \
+                    Source/ | grep -v 'Source/Flock/Public/Misc/FlockEngineCompat.h' || true)
+
+          if [ -n "$STRAY" ]; then
+            echo "::error::Engine-version guards found outside FlockEngineCompat.h:"
+            echo "$STRAY"
+            exit 1
+          fi
+
+          echo "No stray version guards."

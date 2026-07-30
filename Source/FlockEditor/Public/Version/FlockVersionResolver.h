@@ -14,6 +14,9 @@ struct FFlockResolveResult;
 class FLOCKEDITOR_API FFlockVersionResolver
 {
 public:
+	/** `{ApiUrl}/{ApiVersion}/{Path}`, trailing slashes trimmed. One place, so every edit-time call agrees. */
+	static FString VersionedUrl(const FString& ApiUrl, const FString& Path);
+
 	/** The backend by-name Game Version lookup URL. Single source so resolve and any connection-test agree. */
 	static FString ByNameUrl(const FString& ApiUrl, const FString& GameVersion);
 

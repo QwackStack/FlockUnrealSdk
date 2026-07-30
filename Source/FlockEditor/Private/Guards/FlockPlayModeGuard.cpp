@@ -2,6 +2,8 @@
 
 #include "Guards/FlockPlayModeGuard.h"
 #include "Config/FlockConfig.h"
+#include "Setup/FlockSetupContext.h"
+#include "Setup/FlockSetupUI.h"
 #include "FlockEditor.h"
 #include "Editor.h"
 #include "Misc/App.h"
@@ -30,6 +32,26 @@ void FFlockPlayModeGuard::Unregister()
 	}
 }
 
+TArray<FFlockSetupFinding> FFlockPlayModeGuard::BlockingFindings(const TArray<FFlockSetupFinding>& Findings,
+	bool bGuardEnabled, bool bAutoInit)
+{
+	if (!bGuardEnabled)
+	{
+		return {};
+	}
+
+	// The guard only matters when the SDK would try to auto-initialize. If auto-init is off, the game
+	// initializes the SDK itself and we don't second-guess that.
+	if (!bAutoInit)
+	{
+		return {};
+	}
+
+	// Errors only: a warning still runs, and interrupting Play for one would be exactly the nagging this
+	// design exists to avoid.
+	return FFlockSetupStatus::AtLeast(Findings, EFlockSetupSeverity::Error);
+}
+
 void FFlockPlayModeGuard::OnBeginPIE(const bool bIsSimulating)
 {
 	// Never surface dialogs/toasts in headless/CI.
@@ -39,45 +61,44 @@ void FFlockPlayModeGuard::OnBeginPIE(const bool bIsSimulating)
 	}
 
 	const UFlockConfig* Config = GetDefault<UFlockConfig>();
-	if (!Config->bPlayModeGuardEnabled)
+	if (!Config)
 	{
 		return;
 	}
 
-	// The guard only matters when the SDK would try to auto-initialize. If auto-init is off, the game
-	// initializes the SDK itself and we don't second-guess that.
-	if (!Config->bAutoInitializeOnLoad)
+	const TArray<FFlockSetupFinding> Blocking = BlockingFindings(
+		FFlockSetupContext::Evaluate(), Config->bPlayModeGuardEnabled, Config->bAutoInitializeOnLoad);
+
+	if (Blocking.Num() == 0)
 	{
 		return;
 	}
 
-	FString Reason;
-	FString ValidationError;
-	if (!Config->IsValid(ValidationError))
+	TArray<FString> Reasons;
+	Reasons.Reserve(Blocking.Num());
+	for (const FFlockSetupFinding& Finding : Blocking)
 	{
-		Reason = ValidationError;
+		Reasons.Add(Finding.Title.ToString());
 	}
-	else if (Config->GameVersionId.IsEmpty())
-	{
-		Reason = TEXT("Game Version ID is not resolved.");
-	}
-	else
-	{
-		return; // fully set up
-	}
+	const FString Joined = FString::Join(Reasons, TEXT("; "));
 
 	const FText Message = FText::Format(
-		LOCTEXT("PlayModeGuardWarn",
-			"Flock isn't fully set up, so the SDK won't initialize this session: {0}\nOpen Project Settings > Flock SDK (or Tools > Flock > Resolve Game Version) to fix it."),
-		FText::FromString(Reason));
+		LOCTEXT("PlayModeGuardWarn", "Flock isn't fully set up, so the SDK won't initialize this session: {0}"),
+		FText::FromString(Joined));
 
 	FMessageLog("PIE").Warning(Message);
 
 	FNotificationInfo Info(Message);
 	Info.ExpireDuration = 7.0f;
+
+	// One click to the place that can fix it. The old toast named a menu path and left the developer to
+	// find it.
+	Info.HyperlinkText = LOCTEXT("OpenFlockHyperlink", "Open Flock");
+	Info.Hyperlink = FSimpleDelegate::CreateStatic(&FFlockSetupUI::OpenPanel);
+
 	FSlateNotificationManager::Get().AddNotification(Info);
 
-	UE_LOG(LogFlockEditor, Warning, TEXT("Flock play-mode guard: %s"), *Reason);
+	UE_LOG(LogFlockEditor, Warning, TEXT("Flock play-mode guard: %s"), *Joined);
 }
 
 #undef LOCTEXT_NAMESPACE

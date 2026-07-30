@@ -2,6 +2,7 @@
 
 #include "Guards/FlockConfigValidator.h"
 #include "Config/FlockConfig.h"
+#include "Setup/FlockSetupContext.h"
 #include "Version/FlockVersionLookup.h"
 #include "AssetRegistry/AssetData.h"
 #include "Misc/DataValidation.h"
@@ -26,7 +27,8 @@ EDataValidationResult UFlockConfigValidator::ValidateLoadedAsset_Implementation(
 	}
 
 	const bool bCanResolve = FFlockVersionLookupRegistry::Get().CanResolve();
-	const FString Reason = GetBuildBlockReason(Config->GameVersionId, bCanResolve, Config->bFailBuildIfVersionUnresolved);
+	const FString Reason = GetBuildBlockReason(
+		FFlockSetupContext::Evaluate(), bCanResolve, Config->bFailBuildIfVersionUnresolved);
 
 	if (!Reason.IsEmpty())
 	{
@@ -38,7 +40,8 @@ EDataValidationResult UFlockConfigValidator::ValidateLoadedAsset_Implementation(
 	return EDataValidationResult::Valid;
 }
 
-FString UFlockConfigValidator::GetBuildBlockReason(const FString& BakedGameVersionId, bool bCanResolve, bool bGuardEnabled)
+FString UFlockConfigValidator::GetBuildBlockReason(const TArray<FFlockSetupFinding>& Findings, bool bCanResolve,
+	bool bGuardEnabled)
 {
 	if (!bGuardEnabled)
 	{
@@ -51,11 +54,24 @@ FString UFlockConfigValidator::GetBuildBlockReason(const FString& BakedGameVersi
 		return FString();
 	}
 
-	if (BakedGameVersionId.IsEmpty())
+	// Errors only. A warning by definition still initializes, so it must not stop a package — the same
+	// severity policy the panel's auto-summon uses.
+	const TArray<FFlockSetupFinding> Blocking =
+		FFlockSetupStatus::AtLeast(Findings, EFlockSetupSeverity::Error);
+	if (Blocking.Num() == 0)
 	{
-		return TEXT("Flock Game Version ID is not resolved. Open Tools > Flock > Resolve Game Version while online ")
-			TEXT("before building, or turn off 'Fail Build If Version Unresolved' in Project Settings > Flock SDK.");
+		return FString();
 	}
 
-	return FString();
+	TArray<FString> Lines;
+	Lines.Reserve(Blocking.Num() + 1);
+	Lines.Add(TEXT("Flock is not ready to package:"));
+	for (const FFlockSetupFinding& Finding : Blocking)
+	{
+		Lines.Add(FString::Printf(TEXT("  - %s. %s"), *Finding.Title.ToString(), *Finding.Detail.ToString()));
+	}
+	Lines.Add(TEXT("Fix these in the Flock panel (Tools > Flock > Flock Panel), or turn off "
+		"'Fail Build If Version Unresolved' in Project Settings > Flock SDK."));
+
+	return FString::Join(Lines, TEXT("\n"));
 }
