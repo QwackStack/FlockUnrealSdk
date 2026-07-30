@@ -2,7 +2,8 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **Early release.** Everything below ships today except the asset provider. See [Status](#status).
+> **1.0.0 — first stable release.** Everything documented below ships today. Requires Unreal Engine 5.5;
+> see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
 
@@ -323,18 +324,25 @@ UnrealEditor-Cmd.exe <YourProject>.uproject -ExecCmds="Automation RunTests Flock
 
 ## Status
 
-Shipping: the boot/init foundation, the HTTP transport, automatic version baking, the SDK event hub,
-player authentication, analytics, game config (with the offline snapshot cache), the shop
-(catalog, purchase, inventory), player data & templates (with bans), game commands (with the
-offline queue), and typed code generation for Blueprint or C++. Not yet wired:
+**The full feature set ships in 1.0.0**: the boot/init foundation, the HTTP transport, automatic version
+baking, the SDK event hub, player authentication, analytics, game config (with the offline snapshot
+cache), the shop (catalog, purchase, inventory), player data & templates (with bans), game commands (with
+the offline queue), assets (metadata, streamed downloads, and a binary cache), typed code generation for
+Blueprint or C++, and the editor setup panel with its live Play-In-Editor view.
 
-- **Remaining feature provider.** Assets build on the same HTTP layer and land in a later release — the
-  transport, retry, typed error model, and endpoint registry they need are already in place.
-- **Analytics gameplay events.** This release ships the diagnostic log API (event/error/exception) and
-  purchase/transaction reporting (with the shop); custom gameplay event tracking arrives later.
-- **A few Blueprint gaps.** Config *patch* reads (all patches, by id, by config) and configs by version
-  tag are C++-only for now — in Blueprint, `Flock Resolve Config Data` already returns the patched-or-base
-  values, which is what most graphs want. Provider cache clearing is also C++-only.
+Deliberate omissions and known gaps:
+
+- **Custom gameplay event tracking is not exposed.** Analytics ships the diagnostic log API
+  (event/error/exception) and purchase/transaction reporting. Gameplay event tracking is held back
+  pending backend work rather than shipped half-built.
+- **No sound-wave asset download.** Unreal has no engine API for turning mp3/ogg bytes into a
+  `USoundWave`, and a WAV-only helper would fail silently on most of what a CDN actually holds — so
+  `Flock Download Asset File` is the documented path for audio.
+- **A few surfaces are C++-only.** Config *patch* reads (all patches, by id, by config) and configs by
+  version tag — in Blueprint, `Flock Resolve Config Data` already returns the patched-or-base values,
+  which is what most graphs want. Provider cache clearing is also C++-only.
+- **Asset uploads are not included.** The SDK reads and downloads assets; publishing them is a dashboard
+  operation.
 
 See [CHANGELOG.md](CHANGELOG.md) for the version history.
 
