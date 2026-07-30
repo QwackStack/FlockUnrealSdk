@@ -3,13 +3,24 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Http/FlockError.h"
 
 /** Result of a Game Version name-to-ID resolve. */
 struct FFlockResolveResult
 {
 	bool bSuccess = false;
 	FString GameVersionId;
+
+	/** Flattened message. Kept because the toast and log paths only ever wanted a sentence. */
 	FString Error;
+
+	/**
+	 * The typed failure, carrying error type, HTTP status, and the server's coded message.
+	 *
+	 * Flattening this to Error alone was what made every setup failure — unreachable host, rejected key,
+	 * misspelled version — arrive as undifferentiated text. The connection probe classifies from here.
+	 */
+	FFlockError Detail;
 
 	static FFlockResolveResult Ok(const FString& InGameVersionId)
 	{
@@ -24,6 +35,17 @@ struct FFlockResolveResult
 		FFlockResolveResult Result;
 		Result.bSuccess = false;
 		Result.Error = InError;
+		Result.Detail = FFlockError::Make(EFlockErrorType::Network, InError);
+		return Result;
+	}
+
+	/** Failure that keeps the diagnosis. Preferred wherever a typed error is in hand. */
+	static FFlockResolveResult FailWith(const FFlockError& InError)
+	{
+		FFlockResolveResult Result;
+		Result.bSuccess = false;
+		Result.Error = InError.Message;
+		Result.Detail = InError;
 		return Result;
 	}
 };

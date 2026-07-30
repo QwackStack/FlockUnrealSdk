@@ -49,14 +49,19 @@ namespace
 	}
 }
 
-FString FFlockVersionResolver::ByNameUrl(const FString& ApiUrl, const FString& GameVersion)
+FString FFlockVersionResolver::VersionedUrl(const FString& ApiUrl, const FString& Path)
 {
 	FString Base = ApiUrl.TrimStartAndEnd();
 	while (Base.EndsWith(TEXT("/")))
 	{
 		Base.LeftChopInline(1);
 	}
-	return FString::Printf(TEXT("%s/%s/game_version/by-name/%s"), *Base, *UFlockSubsystem::ApiVersion, *EncodePathSegment(GameVersion));
+	return FString::Printf(TEXT("%s/%s/%s"), *Base, *UFlockSubsystem::ApiVersion, *Path);
+}
+
+FString FFlockVersionResolver::ByNameUrl(const FString& ApiUrl, const FString& GameVersion)
+{
+	return VersionedUrl(ApiUrl, FString::Printf(TEXT("game_version/by-name/%s"), *EncodePathSegment(GameVersion)));
 }
 
 bool FFlockVersionResolver::ApplyResult(UFlockConfig& Config, const FFlockResolveResult& Result)

@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "EditorValidatorBase.h"
+#include "Setup/FlockSetupStatus.h"
 #include "FlockConfigValidator.generated.h"
 
 /**
@@ -30,9 +31,13 @@ public:
 	 * Pure decision: returns the build-blocking message, or empty to allow the build. Testable
 	 * without the engine or network.
 	 *
-	 * @param BakedGameVersionId  the ID currently baked on the config (may be empty)
-	 * @param bCanResolve         whether a real (non-stub) lookup is registered
-	 * @param bGuardEnabled       UFlockConfig::bFailBuildIfVersionUnresolved
+	 * Takes findings rather than the baked ID alone, which closes a real hole: the old check looked only
+	 * at GameVersionId, so a key rotated or cleared *after* the ID was baked still packaged clean and
+	 * failed at runtime instead.
+	 *
+	 * @param Findings      everything FFlockSetupStatus reports about this project
+	 * @param bCanResolve   whether a real (non-stub) lookup is registered
+	 * @param bGuardEnabled UFlockConfig::bFailBuildIfVersionUnresolved
 	 */
-	static FString GetBuildBlockReason(const FString& BakedGameVersionId, bool bCanResolve, bool bGuardEnabled);
+	static FString GetBuildBlockReason(const TArray<FFlockSetupFinding>& Findings, bool bCanResolve, bool bGuardEnabled);
 };

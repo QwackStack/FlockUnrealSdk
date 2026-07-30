@@ -51,6 +51,13 @@ public class FlockEditor : ModuleRules
 				// FProjectDescriptor — the C++ codegen target registers its generated module in the
 				// .uproject, and the engine's own descriptor keeps that file canonical.
 				"Projects",
+				// IDetailCustomization — the setup status banner injected above the Flock SDK settings,
+				// so the panel and the settings page cannot disagree about what is wrong.
+				"PropertyEditor",
+				// The nomad tab's category in the Window menu.
+				"WorkspaceMenuStructure",
+				// ISettingsModule — the "Open Settings" fix jumps straight to the Flock SDK page.
+				"Settings",
 			}
 			);
 	}
