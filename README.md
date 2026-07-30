@@ -9,6 +9,7 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 
 - [Features](#features)
 - [Installation](#installation)
+  - [Blueprint-only projects](#blueprint-only-projects)
 - [Requirements](#requirements)
 - [Setup](#setup)
   - [Baking the Game Version](#baking-the-game-version)
@@ -105,11 +106,48 @@ Then, either way:
 Each release is built from the tagged source, so it contains no compiled binaries: you build it once with
 your project, against your engine version and toolchain.
 
+### Blueprint-only projects
+
+Flock is a **code plugin**: it ships C++ source and no binaries, so something has to compile it. A
+Blueprint-only project has no `Source/` folder and nothing to compile it *with*, so adding Flock makes
+your project a C++ project. That is a one-time, one-click change and it does not mean you have to write
+any C++ — your game stays entirely in Blueprint.
+
+**1. Install the C++ toolchain.** Unreal does not bundle a compiler. On Windows you need
+**Visual Studio 2022** with the **Game development with C++** workload, which pulls in the MSVC compiler
+and the Windows SDK. In the Visual Studio Installer, that workload also offers an **Unreal Engine
+installer** optional component — tick it; it wires up the pieces Unreal expects. Community edition is
+free and sufficient. (Verified against Visual Studio Community 2022 17.14.) On macOS this is Xcode with
+its command-line tools; on Linux, the engine's bundled clang toolchain.
+
+**2. Give the project a `Source/` folder.** With Flock in `Plugins/`, open the project and use
+**Tools → New C++ Class**, pick `None` as the parent, and accept the defaults. This is the standard way
+to convert a Blueprint project: it creates `Source/` with the module and target files Unreal needs, then
+compiles and reopens. The class it adds is an empty placeholder you can ignore — you are doing this for
+the `Source/` folder, not for the class.
+
+If you skip this step, the editor will notice the missing module on the next open and offer to rebuild.
+That prompt works, but it fails with a generic message when no toolchain is installed, which is why the
+order above is toolchain first.
+
+**3. Build once**, either from the editor's rebuild prompt or by right-clicking the `.uproject` →
+**Generate Visual Studio project files** and building from your IDE. After that, Flock behaves like any
+other plugin; you only rebuild again when you change engine version or update the plugin.
+
+> **Codegen note.** Flock's schema codegen has two targets, and the default — **Blueprint** — is the one
+> to keep. It emits Blueprint assets with no compile step and works in any project. The **C++** target
+> writes a generated module and needs `Source/` to already contain a build target, so on a project that
+> has never been converted it refuses with: *"This is a Blueprint-only project, so a C++ module cannot be
+> added to it."* That is deliberate — it declines rather than silently restructuring your project.
+
 ## Requirements
 
-- **Unreal Engine 5.5.**
-- A C++ project (the SDK is a code plugin). Blueprint-only projects need the C++ toolchain installed to
-  compile the plugin.
+- **Unreal Engine 5.5.** This is the only version the SDK is built and tested against; see
+  [CHANGELOG.md](CHANGELOG.md) for how support widens.
+- **A C++ toolchain**, because the plugin ships source rather than binaries — Visual Studio 2022 with the
+  *Game development with C++* workload on Windows, Xcode on macOS.
+- **A C++ project.** Blueprint-only projects work fine, but need converting once — see
+  [Blueprint-only projects](#blueprint-only-projects) above. No C++ authoring is required afterwards.
 
 ## Setup
 
