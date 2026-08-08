@@ -29,7 +29,17 @@
     omits, which is the failure mode this script exists to prevent.
 
 .EXAMPLE
-    ./Tooling/Build-AllEngines.ps1
+    # From a Windows PowerShell prompt at the plugin root:
+    .\Tooling\Build-AllEngines.ps1
+
+.EXAMPLE
+    # If the execution policy blocks the direct call:
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File Tooling\Build-AllEngines.ps1
+
+.NOTES
+    Windows PowerShell 5.1 (powershell.exe) is what this is written and verified against, not
+    PowerShell 7 (pwsh) -- which is not installed by default on Windows, so `pwsh` fails with
+    CommandNotFoundException on a stock machine. Nothing here needs 7.
 #>
 
 [CmdletBinding()]

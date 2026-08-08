@@ -48,8 +48,35 @@ jobs:
       - name: Build the plugin archive
         run: git archive --format=zip --prefix=FlockUnrealSdk/ -o "FlockUnrealSdk-${GITHUB_REF_NAME}.zip" HEAD
 
+      # A release that already exists for this tag is the precondition for duplicated notes: the action
+      # updates it rather than creating it, and `generate_release_notes` pre-pends whatever body is
+      # already there to the freshly generated notes. That is how v1.1.0 shipped with "What's Changed"
+      # twice. A warning rather than a failure, because re-running after a transient upload error is
+      # legitimate and should not be blocked — but the operator should know before reading the notes.
+      - name: Warn if a release already exists for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}")
+          if [ "$CODE" = "200" ]; then
+            echo "::warning::A release already exists for ${GITHUB_REF_NAME}. It will be updated, and its notes may duplicate. Let this workflow create releases — do not pre-draft one for a tag you are about to push."
+          else
+            echo "No existing release for ${GITHUB_REF_NAME} (HTTP $CODE) — this run will create it."
+          fi
+
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
           files: FlockUnrealSdk-*.zip
           generate_release_notes: true
+          # Both stated explicitly rather than left to the defaults. `append_body: false` is already the
+          # default, but this is the one input that decides whether an existing body is combined with the
+          # generated notes, so it should be visible at the call site rather than inherited silently.
+          # `name` is pinned for the same reason: with generate_release_notes on, an unset name is also
+          # auto-generated, so a re-run could quietly retitle a published release.
+          append_body: false
+          name: ${{ github.ref_name }}
