@@ -175,7 +175,7 @@ using namespace FlockCommandProviderTestHelpers;
 
 // ── A generic update posts the flat {field: value} body and writes the returned row into the cache ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandUpdateDataTest, "Flock.Command.Provider.UpdatePlayerDataPostsFlatBodyAndWritesThrough",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandUpdateDataTest::RunTest(const FString& Parameters)
 {
@@ -209,7 +209,7 @@ bool FFlockCommandUpdateDataTest::RunTest(const FString& Parameters)
 
 // ── A single-field update sends the value untouched by any key transform ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandUpdateFieldTest, "Flock.Command.Provider.UpdatePlayerDataFieldSendsTypedValue",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandUpdateFieldTest::RunTest(const FString& Parameters)
 {
@@ -234,7 +234,7 @@ bool FFlockCommandUpdateFieldTest::RunTest(const FString& Parameters)
 
 // ── A string literal binds to the string overload, not to bool (the const TCHAR* guard) ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandLiteralOverloadTest, "Flock.Command.Provider.StringLiteralDoesNotBindToBool",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandLiteralOverloadTest::RunTest(const FString& Parameters)
 {
@@ -255,7 +255,7 @@ bool FFlockCommandLiteralOverloadTest::RunTest(const FString& Parameters)
 
 // ── Add game funds resolves the wallet row from the currency template and posts against it ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandAddFundsTest, "Flock.Command.Provider.AddGameFundsResolvesWalletRow",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandAddFundsTest::RunTest(const FString& Parameters)
 {
@@ -284,7 +284,7 @@ bool FFlockCommandAddFundsTest::RunTest(const FString& Parameters)
 
 // ── Money safety: offline, a funds grant fails outright and leaves nothing queued ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandFundsNeverQueuedTest, "Flock.Command.Provider.AddGameFundsFailsOfflineAndIsNeverQueued",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandFundsNeverQueuedTest::RunTest(const FString& Parameters)
 {
@@ -312,7 +312,7 @@ bool FFlockCommandFundsNeverQueuedTest::RunTest(const FString& Parameters)
 
 // ── Money safety: an ambiguous failure is never re-sent, even with retries configured ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandFundsNotRetriedTest, "Flock.Command.Provider.AddGameFundsNotRetriedOnAmbiguousFailure",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandFundsNotRetriedTest::RunTest(const FString& Parameters)
 {
@@ -346,7 +346,7 @@ bool FFlockCommandFundsNotRetriedTest::RunTest(const FString& Parameters)
 
 // ── Offline, a queueable write is persisted and the cached row is overlaid so a read-after-write is honest ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandOfflineQueueTest, "Flock.Command.Provider.OfflineWriteQueuesAndOverlaysCachedRow",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandOfflineQueueTest::RunTest(const FString& Parameters)
 {
@@ -375,7 +375,7 @@ bool FFlockCommandOfflineQueueTest::RunTest(const FString& Parameters)
 
 // ── The queue survives the provider: a later run reloads and replays it ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandQueuePersistsTest, "Flock.Command.Provider.QueueSurvivesRestartAndReplaysInOrder",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandQueuePersistsTest::RunTest(const FString& Parameters)
 {
@@ -412,7 +412,7 @@ bool FFlockCommandQueuePersistsTest::RunTest(const FString& Parameters)
 
 // ── A transient failure halts the flush with the queue intact; a permanent one drops that entry and evicts ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandFlushHaltTest, "Flock.Command.Provider.FlushHaltsOnTransientKeepingOrder",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandFlushHaltTest::RunTest(const FString& Parameters)
 {
@@ -438,7 +438,7 @@ bool FFlockCommandFlushHaltTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandFlushDropTest, "Flock.Command.Provider.FlushDropsRejectedWriteAndEvictsOptimisticRow",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandFlushDropTest::RunTest(const FString& Parameters)
 {
@@ -467,7 +467,7 @@ bool FFlockCommandFlushDropTest::RunTest(const FString& Parameters)
 
 // ── An auth failure is recoverable by signing in again, so the write stays queued rather than being dropped ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandFlushAuthTest, "Flock.Command.Provider.FlushKeepsWriteQueuedOnAuthFailure",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandFlushAuthTest::RunTest(const FString& Parameters)
 {
@@ -495,7 +495,7 @@ bool FFlockCommandFlushAuthTest::RunTest(const FString& Parameters)
 
 // ── A queue belongs to one player: signing in as someone else must not replay their writes ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandQueueScopeTest, "Flock.Command.Provider.QueueIsPlayerScoped",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandQueueScopeTest::RunTest(const FString& Parameters)
 {
@@ -517,7 +517,7 @@ bool FFlockCommandQueueScopeTest::RunTest(const FString& Parameters)
 
 // ── Two flushes can't run at once and post the same command twice ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandFlushSingleFlightTest, "Flock.Command.Provider.FlushIsSingleFlight",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandFlushSingleFlightTest::RunTest(const FString& Parameters)
 {
@@ -546,7 +546,7 @@ bool FFlockCommandFlushSingleFlightTest::RunTest(const FString& Parameters)
 
 // ── The pump's own triggers replay the queue: returning to the foreground, and connectivity coming back ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandAutoFlushTest, "Flock.Command.Provider.PumpTriggersAutoFlush",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandAutoFlushTest::RunTest(const FString& Parameters)
 {
@@ -596,7 +596,7 @@ bool FFlockCommandAutoFlushTest::RunTest(const FString& Parameters)
 
 // ── Unlocking an achievement resolves the "achievement"-tagged row, so no id is passed in ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandUnlockTest, "Flock.Command.Provider.UnlockAchievementResolvesTaggedRow",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandUnlockTest::RunTest(const FString& Parameters)
 {
@@ -623,7 +623,7 @@ bool FFlockCommandUnlockTest::RunTest(const FString& Parameters)
 
 // ── Guards: an empty required argument fails as Validation without touching the network ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandGuardTest, "Flock.Command.Provider.EmptyArgumentsFailAsValidation",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandGuardTest::RunTest(const FString& Parameters)
 {
@@ -657,7 +657,7 @@ bool FFlockCommandGuardTest::RunTest(const FString& Parameters)
 
 // ── Clearing the queue discards without sending ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandClearQueueTest, "Flock.Command.Provider.ClearPendingWritesDiscardsWithoutSending",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockCommandClearQueueTest::RunTest(const FString& Parameters)
 {

@@ -101,6 +101,25 @@ bool FFlockJsonUtils::TryParseObject(const FString& Json, TSharedPtr<FJsonObject
 	return FJsonSerializer::Deserialize(Reader, OutObject) && OutObject.IsValid();
 }
 
+TArray<FString> FFlockJsonUtils::GetFieldNames(const TSharedPtr<FJsonObject>& Object)
+{
+	TArray<FString> Names;
+	if (!Object.IsValid())
+	{
+		return Names;
+	}
+
+	// `auto`, and `*Pair.Key` rather than the key itself: the map's key type changes between engines
+	// (FString, then an interned shared string), and dereference is the one spelling both answer with a
+	// `const TCHAR*`. Naming the type or copying the key directly compiles on one engine only.
+	Names.Reserve(Object->Values.Num());
+	for (const auto& Pair : Object->Values)
+	{
+		Names.Emplace(*Pair.Key);
+	}
+	return Names;
+}
+
 TSharedRef<FJsonObject> FFlockJsonUtils::TransformObjectKeys(const TSharedRef<FJsonObject>& In, bool bToPascal)
 {
 	const TSharedPtr<FJsonValue> Transformed = TransformValue(MakeShared<FJsonValueObject>(In), bToPascal);

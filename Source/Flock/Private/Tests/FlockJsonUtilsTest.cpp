@@ -8,7 +8,7 @@
 #include "Models/FlockGameModels.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonCaseRoundTripTest, "Flock.Http.Json.CaseRoundTrip",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockJsonCaseRoundTripTest::RunTest(const FString& Parameters)
 {
@@ -20,7 +20,7 @@ bool FFlockJsonCaseRoundTripTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonEnvelopeUnwrapTest, "Flock.Http.Json.EnvelopeUnwrap",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockJsonEnvelopeUnwrapTest::RunTest(const FString& Parameters)
 {
@@ -45,7 +45,7 @@ bool FFlockJsonEnvelopeUnwrapTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonCodedErrorTest, "Flock.Http.Json.CodedError",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockJsonCodedErrorTest::RunTest(const FString& Parameters)
 {
@@ -80,7 +80,7 @@ bool FFlockJsonCodedErrorTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonPaginatedTest, "Flock.Http.Json.Paginated",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockJsonPaginatedTest::RunTest(const FString& Parameters)
 {
@@ -101,7 +101,7 @@ bool FFlockJsonPaginatedTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonUtilsOmitEmptyTest, "Flock.Http.Json.OmitEmptyStrings",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockJsonUtilsOmitEmptyTest::RunTest(const FString& Parameters)
 {
@@ -125,7 +125,7 @@ bool FFlockJsonUtilsOmitEmptyTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonArrayUnwrapTest, "Flock.Http.Json.ArrayUnwrap",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockJsonArrayUnwrapTest::RunTest(const FString& Parameters)
 {
@@ -175,7 +175,7 @@ namespace
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonWireParseDetectionTest, "Flock.Http.Json.WireParseDetection",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockJsonWireParseDetectionTest::RunTest(const FString& Parameters)
 {
@@ -187,7 +187,7 @@ bool FFlockJsonWireParseDetectionTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonPlainRoundTripTest, "Flock.Http.Json.PlainRoundTrip",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockJsonPlainRoundTripTest::RunTest(const FString& Parameters)
 {
@@ -233,6 +233,50 @@ bool FFlockJsonPlainRoundTripTest::RunTest(const FString& Parameters)
 	// A non-array body is rejected by the array reader.
 	TArray<FFlockGameVersionSchema> Bad;
 	TestFalse(TEXT("object rejected as array"), FFlockJsonUtils::ArrayFromPlainJson(TEXT("{\"Id\":\"x\"}"), Bad));
+
+	return true;
+}
+
+/**
+ * The two properties of JSON key handling that the SDK relies on everywhere and that no engine
+ * documents as a contract: names come back in the author's spelling, and lookup ignores case.
+ *
+ * Worth pinning because the container behind them is *not* stable across engines - later engines key
+ * FJsonObject by an interned shared string rather than FString. Both currently hash case-insensitively
+ * (the engine's own comment on the shared-string hash says it must match FString's), and both preserve
+ * the stored spelling. If a future engine changes either, `FFlockStructuredData`'s exact-then-Pascal
+ * resolution silently starts resolving differently, and every dotted-path getter in the SDK is affected.
+ * This test is what turns that into a red line instead of a support ticket.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonKeySemanticsTest, "Flock.Http.Json.KeySemantics",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockJsonKeySemanticsTest::RunTest(const FString& Parameters)
+{
+	TSharedPtr<FJsonObject> Object;
+	TestTrue(TEXT("parses"), FFlockJsonUtils::TryParseObject(
+		TEXT("{\"max_health\":10,\"GameCurrencies\":{\"gold\":1},\"MixedCase\":\"v\"}"), Object));
+
+	// Enumeration returns author spelling verbatim -- not lower-cased, not Pascal-ised. Codegen and the
+	// commands surface both write keys back to the server using exactly what this returns.
+	const TArray<FString> Names = FFlockJsonUtils::GetFieldNames(Object);
+	TestEqual(TEXT("three field names"), Names.Num(), 3);
+	TestTrue(TEXT("snake key kept verbatim"), Names.Contains(TEXT("max_health")));
+	TestTrue(TEXT("pascal key kept verbatim"), Names.Contains(TEXT("GameCurrencies")));
+	TestTrue(TEXT("mixed-case key kept verbatim"), Names.Contains(TEXT("MixedCase")));
+
+	// Lookup ignores case, so a caller's spelling need not match the dashboard's.
+	TestTrue(TEXT("exact lookup"), Object->HasField(TEXT("max_health")));
+	TestTrue(TEXT("case-insensitive lookup"), Object->HasField(TEXT("MAX_HEALTH")));
+	TestTrue(TEXT("case-insensitive lookup, other direction"), Object->HasField(TEXT("mixedcase")));
+	TestFalse(TEXT("absent field is absent"), Object->HasField(TEXT("no_such_field")));
+
+	// TryGetField agrees with HasField -- the SDK uses them interchangeably for presence plus value.
+	TestTrue(TEXT("TryGetField finds it case-insensitively"), Object->TryGetField(TEXT("GAMECURRENCIES")).IsValid());
+	TestFalse(TEXT("TryGetField misses an absent field"), Object->TryGetField(TEXT("nope")).IsValid());
+
+	// A null object enumerates to nothing rather than crashing; several callers pass an unresolved object.
+	TestEqual(TEXT("null object yields no names"), FFlockJsonUtils::GetFieldNames(nullptr).Num(), 0);
 
 	return true;
 }

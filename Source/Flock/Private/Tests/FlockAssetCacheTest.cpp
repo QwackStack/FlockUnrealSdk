@@ -36,7 +36,7 @@ namespace FlockAssetCacheTestHelpers
 using namespace FlockAssetCacheTestHelpers;
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAssetCacheVersionTest, "Flock.Assets.Cache.SupersedesOldVersions",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockAssetCacheVersionTest::RunTest(const FString&)
 {
@@ -62,7 +62,7 @@ bool FFlockAssetCacheVersionTest::RunTest(const FString&)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAssetCacheLruTest, "Flock.Assets.Cache.EvictsLeastRecentlyUsed",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockAssetCacheLruTest::RunTest(const FString&)
 {
@@ -98,7 +98,7 @@ bool FFlockAssetCacheLruTest::RunTest(const FString&)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAssetCacheSweepTest, "Flock.Assets.Cache.SweepsStrayTemps",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockAssetCacheSweepTest::RunTest(const FString&)
 {
@@ -121,7 +121,7 @@ bool FFlockAssetCacheSweepTest::RunTest(const FString&)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAssetCacheEscapeTest, "Flock.Assets.Cache.CannotEscapeItsDirectory",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockAssetCacheEscapeTest::RunTest(const FString&)
 {
@@ -143,7 +143,7 @@ bool FFlockAssetCacheEscapeTest::RunTest(const FString&)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAssetVersionTokenTest, "Flock.Assets.Model.VersionTokenTracksUpdatedAt",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockAssetVersionTokenTest::RunTest(const FString&)
 {

@@ -18,7 +18,7 @@ namespace
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockFileTokenStoreRoundtripTest, "Flock.Auth.TokenStore.Roundtrip",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockFileTokenStoreRoundtripTest::RunTest(const FString& Parameters)
 {
@@ -54,7 +54,7 @@ bool FFlockFileTokenStoreRoundtripTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockFileTokenStoreEdgeTest, "Flock.Auth.TokenStore.Edges",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockFileTokenStoreEdgeTest::RunTest(const FString& Parameters)
 {

@@ -139,15 +139,15 @@ void FFlockStructuredData::OverlayFields(const TSharedRef<FJsonObject>& Fields)
 		Merged->Values = Existing->Values;
 	}
 
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Fields->Values)
+	for (const auto& Pair : Fields->Values)
 	{
 		// Exact-then-Pascal, matching ResolvePath: the caller may type either the dashboard's snake_case
 		// field name or the flattened Pascal one, and both must land on the same field.
-		FString TargetKey = Pair.Key;
-		if (!Merged->Values.Contains(TargetKey))
+		FString TargetKey(*Pair.Key);
+		if (!Merged->HasField(TargetKey))
 		{
-			const FString PascalKey = FFlockJsonUtils::SnakeToPascal(Pair.Key);
-			if (Merged->Values.Contains(PascalKey))
+			const FString PascalKey = FFlockJsonUtils::SnakeToPascal(TargetKey);
+			if (Merged->HasField(PascalKey))
 			{
 				TargetKey = PascalKey;
 			}
@@ -281,11 +281,5 @@ bool FFlockStructuredData::HasField(const FString& Path) const
 
 TArray<FString> FFlockStructuredData::GetFieldNames() const
 {
-	TArray<FString> Names;
-	const TSharedPtr<FJsonObject> Object = ResolveObject();
-	if (Object.IsValid())
-	{
-		Object->Values.GetKeys(Names);
-	}
-	return Names;
+	return FFlockJsonUtils::GetFieldNames(ResolveObject());
 }

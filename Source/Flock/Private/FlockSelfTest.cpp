@@ -18,6 +18,7 @@
 #include "Analytics/FlockMetadata.h"
 #include "Dom/JsonObject.h"
 #include "FlockLogger.h"
+#include "Http/FlockJsonUtils.h"
 #include "Engine/GameInstance.h"
 #include "HAL/IConsoleManager.h"
 #include "Serialization/JsonReader.h"
@@ -446,10 +447,9 @@ namespace
 			if (OutProbe.CurrencyName.IsEmpty() && Value->Type == EJson::Object)
 			{
 				const TSharedPtr<FJsonObject> Inner = Value->AsObject();
-				if (Inner.IsValid() && Inner->Values.Num() > 0)
+				const TArray<FString> InnerKeys = FFlockJsonUtils::GetFieldNames(Inner);
+				if (InnerKeys.Num() > 0)
 				{
-					TArray<FString> InnerKeys;
-					Inner->Values.GetKeys(InnerKeys);
 					OutProbe.CurrencyName = InnerKeys[0];
 				}
 			}

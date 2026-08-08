@@ -2,6 +2,7 @@
 
 #include "Codegen/FlockSchemaHasher.h"
 
+#include "Http/FlockJsonUtils.h"
 #include "Misc/SecureHash.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -20,8 +21,7 @@ namespace
 	void AppendCanonicalObject(FStringBuilderBase& Builder, const TSharedRef<FJsonObject>& Object)
 	{
 		// Sorted keys: their order on the wire is a serialization artifact and changes no output.
-		TArray<FString> Keys;
-		Object->Values.GetKeys(Keys);
+		TArray<FString> Keys = FFlockJsonUtils::GetFieldNames(Object);
 		Keys.Sort();
 
 		Builder.Append(TEXT("{"));
@@ -33,7 +33,7 @@ namespace
 			}
 			AppendString(Builder, Keys[Index]);
 			Builder.Append(TEXT(":"));
-			AppendCanonicalValue(Builder, Object->Values[Keys[Index]]);
+			AppendCanonicalValue(Builder, Object->TryGetField(Keys[Index]));
 		}
 		Builder.Append(TEXT("}"));
 	}

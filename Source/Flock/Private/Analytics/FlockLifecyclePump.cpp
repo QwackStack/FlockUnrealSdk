@@ -29,7 +29,10 @@ void FFlockLifecyclePump::Start()
 
 	// Mobile raises Terminate; desktop and editor generally only reach OnPreExit. Subscribing to
 	// both is what makes "end the session on quit" work on every platform.
-	TerminateHandle = FCoreDelegates::ApplicationWillTerminateDelegate.AddLambda(
+	// The getter, not the bare ApplicationWillTerminateDelegate member: that member is the non-thread-safe
+	// one, deprecated since 5.3 and removed outright in later engines. The getter exists at our floor, so
+	// this is the spelling that compiles everywhere.
+	TerminateHandle = FCoreDelegates::GetApplicationWillTerminateDelegate().AddLambda(
 		[this]() { HandleQuit(); });
 	PreExitHandle = FCoreDelegates::OnPreExit.AddLambda(
 		[this]() { HandleQuit(); });
@@ -51,7 +54,7 @@ void FFlockLifecyclePump::Stop()
 
 	FCoreDelegates::ApplicationWillEnterBackgroundDelegate.Remove(BackgroundHandle);
 	FCoreDelegates::ApplicationHasEnteredForegroundDelegate.Remove(ForegroundHandle);
-	FCoreDelegates::ApplicationWillTerminateDelegate.Remove(TerminateHandle);
+	FCoreDelegates::GetApplicationWillTerminateDelegate().Remove(TerminateHandle);
 	FCoreDelegates::OnPreExit.Remove(PreExitHandle);
 
 	BackgroundHandle.Reset();

@@ -154,11 +154,5 @@ bool FFlockJsonData::HasField(const FString& Path) const
 
 TArray<FString> FFlockJsonData::GetFieldNames() const
 {
-	TArray<FString> Names;
-	const TSharedPtr<FJsonObject> Object = ResolveObject();
-	if (Object.IsValid())
-	{
-		Object->Values.GetKeys(Names);
-	}
-	return Names;
+	return FFlockJsonUtils::GetFieldNames(ResolveObject());
 }

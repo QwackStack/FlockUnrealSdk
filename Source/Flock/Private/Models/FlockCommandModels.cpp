@@ -2,6 +2,7 @@
 
 #include "Models/FlockCommandModels.h"
 
+#include "Http/FlockJsonUtils.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -164,9 +165,7 @@ bool FFlockCommandData::IsEmpty() const
 
 TArray<FString> FFlockCommandData::GetFieldNames() const
 {
-	TArray<FString> Names;
-	ToJsonObject()->Values.GetKeys(Names);
-	return Names;
+	return FFlockJsonUtils::GetFieldNames(ToJsonObject());
 }
 
 TSharedRef<FJsonObject> FFlockCommandData::ToJsonObject() const

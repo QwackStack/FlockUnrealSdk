@@ -1,0 +1,124 @@
+name: Engine claim
+
+# The engine-support checks, factored out so the same rules gate a pull request *and* a release.
+#
+# They live here rather than being written into both callers because a duplicated check drifts, and a
+# drifted check is worse than no check: it reports green against rules nobody edits any more. The whole
+# point of these rules is that the engine claim cannot quietly become false, so the checks enforcing it
+# must not be able to quietly diverge either.
+#
+# The claim is stated in places that can drift apart silently — the plugin manifest, the README, and the
+# compat header's floor and ceiling. Bump one, forget another, and the mismatch is invisible until a user
+# on the wrong engine files a bug.
+#
+# This needs no Unreal Engine, which is the point — GitHub-hosted runners have none, so anything
+# requiring a compiler has to be a self-hosted runner or a container image. Full multi-engine builds are
+# `Tooling/Build-AllEngines.ps1`, run locally before tagging.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  engine-claim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The engine claim agrees across manifest, README, and compat header
+        run: |
+          set -euo pipefail
+
+          # The manifest must NOT declare EngineVersion, and this is load-bearing rather than tidiness.
+          # A .uplugin with EngineVersion set makes the editor refuse to load the plugin on any other
+          # engine build -- "The 'Flock' plugin was designed for build X. Attempt to load it anyway?" --
+          # which a headless run auto-answers "No". The plugin then compiles perfectly on every engine in
+          # the range and silently fails to load on all but one. That is exactly the bug this repo shipped
+          # before the range existed, and it is invisible to any check that only compiles.
+          #
+          # Marketplace plugins have to set it, which is why they ship one build per engine. This one is
+          # source-distributed into a project's Plugins/ folder, so it must not.
+          if grep -q '"EngineVersion"' Flock.uplugin; then
+            echo "::error::Flock.uplugin declares EngineVersion. That version-gates plugin loading and breaks every engine in the range except the one named. Remove it; the supported range lives in FlockEngineCompat.h and README.md."
+            exit 1
+          fi
+
+          # -oE, not -oP: PCRE is unavailable in some grep builds/locales, and a check that only runs on
+          # one machine is not a check.
+          COMPAT_H="Source/Flock/Public/Misc/FlockEngineCompat.h"
+          MAJOR=$(grep -oE '#define[[:space:]]+FLOCK_ENGINE_FLOOR_MAJOR[[:space:]]+[0-9]+' "$COMPAT_H" | grep -oE '[0-9]+$')
+          MINOR=$(grep -oE '#define[[:space:]]+FLOCK_ENGINE_FLOOR_MINOR[[:space:]]+[0-9]+' "$COMPAT_H" | grep -oE '[0-9]+$')
+          COMPAT="${MAJOR}.${MINOR}"
+
+          CMAJOR=$(grep -oE '#define[[:space:]]+FLOCK_ENGINE_CEILING_MAJOR[[:space:]]+[0-9]+' "$COMPAT_H" | grep -oE '[0-9]+$')
+          CMINOR=$(grep -oE '#define[[:space:]]+FLOCK_ENGINE_CEILING_MINOR[[:space:]]+[0-9]+' "$COMPAT_H" | grep -oE '[0-9]+$')
+          CEILING="${CMAJOR}.${CMINOR}"
+
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ]; then
+            echo "::error::Could not read the floor from $COMPAT_H — the macros were renamed or removed."
+            exit 1
+          fi
+          if [ -z "$CMAJOR" ] || [ -z "$CMINOR" ]; then
+            echo "::error::Could not read the ceiling from $COMPAT_H — the macros were renamed or removed."
+            exit 1
+          fi
+
+          echo "FlockEngineCompat.h range   : $COMPAT to $CEILING"
+
+          # A ceiling below the floor is an empty range — the SDK would claim to support nothing.
+          if [ "$(printf '%s\n%s\n' "$COMPAT" "$CEILING" | sort -V | head -1)" != "$COMPAT" ]; then
+            echo "::error::The ceiling (UE $CEILING) is below the floor (UE $COMPAT)."
+            exit 1
+          fi
+
+          # The README is what a prospective user reads before installing; it is part of the claim, and
+          # both ends of the range have to appear in it or the reader learns only half of what is true.
+          if ! grep -q "Unreal Engine $COMPAT" README.md; then
+            echo "::error::README.md does not state 'Unreal Engine $COMPAT' in its Requirements."
+            exit 1
+          fi
+          if [ "$COMPAT" != "$CEILING" ] && ! grep -q "$CEILING" README.md; then
+            echo "::error::README.md does not mention the ceiling UE $CEILING."
+            exit 1
+          fi
+
+          echo "Engine claim is consistent at UE $COMPAT to UE $CEILING."
+
+      - name: Version guards live only in the compat header
+        run: |
+          set -euo pipefail
+
+          # One auditable place for engine-conditional code. A guard that leaks elsewhere is one nobody
+          # will find when the floor moves.
+          #
+          # The pattern covers every way C++ can branch on engine version: the two comparison macros in
+          # Misc/EngineVersionComparison.h (there are only two - NEWER_THAN and OLDER_THAN), and all
+          # three raw version macros from Runtime/Launch/Resources/Version.h. An earlier version of this
+          # check listed only MINOR, so a guard written on MAJOR or PATCH passed silently.
+          GUARD_PATTERN='UE_VERSION_(NEWER|OLDER)_THAN|ENGINE_(MAJOR|MINOR|PATCH)_VERSION'
+
+          STRAY=$(grep -rnE --include='*.h' --include='*.cpp' "$GUARD_PATTERN" Source/ \
+                    | grep -v 'Source/Flock/Public/Misc/FlockEngineCompat.h' || true)
+
+          if [ -n "$STRAY" ]; then
+            echo "::error::Engine-version guards found outside FlockEngineCompat.h:"
+            echo "$STRAY"
+            exit 1
+          fi
+
+          echo "No stray version guards in C++."
+
+          # Build rules are the one deliberate exception, and it is an allowance rather than an oversight.
+          # UBT decides things a C++ header cannot express - which modules to link, which definitions to
+          # set - so `Target.Version` branching in a .Build.cs has nowhere else to live. Listed rather
+          # than banned, so it stays visible when the floor moves.
+          BUILD_RULES=$(grep -rnE --include='*.Build.cs' 'Target\.Version' Source/ || true)
+
+          if [ -n "$BUILD_RULES" ]; then
+            echo "Engine-version branching in build rules (allowed - review when changing the floor):"
+            echo "$BUILD_RULES"
+          else
+            echo "No engine-version branching in build rules."
+          fi
