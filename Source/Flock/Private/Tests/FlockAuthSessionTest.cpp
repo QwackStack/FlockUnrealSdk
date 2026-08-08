@@ -56,7 +56,7 @@ namespace FlockAuthSessionTestHelpers
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAuthSessionStateTest, "Flock.Auth.Session.State",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockAuthSessionStateTest::RunTest(const FString& Parameters)
 {
@@ -108,7 +108,7 @@ bool FFlockAuthSessionStateTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAuthSessionRefreshTest, "Flock.Auth.Session.Refresh",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockAuthSessionRefreshTest::RunTest(const FString& Parameters)
 {
@@ -182,7 +182,7 @@ bool FFlockAuthSessionRefreshTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAuthSessionRefreshSingleFlightTest, "Flock.Auth.Session.RefreshSingleFlight",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockAuthSessionRefreshSingleFlightTest::RunTest(const FString& Parameters)
 {

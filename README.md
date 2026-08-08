@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.0.0 — first stable release.** Everything documented below ships today. Requires Unreal Engine 5.5;
+> **1.1.0.** Everything documented below ships today. Requires Unreal Engine 5.5 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -156,8 +156,18 @@ announced on the releases page.
 
 ## Requirements
 
-- **Unreal Engine 5.5.** This is the only version the SDK is built and tested against; see
-  [CHANGELOG.md](CHANGELOG.md) for how support widens.
+- **Unreal Engine 5.5 to 5.8.** Every version in that range is built *and* run against the full test
+  suite before a release — the range is what has been verified, not what is expected to work. Older
+  engines are refused with a single clear error. Newer ones compile and emit a warning saying they are
+  past what has been verified: a new engine usually breaks nothing, so the SDK does not block you on the
+  day one ships. See [CHANGELOG.md](CHANGELOG.md) for how the range moves.
+- **Platforms: verified on Windows (Win64).** The SDK is written against portable engine APIs and uses
+  no platform-specific code, so other targets are expected to work — but expected is not verified, and
+  this project states only what it has actually run. Windows is where the test suite has been executed;
+  macOS, Linux, console and mobile have not been exercised. Nothing restricts them: the plugin declares
+  no platform allow-list, so it builds and packages for any target your project supports. If you ship on
+  one of them, treat the first run as something to check rather than assume, and please report what you
+  find — that is how this line gets shorter.
 - **A C++ toolchain on every machine that builds the project** — Visual Studio 2022 with the
   *Game development with C++* workload on Windows, Xcode on macOS. The plugin ships source rather than
   binaries, and build output isn't usually committed, so each developer compiles their own copy.

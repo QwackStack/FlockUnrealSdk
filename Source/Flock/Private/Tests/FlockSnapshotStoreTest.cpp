@@ -32,7 +32,7 @@ namespace
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSnapshotRoundTripTest, "Flock.Http.SnapshotStore.RoundTrip",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockSnapshotRoundTripTest::RunTest(const FString& Parameters)
 {
@@ -75,7 +75,7 @@ bool FFlockSnapshotRoundTripTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSnapshotVersionMismatchTest, "Flock.Http.SnapshotStore.VersionMismatch",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockSnapshotVersionMismatchTest::RunTest(const FString& Parameters)
 {
@@ -105,7 +105,7 @@ bool FFlockSnapshotVersionMismatchTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSnapshotCorruptTest, "Flock.Http.SnapshotStore.Corrupt",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockSnapshotCorruptTest::RunTest(const FString& Parameters)
 {
@@ -132,7 +132,7 @@ bool FFlockSnapshotCorruptTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSnapshotKeyCollisionTest, "Flock.Http.SnapshotStore.KeyCollision",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockSnapshotKeyCollisionTest::RunTest(const FString& Parameters)
 {
@@ -157,7 +157,7 @@ bool FFlockSnapshotKeyCollisionTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSnapshotDeleteScopeTest, "Flock.Http.SnapshotStore.DeleteScope",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockSnapshotDeleteScopeTest::RunTest(const FString& Parameters)
 {
@@ -180,7 +180,7 @@ bool FFlockSnapshotDeleteScopeTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSnapshotPruneTest, "Flock.Http.SnapshotStore.PruneOtherVersions",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockSnapshotPruneTest::RunTest(const FString& Parameters)
 {

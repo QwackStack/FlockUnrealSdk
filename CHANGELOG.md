@@ -5,6 +5,51 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-08-08
+
+**Engine support is now a verified range: Unreal Engine 5.5 to 5.8.** Previously the SDK claimed 5.5 and
+said nothing about anything newer. That turned out to hide two facts in opposite directions — 5.6 and 5.7
+already worked, and 5.8 did not — because a floor cannot express either one.
+
+### Added
+
+- Support for Unreal Engine 5.6, 5.7 and 5.8. Every version in the range is compiled *and* run against
+  the full automation suite before release.
+- A warning, not an error, on engines newer than the verified ceiling. A new engine usually breaks
+  nothing, so the SDK no longer blocks a project on the day one ships; the warning names the tool that
+  re-verifies the range.
+- `FFlockJsonUtils::GetFieldNames`, the one place the SDK enumerates JSON object keys.
+- `Flock.Http.Json.KeySemantics`, pinning that key lookup ignores case and enumeration returns author
+  spelling verbatim — the two properties the dotted-path getters and the commands write path depend on.
+- Test coverage outside the editor. 42 tests covering the disk-touching paths (token store, snapshot
+  store, asset cache, command queue) and the wire layer now also run with the editor not hosting them,
+  and the release sweep runs both contexts on every engine. Previously the entire suite was editor-only,
+  which cannot see a defect that depends on the editor being absent — the same shape of blind spot that
+  hid the `EngineVersion` loading bug.
+- The README now states which platforms are verified. Windows is what has been run; other targets are
+  expected to work but unverified, and nothing restricts them.
+
+### Changed
+
+- `Flock.uplugin` no longer declares `EngineVersion`. That field version-gates plugin *loading*, not
+  just compilation: with it set, the editor refuses to load the plugin on any engine but the one named,
+  so the SDK would compile on the whole supported range and load on one version of it.
+
+### Fixed
+
+- Compilation on Unreal Engine 5.8, which changed `FJsonObject`'s key storage. The SDK now reaches for
+  `HasField` / `TryGetField` instead of indexing the underlying container, which is both the supported
+  API and stable across every engine in the range. No behaviour changed: key comparison is
+  case-insensitive on all of them.
+- `Tooling/Build-AllEngines.ps1` could not see engines installed outside `C:\Program Files\Epic Games`,
+  so a machine with engines on another drive got a passing report covering one engine. It now sweeps
+  every fixed drive, accepts `-SearchRoots`, and prints what it discovered.
+- `Tooling/Build-AllEngines.ps1` built every engine into one shared `Intermediate`, and stale generated
+  headers from one engine were compiled against another's — producing failures attributed to the SDK that
+  were entirely artefacts of the sweep. It now cleans between engines.
+- `Tooling/Build-AllEngines.ps1` failed immediately when run with `-File`, because its `-Project` default
+  could not resolve under `[CmdletBinding()]`.
+
 ## [1.0.0] - 2026-07-30
 
 **First stable release.** The versions below it are the development history and were never published;

@@ -8,6 +8,12 @@ name: Release
 # no Binaries/, Intermediate/ or Saved/ can leak in, because they are never committed. The `--prefix`
 # is what makes the zip drop straight into a project: it nests everything under FlockUnrealSdk/, so
 # extracting into `YourProject/Plugins/` lands the plugin where Unreal expects it.
+#
+# The engine-claim checks gate the publish. They already run on pull requests and on main, but a tag can
+# be pushed at any commit — including one that never went through either — and the checks do not fire on
+# tag pushes of their own accord (`push: branches:` does not match a tag). Without this gate the one
+# release that actually states an engine range could ship without the rules behind that range ever having
+# been run. Calling the same reusable workflow means it is the same rules, not a copy of them.
 
 on:
   push:
@@ -18,7 +24,11 @@ permissions:
   contents: write
 
 jobs:
+  engine-claim:
+    uses: ./.github/workflows/engine-claim.yml
+
   release:
+    needs: engine-claim
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

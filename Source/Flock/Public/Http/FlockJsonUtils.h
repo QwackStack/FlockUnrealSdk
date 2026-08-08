@@ -35,6 +35,21 @@ public:
 	/** Parses a JSON object string; returns false on malformed input. */
 	static bool TryParseObject(const FString& Json, TSharedPtr<FJsonObject>& OutObject);
 
+	/**
+	 * The field names of a JSON object, in author spelling, in map order.
+	 *
+	 * The one JSON operation with no engine API behind it, which is why it is worth centralising: every
+	 * other access this SDK needs (`HasField`, `TryGetField`, `SetField`) has a supported signature that
+	 * is stable across engines, but enumerating keys means touching `FJsonObject::Values` directly -- and
+	 * that container's key *type* is not stable. Later engines key it by a shared interned string rather
+	 * than FString. Both spellings dereference to `const TCHAR*`, so building the names through that is
+	 * portable and needs no version guard; doing it here means the one unstable spelling lives in one
+	 * place instead of five call sites.
+	 *
+	 * Null or empty object yields an empty array.
+	 */
+	static TArray<FString> GetFieldNames(const TSharedPtr<FJsonObject>& Object);
+
 	/** Recursively rebuilds an object with its keys (and nested keys) transformed. */
 	static TSharedRef<FJsonObject> TransformObjectKeys(const TSharedRef<FJsonObject>& In, bool bToPascal);
 
