@@ -58,8 +58,9 @@ namespace FlockShopProviderTestHelpers
 			FString::Printf(TEXT("shop_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
 	}
 
-	// ── Real wire shapes (bare/paginated/enveloped-list), NOT the enveloped fixtures the Unity tests
-	// use against bare routes — those hide a shape mismatch and only assert non-null. ──
+	// ── Real wire shapes (bare/paginated/enveloped-list). An enveloped fixture on a route that is
+	// actually bare still parses and still passes, so it hides the mismatch until a live backend
+	// answers "missing result" — mirror what the server really sends. ──
 
 	inline FString ItemBody(const FString& Id, int32 Price)
 	{

@@ -19,6 +19,11 @@ bool FFlockErrorCodeParseTest::RunTest(const FString& Parameters)
 		static_cast<int32>(FFlockErrorCodes::Parse(TEXT("game_version.game_version_by_name_not_found"))),
 		static_cast<int32>(EFlockErrorCode::GameVersionGameVersionByNameNotFound));
 
+	// Observed live: the by-name lookup 404s with this code for a board the game does not have.
+	TestEqual(TEXT("known leaderboard code"),
+		static_cast<int32>(FFlockErrorCodes::Parse(TEXT("leaderboard.not_found"))),
+		static_cast<int32>(EFlockErrorCode::LeaderboardNotFound));
+
 	TestEqual(TEXT("unknown code -> Unknown"),
 		static_cast<int32>(FFlockErrorCodes::Parse(TEXT("nope.not_a_real_code"))),
 		static_cast<int32>(EFlockErrorCode::Unknown));

@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.1.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.2.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -243,6 +243,11 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	AssetProvider->Configure(Settings->bEnableAssetCache, static_cast<float>(Settings->AssetDownloadTimeoutSeconds),
 		Settings->AssetDownloadRetryCount, Settings->AssetMaxConcurrentDownloads);
 
+	// Read-only, so it depends on nothing above it and nothing depends on it. Snapshot-backed like the
+	// catalog providers: a board UI offline should show the last-known standings, not an error screen.
+	LeaderboardProvider = MakeShared<FFlockLeaderboardProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
+		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
+
 	// Supply the reachability probe every snapshot-backed provider has always had a seam for and never a
 	// production value for — left null, IsServerReachable() answered "reachable" unconditionally, so the
 	// branch that serves cache *without* a call could only ever fire in a test. One shared latch on the
@@ -259,6 +264,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		ShopProvider->SetReachabilityProbe(Probe);
 		CommandProvider->SetReachabilityProbe(Probe);
 		AssetProvider->SetReachabilityProbe(Probe);
+		LeaderboardProvider->SetReachabilityProbe(Probe);
 	}
 
 	return true;
@@ -390,6 +396,7 @@ void UFlockSubsystem::ShutdownSdk()
 	ShopProvider.Reset();
 	PlayerProvider.Reset();
 	AssetProvider.Reset();
+	LeaderboardProvider.Reset();
 	SnapshotStore.Reset();
 	AuthProvider.Reset();
 	AuthSession.Reset();
@@ -482,6 +489,13 @@ void UFlockSubsystem::Logout()
 	if (PlayerProvider.IsValid())
 	{
 		PlayerProvider->ClearPlayerDataCache();
+	}
+	// The my-rank and around-me snapshots are keyed to the player who fetched them, so they must not
+	// outlive the sign-in. The board configs in the same category are game-scoped and would be safe to
+	// keep, but the category is shared and a cheap refetch beats a leak.
+	if (LeaderboardProvider.IsValid())
+	{
+		LeaderboardProvider->ClearCache();
 	}
 	AuthProvider->Logout();
 }

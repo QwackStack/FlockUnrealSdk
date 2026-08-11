@@ -12,9 +12,9 @@
  *
  * Each consumer constructs its own instance against a distinct subfolder.
  *
- * The cache deliberately does NOT send anything. Unity's equivalent owns a FlushAsync that drives
- * the sender; here the provider owns batching, retry, and the HTTP client, so the cache stays a
- * dumb store and the retry semantics live in exactly one place (FlockProviderBase).
+ * The cache deliberately does NOT send anything. The provider owns batching, retry, and the HTTP
+ * client, so the cache stays a dumb store and the retry semantics live in exactly one place
+ * (FlockProviderBase) rather than being split across two.
  *
  * Handles are opaque, stable, and ordered oldest-first — that ordering is what makes eviction and
  * batching deterministic.

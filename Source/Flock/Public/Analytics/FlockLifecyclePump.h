@@ -6,8 +6,8 @@
 #include "Containers/Ticker.h"
 
 /**
- * The per-frame and app-lifecycle signals the analytics feature runs on: the UE stand-in for the
- * MonoBehaviour a Unity SDK would attach to a DontDestroyOnLoad object.
+ * The per-frame and app-lifecycle signals the analytics feature runs on, owned by the SDK itself
+ * rather than by anything in the level.
  *
  * FTSTicker rather than an actor or world tick, because analytics must keep running with no world
  * loaded, in the editor, in commandlets, and under -nullrhi — which is also what lets the automation

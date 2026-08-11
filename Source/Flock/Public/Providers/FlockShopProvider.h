@@ -15,8 +15,8 @@ class FFlockAnalyticsProvider;
  *
  * Catalog reads (all shops, shop by id/name, item by id, items by shop) are memoized in-process and
  * backed by the offline snapshot, so a second ask is free and a fetch survives an outage. Like the game
- * provider — and unlike the config provider — there is no in-flight coalescing; this mirrors the Unity
- * SDK's simpler memoize.
+ * provider — and unlike the config provider — there is no in-flight coalescing: a plain memoize is
+ * enough, because catalog reads are not the ones several widgets race for on the same frame.
  *
  * A purchase is money-moving and non-idempotent: an ambiguous failure may mean the charge already
  * cleared, so it is never retried on such a failure and never queued. Player inventory changes on every

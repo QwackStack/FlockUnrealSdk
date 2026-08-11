@@ -75,12 +75,16 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   texture, as text, as raw bytes, or as a file. Transfers stream to disk rather than into memory, land in
   a size-budgeted on-disk cache keyed by asset and version, and recover on their own when a signed
   download link expires. Preload warms the cache for a loading screen.
+- **Leaderboards** — read a board's configuration, its ranked standings, the signed-in player's own
+  placement, and the entries either side of them. Boards are addressed by name, and reads are cached and
+  snapshot-backed so a leaderboard screen survives an outage. Read-only by design: a board ranks a
+  player-data field, so a score is submitted by writing that field with a game command.
 - **Code generation** — one menu click turns your backend's templates, configs, and shops into typed
   structs, enums, and one-node reads, writes, and purchases. Blueprint by default, with no toolchain and
   no compile step; switch the target to emit a generated C++ module instead.
-- **Offline snapshot cache** — successful config, game, shop-catalog, player-template, and asset-list reads
-  are cached to disk, scoped to the game version, and served when the network is down; toggleable in
-  settings.
+- **Offline snapshot cache** — successful config, game, shop-catalog, player-template, leaderboard, and
+  asset-list reads are cached to disk, scoped to the game version, and served when the network is down;
+  toggleable in settings.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
 - **Blueprint-friendly** — every provider call is a self-contained async node, and the fire-and-forget
   calls plus auth/session state are one-node too (no "Get Flock Subsystem" needed). Events, error types,
@@ -339,6 +343,7 @@ so you can read only the half you work in.
 | [Game commands](Documentation/game-commands.md) | Updating a row, achievements, funds, the offline queue and its money-safety rules |
 | [Shop](Documentation/shop.md) | Shops and items, purchase and its money-safety contract, player inventory |
 | [Assets](Documentation/assets.md) | Listing and resolving assets, the four download flavours, preloading, the binary cache |
+| [Leaderboards](Documentation/leaderboards.md) | Boards by name, standings, a player's own rank, windows and score formatting, why there is no submit call |
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, logs and events, transactions, consent, crash detection |
 | [SDK events](Documentation/events.md) | The event hub — lifecycle, auth, and session events |
@@ -391,7 +396,8 @@ UnrealEditor-Cmd.exe <YourProject>.uproject -ExecCmds="Automation RunTests Flock
 baking, the SDK event hub, player authentication, analytics, game config (with the offline snapshot
 cache), the shop (catalog, purchase, inventory), player data & templates (with bans), game commands (with
 the offline queue), assets (metadata, streamed downloads, and a binary cache), typed code generation for
-Blueprint or C++, and the editor setup panel with its live Play-In-Editor view.
+Blueprint or C++, and the editor setup panel with its live Play-In-Editor view. **1.2.0 adds
+leaderboards** — boards by name, standings, and a player's own placement.
 
 Deliberate omissions and known gaps:
 

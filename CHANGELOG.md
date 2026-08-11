@@ -5,6 +5,45 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-08-11
+
+Leaderboards. Read-only by design: a board projects over a player-data field, so a score is submitted by
+writing that field through the existing game-command calls. If you are looking for a `SubmitScore`, it is
+`UpdatePlayerDataField`.
+
+### Added
+
+- `FFlockLeaderboardProvider`, reachable from `UFlockSubsystem::GetLeaderboardProvider()`. Boards are
+  addressed by **name** throughout — the id is resolved internally and never appears as an argument on a
+  read. `GetByName`, `GetStandings`, `GetMyRank`, `GetAroundMe`, plus `ResolveId` for logging and deep
+  links, and `ClearCache`.
+- Name-to-board resolution is memoized for the session, so reading a board repeatedly does not re-resolve
+  its name on every call.
+- Standings, board configuration and player placements are backed by the offline snapshot cache: a
+  leaderboard screen shows the last-known board when the network is down rather than an error. An
+  authoritative 4xx still surfaces.
+- Blueprint nodes `Flock Get Leaderboard`, `Flock Get Leaderboard Standings`, `Flock Get My Rank` and
+  `Flock Get Standings Around Me`.
+- `UFlockLeaderboardLibrary`: `Make Current Window`, `Make Season Window`, `Make Period Window`,
+  `Is Current Window`, `Format Score` and `Is Higher Better`, all pure nodes.
+- `FFlockLeaderboardWindow` selects which window to read — the board's live window by default, a finished
+  season, or a raw period key such as `2026-W31`.
+- `Flock.SelfTest` now sweeps leaderboards: board lookup, id resolution, standings, the player's own rank,
+  the entries around them, and the unknown-board guard.
+- `EFlockErrorCode::LeaderboardNotFound`, so a game can branch on "no such board" without matching on
+  the message or the status code. It is the only coded error the leaderboard read routes return.
+
+### Notes
+
+- `FFlockPlayerRank` carries a `Ranked` flag rather than a sentinel rank or score. A player with no entry
+  yet is a valid result, and rank 0, score 0 and negative scores are all legitimate values — so there is
+  no number that could stand in for "no entry". Check `Ranked` before showing `Rank` or `Score`.
+- Duration boards measure in seconds; `Format Score` renders them as a clock, and the enumerator is named
+  `DurationSeconds` because the wire value does not state the unit.
+- Reading a board's configuration and its standings is open to signed-out players. The player's own rank
+  and the entries around them require a signed-in player and fail immediately when there is none.
+- A board name this game does not have fails rather than returning empty standings.
+
 ## [1.1.0] - 2026-08-08
 
 **Engine support is now a verified range: Unreal Engine 5.5 to 5.8.** Previously the SDK claimed 5.5 and

@@ -20,6 +20,7 @@
 #include "Providers/FlockGameProvider.h"
 #include "Providers/FlockPlayerProvider.h"
 #include "Providers/FlockAssetProvider.h"
+#include "Providers/FlockLeaderboardProvider.h"
 #include "Providers/FlockShopProvider.h"
 #include "FlockSubsystem.generated.h"
 
@@ -220,6 +221,17 @@ public:
 	 */
 	FFlockAssetProvider* GetAssetProvider() const { return AssetProvider.Get(); }
 
+	// ── Leaderboards ──
+
+	/**
+	 * Read-only leaderboard access, addressed by board name. Null before initialization and after
+	 * shutdown. C++ API; Blueprint uses the Flock leaderboard async nodes.
+	 *
+	 * There is no score-submit call: a board projects over a player-data field, so scores move through
+	 * GetCommandProvider()'s update calls.
+	 */
+	FFlockLeaderboardProvider* GetLeaderboardProvider() const { return LeaderboardProvider.Get(); }
+
 	// ── Player ──
 
 	/**
@@ -317,6 +329,7 @@ private:
 	TSharedPtr<FFlockAssetProvider> AssetProvider;
 	TSharedPtr<FFlockPlayerProvider> PlayerProvider;
 	TSharedPtr<FFlockCommandProvider> CommandProvider;
+	TSharedPtr<FFlockLeaderboardProvider> LeaderboardProvider;
 
 	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
 	TSharedPtr<IFlockTokenStore> TestTokenStore;
