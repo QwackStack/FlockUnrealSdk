@@ -103,6 +103,14 @@ namespace FlockEndpoints
 	inline constexpr const TCHAR* Asset = TEXT("asset");
 	inline FString AssetById(const FString& AssetId) { return FString::Printf(TEXT("asset/%s"), *AssetId); }
 
+	// Leaderboards — read-only. There is no submit path by design: a board projects over a player-data
+	// field, so a score moves by writing that field through the commands surface. Reads are addressed by
+	// name; the id these builders take is resolved internally through LeaderboardByName.
+	inline FString LeaderboardByName(const FString& Name) { return FString::Printf(TEXT("leaderboard/by-name/%s"), *Encode(Name)); }
+	inline FString LeaderboardById(const FString& LeaderboardId) { return FString::Printf(TEXT("leaderboard/%s"), *LeaderboardId); }
+	inline FString LeaderboardMe(const FString& LeaderboardId) { return FString::Printf(TEXT("leaderboard/%s/me"), *LeaderboardId); }
+	inline FString LeaderboardAroundMe(const FString& LeaderboardId) { return FString::Printf(TEXT("leaderboard/%s/around-me"), *LeaderboardId); }
+
 	// Analytics
 	inline constexpr const TCHAR* AnalyticsSessions = TEXT("analytics/sessions");
 	inline FString AnalyticsSessionById(const FString& SessionId) { return FString::Printf(TEXT("analytics/sessions/%s"), *SessionId); }

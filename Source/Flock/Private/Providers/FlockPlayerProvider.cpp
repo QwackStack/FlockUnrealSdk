@@ -120,7 +120,8 @@ void FFlockPlayerProvider::GetMyDataByTemplate(const FString& PlayerTemplateId, 
 				OnComplete(TFlockResult<FFlockPlayerData>::Ok(*Row));
 				return;
 			}
-			// No row for this template — an empty record (empty Id), mirroring Unity's null return.
+			// No row for this template yet — Ok with an empty record (empty Id) rather than a failure,
+			// because not having written one is a normal state and not an error the caller can act on.
 			OnComplete(TFlockResult<FFlockPlayerData>::Ok(FFlockPlayerData()));
 		});
 }
@@ -228,7 +229,8 @@ void FFlockPlayerProvider::GetTemplateById(const FString& PlayerTemplateId, TFun
 	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockPlayerProvider> WeakSelf = AsShared();
 
-	// Memoize only — matching Unity, by-id template reads are not snapshotted.
+	// Memoize only: a single by-id template read is not worth a snapshot entry — the all-templates
+	// fetch is the one that has to survive an outage.
 	Execute<FFlockPlayerTemplateSchema>(
 		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockPlayerTemplateSchema>)> OnAttempt)
 		{

@@ -186,4 +186,36 @@ bool FFlockSubsystemAuthWiringTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLeaderboardSubsystemWiringTest, "Flock.Leaderboard.Subsystem.Wiring",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockLeaderboardSubsystemWiringTest::RunTest(const FString& Parameters)
+{
+	UFlockSubsystem* Sdk = NewTransientSubsystem();
+
+	// Safe to ask for before init — a graph that resolves the SDK early must get null, not a crash.
+	TestNull(TEXT("no provider before init"), Sdk->GetLeaderboardProvider());
+
+	Sdk->InitializeWithConfig(MakeValidConfig());
+	FFlockLeaderboardProvider* Provider = Sdk->GetLeaderboardProvider();
+	TestNotNull(TEXT("provider built at init"), Provider);
+
+	if (Provider != nullptr)
+	{
+		// Without this the offline branch degrades to always-reachable, so the "serve cache without a
+		// call" path could never fire in a shipped game — and no offline test would notice, because the
+		// provider tests install their own probe.
+		const bool bProbeWired = static_cast<bool>(Provider->GetReachabilityProbe());
+		TestTrue(TEXT("reachability probe wired to the client's offline latch"), bProbeWired);
+	}
+
+	// Logout drops the player-scoped rank snapshots; it must tolerate being called with no player signed in.
+	Sdk->Logout();
+	TestNotNull(TEXT("provider survives logout"), Sdk->GetLeaderboardProvider());
+
+	Sdk->ShutdownSdk();
+	TestNull(TEXT("provider gone after shutdown"), Sdk->GetLeaderboardProvider());
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

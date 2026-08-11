@@ -1,8 +1,8 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 // A dev-only console command that drives the Flock SDK surface and narrates each step to the log,
-// so you can watch boot/init, config/game, authentication, shop, commands, and analytics behavior
-// against your configured Flock backend.
+// so you can watch boot/init, config/game, authentication, shop, commands, leaderboards, and analytics
+// behavior against your configured Flock backend.
 // It initializes from Project Settings > Flock SDK (API URL, key, and the resolved Game Version),
 // so it needs valid settings and a reachable backend to get past init. Run from the editor or
 // in-game console: `Flock.SelfTest` (also works via -ExecCmds in a development build).
@@ -28,12 +28,14 @@
 #include "Models/FlockCommandModels.h"
 #include "Models/FlockConfigModels.h"
 #include "Models/FlockGameModels.h"
+#include "Models/FlockLeaderboardModels.h"
 #include "Models/FlockPlayerModels.h"
 #include "Models/FlockShopModels.h"
 #include "Providers/FlockAuthProvider.h"
 #include "Providers/FlockCommandProvider.h"
 #include "Providers/FlockConfigProvider.h"
 #include "Providers/FlockGameProvider.h"
+#include "Providers/FlockLeaderboardProvider.h"
 #include "Providers/FlockPlayerProvider.h"
 #include "Providers/FlockShopProvider.h"
 #include "UObject/Package.h"
@@ -62,6 +64,31 @@ namespace
 	const TCHAR* const DemoCurrencyFallback = TEXT("coins");
 	const TCHAR* const DemoAchievement = TEXT("self_test_achievement_UE");
 
+	// Leaderboards sweep. The board NAME as it appears on the dashboard — the SDK takes names only, and
+	// resolves the id internally. Empty board name skips the whole block, so a backend without this board
+	// narrates cleanly instead of failing six steps.
+	const TCHAR* const DemoLeaderboardName = TEXT("HighScoreTest");
+	// Empty = the board's live window. A "season:<id>" prefix routes through the Season maker so that maker
+	// is exercised too; anything else is a raw period key ("2026-W31") sent verbatim.
+	const TCHAR* const DemoLeaderboardWindowKey = TEXT("");
+	// ISO country code for a country-scoped board; empty for a global one.
+	const TCHAR* const DemoLeaderboardCountry = TEXT("");
+	constexpr int32 DemoLeaderboardLimit = 10;
+	constexpr int32 DemoLeaderboardNeighbours = 3;
+
+	// Score-projection check. A board ranks a player-data field, so writing that field is how a score is
+	// submitted — this is the feature's whole premise, and the before/after rank also shows whether the
+	// projection is live or batched.
+	//
+	// The template the board ranks (its source_template).
+	const TCHAR* const DemoScoreTemplate = TEXT("gameplay");
+	// The TOP-LEVEL field the board ranks by. Deliberately empty, which skips the projection step:
+	// HighScoreTest ranks "Level.Stage", a nested path, and the update-field command takes a declared
+	// top-level field name rather than a path. There is no valid value here until a board ranks a
+	// top-level field — at which point this constant is the only thing that needs to change.
+	const TCHAR* const DemoScoreField = TEXT("");
+	constexpr double DemoScoreValue = 1234.0;
+
 	/** Funds granted by the commands sweep. Deliberately the smallest non-zero amount — this is real money movement on a real backend. */
 	constexpr int32 DemoFundsAmount = 1;
 
@@ -77,6 +104,7 @@ namespace
 		FFlockShopProvider* Shop = nullptr;
 		FFlockCommandProvider* Commands = nullptr;
 		FFlockPlayerProvider* Players = nullptr;
+		FFlockLeaderboardProvider* Leaderboards = nullptr;
 	};
 
 	/**
@@ -696,6 +724,217 @@ namespace
 	// then the analytics sweep — which calls Teardown when it finishes; the other calls are independent
 	// one-shots that narrate their own result. Every completion captures shared refs / the raw providers
 	// (kept alive by the caller's AddToRoot until Teardown), never `this`, so a late arrival stays safe.
+	/** Empty = the board's live window; a "season:" prefix goes through the Season maker; else verbatim. */
+	FFlockLeaderboardWindow DemoWindow()
+	{
+		const FString Key = DemoLeaderboardWindowKey;
+		if (Key.IsEmpty())
+		{
+			return FFlockLeaderboardWindow::Current();
+		}
+		if (Key.StartsWith(TEXT("season:")))
+		{
+			return FFlockLeaderboardWindow::Season(Key.RightChop(7));
+		}
+		return FFlockLeaderboardWindow::Period(Key);
+	}
+
+	/**
+	 * The score-projection check, and the reason the leaderboard surface has no submit call: a board ranks
+	 * a player-data field, so writing that field is how a score is submitted. Reads the rank, writes the
+	 * field, re-reads, and reports whether the placement moved — which also shows whether the backend's
+	 * projection is live or batched.
+	 *
+	 * ClearCache() before the second read is not optional: an online read always hits the server, but if
+	 * the reachability probe reports offline — which a local backend with no internet does — the "after"
+	 * read would answer from the snapshot and the comparison would be meaningless.
+	 */
+	void RunLeaderboardProjectionStep(FFlockLeaderboardProvider* Leaderboards, FFlockPlayerProvider* Players,
+		FFlockCommandProvider* Commands, const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Next)
+	{
+		const FString ScoreField = DemoScoreField;
+		if (ScoreField.IsEmpty() || Players == nullptr || Commands == nullptr)
+		{
+			// Not a failure: HighScoreTest ranks a nested path, and the write command takes a top-level
+			// declared field name. Narrated so a reader knows this leg was skipped rather than passed.
+			Logger->LogInfo(TEXT("Self-test: leaderboard score projection -> skipped ")
+				TEXT("(no top-level source field configured; the board ranks a nested path)"));
+			Next();
+			return;
+		}
+
+		Leaderboards->GetMyRank(DemoLeaderboardName, DemoWindow(), DemoLeaderboardCountry,
+			[Leaderboards, Players, Commands, Logger, Next, ScoreField](TFlockResult<FFlockPlayerRank> Before)
+			{
+				const bool bBeforeRanked = Before.bSuccess && Before.Value.Ranked;
+				const int32 BeforeRank = bBeforeRanked ? Before.Value.Rank : -1;
+				const double BeforeScore = bBeforeRanked ? Before.Value.Score : 0.0;
+
+				Players->GetMyDataByTemplate(DemoScoreTemplate,
+					[Leaderboards, Commands, Logger, Next, ScoreField, BeforeRank, BeforeScore](TFlockResult<FFlockPlayerData> Row)
+					{
+						if (!Row.bSuccess || Row.Value.Id.IsEmpty())
+						{
+							Logger->LogInfo(FString::Printf(
+								TEXT("Self-test: leaderboard score projection -> no player-data row for template '%s'; nothing to write."),
+								DemoScoreTemplate));
+							Next();
+							return;
+						}
+
+						const FString RowId = Row.Value.Id;
+						Commands->UpdatePlayerDataField(RowId, ScoreField, FFlockCommandValue(DemoScoreValue),
+							[Leaderboards, Logger, Next, ScoreField, RowId, BeforeRank, BeforeScore](TFlockResult<FFlockPlayerData> Write)
+							{
+								if (!Write.bSuccess)
+								{
+									Logger->LogInfo(FString::Printf(
+										TEXT("Self-test: leaderboard score projection -> write of '%s' failed (%s)"),
+										*ScoreField, *Write.Error.Message));
+									Next();
+									return;
+								}
+
+								Leaderboards->ClearCache();
+								Leaderboards->GetMyRank(DemoLeaderboardName, DemoWindow(), DemoLeaderboardCountry,
+									[Logger, Next, ScoreField, RowId, BeforeRank, BeforeScore](TFlockResult<FFlockPlayerRank> After)
+									{
+										const int32 AfterRank = (After.bSuccess && After.Value.Ranked) ? After.Value.Rank : -1;
+										const double AfterScore = (After.bSuccess && After.Value.Ranked) ? After.Value.Score : 0.0;
+										const bool bMoved = AfterRank != BeforeRank || AfterScore != BeforeScore;
+										Logger->LogInfo(FString::Printf(
+											TEXT("Self-test: leaderboard score projection -> wrote %s=%.0f to player_data '%s' | ")
+											TEXT("rank %d -> %d, score %.2f -> %.2f (%s)"),
+											*ScoreField, DemoScoreValue, *RowId, BeforeRank, AfterRank, BeforeScore, AfterScore,
+											bMoved ? TEXT("moved") : TEXT("unchanged; the projection may be batched")));
+										Next();
+									});
+							});
+					});
+			});
+	}
+
+	/**
+	 * Leaderboards against the configured backend, addressed by board name throughout — the id never
+	 * appears as an argument. Runs signed in, because my-rank and around-me are the two bearer routes.
+	 *
+	 * Every step narrates and then continues the chain, so one missing board or one failed read reports
+	 * itself rather than stopping the run. Hands off to Next when done.
+	 */
+	void RunLeaderboardSweep(FFlockLeaderboardProvider* Leaderboards, FFlockPlayerProvider* Players,
+		FFlockCommandProvider* Commands, const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Next)
+	{
+		const FString BoardName = DemoLeaderboardName;
+		if (Leaderboards == nullptr || BoardName.IsEmpty())
+		{
+			Next();
+			return;
+		}
+
+		// Step 1: the board's own config plus the two helpers that hang off it. Everything after this
+		// calls GetByName first (memoized), so a wrong name fails here rather than three steps later.
+		Leaderboards->GetByName(BoardName,
+			[Leaderboards, Players, Commands, Logger, Next, BoardName](TFlockResult<FFlockLeaderboard> BoardResult)
+			{
+				if (!BoardResult.bSuccess)
+				{
+					Logger->LogInfo(FString::Printf(TEXT("Self-test: leaderboard '%s' -> failed (%s); skipping the rest of the sweep."),
+						*BoardName, *BoardResult.Error.Message));
+					Next();
+					return;
+				}
+
+				const FFlockLeaderboard Board = BoardResult.Value;
+				Logger->LogInfo(FString::Printf(
+					TEXT("Self-test: leaderboard board by name -> id=%s name='%s' | %s/%s/%s window=%s scope=%s | ")
+					TEXT("higherIsBetter=%s FormatScore(%.0f)='%s' FormatScore(unranked)='%s'"),
+					*Board.Id, *Board.Name,
+					*FlockLeaderboardValueTypeToWire(Board.ValueType),
+					*FlockLeaderboardDirectionToWire(Board.Direction),
+					*FlockLeaderboardAggregationToWire(Board.Aggregation),
+					*FlockLeaderboardWindowTypeToWire(Board.WindowType),
+					*FlockLeaderboardScopeToWire(Board.Scope),
+					Board.IsHigherBetter() ? TEXT("true") : TEXT("false"),
+					DemoScoreValue, *Board.FormatScore(DemoScoreValue), *Board.FormatScore(0.0, false)));
+
+				// Step 2: the id is exposed for logging and deep links only — no read method takes one.
+				Leaderboards->ResolveId(BoardName,
+					[Leaderboards, Players, Commands, Logger, Next, BoardName, Board](TFlockResult<FString> IdResult)
+					{
+						Logger->LogInfo(IdResult.bSuccess
+							? FString::Printf(TEXT("Self-test: leaderboard resolve id -> '%s' resolves to %s"), *BoardName, *IdResult.Value)
+							: FString::Printf(TEXT("Self-test: leaderboard resolve id -> failed (%s)"), *IdResult.Error.Message));
+
+						// Step 3: standings, with the top row formatted the way the board measures — a
+						// duration board reads as a clock rather than raw seconds.
+						Leaderboards->GetStandings(BoardName, DemoWindow(), DemoLeaderboardCountry, 1, DemoLeaderboardLimit,
+							[Leaderboards, Players, Commands, Logger, Next, BoardName, Board](TFlockResult<FFlockStandings> Standings)
+							{
+								if (!Standings.bSuccess)
+								{
+									Logger->LogInfo(FString::Printf(TEXT("Self-test: leaderboard standings -> failed (%s)"),
+										*Standings.Error.Message));
+								}
+								else
+								{
+									const FString Top = Standings.Value.Items.Num() > 0
+										? FString::Printf(TEXT("#1 %s = %s"), *Standings.Value.Items[0].PlayerName,
+											*Board.FormatScore(Standings.Value.Items[0].Score))
+										: TEXT("no entries");
+									Logger->LogInfo(FString::Printf(
+										TEXT("Self-test: leaderboard standings -> window=%s total=%d returned=%d | %s"),
+										*Standings.Value.Window, Standings.Value.Total, Standings.Value.Items.Num(), *Top));
+								}
+
+								// Step 4: the signed-in player's placement. Unranked is a documented result.
+								Leaderboards->GetMyRank(BoardName, DemoWindow(), DemoLeaderboardCountry,
+									[Leaderboards, Players, Commands, Logger, Next, BoardName, Board](TFlockResult<FFlockPlayerRank> Rank)
+									{
+										if (!Rank.bSuccess)
+										{
+											Logger->LogInfo(FString::Printf(TEXT("Self-test: leaderboard my rank -> failed (%s)"),
+												*Rank.Error.Message));
+										}
+										else
+										{
+											Logger->LogInfo(Rank.Value.Ranked
+												? FString::Printf(TEXT("Self-test: leaderboard my rank -> rank %d score %s (window=%s)"),
+													Rank.Value.Rank, *Board.FormatScore(Rank.Value.Score), *Rank.Value.Window)
+												: FString::Printf(TEXT("Self-test: leaderboard my rank -> unranked, no entry yet (window=%s)"),
+													*Rank.Value.Window));
+										}
+
+										// Step 5: the "you are here" slice.
+										Leaderboards->GetAroundMe(BoardName, DemoLeaderboardNeighbours, DemoWindow(), DemoLeaderboardCountry,
+											[Leaderboards, Players, Commands, Logger, Next, BoardName](TFlockResult<FFlockStandings> Around)
+											{
+												Logger->LogInfo(Around.bSuccess
+													? FString::Printf(TEXT("Self-test: leaderboard around me -> +/-%d returned=%d"),
+														DemoLeaderboardNeighbours, Around.Value.Items.Num())
+													: FString::Printf(TEXT("Self-test: leaderboard around me -> failed (%s)"),
+														*Around.Error.Message));
+
+												// Step 6: a name this game does not have must be rejected. Passing
+												// means the call FAILED; a success here is the bug.
+												const FString Bogus = BoardName + TEXT("__does_not_exist");
+												Leaderboards->GetStandings(Bogus,
+													[Leaderboards, Players, Commands, Logger, Next, Bogus](TFlockResult<FFlockStandings> Unknown)
+													{
+														Logger->LogInfo(Unknown.bSuccess
+															? FString::Printf(TEXT("Self-test: leaderboard unknown name -> UNEXPECTED SUCCESS for '%s'; the unknown-name guard is not working"), *Bogus)
+															: FString::Printf(TEXT("Self-test: leaderboard unknown name -> '%s' rejected as expected (%s)"),
+																*Bogus, *Unknown.Error.Message));
+
+														// Step 7: the projection check (self-gating).
+														RunLeaderboardProjectionStep(Leaderboards, Players, Commands, Logger, Next);
+													});
+											});
+									});
+							});
+					});
+			});
+	}
+
 	void RunAuthSweep(FFlockAuthProvider& AuthRef, const FSignedInSweeps& Sweeps,
 		const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Teardown)
 	{
@@ -791,7 +1030,7 @@ namespace
 										// shop -> commands -> analytics, which owns teardown. Chaining rather
 										// than firing them together keeps the subsystem alive across every
 										// round trip, and keeps the narration readable.
-										TFunction<void()> AfterCommands = [Sweeps, PlayerId, Logger, Teardown]()
+										TFunction<void()> AfterLeaderboards = [Sweeps, PlayerId, Logger, Teardown]()
 										{
 											if (Sweeps.Analytics != nullptr)
 											{
@@ -799,6 +1038,14 @@ namespace
 												return;
 											}
 											Teardown();
+										};
+										// Leaderboards run after the commands sweep on purpose: the projection
+										// step writes a player-data field, and reading a rank straight after a
+										// write is the only way to see whether the projection is live.
+										TFunction<void()> AfterCommands = [Sweeps, Logger, AfterLeaderboards]()
+										{
+											RunLeaderboardSweep(Sweeps.Leaderboards, Sweeps.Players, Sweeps.Commands,
+												Logger, AfterLeaderboards);
 										};
 										TFunction<void()> AfterShop = [Sweeps, Logger, AfterCommands]()
 										{
@@ -1021,6 +1268,7 @@ namespace
 		Sweeps.Shop = Sdk->GetShopProvider();
 		Sweeps.Commands = Sdk->GetCommandProvider();
 		Sweeps.Players = Sdk->GetPlayerProvider();
+		Sweeps.Leaderboards = Sdk->GetLeaderboardProvider();
 
 		RunAuthSweep(*Auth, Sweeps, Logger, Teardown);
 		Logger->LogInfo(TEXT("Self-test: auth sweep dispatched; the signed-in shop, commands, and analytics sweeps "

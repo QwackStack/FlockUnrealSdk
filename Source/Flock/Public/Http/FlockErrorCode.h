@@ -54,6 +54,14 @@ enum class EFlockErrorCode : uint8
 	GameVersionGameVersionByNameNotFound,
 	GameVersionGameVersionNotFound,
 
+	// leaderboard.*
+	//
+	// Only the by-name lookup answers with a code — the standings/rank routes raise nothing, so a bad
+	// board always surfaces here rather than as empty standings. The backend defines many more
+	// leaderboard codes, but they belong to the dashboard's create/season/prize routes, which this SDK
+	// does not call.
+	LeaderboardNotFound,
+
 	// log_event.*
 	LogEventGameNotFound,
 

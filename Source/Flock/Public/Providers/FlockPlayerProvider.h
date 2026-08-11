@@ -13,7 +13,7 @@
  *
  * Templates are read once and memoized; the all-templates fetch is additionally backed by the offline
  * snapshot and coalesces concurrent asks (several widgets opening at once). By-id / by-name template reads
- * memoize but are not snapshotted, mirroring the Unity SDK. A player's own data (GetMyDataByTemplate /
+ * memoize but are not snapshotted. A player's own data (GetMyDataByTemplate /
  * GetMyDataByTag) is paginated once per player, cached in memory (never snapshotted) and coalesced per
  * player.
  *
@@ -58,7 +58,8 @@ public:
 	/**
 	 * The signed-in player's data row for a template. Paginates and caches all of the player's rows on the
 	 * first call (any template), then serves from memory until ClearCache. A successful fetch with no row
-	 * for the template yields Ok with an empty record (empty Id) — the mirror of Unity's null return.
+	 * for the template yields Ok with an empty record (empty Id) — having written no row yet is a
+	 * normal state, not an error.
 	 */
 	void GetMyDataByTemplate(const FString& PlayerTemplateId, TFunction<void(TFlockResult<FFlockPlayerData>)> OnComplete);
 

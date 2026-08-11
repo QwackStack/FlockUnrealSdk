@@ -231,7 +231,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConfigLegacyAndEmptyTest, "Flock.Config.M
 
 bool FFlockConfigLegacyAndEmptyTest::RunTest(const FString& Parameters)
 {
-	// Legacy `data`: a plain dict[str, Any] is already flat and is adopted verbatim (Unity would throw here).
+	// Legacy `data`: a plain dict[str, Any] is already flat, so it is adopted verbatim rather than
+	// rejected for not being a DataField tree — old configs still read.
 	const FString Legacy =
 		TEXT("{\"id\":\"cfg-legacy\",\"name\":\"n\",\"game_id\":\"g\",\"tag\":\"gameplay\",")
 		TEXT("\"created_at\":\"\",\"updated_at\":\"\",\"data\":{\"max_health\":50,\"label\":\"boss\"}}");

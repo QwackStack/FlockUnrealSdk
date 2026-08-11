@@ -294,7 +294,7 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 	TWeakPtr<FFlockShopProvider> WeakSelf = AsShared();
 
 	// The item is fetched first — the transaction record needs its price/currency, and a failed fetch
-	// fails the purchase (mirrors the Unity flow, which awaits it).
+	// fails the purchase: without the item there is nothing to charge for and nothing to record.
 	GetItem(ShopItemId,
 		[WeakSelf, ShopItemId, ResolvedPlayerId, OnComplete](TFlockResult<FFlockShopItem> ItemResult)
 		{
@@ -449,8 +449,8 @@ void FFlockShopProvider::RecordPurchaseStatus(const FString& Status, const FFloc
 	Request.Amount = static_cast<double>(Item.Price);
 	Request.CurrencyCode = Item.Currency;
 	Request.ShopItemId = Item.Id;
-	// PascalCase spellings, matching the Unity provider's enum names (nameof) — deliberately distinct
-	// from the request struct's lowercase defaults.
+	// These two go on the wire verbatim, and the PascalCase is deliberate — distinct from the request
+	// struct's lowercase defaults, so a missed assignment reads as wrong rather than plausible.
 	Request.TransactionType = TEXT("Purchase");
 	Request.Status = Status;
 	// PlayerId/SessionId/CreatedAt left empty — RecordTransaction fills them from the current session.

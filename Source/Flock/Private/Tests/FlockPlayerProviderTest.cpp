@@ -275,7 +275,8 @@ bool FFlockPlayerMyDataPaginatesTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("row from page 1, cached"), Row50.Id, FString(TEXT("pd-50")));
 	TestEqual(TEXT("still one page-1 request"), Fx.Fake->CountTo(TEXT("player_data?page=1")), 1);
 
-	// A template with no row for this player -> Ok with an empty record (mirrors Unity's null).
+	// A template with no row for this player -> Ok with an empty record, not a failure: the player
+	// simply has not written one yet.
 	bool bEmpty = false;
 	Fx.Provider->GetMyDataByTemplate(TEXT("does-not-exist"), [&](TFlockResult<FFlockPlayerData> R)
 		{ bEmpty = R.bSuccess && R.Value.Id.IsEmpty(); });

@@ -24,7 +24,7 @@ struct FFlockCapturedLog
 };
 
 /**
- * Automatic exception capture: the UE stand-in for Unity's Application.logMessageReceived.
+ * Automatic exception capture, by tapping the engine log.
  *
  * UE has no managed exception stream, so the closest equivalent is tapping the log. This registers
  * an FOutputDevice on GLog and takes Error and Fatal lines, plus FCoreDelegates::OnHandleSystemError

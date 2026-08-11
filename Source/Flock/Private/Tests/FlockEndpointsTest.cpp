@@ -20,6 +20,19 @@ bool FFlockEndpointsBuildTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("keeps by-name prefix"), Encoded.StartsWith(TEXT("game_version/by-name/")));
 	TestFalse(TEXT("no raw space in encoded name"), Encoded.Contains(TEXT(" ")));
 
+	// Leaderboards. The read routes take an id, but only the by-name lookup is ever handed caller text —
+	// so that is the one that has to encode.
+	TestEqual(TEXT("leaderboard by name"), FlockEndpoints::LeaderboardByName(TEXT("HighScoreTest")),
+		FString(TEXT("leaderboard/by-name/HighScoreTest")));
+	TestEqual(TEXT("leaderboard by id"), FlockEndpoints::LeaderboardById(TEXT("lb-1")), FString(TEXT("leaderboard/lb-1")));
+	TestEqual(TEXT("leaderboard me"), FlockEndpoints::LeaderboardMe(TEXT("lb-1")), FString(TEXT("leaderboard/lb-1/me")));
+	TestEqual(TEXT("leaderboard around me"), FlockEndpoints::LeaderboardAroundMe(TEXT("lb-1")),
+		FString(TEXT("leaderboard/lb-1/around-me")));
+
+	const FString EncodedBoard = FlockEndpoints::LeaderboardByName(TEXT("Weekly Best"));
+	TestTrue(TEXT("keeps leaderboard by-name prefix"), EncodedBoard.StartsWith(TEXT("leaderboard/by-name/")));
+	TestFalse(TEXT("no raw space in encoded board name"), EncodedBoard.Contains(TEXT(" ")));
+
 	return true;
 }
 
