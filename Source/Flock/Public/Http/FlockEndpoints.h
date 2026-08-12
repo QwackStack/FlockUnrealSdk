@@ -111,6 +111,18 @@ namespace FlockEndpoints
 	inline FString LeaderboardMe(const FString& LeaderboardId) { return FString::Printf(TEXT("leaderboard/%s/me"), *LeaderboardId); }
 	inline FString LeaderboardAroundMe(const FString& LeaderboardId) { return FString::Printf(TEXT("leaderboard/%s/around-me"), *LeaderboardId); }
 
+	// Notifications — the signed-in player's own inbox. No route declares `security`, but every one is
+	// player-scoped by its own schema, so the provider gates them on sign-in rather than earning a
+	// guaranteed 401 (same carve-out as leaderboard /me).
+	// `notification` is the one **bare** route in the family: it answers {items,total,page,limit} at the
+	// root, not under `result`. GetPaged handles both, so it needs no special verb — but a test fixture
+	// must mirror the bare shape or it proves nothing.
+	inline constexpr const TCHAR* Notification = TEXT("notification");
+	inline constexpr const TCHAR* NotificationUnreadCount = TEXT("notification/unread_count");
+	inline constexpr const TCHAR* NotificationSummary = TEXT("notification/summary");
+	inline constexpr const TCHAR* NotificationReadAll = TEXT("notification/read_all");
+	inline FString NotificationRead(const FString& NotificationId) { return FString::Printf(TEXT("notification/%s/read"), *NotificationId); }
+
 	// Analytics
 	inline constexpr const TCHAR* AnalyticsSessions = TEXT("analytics/sessions");
 	inline FString AnalyticsSessionById(const FString& SessionId) { return FString::Printf(TEXT("analytics/sessions/%s"), *SessionId); }

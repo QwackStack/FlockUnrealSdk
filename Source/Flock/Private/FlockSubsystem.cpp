@@ -248,6 +248,12 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	LeaderboardProvider = MakeShared<FFlockLeaderboardProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
 
+	// Read/write, but entirely player-scoped and dependent on nothing above it. Snapshot-backed so an inbox
+	// UI offline shows the last-known messages rather than an empty list; every key carries the player id,
+	// so a shared device cannot serve one account's mail to the next.
+	NotificationProvider = MakeShared<FFlockNotificationProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
+		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
+
 	// Supply the reachability probe every snapshot-backed provider has always had a seam for and never a
 	// production value for — left null, IsServerReachable() answered "reachable" unconditionally, so the
 	// branch that serves cache *without* a call could only ever fire in a test. One shared latch on the
@@ -265,6 +271,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		CommandProvider->SetReachabilityProbe(Probe);
 		AssetProvider->SetReachabilityProbe(Probe);
 		LeaderboardProvider->SetReachabilityProbe(Probe);
+		NotificationProvider->SetReachabilityProbe(Probe);
 	}
 
 	return true;
@@ -397,6 +404,7 @@ void UFlockSubsystem::ShutdownSdk()
 	PlayerProvider.Reset();
 	AssetProvider.Reset();
 	LeaderboardProvider.Reset();
+	NotificationProvider.Reset();
 	SnapshotStore.Reset();
 	AuthProvider.Reset();
 	AuthSession.Reset();
@@ -496,6 +504,12 @@ void UFlockSubsystem::Logout()
 	if (LeaderboardProvider.IsValid())
 	{
 		LeaderboardProvider->ClearCache();
+	}
+	// An inbox is the most personal thing the SDK caches. Every notification snapshot belongs to the player
+	// signing out, so all of them go — there is no game-scoped remainder worth keeping here.
+	if (NotificationProvider.IsValid())
+	{
+		NotificationProvider->ClearCache();
 	}
 	AuthProvider->Logout();
 }

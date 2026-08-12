@@ -21,6 +21,7 @@
 #include "Providers/FlockPlayerProvider.h"
 #include "Providers/FlockAssetProvider.h"
 #include "Providers/FlockLeaderboardProvider.h"
+#include "Providers/FlockNotificationProvider.h"
 #include "Providers/FlockShopProvider.h"
 #include "FlockSubsystem.generated.h"
 
@@ -232,6 +233,18 @@ public:
 	 */
 	FFlockLeaderboardProvider* GetLeaderboardProvider() const { return LeaderboardProvider.Get(); }
 
+	// ── Notifications ──
+
+	/**
+	 * The signed-in player's notification inbox — list, unread count, summary, mark read/all-read. Null
+	 * before initialization and after shutdown. C++ API; Blueprint uses the Flock notification async nodes.
+	 *
+	 * Every call here requires a signed-in player and fails Auth without one, because each route answers a
+	 * player-keyed schema. Push delivery is a separate concern: this is the in-app half, and it works
+	 * whether or not the game ever registers a device token.
+	 */
+	FFlockNotificationProvider* GetNotificationProvider() const { return NotificationProvider.Get(); }
+
 	// ── Player ──
 
 	/**
@@ -330,6 +343,7 @@ private:
 	TSharedPtr<FFlockPlayerProvider> PlayerProvider;
 	TSharedPtr<FFlockCommandProvider> CommandProvider;
 	TSharedPtr<FFlockLeaderboardProvider> LeaderboardProvider;
+	TSharedPtr<FFlockNotificationProvider> NotificationProvider;
 
 	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
 	TSharedPtr<IFlockTokenStore> TestTokenStore;
