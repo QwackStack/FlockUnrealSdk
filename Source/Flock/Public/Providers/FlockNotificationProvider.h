@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Auth/FlockAuthSession.h"
 #include "Http/FlockProviderBase.h"
+#include "Models/FlockCommandModels.h"
 #include "Models/FlockNotificationModels.h"
 
 /**
@@ -69,6 +70,72 @@ public:
 	/** Marks the whole inbox read. Updated is how many rows actually flipped; zero is a success. */
 	void MarkAllRead(TFunction<void(TFlockResult<FFlockMarkAllReadResult>)> OnComplete);
 
+	// Template catalog
+	//
+	// These two are the odd ones out in this provider: they declare no Authorization header and answer a
+	// game-scoped schema, so they are **not gated on sign-in** and their cache is keyed by game version
+	// rather than player. A catalog also does not mutate under the player the way an inbox does, so unlike
+	// the inbox reads these are safe to memoize in process.
+
+	/** Every template this game can schedule against. Memoized after the first call; snapshot-backed. */
+	void GetTemplates(TFunction<void(TFlockResult<TArray<FFlockNotificationTemplate>>)> OnComplete);
+
+	/**
+	 * One template by name — what a designer actually has from the dashboard. Locale is optional; empty
+	 * omits it and takes the template's default. An unknown name is a Validation failure, not an empty
+	 * result: it is a caller mistake worth surfacing loudly.
+	 */
+	void GetTemplateByName(const FString& TemplateName, const FString& Locale,
+		TFunction<void(TFlockResult<FFlockNotificationTemplate>)> OnComplete);
+
+	/** By name in the default locale. */
+	void GetTemplateByName(const FString& TemplateName, TFunction<void(TFlockResult<FFlockNotificationTemplate>)> OnComplete)
+	{
+		GetTemplateByName(TemplateName, FString(), MoveTemp(OnComplete));
+	}
+
+	// Scheduling
+
+	/**
+	 * Asks the backend to deliver a templated notification at DeliverAt, addressed by template **name**.
+	 * Server-side, so it fires whether or not the game is running.
+	 *
+	 * This is the call a graph should reach for: a designer has a name from the dashboard, not a GUID. The
+	 * name is resolved to an id through the by-name route and memoized for the session, the same shape as
+	 * FlockLeaderboardProvider's board lookup — resolving a name must not cost a round trip on every send.
+	 *
+	 * Variables fill the template's placeholders; keys are the template's own, kept verbatim. An empty
+	 * Channels list lets the server apply the template's defaults rather than forcing a choice here.
+	 *
+	 * **Not idempotent.** A retry after an ambiguous failure could leave the player with two of the same
+	 * reminder, so this is never re-sent — the same rule the shop purchase follows, for the same reason.
+	 */
+	void ScheduleByTemplateName(const FString& TemplateName, const FDateTime& DeliverAtUtc,
+		const FFlockCommandData& Variables, const TArray<EFlockNotificationChannel>& Channels,
+		TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete);
+
+	/** Schedules by name with no variables and the template's default channels. */
+	void ScheduleByTemplateName(const FString& TemplateName, const FDateTime& DeliverAtUtc,
+		TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete)
+	{
+		ScheduleByTemplateName(TemplateName, DeliverAtUtc, FFlockCommandData(), TArray<EFlockNotificationChannel>(), MoveTemp(OnComplete));
+	}
+
+	/**
+	 * The same call addressed by template id, skipping the name lookup. For a caller that already holds an
+	 * id — a re-schedule from a stored row, say. Named explicitly rather than overloading on FString, which
+	 * would make the two indistinguishable at a call site.
+	 */
+	void ScheduleByTemplateId(const FString& TemplateId, const FDateTime& DeliverAtUtc,
+		const FFlockCommandData& Variables, const TArray<EFlockNotificationChannel>& Channels,
+		TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete);
+
+	/**
+	 * Cancels a scheduled notification and returns the canceled row. Idempotent — cancelling something
+	 * already cancelled is not an error worth surfacing differently.
+	 */
+	void CancelScheduled(const FString& ScheduledId, TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete);
+
 	/** Drops the notification snapshot category, so the next read hits the backend. Called from Logout(). */
 	void ClearCache();
 
@@ -100,8 +167,26 @@ private:
 	/** Appends an optional query parameter, percent-encoded. Empty values are omitted, never sent blank. */
 	static void AppendParam(FString& Query, const FString& Key, const FString& Value);
 
+	/**
+	 * Resolves a template name to an id and hands it to Continue, or fails. A name this game does not have
+	 * is a caller mistake, so it is a Validation failure rather than an empty result.
+	 */
+	void WithTemplateId(const FString& TemplateName, TFunction<void(const FString&)> Continue,
+		TFunction<void(const FFlockError&)> OnFailure);
+
 	TSharedRef<FFlockAuthSession> Session;
 	FString VersionedApiUrl;
 
+	/** Name -> template. Every name-addressed send resolves first, and that must not cost a round trip each time. */
+	TMap<FString, FFlockNotificationTemplate> TemplatesByName;
+
+	/** Player-scoped keys: inbox, counts, summary. Dropped wholesale on logout. */
 	static const TCHAR* const SnapshotCategory;
+
+	/**
+	 * Templates live in their own category because they are **game-scoped**, not player-scoped. Sharing the
+	 * one category would mean logout deleted a catalog that has nothing to do with the departing player —
+	 * and a title screen would refetch it on every sign-out.
+	 */
+	static const TCHAR* const TemplateSnapshotCategory;
 };

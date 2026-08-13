@@ -33,7 +33,7 @@ namespace
 	}
 }
 
-// ───────────────────────────── Get Notifications ─────────────────────────────
+// Get Notifications
 
 UFlockGetNotificationsAction* UFlockGetNotificationsAction::GetNotifications(UObject* WorldContextObject,
 	bool bUnreadOnly, int32 Page, int32 Limit)
@@ -80,7 +80,7 @@ void UFlockGetNotificationsAction::Complete(const TFlockResult<FFlockNotificatio
 	SetReadyToDestroy();
 }
 
-// ───────────────────────────── Get Unread Count ─────────────────────────────
+// Get Unread Count
 
 UFlockGetUnreadNotificationCountAction* UFlockGetUnreadNotificationCountAction::GetUnreadCount(UObject* WorldContextObject)
 {
@@ -123,7 +123,7 @@ void UFlockGetUnreadNotificationCountAction::Complete(const TFlockResult<int32>&
 	SetReadyToDestroy();
 }
 
-// ───────────────────────────── Get Summary ─────────────────────────────
+// Get Summary
 
 UFlockGetNotificationSummaryAction* UFlockGetNotificationSummaryAction::GetSummary(UObject* WorldContextObject, int32 Limit)
 {
@@ -167,7 +167,7 @@ void UFlockGetNotificationSummaryAction::Complete(const TFlockResult<FFlockNotif
 	SetReadyToDestroy();
 }
 
-// ───────────────────────────── Mark Read ─────────────────────────────
+// Mark Read
 
 UFlockMarkNotificationReadAction* UFlockMarkNotificationReadAction::MarkRead(UObject* WorldContextObject,
 	const FString& NotificationId)
@@ -212,7 +212,7 @@ void UFlockMarkNotificationReadAction::Complete(const TFlockResult<FFlockNotific
 	SetReadyToDestroy();
 }
 
-// ───────────────────────────── Mark All Read ─────────────────────────────
+// Mark All Read
 
 UFlockMarkAllNotificationsReadAction* UFlockMarkAllNotificationsReadAction::MarkAllRead(UObject* WorldContextObject)
 {
@@ -254,3 +254,188 @@ void UFlockMarkAllNotificationsReadAction::Complete(const TFlockResult<FFlockMar
 	}
 	SetReadyToDestroy();
 }
+
+// Get Templates
+
+UFlockGetNotificationTemplatesAction* UFlockGetNotificationTemplatesAction::GetTemplates(UObject* WorldContextObject)
+{
+	UFlockGetNotificationTemplatesAction* Action = NewObject<UFlockGetNotificationTemplatesAction>();
+	Action->WorldContextObject = WorldContextObject;
+	return Action;
+}
+
+void UFlockGetNotificationTemplatesAction::Activate()
+{
+	FFlockError Error;
+	FFlockNotificationProvider* Provider = ResolveNotifications(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<TArray<FFlockNotificationTemplate>>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockGetNotificationTemplatesAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	Provider->GetTemplates([WeakThis](TFlockResult<TArray<FFlockNotificationTemplate>> Result)
+	{
+		if (UFlockGetNotificationTemplatesAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockGetNotificationTemplatesAction::Complete(const TFlockResult<TArray<FFlockNotificationTemplate>>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(TArray<FFlockNotificationTemplate>(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
+// Get Template By Name
+
+UFlockGetNotificationTemplateByNameAction* UFlockGetNotificationTemplateByNameAction::GetByName(
+	UObject* WorldContextObject, const FString& TemplateName, const FString& Locale)
+{
+	UFlockGetNotificationTemplateByNameAction* Action = NewObject<UFlockGetNotificationTemplateByNameAction>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->TemplateName = TemplateName;
+	Action->Locale = Locale;
+	return Action;
+}
+
+void UFlockGetNotificationTemplateByNameAction::Activate()
+{
+	FFlockError Error;
+	FFlockNotificationProvider* Provider = ResolveNotifications(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockNotificationTemplate>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockGetNotificationTemplateByNameAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	Provider->GetTemplateByName(TemplateName, Locale, [WeakThis](TFlockResult<FFlockNotificationTemplate> Result)
+	{
+		if (UFlockGetNotificationTemplateByNameAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockGetNotificationTemplateByNameAction::Complete(const TFlockResult<FFlockNotificationTemplate>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(FFlockNotificationTemplate(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
+// Schedule
+
+UFlockScheduleNotificationAction* UFlockScheduleNotificationAction::Schedule(UObject* WorldContextObject,
+	const FString& TemplateName, FDateTime DeliverAtUtc, FFlockCommandData Variables,
+	const TArray<EFlockNotificationChannel>& Channels)
+{
+	UFlockScheduleNotificationAction* Action = NewObject<UFlockScheduleNotificationAction>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->TemplateName = TemplateName;
+	Action->DeliverAtUtc = DeliverAtUtc;
+	Action->Variables = MoveTemp(Variables);
+	Action->Channels = Channels;
+	return Action;
+}
+
+void UFlockScheduleNotificationAction::Activate()
+{
+	FFlockError Error;
+	FFlockNotificationProvider* Provider = ResolveNotifications(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockScheduledNotification>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockScheduleNotificationAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	Provider->ScheduleByTemplateName(TemplateName, DeliverAtUtc, Variables, Channels,
+		[WeakThis](TFlockResult<FFlockScheduledNotification> Result)
+		{
+			if (UFlockScheduleNotificationAction* Self = WeakThis.Get())
+			{
+				Self->Complete(Result);
+			}
+		});
+}
+
+void UFlockScheduleNotificationAction::Complete(const TFlockResult<FFlockScheduledNotification>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(FFlockScheduledNotification(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
+// Cancel Scheduled
+
+UFlockCancelScheduledNotificationAction* UFlockCancelScheduledNotificationAction::Cancel(UObject* WorldContextObject,
+	const FString& ScheduledId)
+{
+	UFlockCancelScheduledNotificationAction* Action = NewObject<UFlockCancelScheduledNotificationAction>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->ScheduledId = ScheduledId;
+	return Action;
+}
+
+void UFlockCancelScheduledNotificationAction::Activate()
+{
+	FFlockError Error;
+	FFlockNotificationProvider* Provider = ResolveNotifications(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockScheduledNotification>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockCancelScheduledNotificationAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	Provider->CancelScheduled(ScheduledId, [WeakThis](TFlockResult<FFlockScheduledNotification> Result)
+	{
+		if (UFlockCancelScheduledNotificationAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockCancelScheduledNotificationAction::Complete(const TFlockResult<FFlockScheduledNotification>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(FFlockScheduledNotification(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+

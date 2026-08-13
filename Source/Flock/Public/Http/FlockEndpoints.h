@@ -122,6 +122,23 @@ namespace FlockEndpoints
 	inline constexpr const TCHAR* NotificationSummary = TEXT("notification/summary");
 	inline constexpr const TCHAR* NotificationReadAll = TEXT("notification/read_all");
 	inline FString NotificationRead(const FString& NotificationId) { return FString::Printf(TEXT("notification/%s/read"), *NotificationId); }
+	inline constexpr const TCHAR* NotificationSchedule = TEXT("notification/schedule");
+	inline FString NotificationScheduleById(const FString& ScheduledId) { return FString::Printf(TEXT("notification/schedule/%s"), *ScheduledId); }
+
+	// Template catalog. Unlike the rest of this family these two are **game-scoped, not player-scoped** —
+	// they declare no Authorization header, only the API key and game version — so they are not gated on
+	// sign-in and their cache is keyed by game version rather than player.
+	// by-name takes the name as a **query parameter**, not a path segment.
+	inline constexpr const TCHAR* NotificationTemplates = TEXT("notification_template");
+	inline FString NotificationTemplateByName(const FString& Name, const FString& Locale = FString())
+	{
+		FString Url = FString::Printf(TEXT("notification_template/by-name?name=%s"), *Encode(Name));
+		if (!Locale.IsEmpty())
+		{
+			Url += TEXT("&locale=") + Encode(Locale);
+		}
+		return Url;
+	}
 
 	// Analytics
 	inline constexpr const TCHAR* AnalyticsSessions = TEXT("analytics/sessions");

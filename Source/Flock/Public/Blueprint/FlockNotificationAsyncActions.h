@@ -6,6 +6,7 @@
 #include "Http/FlockError.h"
 #include "Http/FlockResult.h"
 #include "Kismet/BlueprintAsyncActionBase.h"
+#include "Models/FlockCommandModels.h"
 #include "Models/FlockNotificationModels.h"
 #include "FlockNotificationAsyncActions.generated.h"
 
@@ -26,6 +27,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockUnreadCountPin, int32, Unread
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockNotificationSummaryPin, const FFlockNotificationSummary&, Summary, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockNotificationPin, const FFlockNotification&, Notification, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockMarkAllReadPin, const FFlockMarkAllReadResult&, Result, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockNotificationTemplatesPin, const TArray<FFlockNotificationTemplate>&, Templates, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockNotificationTemplatePin, const FFlockNotificationTemplate&, Template, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockScheduledNotificationPin, const FFlockScheduledNotification&, Scheduled, const FFlockError&, Error);
 
 /** Fetches a page of the signed-in player's inbox, newest first. */
 UCLASS()
@@ -166,4 +170,129 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+};
+
+/** Every notification template this game can schedule against. Works signed out — the catalog is game-scoped. */
+UCLASS()
+class FLOCK_API UFlockGetNotificationTemplatesAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockNotificationTemplatesPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockNotificationTemplatesPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Get Notification Templates"), Category = "Flock|Notifications")
+	static UFlockGetNotificationTemplatesAction* GetTemplates(UObject* WorldContextObject);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<TArray<FFlockNotificationTemplate>>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+};
+
+/** One template by the name shown on the dashboard. An unknown name fails as a Validation error. */
+UCLASS()
+class FLOCK_API UFlockGetNotificationTemplateByNameAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockNotificationTemplatePin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockNotificationTemplatePin OnFailure;
+
+	/** An empty Locale takes the template's default. */
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Get Notification Template By Name", AdvancedDisplay = "Locale"), Category = "Flock|Notifications")
+	static UFlockGetNotificationTemplateByNameAction* GetByName(UObject* WorldContextObject,
+		const FString& TemplateName, const FString& Locale);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockNotificationTemplate>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+
+	FString TemplateName;
+	FString Locale;
+};
+
+/**
+ * Asks the backend to deliver a templated notification later. Server-side, so it fires whether or not the
+ * game is running.
+ *
+ * Addressed by template **name** — the thing a designer has from the dashboard. The id is resolved
+ * internally and memoized. Build Variables with the Flock Command Data Set nodes; leaving Channels empty
+ * lets the template's own defaults apply.
+ */
+UCLASS()
+class FLOCK_API UFlockScheduleNotificationAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockScheduledNotificationPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockScheduledNotificationPin OnFailure;
+
+	/** Deliver At is UTC. */
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Schedule Notification", AdvancedDisplay = "Variables,Channels"), Category = "Flock|Notifications")
+	static UFlockScheduleNotificationAction* Schedule(UObject* WorldContextObject, const FString& TemplateName,
+		FDateTime DeliverAtUtc, FFlockCommandData Variables, const TArray<EFlockNotificationChannel>& Channels);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockScheduledNotification>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+
+	FString TemplateName;
+	FDateTime DeliverAtUtc;
+	FFlockCommandData Variables;
+	TArray<EFlockNotificationChannel> Channels;
+};
+
+/** Cancels a scheduled notification and returns the canceled row. */
+UCLASS()
+class FLOCK_API UFlockCancelScheduledNotificationAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockScheduledNotificationPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockScheduledNotificationPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Cancel Scheduled Notification"), Category = "Flock|Notifications")
+	static UFlockCancelScheduledNotificationAction* Cancel(UObject* WorldContextObject, const FString& ScheduledId);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockScheduledNotification>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+
+	FString ScheduledId;
 };

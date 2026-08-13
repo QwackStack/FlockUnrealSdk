@@ -5,6 +5,7 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Auth/FlockAuthSession.h"
+#include "Containers/Ticker.h"
 #include "FlockLogger.h"
 #include "HAL/FileManager.h"
 #include "Http/FlockHttpClient.h"
@@ -25,6 +26,23 @@ namespace FlockNotificationProviderTestHelpers
 		return Policy;
 	}
 
+	/** A policy that *does* retry, so a "sent exactly once" assertion means the call opted out, not the policy. */
+	inline FFlockRetryPolicy WithRetries()
+	{
+		FFlockRetryPolicy Policy;
+		Policy.MaxRetries = 2;
+		Policy.InitialDelaySeconds = 0.f;
+		return Policy;
+	}
+
+	inline void PumpRetries()
+	{
+		for (int32 Index = 0; Index < 8; ++Index)
+		{
+			FTSTicker::GetCoreTicker().Tick(1.f);
+		}
+	}
+
 	inline FString MakeTestJwt(const FString& PlayerId)
 	{
 		const int64 Exp = FDateTime::UtcNow().ToUnixTimestamp() + 3600;
@@ -41,10 +59,10 @@ namespace FlockNotificationProviderTestHelpers
 			FString::Printf(TEXT("nf_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
 	}
 
-	// ── Real wire shapes. Eight of the nine notification routes are enveloped, but GET /v1/notification is
+	// Real wire shapes. Eight of the nine notification routes are enveloped, but GET /v1/notification is
 	// **bare** — {items,total,page,limit} at the document root with no {error,response,result} around it.
 	// That asymmetry is the whole reason these fixtures are written by hand: enveloping the inbox fixture
-	// would pass while the live route failed, which is exactly the bug class this family invites. ──
+	// would pass while the live route failed, which is exactly the bug class this family invites.
 
 	inline FString Env(const FString& Inner)
 	{
@@ -71,6 +89,30 @@ namespace FlockNotificationProviderTestHelpers
 	}
 
 	inline FString UnreadCountBody(int32 Count = 4) { return Env(FString::Printf(TEXT("{\"count\":%d}"), Count)); }
+
+	/** The catalog is an enveloped **list** — `result` is a bare array, not a {items,total,...} page. */
+	inline FString TemplatesBody()
+	{
+		return Env(TEXT("[{\"id\":\"tpl-1\",\"name\":\"DailyBonus\",\"category\":\"reward\"},")
+			TEXT("{\"id\":\"tpl-2\",\"name\":\"EnergyFull\",\"category\":\"reminder\"}]"));
+	}
+
+	inline FString TemplateByNameBody(const FString& Id = TEXT("tpl-1"))
+	{
+		return Env(FString::Printf(TEXT("{\"id\":\"%s\",\"name\":\"DailyBonus\",\"category\":\"reward\"}"), *Id));
+	}
+
+	/** A scheduled row. The three delivery-state timestamps are nullable and carry the real state. */
+	inline FString ScheduledBody(bool bCanceled = false)
+	{
+		return Env(FString::Printf(
+			TEXT("{\"id\":\"sch-1\",\"game_id\":\"g1\",\"studio_id\":\"s1\",\"player_id\":\"player-a\",")
+			TEXT("\"template_id\":\"tpl-1\",\"variables\":{\"PlayerName\":\"Ada\"},")
+			TEXT("\"channels\":[\"in_app\",\"push\"],\"deliver_at\":\"2026-08-13T09:00:00Z\",")
+			TEXT("\"status\":\"pending\",\"source\":\"sdk\",\"notification_id\":null,\"delivered_at\":null,")
+			TEXT("\"canceled_at\":%s,\"created_at\":\"2026-08-12T00:00:00Z\",\"updated_at\":\"2026-08-12T00:00:00Z\"}"),
+			bCanceled ? TEXT("\"2026-08-12T02:00:00Z\"") : TEXT("null")));
+	}
 	inline FString SummaryBody() { return Env(FString::Printf(TEXT("{\"unread_count\":4,\"items\":[%s]}"), *Row(TEXT("n-1"), false))); }
 	inline FString MarkReadBody() { return Env(Row(TEXT("n-1"), /*bRead*/ true)); }
 	inline FString MarkAllReadBody() { return Env(TEXT("{\"updated\":4}")); }
@@ -85,14 +127,14 @@ namespace FlockNotificationProviderTestHelpers
 		TSharedPtr<FFlockSnapshotStore> Snapshot;
 		TSharedPtr<FFlockNotificationProvider> Provider;
 
-		explicit FFixture(const FString& ExistingDir = FString())
+		explicit FFixture(const FString& ExistingDir = FString(), const FFlockRetryPolicy& Policy = NoRetry())
 			: Dir(ExistingDir.IsEmpty() ? TempRoot() : ExistingDir)
 			, Client(MakeShared<FFlockHttpClient>(Fake, MakeShared<FFlockNullLogger>()))
 			, Session(MakeShared<FFlockAuthSession>(Client, Store, MakeShared<FFlockNullLogger>(),
 				TEXT("http://x/v1"), TMap<FString, FString>{ { TEXT("X-Flock-API-Key"), TEXT("k") } }))
 		{
 			Snapshot = MakeShared<FFlockSnapshotStore>(Dir, MakeShared<FFlockNullLogger>(), TEXT("9.9.9"));
-			Provider = MakeShared<FFlockNotificationProvider>(Client, NoRetry(), MakeShared<FFlockNullLogger>(),
+			Provider = MakeShared<FFlockNotificationProvider>(Client, Policy, MakeShared<FFlockNullLogger>(),
 				Session, TEXT("http://x/v1"), Snapshot, TEXT("ver-1"));
 			RouteAll();
 		}
@@ -104,11 +146,45 @@ namespace FlockNotificationProviderTestHelpers
 		 */
 		void RouteAll()
 		{
+			// Order is load-bearing throughout: the fake answers the first route whose fragment the URL
+			// contains. "notification_template/by-name?..." contains "notification_template", and
+			// "notification/schedule/sch-1" contains "notification/schedule", so the specific paths go first.
+			Fake->On(TEXT("notification_template/by-name"), FFlockFakeTransport::Ok(TemplateByNameBody()));
+			Fake->On(TEXT("notification_template"), FFlockFakeTransport::Ok(TemplatesBody()));
+			Fake->On(TEXT("notification/schedule/sch-1"), FFlockFakeTransport::Ok(ScheduledBody(/*bCanceled*/ true)));
+			Fake->On(TEXT("notification/schedule"), FFlockFakeTransport::Ok(ScheduledBody()));
 			Fake->On(TEXT("notification/unread_count"), FFlockFakeTransport::Ok(UnreadCountBody()));
 			Fake->On(TEXT("notification/summary"), FFlockFakeTransport::Ok(SummaryBody()));
 			Fake->On(TEXT("notification/read_all"), FFlockFakeTransport::Ok(MarkAllReadBody()));
 			Fake->On(TEXT("n-1/read"), FFlockFakeTransport::Ok(MarkReadBody()));
 			Fake->On(TEXT("notification?"), FFlockFakeTransport::Ok(InboxBody()));
+		}
+
+		/**
+		 * Overrides the by-name route while keeping it ahead of the broader "notification_template" one.
+		 *
+		 * On() removes the old route and **appends** the new one, and Resolve takes the first fragment the
+		 * URL contains — so overriding by-name alone drops it behind the catalog route, and a by-name
+		 * request comes back answered by the list fixture. Re-registering the list route afterwards puts
+		 * the order back. Same trap as the leaderboard fixture's /me vs /{id} routes.
+		 */
+		void RouteTemplateByName(const FFlockHttpResponse& Response)
+		{
+			Fake->On(TEXT("notification_template/by-name"), Response);
+			Fake->On(TEXT("notification_template"), FFlockFakeTransport::Ok(TemplatesBody()));
+		}
+
+		/** The body of the last request whose URL contains Fragment, for asserting what went on the wire. */
+		FString LastBodyContaining(const FString& Fragment) const
+		{
+			for (int32 Index = Fake->Requests.Num() - 1; Index >= 0; --Index)
+			{
+				if (Fake->Requests[Index].Url.Contains(Fragment))
+				{
+					return Fake->Requests[Index].JsonBody;
+				}
+			}
+			return FString();
 		}
 
 		void SignIn(const FString& PlayerId = TEXT("player-a"))
@@ -121,6 +197,10 @@ namespace FlockNotificationProviderTestHelpers
 		void GoOffline()
 		{
 			Provider->SetReachabilityProbe([]() { return false; });
+			Fake->On(TEXT("notification_template/by-name"), FFlockFakeTransport::Offline());
+			Fake->On(TEXT("notification_template"), FFlockFakeTransport::Offline());
+			Fake->On(TEXT("notification/schedule/sch-1"), FFlockFakeTransport::Offline());
+			Fake->On(TEXT("notification/schedule"), FFlockFakeTransport::Offline());
 			Fake->On(TEXT("notification/unread_count"), FFlockFakeTransport::Offline());
 			Fake->On(TEXT("notification/summary"), FFlockFakeTransport::Offline());
 			Fake->On(TEXT("notification/read_all"), FFlockFakeTransport::Offline());
@@ -149,8 +229,8 @@ namespace FlockNotificationProviderTestHelpers
 
 using namespace FlockNotificationProviderTestHelpers;
 
-// ── NF-01: the inbox list is BARE. This is the test the whole family hangs on: an enveloped fixture would
-// pass here and fail against the real backend with "missing result". ──
+// NF-01: the inbox list is BARE. This is the test the whole family hangs on: an enveloped fixture would
+// pass here and fail against the real backend with "missing result".
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationParsesBarePageTest, "Flock.Notification.Provider.ParsesBarePaginatedShape",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -175,8 +255,8 @@ bool FFlockNotificationParsesBarePageTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// ── NF-02: read_at drives IsRead(). A null must not land as the literal "null", or every unread row reads
-// as read — the single most damaging parse slip available in this model. ──
+// NF-02: read_at drives IsRead(). A null must not land as the literal "null", or every unread row reads
+// as read — the single most damaging parse slip available in this model.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationReadStateTest, "Flock.Notification.Provider.NullReadAtIsUnread",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -210,8 +290,8 @@ bool FFlockNotificationReadStateTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// ── NF-03: every route here is player-scoped by its schema, so all five fail fast with Auth when signed
-// out rather than spending a request on a guaranteed 401. ──
+// NF-03: every route here is player-scoped by its schema, so all five fail fast with Auth when signed
+// out rather than spending a request on a guaranteed 401.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationAuthGateTest, "Flock.Notification.Provider.RequiresSignIn",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -238,7 +318,7 @@ bool FFlockNotificationAuthGateTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// ── NF-04: the count route is enveloped and its one-field object is unwrapped to a plain int. ──
+// NF-04: the count route is enveloped and its one-field object is unwrapped to a plain int.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationUnreadCountTest, "Flock.Notification.Provider.UnwrapsUnreadCount",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -258,8 +338,8 @@ bool FFlockNotificationUnreadCountTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// ── NF-05: the summary nests notification rows inside an enveloped object — the items need the custom
-// parse, not the reflection path, or `data` and the nullables come back wrong. ──
+// NF-05: the summary nests notification rows inside an enveloped object — the items need the custom
+// parse, not the reflection path, or `data` and the nullables come back wrong.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationSummaryTest, "Flock.Notification.Provider.ParsesSummaryItems",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -286,7 +366,7 @@ bool FFlockNotificationSummaryTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// ── NF-06: the two writes. Mark-read returns the updated row; mark-all returns how many flipped. ──
+// NF-06: the two writes. Mark-read returns the updated row; mark-all returns how many flipped.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationWritesTest, "Flock.Notification.Provider.MarksRead",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -330,7 +410,7 @@ bool FFlockNotificationWritesTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// ── NF-07: an inbox read offline serves the last-known page rather than an error screen. ──
+// NF-07: an inbox read offline serves the last-known page rather than an error screen.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationOfflineTest, "Flock.Notification.Provider.ServesCacheOffline",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -361,8 +441,8 @@ bool FFlockNotificationOfflineTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// ── NF-08: snapshot keys carry the player id, so a shared device cannot serve one account's mail to the
-// next. Same directory, different player, offline — the previous player's inbox must not appear. ──
+// NF-08: snapshot keys carry the player id, so a shared device cannot serve one account's mail to the
+// next. Same directory, different player, offline — the previous player's inbox must not appear.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationPlayerScopedCacheTest, "Flock.Notification.Provider.CacheIsPlayerScoped",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -391,8 +471,8 @@ bool FFlockNotificationPlayerScopedCacheTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// ── NF-09: writes are never deferred. A read-receipt replayed later marks messages the player never saw,
-// so an unreachable server must fail the call rather than quietly queue it. ──
+// NF-09: writes are never deferred. A read-receipt replayed later marks messages the player never saw,
+// so an unreachable server must fail the call rather than quietly queue it.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationWritesNotQueuedTest, "Flock.Notification.Provider.WritesFailOfflineNotQueued",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -423,7 +503,7 @@ bool FFlockNotificationWritesNotQueuedTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// ── NF-10: the list query carries paging and the unread filter, and omits the filter when it is off. ──
+// NF-10: the list query carries paging and the unread filter, and omits the filter when it is off.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationQueryTest, "Flock.Notification.Provider.BuildsListQuery",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -444,6 +524,314 @@ bool FFlockNotificationQueryTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("unread filter omitted when off"), Unfiltered.Contains(TEXT("unread_only")));
 
 	Cleanup(F.Dir);
+	return true;
+}
+
+// NF-11: the template catalog is an enveloped LIST (bare array in `result`), and it warms the name memo
+// so a later send costs no extra round trip.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationTemplatesTest, "Flock.Notification.Provider.ParsesTemplateList",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationTemplatesTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+	bool bDone = false;
+	F.Provider->GetTemplates([&](TFlockResult<TArray<FFlockNotificationTemplate>> Result)
+	{
+		bDone = true;
+		TestTrue(TEXT("catalog succeeds"), Result.bSuccess);
+		if (TestEqual(TEXT("two templates"), Result.Value.Num(), 2))
+		{
+			TestEqual(TEXT("first name"), FlockTestAt(Result.Value, 0).Name, FString(TEXT("DailyBonus")));
+			TestEqual(TEXT("first id"), FlockTestAt(Result.Value, 0).Id, FString(TEXT("tpl-1")));
+			TestEqual(TEXT("second category"), FlockTestAt(Result.Value, 1).Category, FString(TEXT("reminder")));
+		}
+	});
+	TestTrue(TEXT("completed"), bDone);
+
+	// The catalog warmed the memo, so a by-name lookup answers without touching the network.
+	const int32 Before = F.Fake->Requests.Num();
+	F.Provider->GetTemplateByName(TEXT("DailyBonus"), [&](TFlockResult<FFlockNotificationTemplate> Result)
+	{
+		TestTrue(TEXT("memoized lookup succeeds"), Result.bSuccess);
+		TestEqual(TEXT("resolved id"), Result.Value.Id, FString(TEXT("tpl-1")));
+	});
+	TestEqual(TEXT("no request for a memoized name"), F.Fake->Requests.Num(), Before);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// NF-12: the template routes are game-scoped — they declare no Authorization header — so unlike every
+// other call here they must work signed out. Gating them would refuse a valid title-screen fetch.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationTemplatesUngatedTest, "Flock.Notification.Provider.TemplatesWorkSignedOut",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationTemplatesUngatedTest::RunTest(const FString& Parameters)
+{
+	FFixture F;   // deliberately not signed in
+	bool bList = false, bByName = false;
+
+	F.Provider->GetTemplates([&](TFlockResult<TArray<FFlockNotificationTemplate>> Result)
+	{
+		bList = true;
+		TestTrue(TEXT("catalog works signed out"), Result.bSuccess);
+	});
+	F.Provider->GetTemplateByName(TEXT("DailyBonus"), [&](TFlockResult<FFlockNotificationTemplate> Result)
+	{
+		bByName = true;
+		TestTrue(TEXT("by-name works signed out"), Result.bSuccess);
+	});
+	TestTrue(TEXT("list completed"), bList);
+	TestTrue(TEXT("by-name completed"), bByName);
+
+	// Scheduling still needs a player, because its own schema is player-keyed.
+	bool bSchedule = false;
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime(2026, 8, 13, 9, 0, 0),
+		[&](TFlockResult<FFlockScheduledNotification> Result)
+		{
+			bSchedule = true;
+			TestFalse(TEXT("schedule still gated"), Result.bSuccess);
+			TestEqual(TEXT("as an auth failure"), Result.Error.Type, EFlockErrorType::Auth);
+		});
+	TestTrue(TEXT("schedule completed"), bSchedule);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// NF-13: by-name puts the name in the **query string**, not the path, and adds locale only when given.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationTemplateByNameUrlTest, "Flock.Notification.Provider.TemplateByNameQuery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationTemplateByNameUrlTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.Provider->GetTemplateByName(TEXT("Daily Bonus"), TEXT("ar"), [](TFlockResult<FFlockNotificationTemplate>) {});
+	const FString Localized = F.LastUrlContaining(TEXT("notification_template/by-name"));
+	TestTrue(TEXT("name is a query param"), Localized.Contains(TEXT("by-name?name=")));
+	// A space has to be encoded or the request is malformed.
+	TestTrue(TEXT("name is percent-encoded"), Localized.Contains(TEXT("Daily%20Bonus")));
+	TestTrue(TEXT("locale sent when given"), Localized.Contains(TEXT("locale=ar")));
+
+	// A locale-specific record is not the default one, so it must not have been memoized under the bare
+	// name — the next default-locale lookup has to go to the network.
+	const int32 Before = F.Fake->Requests.Num();
+	F.Provider->GetTemplateByName(TEXT("Daily Bonus"), [](TFlockResult<FFlockNotificationTemplate>) {});
+	TestTrue(TEXT("localized fetch did not poison the default memo"), F.Fake->Requests.Num() > Before);
+	const FString Default = F.LastUrlContaining(TEXT("notification_template/by-name"));
+	TestFalse(TEXT("locale omitted when empty"), Default.Contains(TEXT("locale=")));
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// NF-14: scheduling by name resolves the id first, then posts. The resolve is memoized, so a second
+// send by the same name does not repeat it.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationScheduleByNameTest, "Flock.Notification.Provider.ScheduleResolvesName",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationScheduleByNameTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+
+	const FDateTime When(2026, 8, 13, 9, 0, 0);
+	bool bDone = false;
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), When,
+		FFlockCommandData().Set(TEXT("PlayerName"), TEXT("Ada")).Set(TEXT("Reward"), 100),
+		{ EFlockNotificationChannel::InApp, EFlockNotificationChannel::Push },
+		[&](TFlockResult<FFlockScheduledNotification> Result)
+		{
+			bDone = true;
+			TestTrue(TEXT("schedule succeeds"), Result.bSuccess);
+			TestEqual(TEXT("scheduled id"), Result.Value.Id, FString(TEXT("sch-1")));
+		});
+	TestTrue(TEXT("completed"), bDone);
+
+	TestEqual(TEXT("resolved by name once"), F.Fake->CountTo(TEXT("notification_template/by-name")), 1);
+	TestEqual(TEXT("then posted the schedule"), F.Fake->CountTo(TEXT("notification/schedule")), 1);
+
+	// The body carries the resolved **id**, never the name.
+	const FString Body = F.LastBodyContaining(TEXT("notification/schedule"));
+	TestTrue(TEXT("template_id resolved from the name"), Body.Contains(TEXT("\"template_id\":\"tpl-1\"")));
+	TestFalse(TEXT("the name itself is not sent"), Body.Contains(TEXT("DailyBonus")));
+	TestTrue(TEXT("deliver_at is ISO-8601"), Body.Contains(TEXT("\"deliver_at\":\"2026-08-13T09:00:00")));
+	// Author keys are the template's own and must never be case-transformed on the way out.
+	TestTrue(TEXT("variable keys verbatim"), Body.Contains(TEXT("\"PlayerName\":\"Ada\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("numeric variable keeps its type"), Body.Contains(TEXT("\"Reward\":100"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("channels use wire spellings"), Body.Contains(TEXT("\"channels\":[\"in_app\",\"push\"]")));
+
+	// Second send by the same name reuses the memo.
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), When, [](TFlockResult<FFlockScheduledNotification>) {});
+	TestEqual(TEXT("name resolved only once across two sends"), F.Fake->CountTo(TEXT("notification_template/by-name")), 1);
+	TestEqual(TEXT("but both schedules posted"), F.Fake->CountTo(TEXT("notification/schedule")), 2);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// NF-15: an unknown template name is a caller mistake, so it fails Validation before any schedule is
+// posted — never a silent send against nothing.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationUnknownTemplateTest, "Flock.Notification.Provider.UnknownTemplateFailsValidation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationUnknownTemplateTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+	// A 2xx carrying no id is how the backend reports "no such template for this game".
+	F.RouteTemplateByName(FFlockFakeTransport::Ok(Env(TEXT("{\"id\":\"\",\"name\":\"\",\"category\":\"\"}"))));
+
+	bool bDone = false;
+	F.Provider->ScheduleByTemplateName(TEXT("NoSuchTemplate"), FDateTime(2026, 8, 13, 9, 0, 0),
+		[&](TFlockResult<FFlockScheduledNotification> Result)
+		{
+			bDone = true;
+			TestFalse(TEXT("unknown name fails"), Result.bSuccess);
+			TestEqual(TEXT("as validation, not a server error"), Result.Error.Type, EFlockErrorType::Validation);
+		});
+	TestTrue(TEXT("completed"), bDone);
+	TestEqual(TEXT("nothing was scheduled"), F.Fake->CountTo(TEXT("notification/schedule")), 0);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// NF-16: empty variables and channels are omitted entirely, not sent as {} / []. An empty channel list
+// reads as "deliver nowhere"; omitting it lets the template's own defaults apply.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationScheduleOmitsEmptyTest, "Flock.Notification.Provider.ScheduleOmitsEmptyOptionals",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationScheduleOmitsEmptyTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime(2026, 8, 13, 9, 0, 0),
+		[](TFlockResult<FFlockScheduledNotification>) {});
+
+	const FString Body = F.LastBodyContaining(TEXT("notification/schedule"));
+	TestTrue(TEXT("template_id still sent"), Body.Contains(TEXT("\"template_id\"")));
+	TestFalse(TEXT("variables omitted when empty"), Body.Contains(TEXT("\"variables\"")));
+	TestFalse(TEXT("channels omitted when empty"), Body.Contains(TEXT("\"channels\"")));
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// NF-17: scheduling is not idempotent. A resend after an ambiguous failure could leave the player with
+// two of the same reminder, so it must go exactly once even under a policy that retries.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationScheduleNotRetriedTest, "Flock.Notification.Provider.ScheduleNotRetriedOnAmbiguousFailure",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationScheduleNotRetriedTest::RunTest(const FString& Parameters)
+{
+	FFixture F(FString(), WithRetries());
+	F.SignIn();
+	// 500 after the request was accepted: the reminder may already exist, so a resend could duplicate it.
+	F.Fake->On(TEXT("notification/schedule"), FFlockFakeTransport::Status(500, TEXT("{}")));
+
+	bool bDone = false;
+	F.Provider->ScheduleByTemplateId(TEXT("tpl-1"), FDateTime(2026, 8, 13, 9, 0, 0), FFlockCommandData(), {},
+		[&](TFlockResult<FFlockScheduledNotification> Result)
+		{
+			bDone = true;
+			TestFalse(TEXT("failure surfaces"), Result.bSuccess);
+		});
+	TestTrue(TEXT("caller was told"), bDone);
+
+	PumpRetries();
+	TestEqual(TEXT("posted exactly once"), F.Fake->CountTo(TEXT("notification/schedule")), 1);
+
+	// Cancel under the same policy *does* retry, so the single attempt above is the rule at work rather
+	// than a retry policy that never fires.
+	F.Fake->On(TEXT("notification/schedule/sch-1"), FFlockFakeTransport::Status(500, TEXT("{}")));
+	F.Provider->CancelScheduled(TEXT("sch-1"), [](TFlockResult<FFlockScheduledNotification>) {});
+	PumpRetries();
+	TestTrue(TEXT("cancel is retried"), F.Fake->CountTo(TEXT("notification/schedule/sch-1")) > 1);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// NF-18: delivery state is read off the timestamps, not the loose `status` string.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationCancelTest, "Flock.Notification.Provider.CancelsScheduled",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationCancelTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+
+	bool bDone = false;
+	F.Provider->CancelScheduled(TEXT("sch-1"), [&](TFlockResult<FFlockScheduledNotification> Result)
+	{
+		bDone = true;
+		TestTrue(TEXT("cancel succeeds"), Result.bSuccess);
+		TestTrue(TEXT("canceled_at set means canceled"), Result.Value.IsCanceled());
+		TestFalse(TEXT("and not pending"), Result.Value.IsPending());
+		TestFalse(TEXT("and not delivered"), Result.Value.IsDelivered());
+	});
+	TestTrue(TEXT("completed"), bDone);
+
+	// The create fixture is still pending: null timestamps must read as pending, never as delivered.
+	F.Provider->ScheduleByTemplateId(TEXT("tpl-1"), FDateTime(2026, 8, 13, 9, 0, 0), FFlockCommandData(), {},
+		[&](TFlockResult<FFlockScheduledNotification> Result)
+		{
+			TestTrue(TEXT("null timestamps are pending"), Result.Value.IsPending());
+			TestTrue(TEXT("null notification_id stays empty"), Result.Value.NotificationId.IsEmpty());
+			// Response channels stay verbatim strings — the response types them loosely, so a server-side
+			// addition must not fail the parse.
+			TestEqual(TEXT("channels parsed"), Result.Value.Channels.Num(), 2);
+			TestTrue(TEXT("channel spelling verbatim"), Result.Value.Channels.Contains(TEXT("in_app")));
+			FString PlayerName;
+			TestTrue(TEXT("variables readable"), Result.Value.Variables.TryGetString(TEXT("PlayerName"), PlayerName));
+			TestEqual(TEXT("variable value"), PlayerName, FString(TEXT("Ada")));
+		});
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// NF-19: logout drops the player's inbox but **keeps** the game-scoped template catalog. That split is
+// the whole reason templates get their own snapshot category.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationClearCacheKeepsTemplatesTest, "Flock.Notification.Provider.ClearCacheKeepsTemplates",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationClearCacheKeepsTemplatesTest::RunTest(const FString& Parameters)
+{
+	FString Dir;
+	{
+		FFixture F;
+		Dir = F.Dir;
+		F.SignIn();
+		F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+		F.Provider->GetTemplates([](TFlockResult<TArray<FFlockNotificationTemplate>>) {});
+		F.Provider->ClearCache();
+	}
+
+	// Fresh provider over the same directory, offline: the inbox snapshot is gone, the catalog is not.
+	FFixture F2(Dir);
+	F2.SignIn();
+	F2.GoOffline();
+
+	bool bInbox = false, bTemplates = false;
+	F2.Provider->GetNotifications([&](TFlockResult<FFlockNotificationPage> Result)
+	{
+		bInbox = true;
+		TestFalse(TEXT("the departing player's inbox was dropped"), Result.bSuccess);
+	});
+	F2.Provider->GetTemplates([&](TFlockResult<TArray<FFlockNotificationTemplate>> Result)
+	{
+		bTemplates = true;
+		TestTrue(TEXT("the game-scoped catalog survived logout"), Result.bSuccess);
+		TestEqual(TEXT("with its rows"), Result.Value.Num(), 2);
+	});
+	TestTrue(TEXT("inbox completed"), bInbox);
+	TestTrue(TEXT("templates completed"), bTemplates);
+
+	Cleanup(Dir);
 	return true;
 }
 

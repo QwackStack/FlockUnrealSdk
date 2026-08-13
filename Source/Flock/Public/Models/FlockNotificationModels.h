@@ -138,3 +138,124 @@ struct FLOCK_API FFlockUnreadCount
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	int32 Count = 0;
 };
+
+/**
+ * A notification template a game can schedule against, as the client sees it.
+ *
+ * Deliberately thin — the client route exposes only what a game needs to *pick* a template. The body,
+ * placeholders and channel defaults live server-side and are the dashboard's business, not the SDK's.
+ *
+ * All three members are single words on the wire, so this takes the reflection path rather than a custom
+ * `FromWireObject`.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockNotificationTemplate
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Id;
+
+	/** What a designer schedules against, and what the by-name route takes. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Category;
+};
+
+/**
+ * Where a scheduled notification gets delivered.
+ *
+ * This one *is* an enum, unlike FFlockNotification's Type and Severity: the schedule request's `channels`
+ * is declared as a closed set (in_app / email / push) in the spec, so the set is the server's promise
+ * rather than this SDK's guess. The rule throughout is that the spec decides.
+ */
+UENUM(BlueprintType)
+enum class EFlockNotificationChannel : uint8
+{
+	InApp,
+	Email,
+	Push
+};
+
+/** The wire spelling for a channel. */
+FLOCK_API const TCHAR* FlockNotificationChannelToWire(EFlockNotificationChannel Channel);
+
+/**
+ * A notification the game asked the backend to deliver later.
+ *
+ * `Channels` is TArray<FString> rather than the enum, deliberately: the *request* declares a closed set,
+ * but the *response* types the same field as plain strings. Parsing a response into an enum that fails on
+ * an unrecognized value would turn a server-side addition into a client parse failure, so the read side
+ * stays verbatim while the write side stays typed.
+ *
+ * Delivery state is read off the timestamps, not the loose `status` string — a status the server adds
+ * later would silently break a string comparison, whereas the timestamps are structural.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockScheduledNotification
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Id;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString GameId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString StudioId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PlayerId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString TemplateId;
+
+	/** The values that fill the template's placeholders. Author keys kept verbatim. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FFlockJsonData Variables;
+
+	/** Verbatim wire strings — see the note above on why this is not the enum. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FString> Channels;
+
+	/** Raw ISO-8601 timestamp for when the server will deliver this. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString DeliverAt;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Status;
+
+	/** Who created it — an SDK-scheduled reminder reads differently from a campaign fan-out. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Source;
+
+	/** Set once delivered: the inbox row this became. Nullable on the wire. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString NotificationId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString DeliveredAt;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString CanceledAt;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString CreatedAt;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString UpdatedAt;
+
+	/** Delivered already — read from the timestamp, not the status string. */
+	bool IsDelivered() const { return !DeliveredAt.IsEmpty(); }
+
+	/** Canceled — likewise structural rather than a string compare. */
+	bool IsCanceled() const { return !CanceledAt.IsEmpty(); }
+
+	/** Still waiting to fire: neither delivered nor canceled. */
+	bool IsPending() const { return !IsDelivered() && !IsCanceled(); }
+
+	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockScheduledNotification& OutStruct, FString& OutError);
+};

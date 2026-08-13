@@ -4,8 +4,24 @@
 
 #include "Http/FlockEndpoints.h"
 #include "Http/FlockJsonUtils.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+
+namespace
+{
+	/** Condensed JSON, the wire convention everywhere in this SDK. */
+	FString SerializeObject(const TSharedRef<FJsonObject>& Object)
+	{
+		FString Out;
+		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+			TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
+		FJsonSerializer::Serialize(Object, Writer);
+		return Out;
+	}
+}
 
 const TCHAR* const FFlockNotificationProvider::SnapshotCategory = TEXT("notification");
+const TCHAR* const FFlockNotificationProvider::TemplateSnapshotCategory = TEXT("notification_template");
 
 FFlockNotificationProvider::FFlockNotificationProvider(const TSharedRef<FFlockHttpClient>& InClient,
 	const FFlockRetryPolicy& InPolicy, const TSharedRef<IFlockLogger>& InLogger,
@@ -36,7 +52,7 @@ FString FFlockNotificationProvider::PlayerScopedKey(const FString& Key) const
 	return FString::Printf(TEXT("%s_%s"), *Key, *Session->GetPlayerId());
 }
 
-// ─────────────────────────────────── Reads ───────────────────────────────────
+// Reads
 
 void FFlockNotificationProvider::GetNotifications(bool bUnreadOnly, int32 Page, int32 Limit,
 	TFunction<void(TFlockResult<FFlockNotificationPage>)> OnComplete)
@@ -140,7 +156,7 @@ void FFlockNotificationProvider::GetSummary(int32 Limit, TFunction<void(TFlockRe
 		MoveTemp(OnComplete));
 }
 
-// ─────────────────────────────────── Writes ───────────────────────────────────
+// Writes
 
 void FFlockNotificationProvider::MarkRead(const FString& NotificationId,
 	TFunction<void(TFlockResult<FFlockNotification>)> OnComplete)
@@ -191,10 +207,254 @@ void FFlockNotificationProvider::MarkAllRead(TFunction<void(TFlockResult<FFlockM
 		TEXT("Mark all notifications read"));
 }
 
+// Template catalog
+
+void FFlockNotificationProvider::GetTemplates(TFunction<void(TFlockResult<TArray<FFlockNotificationTemplate>>)> OnComplete)
+{
+	// No sign-in gate: this route declares no Authorization header and answers a game-scoped schema. Gating
+	// it would refuse a perfectly valid call — a title screen may want the catalog before anyone signs in.
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const FString Url = MakeUrl(FlockEndpoints::NotificationTemplates);
+	const TMap<FString, FString> Headers = HeadersNow();
+	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
+
+	// Keyed by game version rather than player, unlike every other key in this provider — the catalog
+	// belongs to the game, so it must survive a sign-out and must not be player-suffixed.
+	FetchListWithSnapshot<FFlockNotificationTemplate>(TemplateSnapshotCategory, TEXT("templates"),
+		[ClientRef, Url, Headers](TFunction<void(TFlockResult<TArray<FFlockNotificationTemplate>>)> OnAttempt)
+		{
+			// Enveloped **list**: `result` is a bare array, not the {items,total,page,limit} page shape.
+			return ClientRef->GetList<FFlockNotificationTemplate>(Url, Headers, MoveTemp(OnAttempt));
+		},
+		TEXT("Fetch notification templates"),
+		[WeakSelf, OnComplete](TFlockResult<TArray<FFlockNotificationTemplate>> Result)
+		{
+			if (const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin())
+			{
+				if (Result.bSuccess)
+				{
+					// Warm the name memo from the catalog, so a later send by name costs no round trip.
+					for (const FFlockNotificationTemplate& Template : Result.Value)
+					{
+						if (!Template.Name.IsEmpty())
+						{
+							Self->TemplatesByName.Add(Template.Name, Template);
+						}
+					}
+				}
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		});
+}
+
+void FFlockNotificationProvider::GetTemplateByName(const FString& TemplateName, const FString& Locale,
+	TFunction<void(TFlockResult<FFlockNotificationTemplate>)> OnComplete)
+{
+	if (!RequireNotEmpty(TemplateName, TEXT("Template Name"), OnComplete))
+	{
+		return;
+	}
+	// A locale-specific fetch is not the same record, so only the default-locale lookup is memoized.
+	if (Locale.IsEmpty())
+	{
+		if (const FFlockNotificationTemplate* Memoized = TemplatesByName.Find(TemplateName))
+		{
+			if (OnComplete)
+			{
+				OnComplete(TFlockResult<FFlockNotificationTemplate>::Ok(*Memoized));
+			}
+			return;
+		}
+	}
+
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const FString Url = MakeUrl(FlockEndpoints::NotificationTemplateByName(TemplateName, Locale));
+	const TMap<FString, FString> Headers = HeadersNow();
+	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
+
+	FetchWithSnapshot<FFlockNotificationTemplate>(TemplateSnapshotCategory,
+		FString::Printf(TEXT("template_%s%s"), *TemplateName, *(Locale.IsEmpty() ? FString() : TEXT("_") + Locale)),
+		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockNotificationTemplate>)> OnAttempt)
+		{
+			return ClientRef->Get<FFlockNotificationTemplate>(Url, Headers, MoveTemp(OnAttempt));
+		},
+		TEXT("Fetch notification template"),
+		[WeakSelf, TemplateName, Locale, OnComplete](TFlockResult<FFlockNotificationTemplate> Result)
+		{
+			if (const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin())
+			{
+				if (Result.bSuccess && Locale.IsEmpty() && !Result.Value.Id.IsEmpty())
+				{
+					Self->TemplatesByName.Add(TemplateName, Result.Value);
+				}
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		});
+}
+
+void FFlockNotificationProvider::WithTemplateId(const FString& TemplateName, TFunction<void(const FString&)> Continue,
+	TFunction<void(const FFlockError&)> OnFailure)
+{
+	if (const FFlockNotificationTemplate* Memoized = TemplatesByName.Find(TemplateName))
+	{
+		Continue(Memoized->Id);
+		return;
+	}
+
+	GetTemplateByName(TemplateName, FString(),
+		[Continue, OnFailure, TemplateName](TFlockResult<FFlockNotificationTemplate> Result)
+		{
+			if (!Result.bSuccess)
+			{
+				OnFailure(Result.Error);
+				return;
+			}
+			if (Result.Value.Id.IsEmpty())
+			{
+				// A 2xx with no id means the name does not exist for this game. That is a caller mistake,
+				// so it fails Validation rather than silently scheduling against nothing.
+				OnFailure(FFlockError::Make(EFlockErrorType::Validation,
+					FString::Printf(TEXT("No notification template named '%s'"), *TemplateName)));
+				return;
+			}
+			Continue(Result.Value.Id);
+		});
+}
+
+// Scheduling
+
+void FFlockNotificationProvider::ScheduleByTemplateName(const FString& TemplateName, const FDateTime& DeliverAtUtc,
+	const FFlockCommandData& Variables, const TArray<EFlockNotificationChannel>& Channels,
+	TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete)
+{
+	if (!RequireSignedIn<FFlockScheduledNotification>(OnComplete))
+	{
+		return;
+	}
+	if (!RequireNotEmpty(TemplateName, TEXT("Template Name"), OnComplete))
+	{
+		return;
+	}
+
+	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
+	const FDateTime When = DeliverAtUtc;
+	const FFlockCommandData Vars = Variables;
+	const TArray<EFlockNotificationChannel> Chans = Channels;
+
+	WithTemplateId(TemplateName,
+		[WeakSelf, When, Vars, Chans, OnComplete](const FString& TemplateId)
+		{
+			if (const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin())
+			{
+				Self->ScheduleByTemplateId(TemplateId, When, Vars, Chans, OnComplete);
+			}
+		},
+		[OnComplete](const FFlockError& Error)
+		{
+			if (OnComplete)
+			{
+				OnComplete(TFlockResult<FFlockScheduledNotification>::Fail(Error));
+			}
+		});
+}
+
+void FFlockNotificationProvider::ScheduleByTemplateId(const FString& TemplateId, const FDateTime& DeliverAtUtc,
+	const FFlockCommandData& Variables, const TArray<EFlockNotificationChannel>& Channels,
+	TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete)
+{
+	if (!RequireSignedIn<FFlockScheduledNotification>(OnComplete))
+	{
+		return;
+	}
+	if (!RequireNotEmpty(TemplateId, TEXT("Template Id"), OnComplete))
+	{
+		return;
+	}
+
+	// The body is assembled as an FJsonObject rather than exported from a struct: `variables` is free-form,
+	// which the reflection path cannot express, and the optional members must be omitted rather than sent
+	// empty. Same reasoning as the command bodies.
+	const TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetStringField(TEXT("template_id"), TemplateId);
+	// ISO-8601 UTC. The caller hands over an FDateTime so a hand-built string cannot get the format wrong.
+	Body->SetStringField(TEXT("deliver_at"), DeliverAtUtc.ToIso8601());
+
+	if (!Variables.IsEmpty())
+	{
+		Body->SetObjectField(TEXT("variables"), Variables.ToJsonObject());
+	}
+	if (Channels.Num() > 0)
+	{
+		// Omitted entirely when empty, so the server applies the template's own channel defaults rather
+		// than receiving an empty list that reads as "deliver nowhere".
+		TArray<TSharedPtr<FJsonValue>> Wire;
+		Wire.Reserve(Channels.Num());
+		for (const EFlockNotificationChannel Channel : Channels)
+		{
+			Wire.Add(MakeShared<FJsonValueString>(FlockNotificationChannelToWire(Channel)));
+		}
+		Body->SetArrayField(TEXT("channels"), Wire);
+	}
+
+	const FString Json = SerializeObject(Body);
+
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
+	const FString Url = MakeUrl(FlockEndpoints::NotificationSchedule);
+
+	Execute<FFlockScheduledNotification>(
+		[ClientRef, SessionRef, Url, Json](TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnAttempt)
+		{
+			return ClientRef->PostJson<FFlockScheduledNotification>(Url, SessionRef->GetAuthHeaders(), Json, MoveTemp(OnAttempt));
+		},
+		MoveTemp(OnComplete),
+		TEXT("Schedule notification"),
+		// Not idempotent: a replay after an ambiguous failure would leave the player with two of the same
+		// reminder. Failing once and letting the caller decide beats silently double-scheduling.
+		/*bIdempotent*/ false);
+}
+
+void FFlockNotificationProvider::CancelScheduled(const FString& ScheduledId,
+	TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete)
+{
+	if (!RequireSignedIn<FFlockScheduledNotification>(OnComplete))
+	{
+		return;
+	}
+	if (!RequireNotEmpty(ScheduledId, TEXT("Scheduled Id"), OnComplete))
+	{
+		return;
+	}
+
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
+	const FString Url = MakeUrl(FlockEndpoints::NotificationScheduleById(ScheduledId));
+
+	// Idempotent, unlike the schedule call: cancelling twice lands on the same state, so a retry after an
+	// ambiguous failure is safe and is what the caller wants.
+	Execute<FFlockScheduledNotification>(
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnAttempt)
+		{
+			return ClientRef->Delete<FFlockScheduledNotification>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
+		},
+		MoveTemp(OnComplete),
+		TEXT("Cancel scheduled notification"));
+}
+
 void FFlockNotificationProvider::ClearCache()
 {
 	// Writes deliberately leave the snapshot alone — the next successful read overwrites it, and an inbox
 	// with a slightly stale read flag beats an empty one on a plane. This is the logout path, where the
 	// rows must go because they belong to the player who just left.
 	DeleteSnapshotCategory(SnapshotCategory);
+
+	// The template catalog and its name memo are **kept**: both are game-scoped, so nothing in them belongs
+	// to the departing player. Dropping them would make a title screen refetch the catalog after every
+	// sign-out for no benefit. This is why templates get their own snapshot category.
 }
