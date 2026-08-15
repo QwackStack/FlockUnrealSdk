@@ -129,6 +129,12 @@ namespace FlockEndpoints
 	// they declare no Authorization header, only the API key and game version — so they are not gated on
 	// sign-in and their cache is keyed by game version rather than player.
 	// by-name takes the name as a **query parameter**, not a path segment.
+	// Push device tokens. The SDK never *acquires* a token — the game gets it from its push plugin
+	// (Firebase Cloud Messaging, OneSignal) and hands the string over. Stock UE cannot obtain an Android
+	// token at all: the JNI hook has no Java implementation in the engine.
+	inline constexpr const TCHAR* DeviceTokenRegister = TEXT("device_token/register");
+	inline constexpr const TCHAR* DeviceTokenUnregister = TEXT("device_token/unregister");
+
 	inline constexpr const TCHAR* NotificationTemplates = TEXT("notification_template");
 	inline FString NotificationTemplateByName(const FString& Name, const FString& Locale = FString())
 	{

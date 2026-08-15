@@ -30,6 +30,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockMarkAllReadPin, const FFlockM
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockNotificationTemplatesPin, const TArray<FFlockNotificationTemplate>&, Templates, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockNotificationTemplatePin, const FFlockNotificationTemplate&, Template, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockScheduledNotificationPin, const FFlockScheduledNotification&, Scheduled, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockDeviceTokenPin, const FFlockDeviceToken&, DeviceToken, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockUnregisterDeviceTokenPin, const FFlockUnregisterDeviceTokenResult&, Result, const FFlockError&, Error);
 
 /** Fetches a page of the signed-in player's inbox, newest first. */
 UCLASS()
@@ -295,4 +297,100 @@ private:
 	TObjectPtr<UObject> WorldContextObject;
 
 	FString ScheduledId;
+};
+
+/**
+ * Registers a push token for the signed-in player, taking the platform from the running build.
+ *
+ * **Flock does not fetch the token** — get it from your push plugin (Firebase Cloud Messaging's On Token
+ * Received, or OneSignal) and pass the string in. Fails with a Validation error on desktop, console and in
+ * the editor, where the push backend has no platform to file it under; use Flock Get Current Device
+ * Platform to hide the option there instead.
+ */
+UCLASS()
+class FLOCK_API UFlockRegisterDeviceTokenAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockDeviceTokenPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockDeviceTokenPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Register Device Token"), Category = "Flock|Notifications")
+	static UFlockRegisterDeviceTokenAction* Register(UObject* WorldContextObject, const FString& Token);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockDeviceToken>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+
+	FString Token;
+};
+
+/**
+ * Registers a push token under an explicit platform, for a token that did not come from the running build
+ * — a web token from an embedded view, say. Most graphs want Flock Register Device Token instead.
+ */
+UCLASS()
+class FLOCK_API UFlockRegisterDeviceTokenForPlatformAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockDeviceTokenPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockDeviceTokenPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Register Device Token For Platform"), Category = "Flock|Notifications")
+	static UFlockRegisterDeviceTokenForPlatformAction* RegisterForPlatform(UObject* WorldContextObject,
+		EFlockDevicePlatform Platform, const FString& Token);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockDeviceToken>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+
+	EFlockDevicePlatform Platform = EFlockDevicePlatform::Android;
+	FString Token;
+};
+
+/** Stops push delivery to a token. Deactivated false means there was nothing to deactivate. */
+UCLASS()
+class FLOCK_API UFlockUnregisterDeviceTokenAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockUnregisterDeviceTokenPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockUnregisterDeviceTokenPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Unregister Device Token"), Category = "Flock|Notifications")
+	static UFlockUnregisterDeviceTokenAction* Unregister(UObject* WorldContextObject, const FString& Token);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockUnregisterDeviceTokenResult>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+
+	FString Token;
 };

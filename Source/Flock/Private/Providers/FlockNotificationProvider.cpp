@@ -447,6 +447,94 @@ void FFlockNotificationProvider::CancelScheduled(const FString& ScheduledId,
 		TEXT("Cancel scheduled notification"));
 }
 
+// Push device tokens
+
+bool FFlockNotificationProvider::GetCurrentDevicePlatform(EFlockDevicePlatform& OutPlatform)
+{
+	return FlockTryResolveDevicePlatform(FString(ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName())), OutPlatform);
+}
+
+void FFlockNotificationProvider::RegisterDeviceToken(EFlockDevicePlatform Platform, const FString& Token,
+	TFunction<void(TFlockResult<FFlockDeviceToken>)> OnComplete)
+{
+	if (!RequireSignedIn<FFlockDeviceToken>(OnComplete))
+	{
+		return;
+	}
+	if (!RequireNotEmpty(Token, TEXT("Device Token"), OnComplete))
+	{
+		return;
+	}
+
+	const TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetStringField(TEXT("platform"), FlockDevicePlatformToWire(Platform));
+	Body->SetStringField(TEXT("token"), Token);
+	const FString Json = SerializeObject(Body);
+
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
+	const FString Url = MakeUrl(FlockEndpoints::DeviceTokenRegister);
+
+	// Idempotent, unlike scheduling: the row is keyed by token, so re-sending after an ambiguous failure
+	// lands on the same state rather than creating a second registration.
+	Execute<FFlockDeviceToken>(
+		[ClientRef, SessionRef, Url, Json](TFunction<void(TFlockResult<FFlockDeviceToken>)> OnAttempt)
+		{
+			return ClientRef->PostJson<FFlockDeviceToken>(Url, SessionRef->GetAuthHeaders(), Json, MoveTemp(OnAttempt));
+		},
+		MoveTemp(OnComplete),
+		TEXT("Register device token"));
+}
+
+void FFlockNotificationProvider::RegisterDeviceToken(const FString& Token,
+	TFunction<void(TFlockResult<FFlockDeviceToken>)> OnComplete)
+{
+	EFlockDevicePlatform Platform = EFlockDevicePlatform::Android;
+	if (!GetCurrentDevicePlatform(Platform))
+	{
+		// Refused rather than guessed. The backend takes android/ios/web only, and a token filed under the
+		// wrong platform is accepted here and then never delivers - a failure that surfaces weeks later as
+		// "push is broken" with nothing in the logs to point at.
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockDeviceToken>::Fail(FFlockError::Make(EFlockErrorType::Validation,
+				FString::Printf(TEXT("Push notifications are not available on %s. The backend accepts android, ios and web only."),
+					ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName())))));
+		}
+		return;
+	}
+	RegisterDeviceToken(Platform, Token, MoveTemp(OnComplete));
+}
+
+void FFlockNotificationProvider::UnregisterDeviceToken(const FString& Token,
+	TFunction<void(TFlockResult<FFlockUnregisterDeviceTokenResult>)> OnComplete)
+{
+	if (!RequireSignedIn<FFlockUnregisterDeviceTokenResult>(OnComplete))
+	{
+		return;
+	}
+	if (!RequireNotEmpty(Token, TEXT("Device Token"), OnComplete))
+	{
+		return;
+	}
+
+	const TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetStringField(TEXT("token"), Token);
+	const FString Json = SerializeObject(Body);
+
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
+	const FString Url = MakeUrl(FlockEndpoints::DeviceTokenUnregister);
+
+	Execute<FFlockUnregisterDeviceTokenResult>(
+		[ClientRef, SessionRef, Url, Json](TFunction<void(TFlockResult<FFlockUnregisterDeviceTokenResult>)> OnAttempt)
+		{
+			return ClientRef->PostJson<FFlockUnregisterDeviceTokenResult>(Url, SessionRef->GetAuthHeaders(), Json, MoveTemp(OnAttempt));
+		},
+		MoveTemp(OnComplete),
+		TEXT("Unregister device token"));
+}
+
 void FFlockNotificationProvider::ClearCache()
 {
 	// Writes deliberately leave the snapshot alone — the next successful read overwrites it, and an inbox

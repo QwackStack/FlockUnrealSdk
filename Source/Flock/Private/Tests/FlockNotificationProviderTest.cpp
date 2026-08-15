@@ -102,6 +102,19 @@ namespace FlockNotificationProviderTestHelpers
 		return Env(FString::Printf(TEXT("{\"id\":\"%s\",\"name\":\"DailyBonus\",\"category\":\"reward\"}"), *Id));
 	}
 
+	inline FString DeviceTokenBody(bool bActive = true)
+	{
+		return Env(FString::Printf(
+			TEXT("{\"id\":\"dt-1\",\"player_id\":\"player-a\",\"game_id\":\"g1\",\"platform\":\"android\",")
+			TEXT("\"is_active\":%s,\"last_seen_at\":null,\"created_at\":\"2026-08-13T00:00:00Z\"}"),
+			bActive ? TEXT("true") : TEXT("false")));
+	}
+
+	inline FString UnregisterTokenBody(bool bDeactivated = true)
+	{
+		return Env(FString::Printf(TEXT("{\"deactivated\":%s}"), bDeactivated ? TEXT("true") : TEXT("false")));
+	}
+
 	/** A scheduled row. The three delivery-state timestamps are nullable and carry the real state. */
 	inline FString ScheduledBody(bool bCanceled = false)
 	{
@@ -149,6 +162,8 @@ namespace FlockNotificationProviderTestHelpers
 			// Order is load-bearing throughout: the fake answers the first route whose fragment the URL
 			// contains. "notification_template/by-name?..." contains "notification_template", and
 			// "notification/schedule/sch-1" contains "notification/schedule", so the specific paths go first.
+			Fake->On(TEXT("device_token/register"), FFlockFakeTransport::Ok(DeviceTokenBody()));
+			Fake->On(TEXT("device_token/unregister"), FFlockFakeTransport::Ok(UnregisterTokenBody()));
 			Fake->On(TEXT("notification_template/by-name"), FFlockFakeTransport::Ok(TemplateByNameBody()));
 			Fake->On(TEXT("notification_template"), FFlockFakeTransport::Ok(TemplatesBody()));
 			Fake->On(TEXT("notification/schedule/sch-1"), FFlockFakeTransport::Ok(ScheduledBody(/*bCanceled*/ true)));
@@ -832,6 +847,176 @@ bool FFlockNotificationClearCacheKeepsTemplatesTest::RunTest(const FString& Para
 	TestTrue(TEXT("templates completed"), bTemplates);
 
 	Cleanup(Dir);
+	return true;
+}
+
+// NF-20: the platform mapping. This is the one piece of sub-feature C that can be covered at all in an
+// automation run — the real call site reads the running platform, which is Windows here forever. Pure and
+// string-in for exactly that reason.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockDevicePlatformMappingTest, "Flock.Notification.DeviceToken.PlatformMapping",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockDevicePlatformMappingTest::RunTest(const FString& Parameters)
+{
+	EFlockDevicePlatform Platform = EFlockDevicePlatform::Web;
+
+	TestTrue(TEXT("Android maps"), FlockTryResolveDevicePlatform(TEXT("Android"), Platform));
+	TestEqual(TEXT("to android"), Platform, EFlockDevicePlatform::Android);
+
+	TestTrue(TEXT("IOS maps"), FlockTryResolveDevicePlatform(TEXT("IOS"), Platform));
+	TestEqual(TEXT("to ios"), Platform, EFlockDevicePlatform::IOS);
+
+	// The engine's spelling is "IOS"; be tolerant of case so a platform rename cannot silently unmap it.
+	TestTrue(TEXT("case-insensitive"), FlockTryResolveDevicePlatform(TEXT("iOS"), Platform));
+
+	// Everything the push backend does not accept must fail rather than resolve to a plausible value.
+	for (const TCHAR* Unsupported : { TEXT("Windows"), TEXT("Mac"), TEXT("Linux"), TEXT("PS5"), TEXT("XSX"), TEXT("") })
+	{
+		TestFalse(FString::Printf(TEXT("%s does not map"), Unsupported),
+			FlockTryResolveDevicePlatform(Unsupported, Platform));
+	}
+
+	// The wire spellings are what the backend's enum declares.
+	TestEqual(TEXT("android wire"), FString(FlockDevicePlatformToWire(EFlockDevicePlatform::Android)), FString(TEXT("android")));
+	TestEqual(TEXT("ios wire"), FString(FlockDevicePlatformToWire(EFlockDevicePlatform::IOS)), FString(TEXT("ios")));
+	TestEqual(TEXT("web wire"), FString(FlockDevicePlatformToWire(EFlockDevicePlatform::Web)), FString(TEXT("web")));
+	return true;
+}
+
+// NF-21: registering posts the platform's wire spelling plus the token, and parses the row back.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockDeviceTokenRegisterTest, "Flock.Notification.DeviceToken.RegistersToken",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockDeviceTokenRegisterTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+
+	bool bDone = false;
+	F.Provider->RegisterDeviceToken(EFlockDevicePlatform::Android, TEXT("fcm-abc123"),
+		[&](TFlockResult<FFlockDeviceToken> Result)
+		{
+			bDone = true;
+			TestTrue(TEXT("register succeeds"), Result.bSuccess);
+			TestEqual(TEXT("row id"), Result.Value.Id, FString(TEXT("dt-1")));
+			TestTrue(TEXT("row is active"), Result.Value.IsActive);
+			// platform comes back as a plain string, matching how the response types it.
+			TestEqual(TEXT("platform echoed"), Result.Value.Platform, FString(TEXT("android")));
+			// null last_seen_at must stay empty, not become the literal "null".
+			TestTrue(TEXT("null last_seen_at stays empty"), Result.Value.LastSeenAt.IsEmpty());
+		});
+	TestTrue(TEXT("completed"), bDone);
+
+	const FString Body = F.LastBodyContaining(TEXT("device_token/register"));
+	TestTrue(TEXT("wire platform spelling"), Body.Contains(TEXT("\"platform\":\"android\"")));
+	TestTrue(TEXT("token sent verbatim"), Body.Contains(TEXT("\"token\":\"fcm-abc123\"")));
+
+	// Unregister answers whether anything was actually deactivated.
+	bool bOff = false;
+	F.Provider->UnregisterDeviceToken(TEXT("fcm-abc123"), [&](TFlockResult<FFlockUnregisterDeviceTokenResult> Result)
+	{
+		bOff = true;
+		TestTrue(TEXT("unregister succeeds"), Result.bSuccess);
+		TestTrue(TEXT("a row was deactivated"), Result.Value.Deactivated);
+	});
+	TestTrue(TEXT("unregister completed"), bOff);
+	TestTrue(TEXT("unregister sends only the token"),
+		F.LastBodyContaining(TEXT("device_token/unregister")).Contains(TEXT("\"token\":\"fcm-abc123\"")));
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// NF-22: registering is **idempotent**, unlike scheduling — the row is keyed by token, so a retry after an
+// ambiguous failure lands on the same state instead of creating a second registration.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockDeviceTokenRetriedTest, "Flock.Notification.DeviceToken.RegisterIsRetried",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockDeviceTokenRetriedTest::RunTest(const FString& Parameters)
+{
+	FFixture F(FString(), WithRetries());
+	F.SignIn();
+	F.Fake->On(TEXT("device_token/register"), FFlockFakeTransport::Status(500, TEXT("{}")));
+
+	F.Provider->RegisterDeviceToken(EFlockDevicePlatform::IOS, TEXT("apns-xyz"), [](TFlockResult<FFlockDeviceToken>) {});
+	PumpRetries();
+	TestTrue(TEXT("register retries under a retrying policy"), F.Fake->CountTo(TEXT("device_token/register")) > 1);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// NF-23: both calls are player-scoped, so they gate on sign-in and reject an empty token without spending
+// a request. A token belongs to a player; there is nobody to register it against when signed out.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockDeviceTokenGuardsTest, "Flock.Notification.DeviceToken.Guards",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockDeviceTokenGuardsTest::RunTest(const FString& Parameters)
+{
+	{
+		FFixture F;   // signed out
+		int32 Gated = 0;
+		F.Provider->RegisterDeviceToken(EFlockDevicePlatform::Android, TEXT("t"), [&](TFlockResult<FFlockDeviceToken> R)
+		{
+			TestEqual(TEXT("register gated on auth"), R.Error.Type, EFlockErrorType::Auth);
+			++Gated;
+		});
+		F.Provider->UnregisterDeviceToken(TEXT("t"), [&](TFlockResult<FFlockUnregisterDeviceTokenResult> R)
+		{
+			TestEqual(TEXT("unregister gated on auth"), R.Error.Type, EFlockErrorType::Auth);
+			++Gated;
+		});
+		TestEqual(TEXT("both gated"), Gated, 2);
+		TestEqual(TEXT("no requests sent"), F.Fake->Requests.Num(), 0);
+		Cleanup(F.Dir);
+	}
+	{
+		FFixture F;
+		F.SignIn();
+		int32 Rejected = 0;
+		F.Provider->RegisterDeviceToken(EFlockDevicePlatform::Android, FString(), [&](TFlockResult<FFlockDeviceToken> R)
+		{
+			TestEqual(TEXT("empty token rejected"), R.Error.Type, EFlockErrorType::Validation);
+			++Rejected;
+		});
+		F.Provider->UnregisterDeviceToken(FString(), [&](TFlockResult<FFlockUnregisterDeviceTokenResult> R)
+		{
+			TestEqual(TEXT("empty token rejected on unregister"), R.Error.Type, EFlockErrorType::Validation);
+			++Rejected;
+		});
+		TestEqual(TEXT("both rejected"), Rejected, 2);
+		TestEqual(TEXT("no requests sent"), F.Fake->Requests.Num(), 0);
+		Cleanup(F.Dir);
+	}
+	return true;
+}
+
+// NF-24: the auto-detecting overload refuses on an unsupported platform rather than guessing one. This
+// runs on Windows, so it exercises the refusal path directly — the accept path is covered by NF-20.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockDeviceTokenUnsupportedPlatformTest, "Flock.Notification.DeviceToken.RefusesUnsupportedPlatform",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockDeviceTokenUnsupportedPlatformTest::RunTest(const FString& Parameters)
+{
+	EFlockDevicePlatform Ignored = EFlockDevicePlatform::Android;
+	const bool bSupportedHere = FFlockNotificationProvider::GetCurrentDevicePlatform(Ignored);
+	// The automation host is a desktop editor or -game run, never Android or iOS.
+	TestFalse(TEXT("push is not available on the test host"), bSupportedHere);
+
+	FFixture F;
+	F.SignIn();
+	bool bDone = false;
+	F.Provider->RegisterDeviceToken(TEXT("some-token"), [&](TFlockResult<FFlockDeviceToken> Result)
+	{
+		bDone = true;
+		TestFalse(TEXT("auto-detect refuses here"), Result.bSuccess);
+		TestEqual(TEXT("as validation"), Result.Error.Type, EFlockErrorType::Validation);
+	});
+	TestTrue(TEXT("completed"), bDone);
+	// The point of refusing: nothing is filed under a platform that would never deliver.
+	TestEqual(TEXT("no token was registered"), F.Fake->CountTo(TEXT("device_token/register")), 0);
+
+	Cleanup(F.Dir);
 	return true;
 }
 

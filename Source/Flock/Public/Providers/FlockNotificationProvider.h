@@ -136,6 +136,45 @@ public:
 	 */
 	void CancelScheduled(const FString& ScheduledId, TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete);
 
+	// Push device tokens
+	//
+	// **The SDK never acquires a token, by design.** The game gets one from its push plugin — Firebase
+	// Cloud Messaging, OneSignal — and hands the string here; this half registers it against the signed-in
+	// player so the backend can deliver. That is where every comparable backend SDK draws the line, and on
+	// Android it is the only line available: stock Unreal has no Java implementation behind its remote-
+	// notification JNI hook, so there is nothing for the engine to hand over.
+	//
+	// Registering is idempotent — the row is keyed by token, so a retry after an ambiguous failure lands on
+	// the same state. That is the opposite of scheduling, where a resend would double-book a reminder.
+
+	/**
+	 * Registers a push token for the signed-in player on an explicit platform.
+	 *
+	 * Use this when the token did not come from the running build — a web token from an embedded view, or a
+	 * test harness. Prefer the auto-detecting overload otherwise.
+	 */
+	void RegisterDeviceToken(EFlockDevicePlatform Platform, const FString& Token,
+		TFunction<void(TFlockResult<FFlockDeviceToken>)> OnComplete);
+
+	/**
+	 * Registers a push token, taking the platform from the running build.
+	 *
+	 * Fails **Validation** on anything the push backend does not accept — Windows, Mac, Linux, console and
+	 * the editor. It never guesses a plausible platform, because a token registered under the wrong one
+	 * fails silently at delivery time and looks like a backend fault weeks later.
+	 */
+	void RegisterDeviceToken(const FString& Token, TFunction<void(TFlockResult<FFlockDeviceToken>)> OnComplete);
+
+	/** Deactivates a token so the backend stops delivering to it. Idempotent; Deactivated false means there was nothing to do. */
+	void UnregisterDeviceToken(const FString& Token, TFunction<void(TFlockResult<FFlockUnregisterDeviceTokenResult>)> OnComplete);
+
+	/**
+	 * The platform this build would register under, if the push backend supports it. False on desktop,
+	 * console and in the editor — call it to hide a "enable notifications" toggle rather than letting the
+	 * register call fail.
+	 */
+	static bool GetCurrentDevicePlatform(EFlockDevicePlatform& OutPlatform);
+
 	/** Drops the notification snapshot category, so the next read hits the backend. Called from Logout(). */
 	void ClearCache();
 

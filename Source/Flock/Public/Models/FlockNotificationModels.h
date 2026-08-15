@@ -259,3 +259,79 @@ struct FLOCK_API FFlockScheduledNotification
 
 	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockScheduledNotification& OutStruct, FString& OutError);
 };
+
+/**
+ * A platform the push backend can deliver to.
+ *
+ * Closed set in the spec, so it is an enum — and a deliberately short one. There is no Windows, Mac,
+ * Linux or console member because the backend accepts none of them, and inventing one would let a caller
+ * register a token under a platform that silently never delivers.
+ */
+UENUM(BlueprintType)
+enum class EFlockDevicePlatform : uint8
+{
+	Android,
+	IOS,
+	Web
+};
+
+/** The wire spelling for a device platform. */
+FLOCK_API const TCHAR* FlockDevicePlatformToWire(EFlockDevicePlatform Platform);
+
+/**
+ * Maps an engine platform name (FPlatformProperties::IniPlatformName) onto a platform the push backend
+ * accepts. Returns false for anything it does not — Windows, Mac, Linux, console, and the editor.
+ *
+ * Pure and string-in so the mapping is testable without running on a device, which is the only way to
+ * cover it at all: the real call sites can never execute in an automation run.
+ */
+FLOCK_API bool FlockTryResolveDevicePlatform(const FString& IniPlatformName, EFlockDevicePlatform& OutPlatform);
+
+/**
+ * A device registered to receive push for the signed-in player.
+ *
+ * `Platform` is an FString, not the enum: the *request* declares a closed set but the *response* types the
+ * same field as a plain string — the same asymmetry as a scheduled notification's channels, handled the
+ * same way.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockDeviceToken
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Id;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PlayerId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString GameId;
+
+	/** Verbatim wire string — see the note above on why this is not the enum. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Platform;
+
+	/** False once unregistered; the row is deactivated rather than deleted. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool IsActive = false;
+
+	/** Raw ISO-8601 timestamp, or empty when the server has not stamped one. Nullable on the wire. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString LastSeenAt;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString CreatedAt;
+
+	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockDeviceToken& OutStruct, FString& OutError);
+};
+
+/** Whether an unregister actually deactivated a row. False means there was nothing to deactivate. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockUnregisterDeviceTokenResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool Deactivated = false;
+};

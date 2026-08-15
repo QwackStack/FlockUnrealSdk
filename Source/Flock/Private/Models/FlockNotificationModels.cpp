@@ -97,6 +97,49 @@ bool FFlockScheduledNotification::FromWireObject(const TSharedRef<FJsonObject>& 
 	return true;
 }
 
+const TCHAR* FlockDevicePlatformToWire(EFlockDevicePlatform Platform)
+{
+	switch (Platform)
+	{
+	case EFlockDevicePlatform::IOS: return TEXT("ios");
+	case EFlockDevicePlatform::Web: return TEXT("web");
+	case EFlockDevicePlatform::Android:
+	default:                        return TEXT("android");
+	}
+}
+
+bool FlockTryResolveDevicePlatform(const FString& IniPlatformName, EFlockDevicePlatform& OutPlatform)
+{
+	// Only the three the backend accepts map. Everything else - Windows, Mac, Linux, console, editor -
+	// deliberately fails rather than picking a plausible-looking value: a token registered under the wrong
+	// platform fails silently at delivery time, which is far worse than refusing the call here.
+	if (IniPlatformName.Equals(TEXT("Android"), ESearchCase::IgnoreCase))
+	{
+		OutPlatform = EFlockDevicePlatform::Android;
+		return true;
+	}
+	if (IniPlatformName.Equals(TEXT("IOS"), ESearchCase::IgnoreCase))
+	{
+		OutPlatform = EFlockDevicePlatform::IOS;
+		return true;
+	}
+	return false;
+}
+
+bool FFlockDeviceToken::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockDeviceToken& OutStruct, FString& OutError)
+{
+	Object->TryGetStringField(TEXT("id"), OutStruct.Id);
+	Object->TryGetStringField(TEXT("player_id"), OutStruct.PlayerId);
+	Object->TryGetStringField(TEXT("game_id"), OutStruct.GameId);
+	Object->TryGetStringField(TEXT("platform"), OutStruct.Platform);
+	Object->TryGetBoolField(TEXT("is_active"), OutStruct.IsActive);
+	Object->TryGetStringField(TEXT("created_at"), OutStruct.CreatedAt);
+
+	// Nullable on the wire; absent must stay empty rather than becoming the literal "null".
+	ReadNullableString(Object, TEXT("last_seen_at"), OutStruct.LastSeenAt);
+	return true;
+}
+
 bool FFlockNotificationSummary::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockNotificationSummary& OutStruct, FString& OutError)
 {
 	Object->TryGetNumberField(TEXT("unread_count"), OutStruct.UnreadCount);

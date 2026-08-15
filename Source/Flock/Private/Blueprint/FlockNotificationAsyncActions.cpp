@@ -439,3 +439,137 @@ void UFlockCancelScheduledNotificationAction::Complete(const TFlockResult<FFlock
 	SetReadyToDestroy();
 }
 
+// Register Device Token
+
+UFlockRegisterDeviceTokenAction* UFlockRegisterDeviceTokenAction::Register(UObject* WorldContextObject, const FString& Token)
+{
+	UFlockRegisterDeviceTokenAction* Action = NewObject<UFlockRegisterDeviceTokenAction>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->Token = Token;
+	return Action;
+}
+
+void UFlockRegisterDeviceTokenAction::Activate()
+{
+	FFlockError Error;
+	FFlockNotificationProvider* Provider = ResolveNotifications(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockDeviceToken>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockRegisterDeviceTokenAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	Provider->RegisterDeviceToken(Token, [WeakThis](TFlockResult<FFlockDeviceToken> Result)
+	{
+		if (UFlockRegisterDeviceTokenAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockRegisterDeviceTokenAction::Complete(const TFlockResult<FFlockDeviceToken>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(FFlockDeviceToken(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
+// Register Device Token For Platform
+
+UFlockRegisterDeviceTokenForPlatformAction* UFlockRegisterDeviceTokenForPlatformAction::RegisterForPlatform(
+	UObject* WorldContextObject, EFlockDevicePlatform Platform, const FString& Token)
+{
+	UFlockRegisterDeviceTokenForPlatformAction* Action = NewObject<UFlockRegisterDeviceTokenForPlatformAction>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->Platform = Platform;
+	Action->Token = Token;
+	return Action;
+}
+
+void UFlockRegisterDeviceTokenForPlatformAction::Activate()
+{
+	FFlockError Error;
+	FFlockNotificationProvider* Provider = ResolveNotifications(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockDeviceToken>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockRegisterDeviceTokenForPlatformAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	Provider->RegisterDeviceToken(Platform, Token, [WeakThis](TFlockResult<FFlockDeviceToken> Result)
+	{
+		if (UFlockRegisterDeviceTokenForPlatformAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockRegisterDeviceTokenForPlatformAction::Complete(const TFlockResult<FFlockDeviceToken>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(FFlockDeviceToken(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
+// Unregister Device Token
+
+UFlockUnregisterDeviceTokenAction* UFlockUnregisterDeviceTokenAction::Unregister(UObject* WorldContextObject, const FString& Token)
+{
+	UFlockUnregisterDeviceTokenAction* Action = NewObject<UFlockUnregisterDeviceTokenAction>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->Token = Token;
+	return Action;
+}
+
+void UFlockUnregisterDeviceTokenAction::Activate()
+{
+	FFlockError Error;
+	FFlockNotificationProvider* Provider = ResolveNotifications(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockUnregisterDeviceTokenResult>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockUnregisterDeviceTokenAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	Provider->UnregisterDeviceToken(Token, [WeakThis](TFlockResult<FFlockUnregisterDeviceTokenResult> Result)
+	{
+		if (UFlockUnregisterDeviceTokenAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockUnregisterDeviceTokenAction::Complete(const TFlockResult<FFlockUnregisterDeviceTokenResult>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(FFlockUnregisterDeviceTokenResult(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+

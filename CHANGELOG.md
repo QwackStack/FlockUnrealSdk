@@ -5,6 +5,88 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-08-13
+
+Notifications, in three parts: the in-app **inbox**, server-side **scheduled reminders**, and **push
+device-token registration**. The inbox works on its own — it needs no push setup at all — and push works
+without the inbox. Adopt whichever half you need.
+
+**Flock does not fetch your push token.** Your game gets one from its push plugin (Firebase Cloud
+Messaging, OneSignal) and hands the string to `RegisterDeviceToken`; Flock registers it against the
+signed-in player so the backend can deliver. This is where every comparable backend SDK draws the line,
+and on Android it is the only line available — Unreal ships no implementation behind its own Android
+remote-notification hook, so there is nothing for the engine to hand over.
+
+### Added
+
+- `FFlockNotificationProvider`, reachable from `UFlockSubsystem::GetNotificationProvider()`.
+- **Inbox**: `GetNotifications` (paged, with an unread-only filter), `GetUnreadCount`, `GetSummary`,
+  `MarkRead` and `MarkAllRead`. Reads are backed by the offline snapshot cache, so an inbox screen shows
+  the last-known messages when the network is down rather than an error.
+- **Scheduling**: `ScheduleByTemplateName` and `CancelScheduled`, plus `GetTemplates` and
+  `GetTemplateByName` for the template catalog. Reminders are delivered server-side, so they fire whether
+  or not the game is running.
+- Scheduling is addressed by template **name** — what you see on the dashboard — with the id resolved
+  internally and memoized. `ScheduleByTemplateId` is there for a caller that already holds an id.
+- **Push device tokens**: `RegisterDeviceToken` (taking the platform from the running build) and
+  `UnregisterDeviceToken`, plus an explicit-platform overload for a token that did not come from this
+  build. `GetCurrentDevicePlatform` reports whether push is available at all.
+- Blueprint nodes: `Flock Get Notifications`, `Flock Get Unread Notification Count`,
+  `Flock Get Notification Summary`, `Flock Mark Notification Read`, `Flock Mark All Notifications Read`,
+  `Flock Get Notification Templates`, `Flock Get Notification Template By Name`,
+  `Flock Schedule Notification`, `Flock Cancel Scheduled Notification`, `Flock Register Device Token`,
+  `Flock Register Device Token For Platform` and `Flock Unregister Device Token`.
+- `UFlockNotificationLibrary`: `Is Read`, `Is Pending`, `Is Delivered`, `Is Canceled`,
+  `Flock Get Current Device Platform`, `Device Platform To String` and `Notification Channel To String`,
+  all pure nodes.
+- `Flock.SelfTest` now covers notifications end to end: template catalog, schedule and cancel, inbox
+  reads, mark read and mark all read, and device-token register and unregister.
+
+### Notes
+
+- **Every notification call except the template catalog requires a signed-in player** and fails with an
+  auth error without one — an inbox and a device token both belong to a player. The template catalog is
+  game-scoped, so it works signed out and survives a logout.
+- **Read-receipts are never queued offline.** `MarkRead` and `MarkAllRead` fail when the server is
+  unreachable rather than replaying later, because a receipt delivered an hour late marks messages the
+  player never saw.
+- **Scheduling is not retried after an ambiguous failure**, so a network blip cannot leave a player with
+  two of the same reminder. Cancelling and registering a device token *are* retried — both are idempotent.
+- **Registering a token on an unsupported platform fails with a validation error rather than guessing
+  one.** The backend accepts `android`, `ios` and `web`; a token filed under the wrong platform is
+  accepted and then never delivers. Branch on `Flock Get Current Device Platform` to hide an "enable
+  notifications" toggle on desktop instead of letting the call fail.
+
+### Testing push notifications
+
+Push cannot be exercised in the editor, in Play-In-Editor, or in a Windows build — Unreal's desktop
+implementation is a stub that reports "not registered" and does nothing. To test delivery you need:
+
+1. A **device build** for Android or iOS.
+2. A way to mint the token, which differs by platform:
+   - **iOS needs nothing extra.** Unreal surfaces the APNs token itself and the backend speaks APNs
+     directly — bind `FCoreDelegates::ApplicationRegisteredForRemoteNotificationsDelegate`, hex-encode the
+     bytes, and pass the string to `Flock Register Device Token`. No Firebase, no purchase.
+   - **Android currently needs a Firebase-based plugin.** Bind its token callback and pass the string in.
+     It must be a real FCM registration token, not a vendor subscriber ID.
+
+   **Built-in acquisition is planned for both** — a one-call iOS wrapper and a first-party Android UPL
+   shipping the modern `firebase-messaging` binding — so push will not depend on a paid marketplace
+   plugin. `RegisterDeviceToken` itself does not change when they land.
+3. **Provider credentials on the dashboard**, under Settings > Push Notifications: the Firebase
+   service-account JSON for Android and web, or an APNs `.p8` key with its Key ID, Team ID and Bundle ID
+   for iOS. Without these the token registers successfully and nothing is ever delivered.
+4. On Android, `google-services.json` where your push plugin expects it (Firebase Features:
+   `<YourProject>/Services/`). Leave the Google Cloud Messaging Sender ID field in Project Settings
+   blank — it gates Unreal's own `GoogleCloudMessaging` plugin, which targets APIs Google decommissioned
+   in 2019, and blanking it avoids two registration paths competing for the same engine delegates.
+
+Step-by-step: **Documentation/push-setup-android.md**.
+
+`Flock.SelfTest` covers the registration call itself on any platform by registering a synthetic token
+under `web`, then unregistering it. That proves the request, response and parse — everything the SDK
+owns — but not that a banner appears on a handset, which only a device build can show.
+
 ## [1.2.0] - 2026-08-11
 
 Leaderboards. Read-only by design: a board projects over a player-data field, so a score is submitted by
