@@ -36,6 +36,7 @@
 #include "Providers/FlockConfigProvider.h"
 #include "Providers/FlockGameProvider.h"
 #include "Providers/FlockLeaderboardProvider.h"
+#include "Providers/FlockNotificationProvider.h"
 #include "Providers/FlockPlayerProvider.h"
 #include "Providers/FlockShopProvider.h"
 #include "UObject/Package.h"
@@ -92,6 +93,35 @@ namespace
 	/** Funds granted by the commands sweep. Deliberately the smallest non-zero amount — this is real money movement on a real backend. */
 	constexpr int32 DemoFundsAmount = 1;
 
+	// Notifications sweep. The template NAME as it appears on the dashboard — the SDK schedules by name and
+	// resolves the id internally. **This is the one thing you must create on the backend for this sweep to
+	// cover scheduling**; an empty name skips the schedule/cancel steps and narrates why, leaving the inbox
+	// and device-token steps to run as normal.
+	//
+	// The template should declare **no required variables**: the sweep deliberately sends none, which also
+	// exercises the omit-empty-optionals path. A template with required placeholders will narrate a clean
+	// rejection instead.
+	const TCHAR* const DemoNotificationTemplate = TEXT("SelfTestReminder");
+	/**
+	 * One template variable, so the sweep covers the variables path rather than only the omit-empty one.
+	 *
+	 * Give the template a placeholder matching this key — a title of "Reminder for {player}" is enough. An
+	 * empty key sends no variables at all, which is still a valid request.
+	 */
+	const TCHAR* const DemoNotificationVariableKey = TEXT("player");
+	const TCHAR* const DemoNotificationVariableValue = DemoName;
+	/** How far ahead the demo reminder is scheduled. It is cancelled straight away, so this only has to be in the future. */
+	constexpr int32 DemoNotificationDeliverInSeconds = 3600;
+	constexpr int32 DemoNotificationLimit = 10;
+	/**
+	 * A synthetic push token, registered under an explicit **web** platform.
+	 *
+	 * Not a real APNs or FCM token, and it does not need to be: this proves the register/unregister wire
+	 * contract, which is the whole of what the SDK owns. Actual delivery needs a device build — see the
+	 * push-testing note in CHANGELOG.md. The sweep unregisters it immediately so nothing is left live.
+	 */
+	const TCHAR* const DemoDeviceToken = TEXT("self-test-token-UE");
+
 	/**
 	 * The providers the signed-in leg of the chain hands along. Bundled because that leg is a stack of
 	 * nested completions, and threading one raw pointer per feature through all of them turns every capture
@@ -105,6 +135,7 @@ namespace
 		FFlockCommandProvider* Commands = nullptr;
 		FFlockPlayerProvider* Players = nullptr;
 		FFlockLeaderboardProvider* Leaderboards = nullptr;
+		FFlockNotificationProvider* Notifications = nullptr;
 	};
 
 	/**
@@ -821,6 +852,227 @@ namespace
 	 * Every step narrates and then continues the chain, so one missing board or one failed read reports
 	 * itself rather than stopping the run. Hands off to Next when done.
 	 */
+	/**
+	 * The whole notification surface against the configured backend, in one chain: template catalog ->
+	 * schedule and cancel -> inbox reads -> mark read -> device token register and unregister.
+	 *
+	 * Every step narrates its own outcome and hands on regardless, so a backend missing the demo template
+	 * reports one clean line rather than aborting the run.
+	 *
+	 * What this cannot prove: that a push notification actually arrives on a handset. Delivery needs a
+	 * device build, a push plugin to mint the token, and APNs/FCM credentials on the backend. What it does
+	 * prove is every call the SDK makes — which is the part the SDK owns.
+	 */
+	void RunNotificationSweep(FFlockNotificationProvider* Notifications, const TSharedRef<IFlockLogger>& Logger,
+		TFunction<void()> Next)
+	{
+		if (Notifications == nullptr)
+		{
+			Logger->LogInfo(TEXT("Self-test: notification provider unavailable; skipping the notifications sweep."));
+			Next();
+			return;
+		}
+
+		// Device tokens close the chain. Registered under an EXPLICIT web platform rather than the
+		// auto-detecting overload: the self-test host is a desktop editor or -game run, where auto-detect
+		// correctly refuses. Web is a platform the backend accepts, so this exercises the real request,
+		// response and parse on a machine that could never hold an APNs or FCM token.
+		TFunction<void()> DeviceTokens = [Notifications, Logger, Next]()
+		{
+			EFlockDevicePlatform Detected = EFlockDevicePlatform::Android;
+			const bool bPushHere = FFlockNotificationProvider::GetCurrentDevicePlatform(Detected);
+			Logger->LogInfo(FString::Printf(TEXT("Self-test: push available on this platform -> %s%s"),
+				bPushHere ? TEXT("yes") : TEXT("no"),
+				bPushHere ? TEXT("") : TEXT(" (expected on desktop; registering explicitly as web instead)")));
+
+			Notifications->RegisterDeviceToken(EFlockDevicePlatform::Web, DemoDeviceToken,
+				[Notifications, Logger, Next](TFlockResult<FFlockDeviceToken> Registered)
+				{
+					if (!Registered.bSuccess)
+					{
+						Logger->LogInfo(FString::Printf(TEXT("Self-test: register device token -> failed (%s)"),
+							*Registered.Error.Message));
+						Next();
+						return;
+					}
+					Logger->LogInfo(FString::Printf(TEXT("Self-test: register device token -> ok (id '%s', platform '%s', active %s)"),
+						*Registered.Value.Id, *Registered.Value.Platform, Registered.Value.IsActive ? TEXT("true") : TEXT("false")));
+
+					// Unregistered immediately so the self-test never leaves a live push target behind.
+					Notifications->UnregisterDeviceToken(DemoDeviceToken,
+						[Logger, Next](TFlockResult<FFlockUnregisterDeviceTokenResult> Off)
+						{
+							Logger->LogInfo(Off.bSuccess
+								? FString::Printf(TEXT("Self-test: unregister device token -> ok (deactivated %s)"),
+									Off.Value.Deactivated ? TEXT("true") : TEXT("false"))
+								: FString::Printf(TEXT("Self-test: unregister device token -> failed (%s)"), *Off.Error.Message));
+							Next();
+						});
+				});
+		};
+
+		// Inbox: page, count, summary, then mark one read and the rest read. Mark-read needs a real row, so
+		// it takes the first one the page returned and skips cleanly on an empty inbox.
+		TFunction<void()> Inbox = [Notifications, Logger, DeviceTokens]()
+		{
+			Notifications->GetNotifications(/*bUnreadOnly*/ false, 1, DemoNotificationLimit,
+				[Notifications, Logger, DeviceTokens](TFlockResult<FFlockNotificationPage> Page)
+				{
+					if (!Page.bSuccess)
+					{
+						Logger->LogInfo(FString::Printf(TEXT("Self-test: notification inbox -> failed (%s)"), *Page.Error.Message));
+						DeviceTokens();
+						return;
+					}
+					Logger->LogInfo(FString::Printf(TEXT("Self-test: notification inbox -> ok (%d of %d total on page %d)"),
+						Page.Value.Items.Num(), Page.Value.Total, Page.Value.Page));
+
+					// The first unread row, if any — what mark-read will act on.
+					FString FirstUnreadId;
+					for (const FFlockNotification& Row : Page.Value.Items)
+					{
+						if (!Row.IsRead())
+						{
+							FirstUnreadId = Row.Id;
+							break;
+						}
+					}
+
+					Notifications->GetUnreadCount([Notifications, Logger, DeviceTokens, FirstUnreadId](TFlockResult<int32> Count)
+					{
+						Logger->LogInfo(Count.bSuccess
+							? FString::Printf(TEXT("Self-test: unread count -> ok (%d)"), Count.Value)
+							: FString::Printf(TEXT("Self-test: unread count -> failed (%s)"), *Count.Error.Message));
+
+						Notifications->GetSummary([Notifications, Logger, DeviceTokens, FirstUnreadId](TFlockResult<FFlockNotificationSummary> Summary)
+						{
+							Logger->LogInfo(Summary.bSuccess
+								? FString::Printf(TEXT("Self-test: notification summary -> ok (%d unread, %d previewed)"),
+									Summary.Value.UnreadCount, Summary.Value.Items.Num())
+								: FString::Printf(TEXT("Self-test: notification summary -> failed (%s)"), *Summary.Error.Message));
+
+							TFunction<void()> MarkAll = [Notifications, Logger, DeviceTokens]()
+							{
+								Notifications->MarkAllRead([Logger, DeviceTokens](TFlockResult<FFlockMarkAllReadResult> All)
+								{
+									Logger->LogInfo(All.bSuccess
+										? FString::Printf(TEXT("Self-test: mark all notifications read -> ok (%d updated)"), All.Value.Updated)
+										: FString::Printf(TEXT("Self-test: mark all notifications read -> failed (%s)"), *All.Error.Message));
+									DeviceTokens();
+								});
+							};
+
+							if (FirstUnreadId.IsEmpty())
+							{
+								// Not a failure: an inbox with nothing unread is the normal steady state once
+								// this sweep has run before.
+								Logger->LogInfo(TEXT("Self-test: mark notification read -> skipped (no unread row in the first page)"));
+								MarkAll();
+								return;
+							}
+							Notifications->MarkRead(FirstUnreadId, [Logger, MarkAll, FirstUnreadId](TFlockResult<FFlockNotification> Marked)
+							{
+								Logger->LogInfo(Marked.bSuccess
+									? FString::Printf(TEXT("Self-test: mark notification read -> ok ('%s' now read: %s)"),
+										*FirstUnreadId, Marked.Value.IsRead() ? TEXT("true") : TEXT("false"))
+									: FString::Printf(TEXT("Self-test: mark notification read -> failed (%s)"), *Marked.Error.Message));
+								MarkAll();
+							});
+						});
+					});
+				});
+		};
+
+		// Scheduling: create one in the future, then cancel it immediately. Cancelling is the point — the
+		// self-test must not leave a real reminder queued against the demo player.
+		TFunction<void()> Scheduling = [Notifications, Logger, Inbox]()
+		{
+			const FString TemplateName = DemoNotificationTemplate;
+			if (TemplateName.IsEmpty())
+			{
+				Logger->LogInfo(TEXT("Self-test: notification scheduling -> skipped (no DemoNotificationTemplate configured)"));
+				Inbox();
+				return;
+			}
+
+			const FDateTime DeliverAt = FDateTime::UtcNow() + FTimespan::FromSeconds(DemoNotificationDeliverInSeconds);
+
+			// One variable and two explicit channels, so the sweep covers the filled-in path. An empty key
+			// falls back to sending neither, which is the omit-empty-optionals path and equally valid.
+			FFlockCommandData Variables;
+			const FString VariableKey = DemoNotificationVariableKey;
+			if (!VariableKey.IsEmpty())
+			{
+				Variables.Set(VariableKey, FString(DemoNotificationVariableValue));
+			}
+			const TArray<EFlockNotificationChannel> Channels =
+				{ EFlockNotificationChannel::InApp, EFlockNotificationChannel::Push };
+
+			Notifications->ScheduleByTemplateName(TemplateName, DeliverAt, Variables, Channels,
+				[Notifications, Logger, Inbox, TemplateName](TFlockResult<FFlockScheduledNotification> Scheduled)
+				{
+					if (!Scheduled.bSuccess)
+					{
+						// Most likely causes: no template by this name on the backend, or a placeholder the
+						// sweep did not fill. Narrated rather than fatal so the inbox steps still run.
+						Logger->LogInfo(FString::Printf(TEXT("Self-test: schedule notification '%s' -> failed (%s)"),
+							*TemplateName, *Scheduled.Error.Message));
+						Inbox();
+						return;
+					}
+					Logger->LogInfo(FString::Printf(TEXT("Self-test: schedule notification '%s' -> ok (id '%s', deliver_at %s, pending %s)"),
+						*TemplateName, *Scheduled.Value.Id, *Scheduled.Value.DeliverAt,
+						Scheduled.Value.IsPending() ? TEXT("true") : TEXT("false")));
+
+					Notifications->CancelScheduled(Scheduled.Value.Id,
+						[Logger, Inbox](TFlockResult<FFlockScheduledNotification> Canceled)
+						{
+							Logger->LogInfo(Canceled.bSuccess
+								? FString::Printf(TEXT("Self-test: cancel scheduled notification -> ok (canceled %s)"),
+									Canceled.Value.IsCanceled() ? TEXT("true") : TEXT("false"))
+								: FString::Printf(TEXT("Self-test: cancel scheduled notification -> failed (%s)"), *Canceled.Error.Message));
+							Inbox();
+						});
+				});
+		};
+
+		// Templates first: the catalog is what makes scheduling addressable by name, and fetching it warms
+		// the name memo the schedule step then resolves through.
+		Notifications->GetTemplates([Notifications, Logger, Scheduling](TFlockResult<TArray<FFlockNotificationTemplate>> Catalog)
+		{
+			if (!Catalog.bSuccess)
+			{
+				Logger->LogInfo(FString::Printf(TEXT("Self-test: notification templates -> failed (%s)"), *Catalog.Error.Message));
+				Scheduling();
+				return;
+			}
+			FString Names;
+			for (const FFlockNotificationTemplate& Template : Catalog.Value)
+			{
+				Names += (Names.IsEmpty() ? TEXT("") : TEXT(", ")) + Template.Name;
+			}
+			Logger->LogInfo(FString::Printf(TEXT("Self-test: notification templates -> ok (%d: %s)"),
+				Catalog.Value.Num(), Names.IsEmpty() ? TEXT("none") : *Names));
+
+			const FString TemplateName = DemoNotificationTemplate;
+			if (TemplateName.IsEmpty())
+			{
+				Scheduling();
+				return;
+			}
+			Notifications->GetTemplateByName(TemplateName,
+				[Logger, Scheduling, TemplateName](TFlockResult<FFlockNotificationTemplate> ByName)
+				{
+					Logger->LogInfo(ByName.bSuccess
+						? FString::Printf(TEXT("Self-test: notification template by name '%s' -> ok (id '%s', category '%s')"),
+							*TemplateName, *ByName.Value.Id, *ByName.Value.Category)
+						: FString::Printf(TEXT("Self-test: notification template by name '%s' -> failed (%s)"),
+							*TemplateName, *ByName.Error.Message));
+					Scheduling();
+				});
+		});
+	}
+
 	void RunLeaderboardSweep(FFlockLeaderboardProvider* Leaderboards, FFlockPlayerProvider* Players,
 		FFlockCommandProvider* Commands, const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Next)
 	{
@@ -1030,7 +1282,7 @@ namespace
 										// shop -> commands -> analytics, which owns teardown. Chaining rather
 										// than firing them together keeps the subsystem alive across every
 										// round trip, and keeps the narration readable.
-										TFunction<void()> AfterLeaderboards = [Sweeps, PlayerId, Logger, Teardown]()
+										TFunction<void()> AfterNotifications = [Sweeps, PlayerId, Logger, Teardown]()
 										{
 											if (Sweeps.Analytics != nullptr)
 											{
@@ -1038,6 +1290,13 @@ namespace
 												return;
 											}
 											Teardown();
+										};
+										// Notifications run after leaderboards and before analytics: every call in
+										// the sweep is player-scoped, so it needs the signed-in leg, and it owns no
+										// teardown of its own.
+										TFunction<void()> AfterLeaderboards = [Sweeps, Logger, AfterNotifications]()
+										{
+											RunNotificationSweep(Sweeps.Notifications, Logger, AfterNotifications);
 										};
 										// Leaderboards run after the commands sweep on purpose: the projection
 										// step writes a player-data field, and reading a rank straight after a
@@ -1269,6 +1528,7 @@ namespace
 		Sweeps.Commands = Sdk->GetCommandProvider();
 		Sweeps.Players = Sdk->GetPlayerProvider();
 		Sweeps.Leaderboards = Sdk->GetLeaderboardProvider();
+	Sweeps.Notifications = Sdk->GetNotificationProvider();
 
 		RunAuthSweep(*Auth, Sweeps, Logger, Teardown);
 		Logger->LogInfo(TEXT("Self-test: auth sweep dispatched; the signed-in shop, commands, and analytics sweeps "

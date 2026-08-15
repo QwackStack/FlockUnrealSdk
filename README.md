@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.1.0.** Everything documented below ships today. Requires Unreal Engine 5.5 to 5.8;
+> **1.3.0.** Everything documented below ships today. Requires Unreal Engine 5.5 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -15,6 +15,7 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   - [Baking the Game Version](#baking-the-game-version)
   - [Checking your credentials](#checking-your-credentials)
   - [While playing](#while-playing)
+  - [Push notifications: dashboard and project setup](#push-notifications-dashboard-and-project-setup)
 - [Initialization](#initialization)
   - [Automatic](#automatic-default)
   - [Manual](#manual)
@@ -79,12 +80,17 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   placement, and the entries either side of them. Boards are addressed by name, and reads are cached and
   snapshot-backed so a leaderboard screen survives an outage. Read-only by design: a board ranks a
   player-data field, so a score is submitted by writing that field with a game command.
+- **Notifications** — a per-player inbox with unread counts and read/mark-all-read, reminders your game
+  schedules and cancels server-side, the readable template catalog, and push device-token registration.
+  Scheduling is addressed by template **name**. Inbox reads are snapshot-backed; read receipts are never
+  queued offline, because a receipt replayed later would mark messages the player never saw. The SDK
+  **registers** a push token rather than fetching one — see the dashboard setup below.
 - **Code generation** — one menu click turns your backend's templates, configs, and shops into typed
   structs, enums, and one-node reads, writes, and purchases. Blueprint by default, with no toolchain and
   no compile step; switch the target to emit a generated C++ module instead.
-- **Offline snapshot cache** — successful config, game, shop-catalog, player-template, leaderboard, and
-  asset-list reads are cached to disk, scoped to the game version, and served when the network is down;
-  toggleable in settings.
+- **Offline snapshot cache** — successful config, game, shop-catalog, player-template, leaderboard,
+  notification, and asset-list reads are cached to disk, scoped to the game version, and served when the
+  network is down; toggleable in settings.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
 - **Blueprint-friendly** — every provider call is a self-contained async node, and the fire-and-forget
   calls plus auth/session state are one-node too (no "Get Flock Subsystem" needed). Events, error types,
@@ -221,6 +227,58 @@ player, the analytics session and consent state, how many offline commands are q
 running list of SDK events. If Flock isn't set up when you press Play, the warning names every blocking
 problem and links straight to the panel.
 
+### Push notifications: dashboard and project setup
+
+The notification **inbox** and **scheduling** need nothing beyond the setup above. **Push delivery** needs
+four things, and three of them live outside this plugin.
+
+**1. Provider credentials, on the dashboard.** Under **Settings → Push Notifications**, configure the
+providers you ship on. Credentials are per game, stored encrypted, and write-only — replaceable, never
+readable back.
+
+| Provider | Delivers to | What to supply |
+| --- | --- | --- |
+| Firebase Cloud Messaging (FCM) | Android and web | The full contents of the Firebase service-account JSON file |
+| Apple Push Notification service (APNs) | iOS | The `.p8` signing key, its **Key ID**, your **Team ID**, the app's **Bundle ID**, and **Use APNs sandbox** for development builds |
+
+Until a provider reads **Configured**, tokens register successfully and nothing is ever delivered on that
+platform. That is the usual cause of "push is broken": the client reports success because registration
+genuinely succeeded.
+
+**2. A notification template, on the dashboard.** Under **Marketing → Templates** — a title and body, its
+locale, the channels it may go out on, and any `{placeholders}` you fill at send time. Scheduling takes the
+template's **name**, so a template is required before `ScheduleByTemplateName` can do anything.
+
+**3. A way to mint the token.** The SDK registers a device token; it does not fetch one — yet. This differs
+by platform:
+
+- **iOS: nothing extra.** Unreal surfaces the APNs token itself and the backend speaks APNs directly, so no
+  Firebase is involved. Bind `FCoreDelegates::ApplicationRegisteredForRemoteNotificationsDelegate`,
+  hex-encode the bytes, pass the string in — about ten lines, worked example in the setup guide.
+- **Android: a Firebase-based plugin, for now.** Bind its token callback and pass the string to
+  `RegisterDeviceToken`. It must be a real **FCM registration token** — a vendor SDK that hands you its own
+  subscriber ID will not resolve.
+
+**Built-in acquisition is planned for both**: a one-call iOS wrapper and a first-party Android UPL shipping
+the modern `firebase-messaging` binding, so push does not depend on a paid marketplace plugin. The
+`RegisterDeviceToken` call you write does not change when they land — only where the string comes from.
+
+**4. `google-services.json` in your project**, wherever your push plugin expects it — Firebase Features
+wants `<YourProject>/Services/`. Leave the **Google Cloud Messaging Sender ID** field under
+Project Settings → Platforms → Android **blank**: it gates Unreal's own `GoogleCloudMessaging` plugin,
+which is built on APIs Google decommissioned in 2019, and blanking it also stops two registration paths
+competing for the same engine delegates.
+
+Full walkthrough with the exact download-and-place steps:
+**[Testing push notifications on Android](Documentation/push-setup-android.md)**.
+
+Push cannot be exercised in the editor, in Play In Editor, or in a Windows build — Unreal's desktop
+implementation is a stub that reports "not registered" and does nothing. Branch on
+`Flock Get Current Device Platform` to hide an "enable notifications" toggle where push cannot work, rather
+than letting the register call fail. `Flock.SelfTest` still covers the registration call on any platform by
+registering a synthetic token under `web` and unregistering it — that proves the request, response and
+parse, but only a device build shows a banner arriving.
+
 ## Initialization
 
 ### Automatic (default)
@@ -344,6 +402,8 @@ so you can read only the half you work in.
 | [Shop](Documentation/shop.md) | Shops and items, purchase and its money-safety contract, player inventory |
 | [Assets](Documentation/assets.md) | Listing and resolving assets, the four download flavours, preloading, the binary cache |
 | [Leaderboards](Documentation/leaderboards.md) | Boards by name, standings, a player's own rank, windows and score formatting, why there is no submit call |
+| [Notifications](Documentation/notifications.md) | The inbox, scheduled reminders, the template catalog, push device tokens and what push delivery needs |
+| [Android push setup](Documentation/push-setup-android.md) | Step-by-step: Firebase project, the two JSON files and where each goes, the plugin, the token hookup, dashboard credentials, and what to check when nothing arrives |
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, logs and events, transactions, consent, crash detection |
 | [SDK events](Documentation/events.md) | The event hub — lifecycle, auth, and session events |
@@ -397,7 +457,9 @@ baking, the SDK event hub, player authentication, analytics, game config (with t
 cache), the shop (catalog, purchase, inventory), player data & templates (with bans), game commands (with
 the offline queue), assets (metadata, streamed downloads, and a binary cache), typed code generation for
 Blueprint or C++, and the editor setup panel with its live Play-In-Editor view. **1.2.0 adds
-leaderboards** — boards by name, standings, and a player's own placement.
+leaderboards** — boards by name, standings, and a player's own placement. **1.3.0 adds notifications** —
+the per-player inbox, server-side scheduled reminders, the template catalog, and push device-token
+registration.
 
 Deliberate omissions and known gaps:
 
