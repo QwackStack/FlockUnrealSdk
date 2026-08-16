@@ -394,6 +394,133 @@ void UFlockAuthAccountAction::Complete(bool bSuccess, const FFlockError& Error)
 	SetReadyToDestroy();
 }
 
+// ── UFlockAccountLinkAction ──
+
+UFlockAccountLinkAction* UFlockAccountLinkAction::Make(UObject* InWorldContextObject,
+	TFunction<FFlockRequestHandle(FFlockAuthProvider&, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)>)> InStart)
+{
+	UFlockAccountLinkAction* Action = NewObject<UFlockAccountLinkAction>();
+	Action->WorldContextObject = InWorldContextObject;
+	Action->Start = MoveTemp(InStart);
+	Action->RegisterWithGameInstance(InWorldContextObject);
+	return Action;
+}
+
+UFlockAccountLinkAction* UFlockAccountLinkAction::GetLinkedAccounts(UObject* WorldContextObject)
+{
+	return Make(WorldContextObject,
+		[](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
+		{
+			return Provider.GetLinkedAccounts(MoveTemp(OnDone));
+		});
+}
+
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkEmail(UObject* WorldContextObject, const FString& Email, const FString& Password)
+{
+	return Make(WorldContextObject,
+		[Email, Password](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
+		{
+			return Provider.LinkEmail(Email, Password, MoveTemp(OnDone));
+		});
+}
+
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkDevice(UObject* WorldContextObject, const FString& DeviceId)
+{
+	return Make(WorldContextObject,
+		[DeviceId](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
+		{
+			return Provider.LinkDevice(DeviceId, MoveTemp(OnDone));
+		});
+}
+
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkGoogle(UObject* WorldContextObject, const FString& IdToken)
+{
+	return Make(WorldContextObject,
+		[IdToken](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
+		{
+			return Provider.LinkGoogle(IdToken, MoveTemp(OnDone));
+		});
+}
+
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkApple(UObject* WorldContextObject, const FString& IdentityToken)
+{
+	return Make(WorldContextObject,
+		[IdentityToken](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
+		{
+			return Provider.LinkApple(IdentityToken, MoveTemp(OnDone));
+		});
+}
+
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkSteam(UObject* WorldContextObject, const FString& SessionTicket)
+{
+	return Make(WorldContextObject,
+		[SessionTicket](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
+		{
+			return Provider.LinkSteam(SessionTicket, MoveTemp(OnDone));
+		});
+}
+
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkFacebook(UObject* WorldContextObject, const FString& FacebookToken)
+{
+	return Make(WorldContextObject,
+		[FacebookToken](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
+		{
+			return Provider.LinkFacebook(FacebookToken, MoveTemp(OnDone));
+		});
+}
+
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkDiscord(UObject* WorldContextObject, const FString& DiscordToken)
+{
+	return Make(WorldContextObject,
+		[DiscordToken](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
+		{
+			return Provider.LinkDiscord(DiscordToken, MoveTemp(OnDone));
+		});
+}
+
+UFlockAccountLinkAction* UFlockAccountLinkAction::Unlink(UObject* WorldContextObject, EFlockCredentialProvider Provider)
+{
+	return Make(WorldContextObject,
+		[Provider](FFlockAuthProvider& AuthProvider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
+		{
+			return AuthProvider.Unlink(Provider, MoveTemp(OnDone));
+		});
+}
+
+void UFlockAccountLinkAction::Activate()
+{
+	FFlockError Error;
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockPlayerAccountsResponse>::Fail(Error));
+		return;
+	}
+	TWeakObjectPtr<UFlockAccountLinkAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	Start(*Provider, [WeakThis](TFlockResult<FFlockPlayerAccountsResponse> Result)
+	{
+		if (UFlockAccountLinkAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockAccountLinkAction::Complete(const TFlockResult<FFlockPlayerAccountsResponse>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value.Accounts, Result.Error);
+	}
+	else
+	{
+		// The unused half of the payload is default-constructed, per the node convention.
+		OnFailure.Broadcast(TArray<FFlockPlayerLinkedAccount>(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
 // ── UFlockNameAvailableAction ──
 
 UFlockNameAvailableAction* UFlockNameAvailableAction::IsNameAvailable(UObject* WorldContextObject, const FString& Name)

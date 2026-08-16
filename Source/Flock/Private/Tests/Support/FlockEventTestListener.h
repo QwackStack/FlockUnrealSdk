@@ -34,6 +34,10 @@ public:
 	int32 LoggedOutCount = 0;
 	int32 SessionRestoredCount = 0;
 	bool bLastSessionRestored = false;
+	int32 AccountLinkedCount = 0;
+	int32 AccountUnlinkedCount = 0;
+	EFlockCredentialProvider LastLinkedProvider = EFlockCredentialProvider::Unknown;
+	EFlockCredentialProvider LastUnlinkedProvider = EFlockCredentialProvider::Unknown;
 
 	UFUNCTION()
 	void HandleInitialized() { ++InitializedCount; }
@@ -64,6 +68,12 @@ public:
 
 	UFUNCTION()
 	void HandleSessionRestored(bool bRestored) { ++SessionRestoredCount; bLastSessionRestored = bRestored; }
+
+	UFUNCTION()
+	void HandleAccountLinked(EFlockCredentialProvider Provider) { ++AccountLinkedCount; LastLinkedProvider = Provider; }
+
+	UFUNCTION()
+	void HandleAccountUnlinked(EFlockCredentialProvider Provider) { ++AccountUnlinkedCount; LastUnlinkedProvider = Provider; }
 };
 
 /** Bind target for the auth async-node pin tests (dynamic delegates need UFUNCTION handlers). */

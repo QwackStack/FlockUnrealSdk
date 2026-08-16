@@ -85,6 +85,12 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   Scheduling is addressed by template **name**. Inbox reads are snapshot-backed; read receipts are never
   queued offline, because a receipt replayed later would mark messages the player never saw. The SDK
   **registers** a push token rather than fetching one — see the dashboard setup below.
+- **Account linking** — attach more than one credential to the same player, so a guest who started on a
+  device can add an email or a social login and keep their progress on a new phone. Read the list, attach
+  email, device, Google, Apple, Steam, Facebook or Discord, and detach again. Every call answers with the
+  player's full updated credential list, so a link doubles as a refresh; the server refuses to remove the
+  last credential, and a credential already owned by another player surfaces as an error rather than
+  silently merging accounts.
 - **Code generation** — one menu click turns your backend's templates, configs, and shops into typed
   structs, enums, and one-node reads, writes, and purchases. Blueprint by default, with no toolchain and
   no compile step; switch the target to emit a generated C++ module instead.
@@ -395,7 +401,7 @@ so you can read only the half you work in.
 
 | Guide | Covers |
 |-------|--------|
-| [Authentication](Documentation/authentication.md) | Login/register for every provider, logout, token refresh and revocation, password reset, email verification |
+| [Authentication](Documentation/authentication.md) | Login/register for every provider, logout, token refresh and revocation, password reset, email verification, account linking |
 | [Game config & metadata](Documentation/game-config.md) | Resolving effective values, configs and patches, feature flags, game/version records |
 | [Player data & templates](Documentation/player-data.md) | Reads by id/template/tag, templates, pagination, bans |
 | [Game commands](Documentation/game-commands.md) | Updating a row, achievements, funds, the offline queue and its money-safety rules |

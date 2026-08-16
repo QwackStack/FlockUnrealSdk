@@ -17,6 +17,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockOnTokenRefreshed);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockOnAuthExpired);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockOnLoggedOut);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnSessionRestored, bool, bRestored);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnAccountLinked, EFlockCredentialProvider, Provider);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnAccountUnlinked, EFlockCredentialProvider, Provider);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnSessionStarted, const FString&, SessionId);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnSessionEnded, const FFlockSessionEndedArgs&, Args);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockOnSessionPaused);
@@ -83,6 +85,14 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Flock|Events")
 	FFlockOnSessionRestored OnSessionRestored;
 
+	/** A credential was attached to the signed-in player. */
+	UPROPERTY(BlueprintAssignable, Category = "Flock|Events")
+	FFlockOnAccountLinked OnAccountLinked;
+
+	/** A credential was removed from the signed-in player. */
+	UPROPERTY(BlueprintAssignable, Category = "Flock|Events")
+	FFlockOnAccountUnlinked OnAccountUnlinked;
+
 	// ── Session (raised by the session/analytics features when they land) ──
 
 	/** A gameplay/analytics session began; payload is the local session id. */
@@ -133,6 +143,8 @@ public:
 	void InvokeAuthExpired();
 	void InvokeLoggedOut();
 	void InvokeSessionRestored(bool bRestored);
+	void InvokeAccountLinked(EFlockCredentialProvider Provider);
+	void InvokeAccountUnlinked(EFlockCredentialProvider Provider);
 	void InvokeSessionStarted(const FString& SessionId);
 	void InvokeSessionEnded(const FFlockSessionEndedArgs& Args);
 	void InvokeSessionPaused();

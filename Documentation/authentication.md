@@ -111,6 +111,40 @@ Auth->RevokeToken(OnRevoked);                              // kill the refresh t
 Auth->Logout();                                            // local sign-out
 ```
 
+## Account linking
+
+A player can hold more than one credential. This is what turns a guest who started on a device into
+someone who can sign back in on a new phone — they add an email or a social login, and the progress
+stays on the same player.
+
+```cpp
+Auth->GetLinkedAccounts(OnListed);                         // what is attached right now
+
+Auth->LinkEmail(Email, Password, OnLinked);
+Auth->LinkDevice(DeviceId, OnLinked);
+Auth->LinkGoogle(IdToken, OnLinked);                       // also Apple / Steam / Facebook / Discord
+
+Auth->Unlink(EFlockCredentialProvider::DeviceId, OnUnlinked);
+```
+
+Every one of these answers with the player's **full updated credential list**, so a link or an unlink
+doubles as a refresh — you never need a separate re-read afterwards. Each listed account carries a
+typed `ProviderType` you can hand straight back to `Unlink`, plus the provider's user id, the email
+where there is one, and whether that email is verified.
+
+Blueprint gets the same nine as nodes under **Flock|Auth** (`Flock Get Linked Accounts`, `Flock Link
+Email`, `Flock Unlink Account`, …). `OnAccountLinked` and `OnAccountUnlinked` fire on the events hub
+with the provider that changed.
+
+Four coded errors are worth handling in-game:
+
+| Code | Means |
+| --- | --- |
+| `PlayerAccountAlreadyLinked` | That credential belongs to another player. There is no account-merge flow — this reaches your code and you decide what to tell the player. |
+| `PlayerAccountNotLinked` | Nothing to unlink for that provider. |
+| `PlayerCannotUnlinkLastCredential` | The server refuses to leave a player with no way back in. |
+| `PlayerInvalidLinkRequest` | The request itself was rejected. |
+
 ## Session lifecycle
 
 `TryRestoreSession` runs automatically after init, so a returning player is usually signed in before
@@ -129,9 +163,11 @@ Auth->Logout();                                            // local sign-out
 - **`ForgotPassword` always reports success.** The backend never reveals whether an address has an
   account, so success means "if that address exists, a code was sent". Do not use it to test whether
   someone is registered.
-- **Password reset needs an email session.** `ResetPassword` requires the current session to have been
-  signed in with email; a restored email session counts. A device or Steam session cannot reset a
-  password it never had.
+- **Password reset needs an email credential.** `ResetPassword` accepts a session signed in with email
+  (a restored email session counts) **or** an email credential linked during this session. A device or
+  Steam session with no email attached cannot reset a password it never had. That linked-email
+  knowledge is session-scoped and deliberately not persisted — after a restore the SDK does not know
+  what is attached until you call `GetLinkedAccounts`.
 - **`RevokeToken` is the server-side kill**, and the thing to reach for when a token is stolen — it
   invalidates the refresh token for good. Call `Logout` afterwards for a full sign-out; `Logout` alone
   only clears local state.

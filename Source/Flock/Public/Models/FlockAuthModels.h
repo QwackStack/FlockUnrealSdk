@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "FlockEventModels.h"
 #include "FlockAuthModels.generated.h"
 
 /**
@@ -148,6 +149,33 @@ struct FLOCK_API FFlockPlayerEmailVerifyRequest
 	UPROPERTY() FString Code;
 };
 
+USTRUCT()
+struct FLOCK_API FFlockPlayerLinkEmailRequest
+{
+	GENERATED_BODY()
+
+	UPROPERTY() FString Email;
+	UPROPERTY() FString Password;
+};
+
+USTRUCT()
+struct FLOCK_API FFlockPlayerLinkDeviceRequest
+{
+	GENERATED_BODY()
+
+	UPROPERTY() FString DeviceType;
+	UPROPERTY() FString DeviceId;
+};
+
+// Every OAuth provider links with a bare token — the login routes' per-provider field names don't apply here.
+USTRUCT()
+struct FLOCK_API FFlockPlayerLinkOAuthRequest
+{
+	GENERATED_BODY()
+
+	UPROPERTY() FString Token;
+};
+
 // ── Responses (BlueprintType — surfaced by the auth async nodes) ──
 
 USTRUCT(BlueprintType)
@@ -193,6 +221,42 @@ struct FLOCK_API FFlockNameAvailableResponse
 
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	bool Available = false;
+};
+
+/** One credential attached to a player. No secrets — the token/password never comes back. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockPlayerLinkedAccount
+{
+	GENERATED_BODY()
+
+	/** Raw wire spelling of the provider (a LoginType value). */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Provider;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ProviderUserId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Email;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool EmailVerified = false;
+
+	/**
+	 * Typed view of Provider — pass straight to Unlink. Unknown for a provider this SDK version
+	 * predates. Not on the wire: the provider fills it in after deserializing each account.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	EFlockCredentialProvider ProviderType = EFlockCredentialProvider::Unknown;
+};
+
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockPlayerAccountsResponse
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockPlayerLinkedAccount> Accounts;
 };
 
 /** Registration outcome: success either created an account (bAlreadyRegistered false, Response set) or found the identity already registered (bAlreadyRegistered true, Response empty). Not a wire model. */

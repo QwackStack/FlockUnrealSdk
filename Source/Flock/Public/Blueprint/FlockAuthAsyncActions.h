@@ -26,6 +26,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockRegisterPin, const FFlockRegi
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockRestorePin);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockAuthAccountPin, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockNameAvailablePin, bool, bAvailable, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockAccountsPin, const TArray<FFlockPlayerLinkedAccount>&, Accounts, const FFlockError&, Error);
 
 UCLASS()
 class FLOCK_API UFlockLoginAction : public UBlueprintAsyncActionBase
@@ -178,6 +179,63 @@ private:
 	TObjectPtr<UObject> WorldContextObject;
 
 	TFunction<void(FFlockAuthProvider&, TFunction<void(bool, const FFlockError&)>)> Start;
+};
+
+/**
+ * Account linking. Every node answers with the player's full updated credential list, so a link or
+ * unlink doubles as a refresh of it. Unlink takes the typed provider, which a listed account carries
+ * back on its Provider Type pin.
+ */
+UCLASS()
+class FLOCK_API UFlockAccountLinkAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockAccountsPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockAccountsPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Get Linked Accounts"), Category = "Flock|Auth")
+	static UFlockAccountLinkAction* GetLinkedAccounts(UObject* WorldContextObject);
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Link Email"), Category = "Flock|Auth")
+	static UFlockAccountLinkAction* LinkEmail(UObject* WorldContextObject, const FString& Email, const FString& Password);
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Link Device"), Category = "Flock|Auth")
+	static UFlockAccountLinkAction* LinkDevice(UObject* WorldContextObject, const FString& DeviceId);
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Link Google"), Category = "Flock|Auth")
+	static UFlockAccountLinkAction* LinkGoogle(UObject* WorldContextObject, const FString& IdToken);
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Link Apple"), Category = "Flock|Auth")
+	static UFlockAccountLinkAction* LinkApple(UObject* WorldContextObject, const FString& IdentityToken);
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Link Steam"), Category = "Flock|Auth")
+	static UFlockAccountLinkAction* LinkSteam(UObject* WorldContextObject, const FString& SessionTicket);
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Link Facebook"), Category = "Flock|Auth")
+	static UFlockAccountLinkAction* LinkFacebook(UObject* WorldContextObject, const FString& FacebookToken);
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Link Discord"), Category = "Flock|Auth")
+	static UFlockAccountLinkAction* LinkDiscord(UObject* WorldContextObject, const FString& DiscordToken);
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Unlink Account"), Category = "Flock|Auth")
+	static UFlockAccountLinkAction* Unlink(UObject* WorldContextObject, EFlockCredentialProvider Provider);
+
+	virtual void Activate() override;
+
+private:
+	static UFlockAccountLinkAction* Make(UObject* InWorldContextObject,
+		TFunction<FFlockRequestHandle(FFlockAuthProvider&, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)>)> InStart);
+	void Complete(const TFlockResult<FFlockPlayerAccountsResponse>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+
+	TFunction<FFlockRequestHandle(FFlockAuthProvider&, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)>)> Start;
 };
 
 UCLASS()

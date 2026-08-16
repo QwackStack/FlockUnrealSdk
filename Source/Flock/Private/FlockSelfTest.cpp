@@ -122,6 +122,10 @@ namespace
 	 */
 	const TCHAR* const DemoDeviceToken = TEXT("self-test-token-UE");
 
+	// Device credential the account-linking leg attaches and then detaches. Distinct from any device id
+	// a login leg uses, so a half-finished run can never strand the session's own credential.
+	const TCHAR* const DemoLinkDeviceId = TEXT("self-test-link-device-UE");
+
 	/**
 	 * The providers the signed-in leg of the chain hands along. Bundled because that leg is a stack of
 	 * nested completions, and threading one raw pointer per feature through all of them turns every capture
@@ -863,6 +867,81 @@ namespace
 	 * device build, a push plugin to mint the token, and APNs/FCM credentials on the backend. What it does
 	 * prove is every call the SDK makes — which is the part the SDK owns.
 	 */
+	/** Renders a credential list the way a game would read it back. */
+	FString DescribeAccounts(const TArray<FFlockPlayerLinkedAccount>& Accounts)
+	{
+		TArray<FString> Parts;
+		for (const FFlockPlayerLinkedAccount& Account : Accounts)
+		{
+			Parts.Add(FString::Printf(TEXT("%s%s"), *Account.Provider,
+				Account.ProviderType == EFlockCredentialProvider::Unknown ? TEXT(" (unknown to this SDK)") : TEXT("")));
+		}
+		return Parts.Num() > 0 ? FString::Join(Parts, TEXT(", ")) : TEXT("<none>");
+	}
+
+	/**
+	 * Account linking against the signed-in email session: read the list, attach a device credential,
+	 * read it back, then detach it so nothing live is left behind. Unlinking the *device* (never the
+	 * email the session was established with) is what keeps this clear of cannot_unlink_last_credential.
+	 */
+	void RunAccountLinkingSweep(FFlockAuthProvider* Auth, const TSharedRef<IFlockLogger>& Logger,
+		TFunction<void()> Next)
+	{
+		if (Auth == nullptr)
+		{
+			Logger->LogInfo(TEXT("Self-test: auth provider unavailable; skipping the account-linking sweep."));
+			Next();
+			return;
+		}
+
+		TFunction<void()> Detach = [Auth, Logger, Next]()
+		{
+			Auth->Unlink(EFlockCredentialProvider::DeviceId,
+				[Logger, Next](TFlockResult<FFlockPlayerAccountsResponse> Result)
+				{
+					Logger->LogInfo(Result.bSuccess
+						? FString::Printf(TEXT("Self-test: unlink device -> ok (now: %s)"), *DescribeAccounts(Result.Value.Accounts))
+						: FString::Printf(TEXT("Self-test: unlink device -> failed (%s)"), *Result.Error.Message));
+					Next();
+				});
+		};
+
+		Auth->GetLinkedAccounts([Auth, Logger, Detach, Next](TFlockResult<FFlockPlayerAccountsResponse> Listed)
+		{
+			if (!Listed.bSuccess)
+			{
+				Logger->LogInfo(FString::Printf(TEXT("Self-test: list linked accounts -> failed (%s)"), *Listed.Error.Message));
+				Next();
+				return;
+			}
+			Logger->LogInfo(FString::Printf(TEXT("Self-test: list linked accounts -> %d (%s)"),
+				Listed.Value.Accounts.Num(), *DescribeAccounts(Listed.Value.Accounts)));
+
+			Auth->LinkDevice(DemoLinkDeviceId, [Auth, Logger, Detach, Next](TFlockResult<FFlockPlayerAccountsResponse> Linked)
+			{
+				if (!Linked.bSuccess)
+				{
+					// A previous run that died before its unlink leaves the device attached; that 409 is
+					// a known state, not a defect, and the detach below still cleans it up.
+					const bool bAlreadyLinked = Linked.Error.ErrorCode == EFlockErrorCode::PlayerAccountAlreadyLinked;
+					Logger->LogInfo(FString::Printf(TEXT("Self-test: link device -> %s (%s)"),
+						bAlreadyLinked ? TEXT("already linked from an earlier run") : TEXT("failed"),
+						*Linked.Error.Message));
+					if (bAlreadyLinked)
+					{
+						Detach();
+						return;
+					}
+					Next();
+					return;
+				}
+				Logger->LogInfo(FString::Printf(TEXT("Self-test: link device -> ok (now: %s)"),
+					*DescribeAccounts(Linked.Value.Accounts)));
+				Detach();
+			});
+		});
+	}
+
 	void RunNotificationSweep(FFlockNotificationProvider* Notifications, const TSharedRef<IFlockLogger>& Logger,
 		TFunction<void()> Next)
 	{
@@ -1273,7 +1352,7 @@ namespace
 								// The real code arrives by email, so this placeholder is expected to be
 								// rejected — a code error here still proves the authenticated round trip.
 								Auth->VerifyEmail(DemoCode,
-									[Sweeps, PlayerId, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> VerifyResult)
+									[Auth, Sweeps, PlayerId, Logger, Teardown, NarrateAction](TFlockResult<FFlockAuthActionResponse> VerifyResult)
 									{
 										NarrateAction(TEXT("verify email (signed in, placeholder code)"), VerifyResult);
 
@@ -1310,7 +1389,14 @@ namespace
 										{
 											RunCommandsSweep(Sweeps.Commands, Sweeps.Players, Logger, AfterCommands);
 										};
-										RunShopSignedInSweep(Sweeps.Shop, Logger, AfterShop);
+										// Account linking runs first among the signed-in legs: it only needs the
+										// bearer, and finishing it before the writes keeps the credential list it
+										// narrates uncluttered by anything the later sweeps do.
+										TFunction<void()> AfterLinking = [Sweeps, Logger, AfterShop]()
+										{
+											RunShopSignedInSweep(Sweeps.Shop, Logger, AfterShop);
+										};
+										RunAccountLinkingSweep(Auth, Logger, AfterLinking);
 									});
 							});
 					});

@@ -183,6 +183,8 @@ void FFlockAuthProvider::TryRestoreSession(TFunction<void(bool)> OnComplete)
 
 	// Carry the original login method forward so method-gated flows keep working after a restore.
 	SessionRef->SetAuthMethod(Stored.AuthMethod.IsSet() ? Stored.AuthMethod.GetValue() : EFlockAuthMethod::SessionRestore);
+	// Linked-credential state is never persisted — a restored session knows nothing until the game reads the list.
+	*bHasEmailCredential = false;
 
 	TFunction<void()> CompleteRestored = [SessionRef, EventsWeak, Log, Finish, LoggedContext]()
 	{
@@ -217,6 +219,7 @@ void FFlockAuthProvider::TryRestoreSession(TFunction<void(bool)> OnComplete)
 void FFlockAuthProvider::Logout()
 {
 	const bool bWasAuthenticated = Session->IsAuthenticated();
+	*bHasEmailCredential = false;
 	Session->ClearTokens();
 	if (bWasAuthenticated)
 	{
@@ -340,4 +343,188 @@ FFlockRequestHandle FFlockAuthProvider::IsNameAvailable(const FString& Name,
 			return ClientRef->GetRaw<FFlockNameAvailableResponse>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		MoveTemp(OnComplete), TEXT("Name availability"));
+}
+
+// ── Account linking ──
+
+void FFlockAuthProvider::AdoptAccounts(FFlockPlayerAccountsResponse& Response, const TSharedRef<bool>& HasEmailFlag)
+{
+	bool bHasEmail = false;
+	for (FFlockPlayerLinkedAccount& Account : Response.Accounts)
+	{
+		Account.ProviderType = FFlockCredentialProviders::Parse(Account.Provider);
+		if (Account.ProviderType == EFlockCredentialProvider::Email)
+		{
+			bHasEmail = true;
+		}
+	}
+	// Every route hands back the full list, so the flag re-derives itself on any of them.
+	*HasEmailFlag = bHasEmail;
+}
+
+FFlockRequestHandle FFlockAuthProvider::GetLinkedAccounts(
+	TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete)
+{
+	if (!RequireAuthenticated<FFlockPlayerAccountsResponse>(OnComplete))
+	{
+		return FFlockRequestHandle();
+	}
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
+	const TSharedRef<bool> HasEmailFlag = bHasEmailCredential;
+	const FString Url = AuthUrl(FlockEndpoints::PlayerAccounts);
+	return Execute<FFlockPlayerAccountsResponse>(
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnAttempt)
+		{
+			// Raw (non-enveloped): the player auth routes return the model at the root.
+			return ClientRef->GetRaw<FFlockPlayerAccountsResponse>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
+		},
+		[HasEmailFlag, OnComplete](TFlockResult<FFlockPlayerAccountsResponse> Result)
+		{
+			if (Result.bSuccess)
+			{
+				AdoptAccounts(Result.Value, HasEmailFlag);
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		},
+		TEXT("List linked accounts"));
+}
+
+FFlockRequestHandle FFlockAuthProvider::LinkEmail(const FString& Email, const FString& Password,
+	TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete)
+{
+	if (!RequireAuthenticated<FFlockPlayerAccountsResponse>(OnComplete)
+		|| !RequireNotEmpty<FFlockPlayerAccountsResponse>(Email, TEXT("Email"), OnComplete)
+		|| !RequireNotEmpty<FFlockPlayerAccountsResponse>(Password, TEXT("Password"), OnComplete))
+	{
+		return FFlockRequestHandle();
+	}
+	FFlockPlayerLinkEmailRequest Request;
+	Request.Email = Email;
+	Request.Password = Password;
+	return Link(Request, FlockEndpoints::PlayerLinkEmail, EFlockCredentialProvider::Email,
+		TEXT("Link email"), MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockAuthProvider::LinkDevice(const FString& DeviceId,
+	TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete)
+{
+	if (!RequireAuthenticated<FFlockPlayerAccountsResponse>(OnComplete)
+		|| !RequireNotEmpty<FFlockPlayerAccountsResponse>(DeviceId, TEXT("DeviceId"), OnComplete))
+	{
+		return FFlockRequestHandle();
+	}
+	FFlockPlayerLinkDeviceRequest Request;
+	Request.DeviceType = FPlatformProperties::IniPlatformName();
+	Request.DeviceId = DeviceId;
+	return Link(Request, FlockEndpoints::PlayerLinkDevice, EFlockCredentialProvider::DeviceId,
+		TEXT("Link device"), MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockAuthProvider::LinkGoogle(const FString& IdToken,
+	TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete)
+{
+	return LinkOAuth(EFlockCredentialProvider::Google, IdToken, TEXT("IdToken"), TEXT("Link Google"), MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockAuthProvider::LinkApple(const FString& IdentityToken,
+	TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete)
+{
+	return LinkOAuth(EFlockCredentialProvider::Apple, IdentityToken, TEXT("IdentityToken"), TEXT("Link Apple"), MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockAuthProvider::LinkSteam(const FString& SessionTicket,
+	TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete)
+{
+	return LinkOAuth(EFlockCredentialProvider::Steam, SessionTicket, TEXT("SessionTicket"), TEXT("Link Steam"), MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockAuthProvider::LinkFacebook(const FString& FacebookToken,
+	TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete)
+{
+	return LinkOAuth(EFlockCredentialProvider::Facebook, FacebookToken, TEXT("FacebookToken"), TEXT("Link Facebook"), MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockAuthProvider::LinkDiscord(const FString& DiscordToken,
+	TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete)
+{
+	return LinkOAuth(EFlockCredentialProvider::Discord, DiscordToken, TEXT("DiscordToken"), TEXT("Link Discord"), MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockAuthProvider::LinkOAuth(EFlockCredentialProvider Provider, const FString& Token,
+	const FString& TokenArgName, const FString& Context,
+	TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete)
+{
+	if (!RequireAuthenticated<FFlockPlayerAccountsResponse>(OnComplete)
+		|| !RequireNotEmpty<FFlockPlayerAccountsResponse>(Token, TokenArgName, OnComplete))
+	{
+		return FFlockRequestHandle();
+	}
+	const FString Wire = FFlockCredentialProviders::ToWire(Provider);
+	if (Wire.IsEmpty())
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockPlayerAccountsResponse>::Fail(FFlockError::Make(EFlockErrorType::Validation,
+				TEXT("Unknown is not a credential provider the SDK can send"))));
+		}
+		return FFlockRequestHandle();
+	}
+	FFlockPlayerLinkOAuthRequest Request;
+	Request.Token = Token;
+	return Link(Request, FlockEndpoints::PlayerLinkOAuth(Wire), Provider, Context, MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockAuthProvider::Unlink(EFlockCredentialProvider Provider,
+	TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete)
+{
+	if (!RequireAuthenticated<FFlockPlayerAccountsResponse>(OnComplete))
+	{
+		return FFlockRequestHandle();
+	}
+	const FString Wire = FFlockCredentialProviders::ToWire(Provider);
+	if (Wire.IsEmpty())
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockPlayerAccountsResponse>::Fail(FFlockError::Make(EFlockErrorType::Validation,
+				TEXT("Unknown is not a credential provider the SDK can send"))));
+		}
+		return FFlockRequestHandle();
+	}
+
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
+	const TWeakObjectPtr<UFlockEvents> EventsWeak = Events;
+	const TSharedRef<IFlockLogger> Log = Logger;
+	const TSharedRef<bool> HasEmailFlag = bHasEmailCredential;
+	const FString Context = FString::Printf(TEXT("Unlink %s"), *Wire);
+	const FString LoggedContext = DecorateContext(Context);
+	const FString Url = AuthUrl(FlockEndpoints::PlayerUnlink(Wire));
+	// The route takes no body; an empty object keeps it a well-formed JSON POST.
+	return Execute<FFlockPlayerAccountsResponse>(
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnAttempt)
+		{
+			return ClientRef->PostJsonRaw<FFlockPlayerAccountsResponse>(Url, SessionRef->GetAuthHeaders(), TEXT("{}"), MoveTemp(OnAttempt));
+		},
+		[SessionRef, EventsWeak, Log, HasEmailFlag, LoggedContext, Provider, OnComplete](TFlockResult<FFlockPlayerAccountsResponse> Result)
+		{
+			if (Result.bSuccess)
+			{
+				AdoptAccounts(Result.Value, HasEmailFlag);
+				Log->LogInfo(FString::Printf(TEXT("%s from player: %s"), *LoggedContext, *SessionRef->GetPlayerId()));
+				if (UFlockEvents* Hub = EventsWeak.Get())
+				{
+					Hub->InvokeAccountUnlinked(Provider);
+				}
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		},
+		Context, /*bIdempotent*/ false);
 }
