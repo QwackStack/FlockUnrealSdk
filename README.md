@@ -470,8 +470,10 @@ registration.
 Deliberate omissions and known gaps:
 
 - **Custom gameplay event tracking is not exposed.** Analytics ships the diagnostic log API
-  (event/error/exception) and purchase/transaction reporting. Gameplay event tracking is held back
-  pending backend work rather than shipped half-built.
+  (event/error/exception) and purchase/transaction reporting. For now, gameplay events go through
+  `Flock Log Event`: they are recorded under the `debug` log type, carrying whatever you put on the
+  Extra Data pin. A dedicated gameplay-event surface is held back pending backend work rather than
+  shipped half-built.
 - **No sound-wave asset download.** Unreal has no engine API for turning mp3/ogg bytes into a
   `USoundWave`, and a WAV-only helper would fail silently on most of what a CDN actually holds — so
   `Flock Download Asset File` is the documented path for audio.
