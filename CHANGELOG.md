@@ -5,6 +5,34 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-08-15
+
+**Account linking** — attach more than one credential to the same player, so a guest who started on a
+device can add an email or a social login and keep their progress. Lives on the auth provider beside
+login and register, because these are the same `/v1/player/*` credential routes with the same bearer
+gate; it is not part of the player-data surface.
+
+Read the list with `GetLinkedAccounts`, attach with `LinkEmail`, `LinkDevice`, `LinkGoogle`,
+`LinkApple`, `LinkSteam`, `LinkFacebook` or `LinkDiscord`, and detach with `Unlink`. Every one of them
+answers with the player's **full updated credential list**, so a link or unlink doubles as a refresh —
+there is no separate re-read to remember. Each listed account carries a typed `Provider Type` you can
+hand straight back to `Unlink`. The same nine calls are Blueprint nodes under **Flock|Auth**.
+
+Two new events, `OnAccountLinked` and `OnAccountUnlinked`, both carrying the provider.
+
+Four new error codes surface the cases worth handling in-game: `PlayerAccountAlreadyLinked` (the
+credential belongs to another player — there is no account-merge flow, so this reaches your code),
+`PlayerAccountNotLinked`, `PlayerCannotUnlinkLastCredential` (the server refuses to leave a player with
+no way back in), and `PlayerInvalidLinkRequest`.
+
+`ResetPassword`'s gate widened: it used to require signing in *with* email, and now also accepts an
+email credential linked during this session. Never narrower than before. That knowledge is
+session-scoped and deliberately not persisted — after a restored session the SDK does not know what is
+linked until the game reads the list.
+
+Credential state is never cached and never queued offline: a re-sent link comes back as
+`account_already_linked`, so these writes are posted non-idempotent.
+
 ## [1.3.0] - 2026-08-13
 
 Notifications, in three parts: the in-app **inbox**, server-side **scheduled reminders**, and **push

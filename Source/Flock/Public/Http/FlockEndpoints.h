@@ -63,6 +63,19 @@ namespace FlockEndpoints
 		return FString::Printf(TEXT("player/name-available?name=%s"), *Encode(Name));
 	}
 
+	// Auth — account linking. Provider segment is the LoginType wire value, not a display name.
+	inline constexpr const TCHAR* PlayerAccounts = TEXT("player/accounts");
+	inline constexpr const TCHAR* PlayerLinkEmail = TEXT("player/link/email");
+	inline constexpr const TCHAR* PlayerLinkDevice = TEXT("player/link/device");
+	inline FString PlayerLinkOAuth(const FString& Provider)
+	{
+		return FString::Printf(TEXT("player/link/oauth/%s"), *Encode(Provider));
+	}
+	inline FString PlayerUnlink(const FString& Provider)
+	{
+		return FString::Printf(TEXT("player/unlink/%s"), *Encode(Provider));
+	}
+
 	// Player data / templates / bans
 	inline constexpr const TCHAR* PlayerData = TEXT("player_data");
 	inline FString PlayerDataById(const FString& PlayerDataId) { return FString::Printf(TEXT("player_data/%s"), *PlayerDataId); }

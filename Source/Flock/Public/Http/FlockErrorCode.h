@@ -66,13 +66,17 @@ enum class EFlockErrorCode : uint8
 	LogEventGameNotFound,
 
 	// player.*
+	PlayerAccountAlreadyLinked,
+	PlayerAccountNotLinked,
 	PlayerAppleAccountAlreadyRegistered,
+	PlayerCannotUnlinkLastCredential,
 	PlayerDeviceAlreadyRegistered,
 	PlayerEmailAlreadyRegistered,
 	PlayerGameJwkNotConfigured,
 	PlayerGameVersionIdRequired,
 	PlayerGoogleAccountAlreadyRegistered,
 	PlayerInvalidDeviceRegistrationRequest,
+	PlayerInvalidLinkRequest,
 	PlayerInvalidLoginCredentials,
 	PlayerInvalidRefreshToken,
 	PlayerInvalidRegistrationRequest,

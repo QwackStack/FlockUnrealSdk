@@ -122,6 +122,41 @@ public:
 	FFlockRequestHandle IsNameAvailable(const FString& Name,
 		TFunction<void(TFlockResult<FFlockNameAvailableResponse>)> OnComplete);
 
+	// ── Account linking ──
+	// Every route answers with the player's full updated credential list, so a link or unlink doubles
+	// as a refresh. Credential state is never cached and never queued offline, and the writes post
+	// non-idempotent: a re-sent link comes back as player.account_already_linked.
+
+	/** Lists the signed-in player's linked credentials (no secrets). Always fetched fresh. */
+	FFlockRequestHandle GetLinkedAccounts(TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
+
+	/** Attaches an email/password credential. Fails with player.account_already_linked when the email belongs to another player. */
+	FFlockRequestHandle LinkEmail(const FString& Email, const FString& Password,
+		TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
+
+	/** Attaches a device credential — the "keep my guest progress" flow's counterpart. */
+	FFlockRequestHandle LinkDevice(const FString& DeviceId,
+		TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
+
+	FFlockRequestHandle LinkGoogle(const FString& IdToken,
+		TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
+
+	FFlockRequestHandle LinkApple(const FString& IdentityToken,
+		TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
+
+	FFlockRequestHandle LinkSteam(const FString& SessionTicket,
+		TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
+
+	FFlockRequestHandle LinkFacebook(const FString& FacebookToken,
+		TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
+
+	FFlockRequestHandle LinkDiscord(const FString& DiscordToken,
+		TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
+
+	/** Removes a credential. The server refuses the last remaining one with player.cannot_unlink_last_credential. */
+	FFlockRequestHandle Unlink(EFlockCredentialProvider Provider,
+		TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
+
 private:
 	/**
 	 * Shared login/register success path: validate, adopt tokens, record method, raise OnAuthenticated.
@@ -151,6 +186,21 @@ private:
 	FFlockRequestHandle PostAccount(const TReq& Request, const FString& Endpoint, const FString& Context,
 		TFunction<void(TFlockResult<TResp>)> OnComplete, bool bIdempotent = false);
 
+	/** Shared link POST: post non-idempotent, adopt the returned list, raise OnAccountLinked. */
+	template <typename TReq>
+	FFlockRequestHandle Link(const TReq& Request, const FString& Endpoint, EFlockCredentialProvider Provider,
+		const FString& Context, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
+
+	/** Every OAuth provider links with a bare token, so one path serves all five. */
+	FFlockRequestHandle LinkOAuth(EFlockCredentialProvider Provider, const FString& Token, const FString& TokenArgName,
+		const FString& Context, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
+
+	/**
+	 * Post-processes a credential list: fills each account's typed ProviderType and re-derives the
+	 * email-credential flag. Static and flag-by-parameter so completion lambdas never capture `this`.
+	 */
+	static void AdoptAccounts(FFlockPlayerAccountsResponse& Response, const TSharedRef<bool>& HasEmailFlag);
+
 	FString AuthUrl(const FString& Endpoint) const;
 
 	TSharedRef<FFlockAuthSession> Session;
@@ -159,6 +209,13 @@ private:
 
 	/** Heap-shared (not a plain member) so async restore legs can clear it even if the provider is torn down mid-restore. */
 	TSharedRef<bool> bRestoringSession = MakeShared<bool>(false);
+
+	/**
+	 * Best-effort: true once a credential list or an email link proves the account has an email
+	 * credential. Widens the ResetPassword gate. Session-scoped and never persisted — false after a
+	 * restore until the caller reads the list. Heap-shared for the same reason as bRestoringSession.
+	 */
+	TSharedRef<bool> bHasEmailCredential = MakeShared<bool>(false);
 };
 
 // ── Template implementations ──
@@ -197,8 +254,9 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 
 	const TWeakObjectPtr<UFlockEvents> EventsWeak = Events;
 	const TSharedRef<IFlockLogger> Log = Logger;
+	const TSharedRef<bool> HasEmailFlag = bHasEmailCredential;
 	return Execute<FFlockPlayerLoginResponse>(MoveTemp(Operation),
-		[SessionRef, EventsWeak, Log, Context, LoggedContext, Method, OnComplete](TFlockResult<FFlockPlayerLoginResponse> Result)
+		[SessionRef, EventsWeak, Log, HasEmailFlag, Context, LoggedContext, Method, OnComplete](TFlockResult<FFlockPlayerLoginResponse> Result)
 		{
 			if (!Result.bSuccess)
 			{
@@ -231,6 +289,8 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 			}
 
 			SessionRef->SetAuthMethod(Method);
+			// A new session knows nothing about linked credentials yet — never carry the previous player's answer over.
+			*HasEmailFlag = false;
 			Log->LogInfo(FString::Printf(TEXT("%s successful for player: %s"), *LoggedContext, *SessionRef->GetPlayerId()));
 
 			if (UFlockEvents* Hub = EventsWeak.Get())
@@ -307,16 +367,47 @@ bool FFlockAuthProvider::RequireEmailAuth(const TFunction<void(TFlockResult<T>)>
 	{
 		return false;
 	}
-	if (Session->GetAuthMethod() != EFlockAuthMethod::Email)
+	// An email login (restored ones count) or an email credential linked during this session.
+	if (Session->GetAuthMethod() != EFlockAuthMethod::Email && !*bHasEmailCredential)
 	{
 		if (OnComplete)
 		{
 			OnComplete(TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Auth,
-				TEXT("Password reset requires being signed in with email"))));
+				TEXT("Password reset requires an email credential on this account"))));
 		}
 		return false;
 	}
 	return true;
+}
+
+template <typename TReq>
+FFlockRequestHandle FFlockAuthProvider::Link(const TReq& Request, const FString& Endpoint,
+	EFlockCredentialProvider Provider, const FString& Context,
+	TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete)
+{
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
+	const TWeakObjectPtr<UFlockEvents> EventsWeak = Events;
+	const TSharedRef<IFlockLogger> Log = Logger;
+	const TSharedRef<bool> HasEmailFlag = bHasEmailCredential;
+	const FString LoggedContext = DecorateContext(Context);
+	return PostAccount<TReq, FFlockPlayerAccountsResponse>(Request, Endpoint, Context,
+		[SessionRef, EventsWeak, Log, HasEmailFlag, LoggedContext, Provider, OnComplete](TFlockResult<FFlockPlayerAccountsResponse> Result)
+		{
+			if (Result.bSuccess)
+			{
+				AdoptAccounts(Result.Value, HasEmailFlag);
+				Log->LogInfo(FString::Printf(TEXT("%s succeeded for player: %s"), *LoggedContext, *SessionRef->GetPlayerId()));
+				if (UFlockEvents* Hub = EventsWeak.Get())
+				{
+					Hub->InvokeAccountLinked(Provider);
+				}
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		},
+		/*bIdempotent*/ false);
 }
 
 template <typename TReq, typename TResp>

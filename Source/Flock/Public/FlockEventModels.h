@@ -35,6 +35,31 @@ struct FLOCK_API FFlockAuthInfo
 	EFlockAuthMethod Method = EFlockAuthMethod::Email;
 };
 
+/** A credential kind that can be linked to a player. Mirrors the backend LoginType set; Unknown = a provider this SDK version predates. */
+UENUM(BlueprintType)
+enum class EFlockCredentialProvider : uint8
+{
+	Unknown = 0,
+	DeviceId,
+	Email,
+	Google,
+	Apple,
+	Facebook,
+	Steam,
+	Discord,
+};
+
+/** Wire mapping for EFlockCredentialProvider — the backend spells these as LoginType strings. */
+class FLOCK_API FFlockCredentialProviders
+{
+public:
+	/** Wire string for a provider; empty for Unknown, which is never a valid request value. */
+	static FString ToWire(EFlockCredentialProvider Provider);
+
+	/** Parses a wire string; returns Unknown for empty input or anything this SDK version does not know. */
+	static EFlockCredentialProvider Parse(const FString& Wire);
+};
+
 /** Why a session ended (see UFlockEvents::OnSessionEnded). */
 UENUM(BlueprintType)
 enum class EFlockSessionEndReason : uint8

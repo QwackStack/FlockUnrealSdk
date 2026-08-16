@@ -91,6 +91,18 @@ void UFlockEvents::InvokeSessionRestored(bool bRestored)
 	OnSessionRestored.Broadcast(bRestored);
 }
 
+void UFlockEvents::InvokeAccountLinked(EFlockCredentialProvider Provider)
+{
+	LogRaise(TEXT("OnAccountLinked"), OnAccountLinked.GetAllObjects().Num());
+	OnAccountLinked.Broadcast(Provider);
+}
+
+void UFlockEvents::InvokeAccountUnlinked(EFlockCredentialProvider Provider)
+{
+	LogRaise(TEXT("OnAccountUnlinked"), OnAccountUnlinked.GetAllObjects().Num());
+	OnAccountUnlinked.Broadcast(Provider);
+}
+
 void UFlockEvents::InvokeSessionStarted(const FString& SessionId)
 {
 	LogRaise(TEXT("OnSessionStarted"), OnSessionStarted.GetAllObjects().Num());
