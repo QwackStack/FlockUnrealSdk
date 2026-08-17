@@ -21,8 +21,21 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - **`CancelAllScheduled()`** — cancels everything still tracked and reports how many the server actually
   cancelled.
 
+### Fixed
+
+- **Release notes no longer duplicate.** `generate_release_notes` does not set a body — when a release
+  already exists for the tag it is updated, and the generated notes end up combined with the body already
+  there, so each re-run stacked another "What's Changed". v1.1.0 and v1.4.0 both shipped that way. The
+  workflow now fetches the notes explicitly and passes the whole body, so publishing the same tag twice
+  overwrites instead of accumulating.
+
 ### Changed
 
+- **Releases state the supported engine range.** Every release body now carries a "Supported Unreal
+  Engine versions" section — the floor, the ceiling, and what each boundary actually does (below the
+  floor refuses to compile; above the ceiling compiles with a notice). The range is published by the
+  engine-claim checks *after* they validate it against the manifest, README and compat header, so the
+  notes cannot state a range those checks disagreed with and there is no second parser to drift.
 - **`Flock.SelfTest` covers the pending-schedule list and the notification events.** Scheduling now
   narrates the tracked entry, cancelling shows it untracked, and a second reminder is scheduled purely to
   exercise `CancelAllScheduled` — cancelled immediately, so nothing live is left behind. The two events

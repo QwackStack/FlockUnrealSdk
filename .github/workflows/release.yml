@@ -48,12 +48,11 @@ jobs:
       - name: Build the plugin archive
         run: git archive --format=zip --prefix=FlockUnrealSdk/ -o "FlockUnrealSdk-${GITHUB_REF_NAME}.zip" HEAD
 
-      # A release that already exists for this tag is the precondition for duplicated notes: the action
-      # updates it rather than creating it, and `generate_release_notes` pre-pends whatever body is
-      # already there to the freshly generated notes. That is how v1.1.0 shipped with "What's Changed"
-      # twice. A warning rather than a failure, because re-running after a transient upload error is
-      # legitimate and should not be blocked — but the operator should know before reading the notes.
-      - name: Warn if a release already exists for this tag
+      # Informational only. The notes are no longer affected by a release already existing — the step
+      # below composes the whole body, so a re-run replaces it — but it is still worth knowing that this
+      # run updated something rather than created it, because a hand-drafted release for a tag about to
+      # be pushed is usually a mistake.
+      - name: Note whether a release already exists for this tag
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -63,20 +62,75 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}")
           if [ "$CODE" = "200" ]; then
-            echo "::warning::A release already exists for ${GITHUB_REF_NAME}. It will be updated, and its notes may duplicate. Let this workflow create releases — do not pre-draft one for a tag you are about to push."
+            echo "::warning::A release already exists for ${GITHUB_REF_NAME}; this run will update it and overwrite its notes. Let this workflow create releases — do not pre-draft one for a tag you are about to push."
           else
             echo "No existing release for ${GITHUB_REF_NAME} (HTTP $CODE) — this run will create it."
           fi
+
+      # The body is composed here rather than left to `generate_release_notes`, and that is the fix for
+      # the duplicated "What's Changed".
+      #
+      # That input does not *set* a body. When a release for the tag already exists the action updates it,
+      # and the generated notes end up combined with the body already there — so every re-run stacks
+      # another copy. v1.1.0 and v1.4.0 both shipped that way, and `append_body: false` did not prevent it
+      # because the combining happens on the API side, not in the action's append path.
+      #
+      # Fetching the notes as text and passing the whole body makes the step idempotent: the same tag
+      # always produces the same document, and publishing twice overwrites instead of accumulating. It
+      # also leaves somewhere to put the engine range, which is the thing a reader most needs and the one
+      # fact a generated changelog can never contain.
+      - name: Compose the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FLOOR: ${{ needs.engine-claim.outputs.floor }}
+          CEILING: ${{ needs.engine-claim.outputs.ceiling }}
+        run: |
+          set -euo pipefail
+
+          # Exactly what GitHub would have generated, fetched so we own the composition rather than the
+          # merge behaviour.
+          GENERATED=$(gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${GITHUB_REF_NAME}" --jq '.body')
+
+          if [ -z "$GENERATED" ]; then
+            echo "::error::GitHub returned empty release notes for ${GITHUB_REF_NAME}; refusing to publish a release with no changelog."
+            exit 1
+          fi
+
+          # The range comes from the job that just validated it against the manifest, README and compat
+          # header — so the notes cannot state a range those checks disagreed with, and there is no second
+          # parser here to drift from the one in engine-claim.yml.
+          if [ -z "$FLOOR" ] || [ -z "$CEILING" ]; then
+            echo "::error::The engine-claim job published no range; the release notes would understate what this build supports."
+            exit 1
+          fi
+
+          if [ "$FLOOR" = "$CEILING" ]; then
+            SUPPORT="Verified on **Unreal Engine ${FLOOR}**."
+          else
+            SUPPORT="Verified on **Unreal Engine ${FLOOR} to ${CEILING}** — built, and the full automation suite green, on each."
+          fi
+
+          {
+            printf '%s\n\n' "$GENERATED"
+            printf '## Supported Unreal Engine versions\n\n'
+            printf '%s\n\n' "$SUPPORT"
+            printf 'Below UE %s the plugin refuses to compile, so landing on an unsupported engine is one clear error rather than a cascade of unknown symbols. Above UE %s it still compiles and emits a notice — untested, and deliberately not blocked, so a newly released engine never breaks a project on day one.\n' "$FLOOR" "$CEILING"
+          } > release-notes.md
+
+          echo "Composed notes for ${GITHUB_REF_NAME} (UE ${FLOOR} to ${CEILING}):"
+          cat release-notes.md
 
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
           files: FlockUnrealSdk-*.zip
-          generate_release_notes: true
-          # Both stated explicitly rather than left to the defaults. `append_body: false` is already the
-          # default, but this is the one input that decides whether an existing body is combined with the
-          # generated notes, so it should be visible at the call site rather than inherited silently.
-          # `name` is pinned for the same reason: with generate_release_notes on, an unset name is also
-          # auto-generated, so a re-run could quietly retitle a published release.
+          body_path: release-notes.md
+          # Off, deliberately: the body above is complete, and leaving this on is what duplicated the
+          # notes. `append_body: false` keeps an existing body from being combined with ours, so a re-run
+          # replaces the notes rather than stacking another copy. `name` is pinned so a re-run cannot
+          # quietly retitle a published release.
+          generate_release_notes: false
           append_body: false
           name: ${{ github.ref_name }}
