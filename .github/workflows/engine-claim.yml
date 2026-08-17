@@ -17,6 +17,16 @@ name: Engine claim
 
 on:
   workflow_call:
+    # The validated range is published so callers can state it without parsing the header themselves.
+    # The release notes need it, and a second parser would be a second thing to drift — the same reason
+    # these checks are a reusable workflow rather than a copy in each caller.
+    outputs:
+      floor:
+        description: "Lowest supported engine, e.g. 5.5 — read from FlockEngineCompat.h and validated here."
+        value: ${{ jobs.engine-claim.outputs.floor }}
+      ceiling:
+        description: "Highest verified engine, e.g. 5.8 — read from FlockEngineCompat.h and validated here."
+        value: ${{ jobs.engine-claim.outputs.ceiling }}
 
 permissions:
   contents: read
@@ -24,10 +34,14 @@ permissions:
 jobs:
   engine-claim:
     runs-on: ubuntu-latest
+    outputs:
+      floor: ${{ steps.claim.outputs.floor }}
+      ceiling: ${{ steps.claim.outputs.ceiling }}
     steps:
       - uses: actions/checkout@v4
 
       - name: The engine claim agrees across manifest, README, and compat header
+        id: claim
         run: |
           set -euo pipefail
 
@@ -85,6 +99,11 @@ jobs:
           fi
 
           echo "Engine claim is consistent at UE $COMPAT to UE $CEILING."
+
+          # Published only after every check above has passed, so a caller can never quote a range that
+          # failed validation.
+          echo "floor=$COMPAT" >> "$GITHUB_OUTPUT"
+          echo "ceiling=$CEILING" >> "$GITHUB_OUTPUT"
 
       - name: Version guards live only in the compat header
         run: |
