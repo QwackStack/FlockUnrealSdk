@@ -47,9 +47,55 @@ These pure nodes answer immediately, with no network call:
 | `Flock Get Asset Cache Directory` | the cache root on this device |
 | `Flock Clear Asset Cache` | *(callable)* drops every cached file |
 
-A loading screen is `Flock Get Assets` → `Flock Get Uncached Assets` → `Flock Preload Assets`, with the
-preload node's On Progress driving the bar. Preload is best-effort: one unreachable asset does not fail
-the batch, and `Succeeded` reports how many of `Requested` actually landed.
+### Showing an asset in a widget
+
+The shortest path from a dashboard upload to something on screen, in a Widget Blueprint:
+
+1. In the **Designer**, add an **Image** and tick **Is Variable** in its Details — without that tick it
+   does not exist in the graph. Name it `Icon`.
+2. In the **Graph**, drop **Flock Download Asset Texture** and type the asset's name into its `Asset`
+   pin.
+3. Drag `Icon` into the graph, pull off it to **Set Brush from Texture**, and run **On Success** into
+   that node with the download node's `Texture` output wired to its `Texture` input. Tick **Match Size**
+   if the Image should take the texture's real dimensions rather than your layout slot's.
+4. Run **On Failure** into whatever you show errors with, putting `Error` through
+   **To String (Flock Error)**.
+
+`Texture` is only populated on the Success path. All three pins share one signature, so it is null on
+Failure and on Progress — and **On Progress** in particular fires once per chunk, so hanging the Set on
+it would run repeatedly with nothing to set.
+
+`Event Construct` is a fine trigger, with one catch worth knowing before you debug the wrong thing:
+**it fires when the widget is added to the viewport or to a parent, not when it is created.** A
+`Create Widget` whose Return Value never reaches an `Add to Viewport` produces a widget that exists in
+memory, never constructs, and therefore never asks for the asset — so nothing renders *and* the log
+stays silent, which reads like a failed download but is not one. If `LogFlock` says nothing at all,
+check that wire first.
+
+`Event Construct` also does not run in the Designer preview, so the icon appears in PIE and in a build,
+not while you are laying the widget out.
+
+### A loading screen
+
+`Flock Get Assets` → `Flock Get Uncached Assets` → `Flock Preload Assets`, with the preload node's
+On Progress driving the bar. Filtering to the uncached set means a second launch has nothing left to do
+and the bar reflects real work. `Flock Preload All Assets` is the no-arguments version when you simply
+want everything.
+
+**Do not start it straight from Event Construct.** Auto-init finishes during GameInstance startup —
+before any Blueprint can bind — so a widget that waits on the SDK's initialization event waits forever.
+Run Event Construct into **Flock Get Events** → **Call Or Register On Initialized**, and bind a custom
+event to its delegate pin: that fires immediately when the SDK is already up, and waits when it is not.
+See [SDK events](events.md).
+
+Preload is best-effort: one unreachable asset does not fail the batch, and the Success pin's `Succeeded`
+reports how many of `Requested` actually landed — compare the two to know whether anything was missed.
+On the **On Progress** pin only `Progress` and `Requested` mean anything; `Succeeded` is 0 until the
+end, so a "3 of 10" readout belongs on Success.
+
+Preloading is also what makes the widget recipe above instant: once the bytes are on disk,
+`Flock Download Asset Texture` is a disk read and the icon is there on the first frame instead of
+appearing a beat late.
 
 ## C++
 

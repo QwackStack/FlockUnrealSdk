@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Auth/FlockAuthSession.h"
+#include "FlockEvents.h"
 #include "Http/FlockProviderBase.h"
 #include "Models/FlockCommandModels.h"
 #include "Models/FlockNotificationModels.h"
@@ -31,6 +32,7 @@ class FLOCK_API FFlockNotificationProvider
 public:
 	FFlockNotificationProvider(const TSharedRef<FFlockHttpClient>& InClient, const FFlockRetryPolicy& InPolicy,
 		const TSharedRef<IFlockLogger>& InLogger, const TSharedRef<FFlockAuthSession>& InSession,
+		const TWeakObjectPtr<UFlockEvents>& InEvents,
 		const FString& InVersionedApiUrl, const TSharedPtr<FFlockSnapshotStore>& InSnapshotStore,
 		const FString& InGameVersionId);
 
@@ -136,6 +138,26 @@ public:
 	 */
 	void CancelScheduled(const FString& ScheduledId, TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete);
 
+	/**
+	 * Schedules this install created that have not reached their delivery time yet.
+	 *
+	 * **Local bookkeeping, not a server query.** `/v1` has no route to list or read a schedule back, so the
+	 * SDK persists what it scheduled — which means this knows only what *this install* created, and infers
+	 * delivery from the clock. Entries whose time has passed are dropped as they are read. Synchronous,
+	 * because it never touches the network.
+	 */
+	TArray<FFlockPendingSchedule> GetPendingSchedules() const;
+
+	/**
+	 * Cancels every schedule still tracked here and reports how many the server actually cancelled.
+	 *
+	 * Entries the server no longer recognises (delivered, already cancelled, unknown) are **dropped rather
+	 * than failing the batch** — they are not pending either way. A transient failure stops the run and
+	 * fails, leaving the rest tracked so a later call can retry them; the count is not reported in that
+	 * case, which is why this is for a "clear my reminders" action rather than a fire-and-forget sweep.
+	 */
+	void CancelAllScheduled(TFunction<void(TFlockResult<int32>)> OnComplete);
+
 	// Push device tokens
 	//
 	// **The SDK never acquires a token, by design.** The game gets one from its push plugin — Firebase
@@ -213,14 +235,92 @@ private:
 	void WithTemplateId(const FString& TemplateName, TFunction<void(const FString&)> Continue,
 		TFunction<void(const FFlockError&)> OnFailure);
 
+	/**
+	 * The one schedule path. Both public entry points funnel here so tracking happens in exactly one place;
+	 * TemplateName is empty when the caller scheduled by id, which is the only thing the two differ on.
+	 */
+	void ScheduleInternal(const FString& TemplateId, const FString& TemplateName, const FDateTime& DeliverAtUtc,
+		const FFlockCommandData& Variables, const TArray<EFlockNotificationChannel>& Channels,
+		TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete);
+
+	// Pending-schedule bookkeeping
+	//
+	// The id a schedule call returns is the only handle on a pending reminder and /v1 has no route to list
+	// or read one back, so the SDK persists what it scheduled. Player-scoped: a second player on the same
+	// device must not see, or be able to cancel, the first player's reminders.
+
+	/** Stored entries with the elapsed ones dropped; rewrites the list when it drops any. */
+	TArray<FFlockPendingSchedule> LoadPendingSchedules() const;
+
+	/** Persists the list under the player-scoped key. No-op without a snapshot store. */
+	void SavePendingSchedules(const TArray<FFlockPendingSchedule>& Pending) const;
+
+	/** Records a successful schedule. Ignores a response with no id — there would be nothing to cancel. */
+	void TrackPending(const FFlockScheduledNotification& Scheduled, const FString& TemplateName,
+		const FString& TemplateId) const;
+
+	/** Forgets one entry by scheduled id. Called after a cancel, and after a permanent rejection. */
+	void UntrackPending(const FString& ScheduledId) const;
+
+	/** One step of CancelAllScheduled's sequential walk. Kept a member so the recursion never captures `this`. */
+	void CancelAllStep(TSharedRef<TArray<FString>> Ids, int32 Index, TSharedRef<int32> Cancelled,
+		TFunction<void(TFlockResult<int32>)> OnComplete);
+
+	/**
+	 * True when DeliverAt is in the past. An **unparseable** timestamp answers false, so the entry is kept:
+	 * losing the only handle on a cancellable reminder is worse than carrying a stale row. (The opposite
+	 * call from the watermark, where an unparseable date is skipped — there the risk is duplicate events
+	 * forever, here it is a lost cancel.)
+	 */
+	static bool HasElapsed(const FString& DeliverAt);
+
+	// Seen-watermark bookkeeping
+	//
+	// "Received" is fetch-derived: there is no realtime channel and the SDK never polls, so the watermark is
+	// the only thing separating a notification the game has already been told about from a genuinely new one.
+
+	/** The stored watermark for the signed-in player, or a fresh unseeded one when there is none. */
+	FFlockNotificationWatermark LoadWatermark() const;
+
+	/** Persists the watermark under the player-scoped key. No-op without a snapshot store. */
+	void SaveWatermark(const FFlockNotificationWatermark& Mark) const;
+
+	/**
+	 * Raises OnNotificationReceived once per notification newer than the watermark, oldest first, then
+	 * advances it. The first fetch for a player seeds silently — replaying an existing inbox as a burst of
+	 * events is worse than not reporting its history.
+	 */
+	void RaiseNewNotifications(const TArray<FFlockNotification>& Items) const;
+
+	/** Raises OnUnreadCountChanged. Only ever called with a count the server just reported. */
+	void RaiseUnreadCount(int32 Count) const;
+
 	TSharedRef<FFlockAuthSession> Session;
+
+	/** Weak: the hub is a UObject owned by the subsystem and may be collected before this provider is. */
+	TWeakObjectPtr<UFlockEvents> Events;
+
 	FString VersionedApiUrl;
 
 	/** Name -> template. Every name-addressed send resolves first, and that must not cost a round trip each time. */
 	TMap<FString, FFlockNotificationTemplate> TemplatesByName;
 
-	/** Player-scoped keys: inbox, counts, summary. Dropped wholesale on logout. */
+	/** Player-scoped keys: inbox, counts, summary. Dropped wholesale on logout — except the watermark. */
 	static const TCHAR* const SnapshotCategory;
+
+	/**
+	 * Key of the seen-watermark inside SnapshotCategory. It shares the category but **survives ClearCache**:
+	 * it is state, not cache. Losing it would make the next read either re-announce an entire inbox or
+	 * silently swallow everything created before the sign-out.
+	 */
+	static const TCHAR* const WatermarkKey;
+
+	/**
+	 * Key of the pending-schedule list inside SnapshotCategory. Like the watermark it shares the category
+	 * but **survives ClearCache** — it is the only record of what this install scheduled, and the server
+	 * cannot tell us again.
+	 */
+	static const TCHAR* const PendingSchedulesKey;
 
 	/**
 	 * Templates live in their own category because they are **game-scoped**, not player-scoped. Sharing the

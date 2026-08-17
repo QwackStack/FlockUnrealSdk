@@ -127,6 +127,18 @@ void UFlockEvents::InvokeSessionResumed()
 	OnSessionResumed.Broadcast();
 }
 
+void UFlockEvents::InvokeUnreadCountChanged(int32 UnreadCount)
+{
+	LogRaise(TEXT("OnUnreadCountChanged"), OnUnreadCountChanged.GetAllObjects().Num());
+	OnUnreadCountChanged.Broadcast(UnreadCount);
+}
+
+void UFlockEvents::InvokeNotificationReceived(const FFlockNotification& Notification)
+{
+	LogRaise(TEXT("OnNotificationReceived"), OnNotificationReceived.GetAllObjects().Num());
+	OnNotificationReceived.Broadcast(Notification);
+}
+
 void UFlockEvents::InvokeConsentChanged(bool bGranted)
 {
 	LogRaise(TEXT("OnConsentChanged"), OnConsentChanged.GetAllObjects().Num());

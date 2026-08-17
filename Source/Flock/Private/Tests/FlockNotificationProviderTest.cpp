@@ -12,7 +12,9 @@
 #include "Http/FlockSnapshotStore.h"
 #include "Misc/Base64.h"
 #include "Misc/Paths.h"
+#include "FlockEvents.h"
 #include "Providers/FlockNotificationProvider.h"
+#include "Tests/Support/FlockEventTestListener.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
@@ -88,6 +90,29 @@ namespace FlockNotificationProviderTestHelpers
 			*Row(TEXT("n-1"), /*bRead*/ false), *Row(TEXT("n-2"), /*bRead*/ true));
 	}
 
+	/**
+	 * A row with a caller-chosen created_at. The fixed-date Row() above cannot express ordering, and the
+	 * seen-watermark is entirely about ordering — a literal is passed through verbatim so a deliberately
+	 * unparseable timestamp can be tested too.
+	 */
+	inline FString RowAt(const FString& Id, const FString& CreatedAt)
+	{
+		return FString::Printf(
+			TEXT("{\"id\":\"%s\",\"studio_id\":\"s1\",\"game_id\":\"g1\",\"recipient_type\":\"player\",")
+			TEXT("\"recipient_id\":\"player-a\",\"type\":\"reward\",\"severity\":\"info\",")
+			TEXT("\"title\":\"Daily bonus\",\"body\":\"Your reward is ready\",\"data\":{\"Coins\":25},")
+			TEXT("\"read_at\":null,\"campaign_id\":null,\"created_at\":\"%s\",")
+			TEXT("\"updated_at\":\"2026-08-12T00:00:00Z\"}"),
+			*Id, *CreatedAt);
+	}
+
+	/** A bare inbox page built from explicit rows, newest-first the way the real route orders them. */
+	inline FString InboxOf(const TArray<FString>& Rows)
+	{
+		return FString::Printf(TEXT("{\"items\":[%s],\"total\":%d,\"page\":1,\"limit\":50}"),
+			*FString::Join(Rows, TEXT(",")), Rows.Num());
+	}
+
 	inline FString UnreadCountBody(int32 Count = 4) { return Env(FString::Printf(TEXT("{\"count\":%d}"), Count)); }
 
 	/** The catalog is an enveloped **list** — `result` is a bare array, not a {items,total,...} page. */
@@ -115,15 +140,52 @@ namespace FlockNotificationProviderTestHelpers
 		return Env(FString::Printf(TEXT("{\"deactivated\":%s}"), bDeactivated ? TEXT("true") : TEXT("false")));
 	}
 
+	/**
+	 * A `deliver_at` far enough ahead that it cannot elapse mid-suite.
+	 *
+	 * **Derived, never hardcoded.** A literal future date is a time bomb: once it passes, the pending-schedule
+	 * tests start failing for a reason that has nothing to do with the SDK — `LoadPendingSchedules` would be
+	 * correctly dropping the entry as delivered, and every "still pending" assertion would read zero.
+	 */
+	inline FString FutureIso()
+	{
+		return (FDateTime::UtcNow() + FTimespan::FromDays(365)).ToIso8601();
+	}
+
+	/** The mirror image, for exercising the drop-on-elapsed path. */
+	inline FString PastIso()
+	{
+		return (FDateTime::UtcNow() - FTimespan::FromDays(1)).ToIso8601();
+	}
+
+	/**
+	 * A past timestamp in the shape the **real backend** echoes: microsecond fraction and **no timezone
+	 * suffix** (`2026-08-17T07:46:12.493000`), not the `...Z` that `FDateTime::ToIso8601` emits.
+	 *
+	 * Worth its own fixture because the two forms take different paths through `FDateTime::ParseIso8601`:
+	 * a >3-digit fraction is rounded to milliseconds, and the timezone branch has to accept a bare
+	 * terminator. A fixture that only ever used the `Z` form would pass while production never dropped a
+	 * single elapsed entry — the pending list would grow forever. Confirmed live 2026-08-17.
+	 */
+	inline FString PastIsoServerShape()
+	{
+		const FDateTime When = FDateTime::UtcNow() - FTimespan::FromDays(1);
+		return FString::Printf(TEXT("%04d-%02d-%02dT%02d:%02d:%02d.%03d000"),
+			When.GetYear(), When.GetMonth(), When.GetDay(),
+			When.GetHour(), When.GetMinute(), When.GetSecond(), When.GetMillisecond());
+	}
+
 	/** A scheduled row. The three delivery-state timestamps are nullable and carry the real state. */
-	inline FString ScheduledBody(bool bCanceled = false)
+	inline FString ScheduledBody(bool bCanceled = false, const FString& DeliverAt = FString(),
+		const FString& Id = TEXT("sch-1"))
 	{
 		return Env(FString::Printf(
-			TEXT("{\"id\":\"sch-1\",\"game_id\":\"g1\",\"studio_id\":\"s1\",\"player_id\":\"player-a\",")
+			TEXT("{\"id\":\"%s\",\"game_id\":\"g1\",\"studio_id\":\"s1\",\"player_id\":\"player-a\",")
 			TEXT("\"template_id\":\"tpl-1\",\"variables\":{\"PlayerName\":\"Ada\"},")
-			TEXT("\"channels\":[\"in_app\",\"push\"],\"deliver_at\":\"2026-08-13T09:00:00Z\",")
+			TEXT("\"channels\":[\"in_app\",\"push\"],\"deliver_at\":\"%s\",")
 			TEXT("\"status\":\"pending\",\"source\":\"sdk\",\"notification_id\":null,\"delivered_at\":null,")
 			TEXT("\"canceled_at\":%s,\"created_at\":\"2026-08-12T00:00:00Z\",\"updated_at\":\"2026-08-12T00:00:00Z\"}"),
+			*Id, *(DeliverAt.IsEmpty() ? FutureIso() : DeliverAt),
 			bCanceled ? TEXT("\"2026-08-12T02:00:00Z\"") : TEXT("null")));
 	}
 	inline FString SummaryBody() { return Env(FString::Printf(TEXT("{\"unread_count\":4,\"items\":[%s]}"), *Row(TEXT("n-1"), false))); }
@@ -139,6 +201,8 @@ namespace FlockNotificationProviderTestHelpers
 		TSharedRef<FFlockAuthSession> Session;
 		TSharedPtr<FFlockSnapshotStore> Snapshot;
 		TSharedPtr<FFlockNotificationProvider> Provider;
+		UFlockEvents* Events = nullptr;
+		UFlockEventTestListener* Listener = nullptr;
 
 		explicit FFixture(const FString& ExistingDir = FString(), const FFlockRetryPolicy& Policy = NoRetry())
 			: Dir(ExistingDir.IsEmpty() ? TempRoot() : ExistingDir)
@@ -146,9 +210,14 @@ namespace FlockNotificationProviderTestHelpers
 			, Session(MakeShared<FFlockAuthSession>(Client, Store, MakeShared<FFlockNullLogger>(),
 				TEXT("http://x/v1"), TMap<FString, FString>{ { TEXT("X-Flock-API-Key"), TEXT("k") } }))
 		{
+			Events = NewObject<UFlockEvents>();
+			Listener = NewObject<UFlockEventTestListener>();
+			Events->OnUnreadCountChanged.AddDynamic(Listener, &UFlockEventTestListener::HandleUnreadCountChanged);
+			Events->OnNotificationReceived.AddDynamic(Listener, &UFlockEventTestListener::HandleNotificationReceived);
+
 			Snapshot = MakeShared<FFlockSnapshotStore>(Dir, MakeShared<FFlockNullLogger>(), TEXT("9.9.9"));
 			Provider = MakeShared<FFlockNotificationProvider>(Client, Policy, MakeShared<FFlockNullLogger>(),
-				Session, TEXT("http://x/v1"), Snapshot, TEXT("ver-1"));
+				Session, Events, TEXT("http://x/v1"), Snapshot, TEXT("ver-1"));
 			RouteAll();
 		}
 
@@ -187,6 +256,18 @@ namespace FlockNotificationProviderTestHelpers
 		{
 			Fake->On(TEXT("notification_template/by-name"), Response);
 			Fake->On(TEXT("notification_template"), FFlockFakeTransport::Ok(TemplatesBody()));
+		}
+
+		/**
+		 * The same trap one level down: `notification/schedule` is a prefix of `notification/schedule/{id}`,
+		 * so a cancel route registered after the schedule POST is unreachable and *every* cancel silently
+		 * succeeds — a test that asserts nothing. Re-registering the general route puts it back at the end.
+		 * Route cancels through this, never through a bare `On`.
+		 */
+		void RouteCancel(const FString& ScheduledId, const FFlockHttpResponse& Response)
+		{
+			Fake->On(FString::Printf(TEXT("notification/schedule/%s"), *ScheduledId), Response);
+			Fake->On(TEXT("notification/schedule"), FFlockFakeTransport::Ok(ScheduledBody()));
 		}
 
 		/** The body of the last request whose URL contains Fragment, for asserting what went on the wire. */
@@ -1015,6 +1096,355 @@ bool FFlockDeviceTokenUnsupportedPlatformTest::RunTest(const FString& Parameters
 	TestTrue(TEXT("completed"), bDone);
 	// The point of refusing: nothing is filed under a platform that would never deliver.
 	TestEqual(TEXT("no token was registered"), F.Fake->CountTo(TEXT("device_token/register")), 0);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// Notification events
+//
+// "Received" is fetch-derived — there is no realtime channel and this SDK never polls — so the seen
+// watermark is the entire mechanism. These pin the four properties that make it safe: seed silently,
+// raise once, raise oldest-first, and never let one player's cutoff apply to another's inbox.
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationSeedsSilentlyTest, "Flock.Notification.Events.FirstFetchSeedsSilently",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationSeedsSilentlyTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+
+	bool bDone = false;
+	F.Provider->GetNotifications([&](TFlockResult<FFlockNotificationPage> Result) { bDone = Result.bSuccess; });
+	TestTrue(TEXT("inbox fetched"), bDone);
+
+	// A player who already has mail must not be handed their whole history as a burst of "received" events
+	// the first time the game asks.
+	TestEqual(TEXT("first fetch announces nothing"), F.Listener->ReceivedNotifications.Num(), 0);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationRaisesNewOldestFirstTest, "Flock.Notification.Events.RaisesNewOldestFirst",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationRaisesNewOldestFirstTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+
+	// Seed at T1.
+	F.Fake->On(TEXT("notification?"), FFlockFakeTransport::Ok(InboxOf({ RowAt(TEXT("n-1"), TEXT("2026-08-12T00:00:00Z")) })));
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+	TestEqual(TEXT("seed is silent"), F.Listener->ReceivedNotifications.Num(), 0);
+
+	// Two newer rows arrive. The route answers newest-first, which is why raise order is worth asserting:
+	// handing a game its mail backwards is the bug this walks the page in reverse to avoid.
+	F.Fake->On(TEXT("notification?"), FFlockFakeTransport::Ok(InboxOf({
+		RowAt(TEXT("n-3"), TEXT("2026-08-14T00:00:00Z")),
+		RowAt(TEXT("n-2"), TEXT("2026-08-13T00:00:00Z")),
+		RowAt(TEXT("n-1"), TEXT("2026-08-12T00:00:00Z")) })));
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+
+	if (TestEqual(TEXT("only the two new rows raise"), F.Listener->ReceivedNotifications.Num(), 2))
+	{
+		TestEqual(TEXT("oldest first"), FlockTestAt(F.Listener->ReceivedNotifications, 0).Id, FString(TEXT("n-2")));
+		TestEqual(TEXT("then the newer one"), FlockTestAt(F.Listener->ReceivedNotifications, 1).Id, FString(TEXT("n-3")));
+	}
+
+	// A third fetch of the same page raises nothing: the watermark advanced past both.
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+	TestEqual(TEXT("re-reading the same page announces nothing again"), F.Listener->ReceivedNotifications.Num(), 2);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationWatermarkPlayerScopedTest, "Flock.Notification.Events.WatermarkIsPlayerScoped",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationWatermarkPlayerScopedTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+
+	// Player A seeds at a late date.
+	F.SignIn(TEXT("player-a"));
+	F.Fake->On(TEXT("notification?"), FFlockFakeTransport::Ok(InboxOf({ RowAt(TEXT("a-1"), TEXT("2026-08-20T00:00:00Z")) })));
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+
+	// Player B signs in on the same device and seeds at an early date.
+	F.SignIn(TEXT("player-b"));
+	F.Fake->On(TEXT("notification?"), FFlockFakeTransport::Ok(InboxOf({ RowAt(TEXT("b-1"), TEXT("2026-08-01T00:00:00Z")) })));
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+	TestEqual(TEXT("B's first fetch is silent too"), F.Listener->ReceivedNotifications.Num(), 0);
+
+	// B now gets a row dated *before* A's cutoff but after B's. A shared watermark would swallow it; a
+	// player-scoped one raises it. That is the whole point of suffixing the key with the player id.
+	F.Fake->On(TEXT("notification?"), FFlockFakeTransport::Ok(InboxOf({
+		RowAt(TEXT("b-2"), TEXT("2026-08-05T00:00:00Z")),
+		RowAt(TEXT("b-1"), TEXT("2026-08-01T00:00:00Z")) })));
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+
+	if (TestEqual(TEXT("B hears about their own new mail"), F.Listener->ReceivedNotifications.Num(), 1))
+	{
+		TestEqual(TEXT("and it is B's row"), FlockTestAt(F.Listener->ReceivedNotifications, 0).Id, FString(TEXT("b-2")));
+	}
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationClearCacheKeepsWatermarkTest, "Flock.Notification.Events.ClearCacheKeepsWatermark",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationClearCacheKeepsWatermarkTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+	F.Fake->On(TEXT("notification?"), FFlockFakeTransport::Ok(InboxOf({ RowAt(TEXT("n-1"), TEXT("2026-08-12T00:00:00Z")) })));
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+
+	// Logout drops the inbox rows — they belong to the departing player — but the watermark is state, not
+	// cache. Losing it would re-announce this player's entire inbox the next time they signed in.
+	F.Provider->ClearCache();
+
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+	TestEqual(TEXT("the already-seen row is not re-announced after ClearCache"),
+		F.Listener->ReceivedNotifications.Num(), 0);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationUnparseableDateSkippedTest, "Flock.Notification.Events.UnparseableCreatedAtIsSkipped",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationUnparseableDateSkippedTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+	F.Fake->On(TEXT("notification?"), FFlockFakeTransport::Ok(InboxOf({ RowAt(TEXT("n-1"), TEXT("2026-08-12T00:00:00Z")) })));
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+
+	// A row the SDK cannot place in time is skipped rather than announced: with no comparable timestamp it
+	// would raise on every single fetch, and a duplicate is worse than a miss.
+	F.Fake->On(TEXT("notification?"), FFlockFakeTransport::Ok(InboxOf({
+		RowAt(TEXT("bad"), TEXT("not-a-date")),
+		RowAt(TEXT("n-1"), TEXT("2026-08-12T00:00:00Z")) })));
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+
+	TestEqual(TEXT("an undateable row never raises, however often it is fetched"),
+		F.Listener->ReceivedNotifications.Num(), 0);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationUnreadCountEventTest, "Flock.Notification.Events.ServerReportedCountsRaise",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationUnreadCountEventTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+
+	F.Provider->GetUnreadCount([](TFlockResult<int32>) {});
+	TestEqual(TEXT("an unread-count fetch raises once"), F.Listener->UnreadCountChangedCount, 1);
+	TestEqual(TEXT("with the server's number"), F.Listener->LastUnreadCount, 4);
+
+	// The summary is the one call that reports a count *and* carries rows, so it feeds both events.
+	F.Provider->GetSummary([](TFlockResult<FFlockNotificationSummary>) {});
+	TestEqual(TEXT("summary raises the count too"), F.Listener->UnreadCountChangedCount, 2);
+
+	// Mark-all-read has exactly one possible outcome, so zero is reported rather than left to a refetch.
+	F.Provider->MarkAllRead([](TFlockResult<FFlockMarkAllReadResult>) {});
+	TestEqual(TEXT("mark-all-read raises"), F.Listener->UnreadCountChangedCount, 3);
+	TestEqual(TEXT("as zero unread"), F.Listener->LastUnreadCount, 0);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// Pending schedules
+//
+// The id a schedule returns is the only handle on a pending reminder and /v1 has no route to list or read
+// one back, so the SDK keeps its own list. These pin what that list must survive and when it must forget.
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationTracksPendingTest, "Flock.Notification.Pending.TrackedOnScheduleDroppedOnCancel",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationTracksPendingTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+	TestEqual(TEXT("nothing tracked to begin with"), F.Provider->GetPendingSchedules().Num(), 0);
+
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2),
+		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
+
+	const TArray<FFlockPendingSchedule> Pending = F.Provider->GetPendingSchedules();
+	if (TestEqual(TEXT("the schedule is tracked"), Pending.Num(), 1))
+	{
+		const FFlockPendingSchedule& Entry = FlockTestAt(Pending, 0);
+		TestEqual(TEXT("by its scheduled id"), Entry.Id, FString(TEXT("sch-1")));
+		// The name is what a caller has; carrying it means telling entries apart needs no second call.
+		TestEqual(TEXT("with the template name it was scheduled by"), Entry.TemplateName, FString(TEXT("DailyBonus")));
+		TestEqual(TEXT("and the id that name resolved to"), Entry.TemplateId, FString(TEXT("tpl-1")));
+		TestFalse(TEXT("deliver_at recorded"), Entry.DeliverAt.IsEmpty());
+	}
+
+	F.Provider->CancelScheduled(TEXT("sch-1"), [](TFlockResult<FFlockScheduledNotification>) {});
+	TestEqual(TEXT("cancelling forgets it"), F.Provider->GetPendingSchedules().Num(), 0);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationDropsElapsedTest, "Flock.Notification.Pending.ElapsedEntriesAreDropped",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationDropsElapsedTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+
+	// Delivery can only be inferred from the clock — there is no route to ask — so a schedule whose time
+	// has passed stops counting as pending.
+	F.Fake->On(TEXT("notification/schedule"), FFlockFakeTransport::Ok(ScheduledBody(false, PastIso())));
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2),
+		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
+
+	TestEqual(TEXT("an already-delivered schedule is not pending"), F.Provider->GetPendingSchedules().Num(), 0);
+
+	// The same thing again in the shape the real backend actually echoes — microsecond fraction, no
+	// timezone suffix. The `Z` form above would pass even if this one silently never elapsed.
+	F.Fake->On(TEXT("notification/schedule"),
+		FFlockFakeTransport::Ok(ScheduledBody(false, PastIsoServerShape(), TEXT("sch-srv"))));
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2),
+		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
+
+	TestEqual(TEXT("the backend's own timestamp shape elapses too"), F.Provider->GetPendingSchedules().Num(), 0);
+
+	// An unparseable deliver_at goes the other way and is kept: losing the only handle on a cancellable
+	// reminder is worse than carrying a stale row.
+	F.Fake->On(TEXT("notification/schedule"), FFlockFakeTransport::Ok(ScheduledBody(false, TEXT("not-a-date"), TEXT("sch-2"))));
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2),
+		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
+
+	TestEqual(TEXT("an undateable entry is kept, not dropped"), F.Provider->GetPendingSchedules().Num(), 1);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationClearCacheKeepsPendingTest, "Flock.Notification.Pending.ClearCacheKeepsPending",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationClearCacheKeepsPendingTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2),
+		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
+	TestEqual(TEXT("tracked"), F.Provider->GetPendingSchedules().Num(), 1);
+
+	// Logout drops the inbox rows, but not this: the server has no route that could tell us again, so
+	// dropping it strands a reminder nothing can cancel.
+	F.Provider->ClearCache();
+	TestEqual(TEXT("the pending list survives ClearCache"), F.Provider->GetPendingSchedules().Num(), 1);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationPendingPlayerScopedTest, "Flock.Notification.Pending.IsPlayerScoped",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationPendingPlayerScopedTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn(TEXT("player-a"));
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2),
+		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
+	TestEqual(TEXT("A has one"), F.Provider->GetPendingSchedules().Num(), 1);
+
+	// A second player on the same device must not see — or be able to cancel — the first player's reminders.
+	F.SignIn(TEXT("player-b"));
+	TestEqual(TEXT("B sees none of A's"), F.Provider->GetPendingSchedules().Num(), 0);
+
+	F.SignIn(TEXT("player-a"));
+	TestEqual(TEXT("and A still has theirs"), F.Provider->GetPendingSchedules().Num(), 1);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationCancelAllTest, "Flock.Notification.Pending.CancelAllDropsPermanentlyRejected",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationCancelAllTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+
+	// Two schedules, then make one of them unknown to the server — delivered, already cancelled, or simply
+	// gone. Route order matters: the specific id must be registered before the general prefix.
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2),
+		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
+	F.Fake->On(TEXT("notification/schedule"), FFlockFakeTransport::Ok(ScheduledBody(false, FString(), TEXT("sch-2"))));
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2),
+		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
+	TestEqual(TEXT("two tracked"), F.Provider->GetPendingSchedules().Num(), 2);
+
+	F.RouteCancel(TEXT("sch-2"), FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"gone\"}")));
+	F.RouteCancel(TEXT("sch-1"), FFlockFakeTransport::Ok(ScheduledBody(/*bCanceled*/ true)));
+
+	bool bDone = false;
+	int32 Count = -1;
+	F.Provider->CancelAllScheduled([&](TFlockResult<int32> Result)
+	{
+		bDone = true;
+		TestTrue(TEXT("the batch succeeds despite the 404"), Result.bSuccess);
+		Count = Result.Value;
+	});
+
+	TestTrue(TEXT("completed"), bDone);
+	// A row the server no longer recognises is not pending either way, so it is dropped rather than
+	// failing the batch — but it is not counted as cancelled, because nothing was.
+	TestEqual(TEXT("only the real cancel is counted"), Count, 1);
+	TestEqual(TEXT("both entries are gone from the list"), F.Provider->GetPendingSchedules().Num(), 0);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationCancelAllTransientTest, "Flock.Notification.Pending.CancelAllKeepsEntriesOnTransientFailure",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationCancelAllTransientTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2),
+		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
+
+	// A 500 is not an authoritative answer about the schedule, so the entry must stay tracked for a retry
+	// rather than being silently forgotten.
+	F.RouteCancel(TEXT("sch-1"), FFlockFakeTransport::Status(500, TEXT("{\"detail\":\"boom\"}")));
+
+	bool bDone = false;
+	F.Provider->CancelAllScheduled([&](TFlockResult<int32> Result)
+	{
+		bDone = true;
+		TestFalse(TEXT("a transient failure stops the batch"), Result.bSuccess);
+	});
+
+	TestTrue(TEXT("completed"), bDone);
+	TestEqual(TEXT("the entry is still tracked, so a later call can retry it"),
+		F.Provider->GetPendingSchedules().Num(), 1);
 
 	Cleanup(F.Dir);
 	return true;

@@ -251,8 +251,10 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	// Read/write, but entirely player-scoped and dependent on nothing above it. Snapshot-backed so an inbox
 	// UI offline shows the last-known messages rather than an empty list; every key carries the player id,
 	// so a shared device cannot serve one account's mail to the next.
+	// The events hub goes in because reads raise from here: an unread count the server reported, and any
+	// notification the SDK has not surfaced before. Weak, like every other holder of the hub.
 	NotificationProvider = MakeShared<FFlockNotificationProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
-		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
+		AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
 
 	// Supply the reachability probe every snapshot-backed provider has always had a seam for and never a
 	// production value for — left null, IsServerReachable() answered "reachable" unconditionally, so the

@@ -5,6 +5,97 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Notification events on the events hub.** `OnUnreadCountChanged` (the player's unread count, as the
+  server last reported it) and `OnNotificationReceived` (one raise per notification the SDK has not
+  surfaced before). Both are `BlueprintAssignable`, so a graph binds them off `Get Events` with no new
+  nodes.
+- `OnUnreadCountChanged` fires only when the server actually reports a count — an unread-count or
+  summary fetch, or a mark-all-read, which reports zero because that call has exactly one possible
+  outcome. It never fires from a background poll, because the SDK does not run one.
+- **`GetPendingSchedules()`** — the schedules this install created that have not reached their delivery
+  time yet. Synchronous; it never touches the network.
+- **`CancelAllScheduled()`** — cancels everything still tracked and reports how many the server actually
+  cancelled.
+
+### Changed
+
+- **`Flock.SelfTest` covers the pending-schedule list and the notification events.** Scheduling now
+  narrates the tracked entry, cancelling shows it untracked, and a second reminder is scheduled purely to
+  exercise `CancelAllScheduled` — cancelled immediately, so nothing live is left behind. The two events
+  are reported at the end of the sweep.
+- **`Flock.SelfTest` funds the wallet before it buys.** The demo player had no balance in the item's
+  currency, so every run stopped at `shop.insufficient_funds` and the purchase *success* path had never
+  run against a real backend. The sweep now grants exactly the item's price first, which is net-neutral,
+  and then narrates what the purchase response does and does not contain.
+- **`Flock.SelfTest` narrates the purchase's analytics transaction.** The shop provider fires those
+  fire-and-forget, so a failure only ever reached the log; the sweep now sends one with a completion and
+  reports the outcome.
+- `Flock.SelfTest` now sweeps assets: the index listing, one asset resolved **by name**, and that
+  asset's bytes downloaded. It runs signed out, alongside the config and shop-catalog sweeps, because
+  neither asset route declares `security`. Point `DemoAssetName` at an asset on your backend; an empty
+  name skips the by-name and download steps and leaves the index listing running.
+- `Documentation/assets.md` gains two worked recipes: showing a downloaded texture in a Widget
+  Blueprint, and building a loading screen around the preload nodes.
+
+### Notes
+
+- **"Received" means first seen by a read, not the moment the server created the row.** There is no
+  realtime channel and the SDK never polls, so a persisted per-player watermark is what separates a
+  notification the game was already told about from a genuinely new one. It rides the inbox and summary
+  reads and adds no traffic of its own.
+- **The first fetch for a player seeds silently.** Handing a game an existing inbox as a burst of
+  arrival events on launch is worse than not reporting its history at all.
+- **The watermark survives `ClearCache()`** — it is state, not cache. Dropping it on sign-out would
+  make that player's next session either re-announce their whole inbox or silently swallow everything
+  older than the sign-out. Its key carries the player id, so a shared device cannot apply one account's
+  cutoff to another's mail.
+- Notifications are raised **oldest first**, which means walking the page backwards: the route answers
+  newest-first, and handing a game its mail in reverse order is the bug that ordering avoids. A row
+  whose `created_at` cannot be parsed is skipped rather than announced — with no comparable timestamp
+  it would raise on every fetch, and a duplicate is worse than a miss.
+- **The pending-schedule list exists because `/v1` has no route to read a schedule back.** The id a
+  schedule call returns is the only handle on a pending reminder, so the SDK persists what it scheduled.
+  That bounds what it can know: it sees only what *this install* created, and it infers delivery from the
+  clock. Entries whose time has passed are dropped as the list is read.
+- **It survives `ClearCache()` for the same reason the watermark does** — it is state, not cache, and the
+  server cannot tell us again. Its key carries the player id, so a second player on a shared device
+  neither sees nor can cancel the first player's reminders.
+- **`CancelAllScheduled` drops entries the server permanently rejects** (delivered, already cancelled,
+  unknown) rather than failing the whole batch — they are not pending either way. A *transient* failure
+  stops the run instead, leaving the rest tracked so a later call can retry them.
+- An **unparseable `deliver_at` is kept**, the opposite of the watermark's handling of a bad timestamp:
+  there the risk is announcing a notification twice forever, here it is stranding a reminder nothing can
+  cancel.
+- **Verified live 2026-08-17.** `Flock.SelfTest` runs all eleven notification calls green against a real
+  backend — templates, by-name, schedule and cancel included — and both new state files persist under
+  `Saved/Flock/snapshots/{version}/notification/`: the watermark seeded silently on the first inbox read,
+  and the pending list recorded the schedule then cleared it on the cancel.
+- Live sweep output for the new surfaces: pending 1 after scheduling → 0 after cancel → 1 after a second
+  schedule → `cancel all scheduled -> ok (1 cancelled server-side, 0 still tracked)`. `OnUnreadCountChanged`
+  fired **three** times — the unread-count fetch, the summary fetch and the mark-all-read, which is exactly
+  the set of calls where the server reports a count. `OnNotificationReceived` reported 0, the correct
+  steady state once a player's watermark is seeded.
+- **Note on repeat runs:** the funded purchase means each self-test run leaves one more inventory row on
+  the demo player. There is no client route to consume or refund one, so that grows over time — the cost
+  of proving the purchase success path at all.
+- **The backend echoes `deliver_at` with a microsecond fraction and no timezone suffix**
+  (`2026-08-17T07:52:03.879000`), not the `...Z` form. It parses correctly as UTC — a fraction longer
+  than three digits is rounded to milliseconds and a bare terminator is accepted — so elapsed entries do
+  drop in production. A fixture now pins that exact shape, because one built only from the `Z` form would
+  pass while the pending list grew forever.
+- **The index is listed before the by-name lookup on purpose.** There is no by-name route on the
+  backend — the SDK filters the index — so printing what the game version holds turns a name miss into
+  a visible spelling difference rather than a bare failure.
+- **The download step is the one a metadata read cannot stand in for.** An asset record can be
+  perfectly correct while its bytes are unreachable: the presigned URL carries whatever host the
+  backend was configured to sign for, and one that only resolves inside the API's own network fails at
+  the client and nowhere else. The sweep compares the received byte count against the record's reported
+  size and narrates a mismatch.
+
 ## [1.4.0] - 2026-08-15
 
 **Account linking** — attach more than one credential to the same player, so a guest who started on a

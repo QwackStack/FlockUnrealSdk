@@ -58,6 +58,35 @@ the network is down rather than an error. Mark-read calls are the opposite: they
 offline and fail with `Connection` instead, because a read receipt replayed an hour later marks messages the
 player never saw.
 
+### Reacting to arrivals
+
+Two events on the hub save you diffing pages yourself:
+
+```cpp
+UFlockEvents* Events = UFlockSubsystem::Get(this)->GetEvents();
+Events->OnNotificationReceived.AddDynamic(this, &AMyActor::HandleNotification);  // UFUNCTION()
+Events->OnUnreadCountChanged.AddDynamic(this, &AMyActor::HandleUnreadCount);     // UFUNCTION()
+```
+
+`OnUnreadCountChanged` carries the count the **server** last reported — it fires on `GetUnreadCount`,
+`GetSummary`, and `MarkAllRead` (which reports `0`, since that call has exactly one possible outcome). It
+never fires from a background poll, because the SDK does not run one.
+
+`OnNotificationReceived` fires once per notification the SDK has not surfaced before, **oldest first**. It
+rides the inbox and summary reads and adds no traffic of its own.
+
+Things worth knowing about it:
+
+- **"Received" means first seen by a read**, not the instant the server created the row. There is no
+  realtime channel; a push wakes the OS, not your `UObject`.
+- **The first read for a player is silent.** A player who already has mail would otherwise get their whole
+  history as a burst of events the first time your game asks.
+- **It survives a sign-out.** The watermark behind it is per-player state rather than cache, so signing out
+  and back in does not re-announce everything, and a shared device never applies one account's cutoff to
+  another's inbox.
+- A row whose `created_at` the SDK cannot parse is skipped rather than announced — with no comparable
+  timestamp it would raise on every fetch, and a duplicate is worse than a miss.
+
 ## Scheduling
 
 ```cpp
@@ -92,6 +121,35 @@ idempotent and does retry.
 
 `ScheduleByTemplateId` exists for a caller that already holds an id. It is named rather than overloaded,
 because two `FString` overloads would be indistinguishable at a call site.
+
+### What you scheduled
+
+`/v1` has no route to list or read a schedule back, so the SDK keeps its own record of what it scheduled:
+
+```cpp
+for (const FFlockPendingSchedule& Entry : Notifications->GetPendingSchedules())
+{
+    // Entry.Id is what CancelScheduled takes; Entry.TemplateName is what you scheduled it by.
+}
+
+Notifications->CancelAllScheduled([](TFlockResult<int32> Result)
+{
+    // Result.Value is how many the server actually cancelled.
+});
+```
+
+`GetPendingSchedules` is synchronous — there is no network call to make. What that buys, and what it costs:
+
+- It knows only what **this install** scheduled. A reminder set on the player's other device is invisible
+  here, because nothing can be asked.
+- Delivery is inferred from the **clock**: once an entry's `DeliverAt` passes it stops being pending and is
+  dropped as the list is read.
+- The list is **per player** and survives sign-out, so a second player on a shared device neither sees nor
+  can cancel the first player's reminders — and signing back in does not lose them.
+
+`CancelAllScheduled` drops entries the server no longer recognises — delivered, already cancelled, or
+unknown — instead of failing the whole batch, since they are not pending either way. A transient failure
+stops the run and reports the error, leaving the remaining entries tracked so a later call can retry them.
 
 ## The template catalog
 
@@ -182,6 +240,9 @@ Every call has a node under **Flock | Notifications**: `Flock Get Notifications`
 
 Pure helpers: `Is Read`, `Is Pending`, `Is Delivered`, `Is Canceled`,
 `Flock Get Current Device Platform`, `Device Platform To String` and `Notification Channel To String`.
+
+The two events need no node of their own — drag off `Flock Get Events` and *Assign* `On Unread Count
+Changed` or `On Notification Received`.
 
 Build a `Variables` bag with the chainable `Set Command …` nodes — it is the same flat typed value bag the
 game-command calls use.

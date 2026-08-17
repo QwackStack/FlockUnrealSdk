@@ -1,8 +1,8 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 // A dev-only console command that drives the Flock SDK surface and narrates each step to the log,
-// so you can watch boot/init, config/game, authentication, shop, commands, leaderboards, and analytics
-// behavior against your configured Flock backend.
+// so you can watch boot/init, config/game, authentication, shop, commands, leaderboards, assets, and
+// analytics behavior against your configured Flock backend.
 // It initializes from Project Settings > Flock SDK (API URL, key, and the resolved Game Version),
 // so it needs valid settings and a reachable backend to get past init. Run from the editor or
 // in-game console: `Flock.SelfTest` (also works via -ExecCmds in a development build).
@@ -16,6 +16,8 @@
 #include "FlockSubsystem.h"
 #include "Analytics/FlockLogSink.h"
 #include "Analytics/FlockMetadata.h"
+#include "FlockEvents.h"
+#include "FlockSelfTestListener.h"
 #include "Dom/JsonObject.h"
 #include "FlockLogger.h"
 #include "Http/FlockJsonUtils.h"
@@ -24,6 +26,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Http/FlockResult.h"
+#include "Models/FlockAssetModels.h"
 #include "Models/FlockAuthModels.h"
 #include "Models/FlockCommandModels.h"
 #include "Models/FlockConfigModels.h"
@@ -31,6 +34,7 @@
 #include "Models/FlockLeaderboardModels.h"
 #include "Models/FlockPlayerModels.h"
 #include "Models/FlockShopModels.h"
+#include "Providers/FlockAssetProvider.h"
 #include "Providers/FlockAuthProvider.h"
 #include "Providers/FlockCommandProvider.h"
 #include "Providers/FlockConfigProvider.h"
@@ -126,6 +130,12 @@ namespace
 	// a login leg uses, so a half-finished run can never strand the session's own credential.
 	const TCHAR* const DemoLinkDeviceId = TEXT("self-test-link-device-UE");
 
+	// Assets sweep. The asset NAME as it appears on the dashboard. There is no by-name route on the
+	// backend — the SDK filters the index — which is why the sweep lists the index first: a name miss is
+	// then a visible spelling difference rather than a bare failure. An empty name skips the by-name and
+	// download steps and leaves the index listing to run on its own.
+	const TCHAR* const DemoAssetName = TEXT("iconTest.jpg");
+
 	/**
 	 * The providers the signed-in leg of the chain hands along. Bundled because that leg is a stack of
 	 * nested completions, and threading one raw pointer per feature through all of them turns every capture
@@ -140,6 +150,9 @@ namespace
 		FFlockPlayerProvider* Players = nullptr;
 		FFlockLeaderboardProvider* Leaderboards = nullptr;
 		FFlockNotificationProvider* Notifications = nullptr;
+
+		/** The events hub, so the notification sweep can show the two events firing off its own reads. */
+		UFlockEvents* Events = nullptr;
 	};
 
 	/**
@@ -306,7 +319,8 @@ namespace
 	 * coded error comes back. The analytics transactions around the purchase are fire-and-forget, so this
 	 * narration never waits on them. Hands off to Next, which continues the signed-in chain.
 	 */
-	void RunShopSignedInSweep(FFlockShopProvider* Shop, const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Next)
+	void RunShopSignedInSweep(FFlockShopProvider* Shop, FFlockCommandProvider* Commands,
+		FFlockAnalyticsProvider* Analytics, const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Next)
 	{
 		if (Shop == nullptr)
 		{
@@ -314,11 +328,14 @@ namespace
 			return;
 		}
 
-		Shop->GetAll(1, 50, [Shop, Logger, Next](TFlockResult<FFlockShopPage> ShopsResult)
+		Shop->GetAll(1, 50, [Shop, Commands, Analytics, Logger, Next](TFlockResult<FFlockShopPage> ShopsResult)
 		{
-			// The first shop item across the catalog is the purchase candidate.
+			// The first shop item across the catalog is the purchase candidate. Its price and currency come
+			// along because the sweep funds the wallet before buying — see the grant step below.
 			FString ItemId;
 			FString ItemName;
+			FString ItemCurrency;
+			int32 ItemPrice = 0;
 			if (ShopsResult.bSuccess)
 			{
 				for (const FFlockShop& S : ShopsResult.Value.Items)
@@ -329,6 +346,8 @@ namespace
 						{
 							ItemId = Item.Id;
 							ItemName = Item.Name;
+							ItemCurrency = Item.Currency;
+							ItemPrice = Item.Price;
 							break;
 						}
 					}
@@ -363,19 +382,93 @@ namespace
 				return;
 			}
 
-			Logger->LogInfo(FString::Printf(
-				TEXT("Self-test: purchasing shop item '%s' (%s) for the signed-in player."), *ItemName, *ItemId));
-			Shop->Purchase(ItemId, FString(), [Logger, ReadInventory](TFlockResult<FFlockPlayerInventory> PurchaseResult)
+			// The purchase itself, once the wallet can afford it.
+			auto DoPurchase = [Shop, Analytics, Logger, ReadInventory, ItemId, ItemName, ItemCurrency, ItemPrice]()
 			{
-				Logger->LogInfo(PurchaseResult.bSuccess
-					? FString::Printf(TEXT("Self-test: purchase -> owned inventory entry %s (status=%s)"),
-						*PurchaseResult.Value.Id, *PurchaseResult.Value.Status)
-					: FString::Printf(
-						TEXT("Self-test: purchase -> failed (%s); wiring still proven — a coded error means the request reached the backend."),
-						*PurchaseResult.Error.Message));
-				// Inventory is never cached, so this shows the post-purchase state.
-				ReadInventory();
-			});
+				Logger->LogInfo(FString::Printf(
+					TEXT("Self-test: purchasing shop item '%s' (%s) for the signed-in player."), *ItemName, *ItemId));
+				Shop->Purchase(ItemId, FString(),
+					[Analytics, Logger, ReadInventory, ItemId, ItemCurrency, ItemPrice](TFlockResult<FFlockPlayerInventory> PurchaseResult)
+				{
+					if (PurchaseResult.bSuccess)
+					{
+						Logger->LogInfo(FString::Printf(TEXT("Self-test: purchase -> owned inventory entry %s (status=%s)"),
+							*PurchaseResult.Value.Id, *PurchaseResult.Value.Status));
+						// The reward-granting question, answered by what the response actually carries: an
+						// inventory row and nothing else. There is no currency delta, no granted-item list
+						// and no wallet in `PlayerInventorySchema`, so a game that sells 100 gold has to
+						// re-read player data to see the balance move. Narrated rather than assumed,
+						// because it is a contract fact worth seeing every run.
+						Logger->LogInfo(TEXT("Self-test: purchase response carries {id, player_id, shop_item_id, status, created_at, used_at} ")
+							TEXT("— no reward/currency detail, so granted rewards must be observed by re-reading player data."));
+					}
+					else
+					{
+						Logger->LogInfo(FString::Printf(
+							TEXT("Self-test: purchase -> failed (%s); wiring still proven — a coded error means the request reached the backend."),
+							*PurchaseResult.Error.Message));
+					}
+
+					// The shop provider already fired Started/Failed (or Purchased) transactions around the
+					// call, fire-and-forget with no completion — so their outcome only ever reached the log.
+					// This one is sent explicitly with a completion so the sweep can narrate it, which is
+					// what turns a silent analytics failure into a visible one.
+					if (Analytics == nullptr)
+					{
+						ReadInventory();
+						return;
+					}
+					FFlockAnalyticsTransactionRequest Tx;
+					Tx.Amount = static_cast<double>(ItemPrice);
+					Tx.CurrencyCode = ItemCurrency;
+					Tx.ShopItemId = ItemId;
+					Tx.TransactionType = TEXT("Purchase");
+					Tx.Status = PurchaseResult.bSuccess ? TEXT("Purchased") : TEXT("Failed");
+					// CurrencyId deliberately left empty: there is **no `/v1` currency route**, so a client
+					// cannot resolve one. `/currency` exists only outside `/v1`, on the dashboard surface.
+					Analytics->RecordTransaction(Tx, [Logger, ReadInventory](TFlockResult<FFlockAnalyticsAck> Ack)
+					{
+						if (Ack.bSuccess)
+						{
+							Logger->LogInfo(TEXT("Self-test: analytics transaction -> ok"));
+						}
+						else
+						{
+							Logger->LogInfo(FString::Printf(TEXT("Self-test: analytics transaction -> failed (%s)"), *Ack.Error.Message));
+							Logger->LogInfo(TEXT("Self-test:   the SDK sends currency_code from the shop item but cannot send currency_id ")
+								TEXT("— no /v1 currency route exists. If this is 'currency_not_found', create a currency for the game ")
+								TEXT("in the dashboard, or have the backend resolve currency_code."));
+						}
+						ReadInventory();
+					});
+				});
+			};
+
+			// Fund the wallet first, so the purchase *success* path actually runs. Without this the demo
+			// player has no balance in the item's currency and every run stops at insufficient_funds —
+			// which proves the wiring but never the thing a shop exists to do. Granting exactly the price
+			// is net-neutral: the purchase spends what the grant added.
+			if (Commands != nullptr && ItemPrice > 0 && !ItemCurrency.IsEmpty())
+			{
+				Logger->LogInfo(FString::Printf(
+					TEXT("Self-test: funding %d '%s' so the purchase can succeed (granting exactly the price)."),
+					ItemPrice, *ItemCurrency));
+				Commands->AddGameFunds(ItemCurrency, ItemPrice,
+					[Logger, DoPurchase, ItemCurrency](TFlockResult<FFlockPlayerData> Funded)
+				{
+					Logger->LogInfo(Funded.bSuccess
+						? FString::Printf(TEXT("Self-test: pre-purchase grant -> ok (wallet %s)"), *Funded.Value.Data.ToJsonString())
+						: FString::Printf(
+							TEXT("Self-test: pre-purchase grant -> failed (%s); the purchase will likely report insufficient funds. ")
+							TEXT("A grant needs a 'currency'-tagged template declaring '%s'."),
+							*Funded.Error.Message, *ItemCurrency));
+					DoPurchase();
+				});
+				return;
+			}
+
+			Logger->LogInfo(TEXT("Self-test: pre-purchase grant -> skipped (no command provider, or the item has no price/currency)."));
+			DoPurchase();
 		});
 	}
 
@@ -942,8 +1035,8 @@ namespace
 		});
 	}
 
-	void RunNotificationSweep(FFlockNotificationProvider* Notifications, const TSharedRef<IFlockLogger>& Logger,
-		TFunction<void()> Next)
+	void RunNotificationSweep(FFlockNotificationProvider* Notifications, UFlockEvents* Events,
+		const TSharedRef<IFlockLogger>& Logger, TFunction<void()> Next)
 	{
 		if (Notifications == nullptr)
 		{
@@ -951,6 +1044,59 @@ namespace
 			Next();
 			return;
 		}
+
+		// The two notification events are raised off the reads further down this chain, never by a poller —
+		// so binding here, before any of them run, is what makes them observable at all.
+		//
+		// Rooted for the duration: the hub holds only a weak reference (dynamic delegates do), so an
+		// unrooted listener could be collected mid-sweep and the events would silently stop arriving.
+		UFlockSelfTestListener* Listener = nullptr;
+		if (Events != nullptr)
+		{
+			Listener = NewObject<UFlockSelfTestListener>();
+			Listener->AddToRoot();
+			Events->OnUnreadCountChanged.AddDynamic(Listener, &UFlockSelfTestListener::HandleUnreadCountChanged);
+			Events->OnNotificationReceived.AddDynamic(Listener, &UFlockSelfTestListener::HandleNotificationReceived);
+		}
+
+		// Runs last, after every read that could raise: reports what the events saw, then unbinds and
+		// unroots so the sweep leaves nothing behind.
+		TFunction<void()> ReportEvents = [Events, Listener, Logger, Next]()
+		{
+			if (Listener == nullptr)
+			{
+				Logger->LogInfo(TEXT("Self-test: notification events -> skipped (no events hub)"));
+				Next();
+				return;
+			}
+
+			Logger->LogInfo(FString::Printf(
+				TEXT("Self-test: OnUnreadCountChanged -> fired %d time(s), last count %d (server-reported only; the SDK never polls)"),
+				Listener->UnreadCountEvents, Listener->LastUnreadCount));
+
+			// Zero here is the *expected* steady state on a repeat run: "received" means first seen by a
+			// read, and this player's inbox was already seeded by an earlier run. A non-zero count means
+			// something genuinely new arrived since.
+			Logger->LogInfo(FString::Printf(
+				TEXT("Self-test: OnNotificationReceived -> %d newly-seen notification(s)%s"),
+				Listener->ReceivedIds.Num(),
+				Listener->ReceivedIds.Num() == 0
+					? TEXT(" (expected once the watermark is seeded; the first ever fetch seeds silently)")
+					: TEXT("")));
+			for (const FString& Id : Listener->ReceivedIds)
+			{
+				Logger->LogInfo(FString::Printf(TEXT("Self-test:   received '%s'"), *Id));
+			}
+
+			if (Events != nullptr)
+			{
+				Events->OnUnreadCountChanged.RemoveDynamic(Listener, &UFlockSelfTestListener::HandleUnreadCountChanged);
+				Events->OnNotificationReceived.RemoveDynamic(Listener, &UFlockSelfTestListener::HandleNotificationReceived);
+			}
+			Listener->RemoveFromRoot();
+			Next();
+		};
+		Next = ReportEvents;
 
 		// Device tokens close the chain. Registered under an EXPLICIT web platform rather than the
 		// auto-detecting overload: the self-test host is a desktop editor or -game run, where auto-detect
@@ -1087,8 +1233,10 @@ namespace
 			const TArray<EFlockNotificationChannel> Channels =
 				{ EFlockNotificationChannel::InApp, EFlockNotificationChannel::Push };
 
+			// DeliverAt/Variables/Channels ride along so the cancel-all step can schedule a second reminder
+			// with exactly the same shape as the first.
 			Notifications->ScheduleByTemplateName(TemplateName, DeliverAt, Variables, Channels,
-				[Notifications, Logger, Inbox, TemplateName](TFlockResult<FFlockScheduledNotification> Scheduled)
+				[Notifications, Logger, Inbox, TemplateName, DeliverAt, Variables, Channels](TFlockResult<FFlockScheduledNotification> Scheduled)
 				{
 					if (!Scheduled.bSuccess)
 					{
@@ -1103,14 +1251,55 @@ namespace
 						*TemplateName, *Scheduled.Value.Id, *Scheduled.Value.DeliverAt,
 						Scheduled.Value.IsPending() ? TEXT("true") : TEXT("false")));
 
+					// The SDK's own record of what it scheduled. There is no route to list or read a
+					// schedule back, so this list is the only handle on a pending reminder — which is why
+					// it is worth showing that scheduling actually populated it.
+					const TArray<FFlockPendingSchedule> AfterSchedule = Notifications->GetPendingSchedules();
+					Logger->LogInfo(FString::Printf(TEXT("Self-test: pending schedules after scheduling -> %d"), AfterSchedule.Num()));
+					for (const FFlockPendingSchedule& Entry : AfterSchedule)
+					{
+						Logger->LogInfo(FString::Printf(TEXT("Self-test:   pending '%s' template '%s' (%s) deliver_at %s"),
+							*Entry.Id, *Entry.TemplateName, *Entry.TemplateId, *Entry.DeliverAt));
+					}
+
 					Notifications->CancelScheduled(Scheduled.Value.Id,
-						[Logger, Inbox](TFlockResult<FFlockScheduledNotification> Canceled)
+						[Notifications, Logger, Inbox, TemplateName, DeliverAt, Variables, Channels](TFlockResult<FFlockScheduledNotification> Canceled)
 						{
 							Logger->LogInfo(Canceled.bSuccess
 								? FString::Printf(TEXT("Self-test: cancel scheduled notification -> ok (canceled %s)"),
 									Canceled.Value.IsCanceled() ? TEXT("true") : TEXT("false"))
 								: FString::Printf(TEXT("Self-test: cancel scheduled notification -> failed (%s)"), *Canceled.Error.Message));
-							Inbox();
+
+							Logger->LogInfo(FString::Printf(TEXT("Self-test: pending schedules after cancel -> %d (cancelling untracks it)"),
+								Notifications->GetPendingSchedules().Num()));
+
+							// A second schedule, cancelled through the batch path instead of by id. That is
+							// the only way to exercise CancelAllScheduled against a real backend, and it
+							// leaves nothing live behind for the same reason the first one is cancelled.
+							Notifications->ScheduleByTemplateName(TemplateName, DeliverAt, Variables, Channels,
+								[Notifications, Logger, Inbox](TFlockResult<FFlockScheduledNotification> Second)
+								{
+									if (!Second.bSuccess)
+									{
+										Logger->LogInfo(FString::Printf(
+											TEXT("Self-test: cancel-all -> skipped (second schedule failed: %s)"), *Second.Error.Message));
+										Inbox();
+										return;
+									}
+									Logger->LogInfo(FString::Printf(
+										TEXT("Self-test: scheduled a second reminder '%s' for the cancel-all step; pending now %d"),
+										*Second.Value.Id, Notifications->GetPendingSchedules().Num()));
+
+									Notifications->CancelAllScheduled([Notifications, Logger, Inbox](TFlockResult<int32> Cleared)
+									{
+										Logger->LogInfo(Cleared.bSuccess
+											? FString::Printf(TEXT("Self-test: cancel all scheduled -> ok (%d cancelled server-side, %d still tracked)"),
+												Cleared.Value, Notifications->GetPendingSchedules().Num())
+											: FString::Printf(TEXT("Self-test: cancel all scheduled -> failed (%s); entries stay tracked for a retry"),
+												*Cleared.Error.Message));
+										Inbox();
+									});
+								});
 						});
 				});
 		};
@@ -1375,7 +1564,7 @@ namespace
 										// teardown of its own.
 										TFunction<void()> AfterLeaderboards = [Sweeps, Logger, AfterNotifications]()
 										{
-											RunNotificationSweep(Sweeps.Notifications, Logger, AfterNotifications);
+											RunNotificationSweep(Sweeps.Notifications, Sweeps.Events, Logger, AfterNotifications);
 										};
 										// Leaderboards run after the commands sweep on purpose: the projection
 										// step writes a player-data field, and reading a rank straight after a
@@ -1389,18 +1578,98 @@ namespace
 										{
 											RunCommandsSweep(Sweeps.Commands, Sweeps.Players, Logger, AfterCommands);
 										};
+										// The shop sweep now needs the command provider (to fund the wallet
+										// before buying) and the analytics provider (to narrate the purchase
+										// transaction, which the shop provider itself only fires and forgets).
 										// Account linking runs first among the signed-in legs: it only needs the
 										// bearer, and finishing it before the writes keeps the credential list it
 										// narrates uncluttered by anything the later sweeps do.
 										TFunction<void()> AfterLinking = [Sweeps, Logger, AfterShop]()
 										{
-											RunShopSignedInSweep(Sweeps.Shop, Logger, AfterShop);
+											RunShopSignedInSweep(Sweeps.Shop, Sweeps.Commands, Sweeps.Analytics, Logger, AfterShop);
 										};
 										RunAccountLinkingSweep(Auth, Logger, AfterLinking);
 									});
 							});
 					});
 			});
+	}
+
+	/**
+	 * Assets: list the index, resolve one by name, then pull its bytes. Neither asset route declares
+	 * security, so this runs signed out as an independent one-shot and does not own teardown.
+	 *
+	 * The download is the only step a metadata read cannot stand in for. The record can be perfect while
+	 * the bytes are unreachable — the presigned URL carries whatever host the backend was told to sign
+	 * for, and one that only resolves inside the API's own network fails here and nowhere else.
+	 */
+	void RunAssetSweep(FFlockAssetProvider* Assets, const TSharedRef<IFlockLogger>& Logger)
+	{
+		if (Assets == nullptr)
+		{
+			Logger->LogInfo(TEXT("Self-test: asset provider unavailable; skipping the asset sweep."));
+			return;
+		}
+
+		// The index first: GetByName filters it, so listing what this game version holds is what makes a
+		// name miss below diagnosable.
+		Assets->GetAll([Logger](TFlockResult<TArray<FFlockAsset>> Result)
+		{
+			if (!Result.bSuccess)
+			{
+				Logger->LogInfo(FString::Printf(TEXT("Self-test: assets -> failed (%s)"), *Result.Error.Message));
+				return;
+			}
+			TArray<FString> Names;
+			for (const FFlockAsset& Asset : Result.Value)
+			{
+				Names.Add(Asset.Name);
+			}
+			Logger->LogInfo(FString::Printf(TEXT("Self-test: assets -> %d asset(s): %s"),
+				Result.Value.Num(), Names.Num() > 0 ? *FString::Join(Names, TEXT(", ")) : TEXT("<none>")));
+		});
+
+		const FString AssetName = DemoAssetName;
+		if (AssetName.IsEmpty())
+		{
+			Logger->LogInfo(TEXT("Self-test: asset by name -> skipped (no DemoAssetName configured)"));
+			return;
+		}
+
+		Assets->GetByName(AssetName, [Assets, AssetName, Logger](TFlockResult<FFlockAsset> Result)
+		{
+			if (!Result.bSuccess)
+			{
+				Logger->LogInfo(FString::Printf(TEXT("Self-test: asset by name '%s' -> failed (%s)"),
+					*AssetName, *Result.Error.Message));
+				return;
+			}
+
+			const FFlockAsset Asset = Result.Value;
+			// SizeBytes is -1 when the record never carried one, which is not the same as an empty asset.
+			const FString ReportedSize = Asset.SizeBytes < 0
+				? FString(TEXT("unreported"))
+				: FString::Printf(TEXT("%lld byte(s)"), Asset.SizeBytes);
+			Logger->LogInfo(FString::Printf(TEXT("Self-test: asset by name '%s' -> id=%s type='%s' size=%s"),
+				*AssetName, *Asset.Id, *Asset.ExtensionType, *ReportedSize));
+
+			Assets->DownloadBytes(Asset, FFlockAssetProgress(),
+				[Asset, AssetName, Logger](TFlockResult<TArray<uint8>> Downloaded)
+				{
+					if (!Downloaded.bSuccess)
+					{
+						Logger->LogInfo(FString::Printf(TEXT("Self-test: download asset '%s' -> failed (%s)"),
+							*AssetName, *Downloaded.Error.Message));
+						return;
+					}
+					const int64 Received = Downloaded.Value.Num();
+					const FString Mismatch = (Asset.SizeBytes < 0 || Asset.SizeBytes == Received)
+						? FString()
+						: FString::Printf(TEXT(" -- record says %lld"), Asset.SizeBytes);
+					Logger->LogInfo(FString::Printf(TEXT("Self-test: download asset '%s' -> %lld byte(s)%s"),
+						*AssetName, Received, *Mismatch));
+				});
+		});
 	}
 
 	/**
@@ -1587,6 +1856,11 @@ namespace
 		Logger->LogInfo(TEXT("Self-test: shop catalog sweep (public routes, signed out)."));
 		RunShopSweep(Sdk->GetShopProvider(), Logger);
 
+		// Assets are public as well, and the download leg is what proves object storage is reachable from
+		// the client rather than only from the API.
+		Logger->LogInfo(TEXT("Self-test: asset sweep (public routes, signed out)."));
+		RunAssetSweep(Sdk->GetAssetProvider(), Logger);
+
 		Logger->LogInfo(TEXT("Self-test: Logout to start from a clean signed-out state (safe when already signed out)."));
 		Sdk->Logout();
 
@@ -1614,7 +1888,8 @@ namespace
 		Sweeps.Commands = Sdk->GetCommandProvider();
 		Sweeps.Players = Sdk->GetPlayerProvider();
 		Sweeps.Leaderboards = Sdk->GetLeaderboardProvider();
-	Sweeps.Notifications = Sdk->GetNotificationProvider();
+		Sweeps.Notifications = Sdk->GetNotificationProvider();
+		Sweeps.Events = Sdk->GetEvents();
 
 		RunAuthSweep(*Auth, Sweeps, Logger, Teardown);
 		Logger->LogInfo(TEXT("Self-test: auth sweep dispatched; the signed-in shop, commands, and analytics sweeps "
@@ -1623,7 +1898,7 @@ namespace
 
 	FAutoConsoleCommand GFlockSelfTestCommand(
 		TEXT("Flock.SelfTest"),
-		TEXT("Drives the Flock SDK surface (boot/init + config/game + auth + shop + commands + analytics) and narrates each step to the log (development builds only)."),
+		TEXT("Drives the Flock SDK surface (boot/init + config/game + auth + shop + commands + assets + analytics) and narrates each step to the log (development builds only)."),
 		FConsoleCommandDelegate::CreateStatic(&RunFlockSelfTest));
 }
 
