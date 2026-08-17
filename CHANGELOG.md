@@ -5,7 +5,11 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.6.0] - 2026-08-17
+
+**Engine support re-verified for this release.** `Tooling/Build-AllEngines.ps1` cleaned, built and ran
+the full automation suite against **UE 5.5, 5.6, 5.7 and 5.8** — **375/375 editor and 98/98 `-game` on
+each** — and reported *"The declared claim (UE 5.5 to UE 5.8) is verified."*
 
 ### Added
 
@@ -16,6 +20,9 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - `OnUnreadCountChanged` fires only when the server actually reports a count — an unread-count or
   summary fetch, or a mark-all-read, which reports zero because that call has exactly one possible
   outcome. It never fires from a background poll, because the SDK does not run one.
+- **`Documentation/architecture.md`** — how the SDK is layered and why, the module split, the folder map,
+  the rules that hold across every feature, and a table separating Flock's design decisions from Unreal's
+  mechanics. Linked from the README's guide index.
 - **`GetPendingSchedules()`** — the schedules this install created that have not reached their delivery
   time yet. Synchronous; it never touches the network.
 - **`CancelAllScheduled()`** — cancels everything still tracked and reports how many the server actually
