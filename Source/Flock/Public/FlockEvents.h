@@ -6,6 +6,7 @@
 #include "UObject/Object.h"
 #include "FlockEventModels.h"
 #include "FlockLogger.h"
+#include "Models/FlockNotificationModels.h"
 #include "FlockEvents.generated.h"
 
 // ── Multicast events (Assign in Blueprint, AddDynamic in C++) ──
@@ -23,6 +24,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnSessionStarted, const FStrin
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnSessionEnded, const FFlockSessionEndedArgs&, Args);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockOnSessionPaused);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockOnSessionResumed);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnUnreadCountChanged, int32, UnreadCount);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnNotificationReceived, const FFlockNotification&, Notification);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnConsentChanged, bool, bGranted);
 
 // ── One-shot callbacks for the CallOrRegister entry points ──
@@ -111,6 +114,27 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Flock|Events")
 	FFlockOnSessionResumed OnSessionResumed;
 
+	// ── Notifications ──
+
+	/**
+	 * The player's unread count changed. Raised only when the server reports a count — an unread-count or
+	 * summary fetch, or a mark-all-read — never from a background poll, because the SDK does not run one.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Flock|Events")
+	FFlockOnUnreadCountChanged OnUnreadCountChanged;
+
+	/**
+	 * A notification the SDK has not surfaced before came back from an inbox or summary fetch — schedule,
+	 * trigger and campaign deliveries alike.
+	 *
+	 * "Received" means first seen by a read, not the instant the server created it: there is no realtime
+	 * channel and the SDK never polls. The first fetch for a player seeds silently, so an existing inbox
+	 * does not arrive as a burst; after that each new notification raises once, oldest first. Inspect
+	 * CampaignId (campaign) or `trigger_id` in Data (trigger) to tell the sources apart.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Flock|Events")
+	FFlockOnNotificationReceived OnNotificationReceived;
+
 	// ── Consent ──
 
 	/** Analytics consent was granted or revoked; payload is the new state. */
@@ -149,6 +173,8 @@ public:
 	void InvokeSessionEnded(const FFlockSessionEndedArgs& Args);
 	void InvokeSessionPaused();
 	void InvokeSessionResumed();
+	void InvokeUnreadCountChanged(int32 UnreadCount);
+	void InvokeNotificationReceived(const FFlockNotification& Notification);
 	void InvokeConsentChanged(bool bGranted);
 
 	/** Debug-logs every raise through this logger; kept in sync with the subsystem's logger. */

@@ -140,6 +140,61 @@ struct FLOCK_API FFlockUnreadCount
 };
 
 /**
+ * A schedule this install created that has not reached its delivery time yet.
+ *
+ * **Not a wire model** — nothing sends or receives this, and it is not a server query. The id handed back
+ * by a schedule call is the only handle on a pending reminder, and `/v1` has no route to list or read one
+ * back, so the SDK persists what it scheduled. That also bounds what this can know: it sees only what
+ * *this install* scheduled, and it infers delivery from the clock because there is nothing to ask.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockPendingSchedule
+{
+	GENERATED_BODY()
+
+	/** The scheduled id, which is what `CancelScheduled` takes. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Id;
+
+	/** The template name that was scheduled, kept so a caller can tell entries apart without another call. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString TemplateName;
+
+	/** The id that name resolved to when the schedule was created. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString TemplateId;
+
+	/** Raw ISO-8601, stored exactly as the server echoed it — never the value the caller asked for. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString DeliverAt;
+};
+
+/**
+ * How far the SDK has already announced this player's inbox, so a read can tell a genuinely new
+ * notification from one the game was told about on a previous run.
+ *
+ * **Not a wire model** — nothing sends or receives this. It is persisted through the snapshot store's
+ * plain-JSON path and is *state, not cache*: `ClearCache()` deliberately preserves it, because losing it
+ * would make the next read either re-announce a whole inbox or swallow everything up to that point.
+ *
+ * Bool named without the `b` prefix to match the serialized-model convention used by the wire structs it
+ * sits beside, since it round-trips through the same reflection path.
+ */
+USTRUCT()
+struct FLOCK_API FFlockNotificationWatermark
+{
+	GENERATED_BODY()
+
+	/** False until the first fetch for this player, which seeds silently rather than replaying the inbox. */
+	UPROPERTY()
+	bool Seeded = false;
+
+	/** Newest `created_at` surfaced so far; empty when the inbox was empty at seed time, which makes everything later new. */
+	UPROPERTY()
+	FString NewestCreatedAt;
+};
+
+/**
  * A notification template a game can schedule against, as the client sees it.
  *
  * Deliberately thin — the client route exposes only what a game needs to *pick* a template. The body,

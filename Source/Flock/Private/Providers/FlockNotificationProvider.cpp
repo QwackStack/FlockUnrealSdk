@@ -22,13 +22,17 @@ namespace
 
 const TCHAR* const FFlockNotificationProvider::SnapshotCategory = TEXT("notification");
 const TCHAR* const FFlockNotificationProvider::TemplateSnapshotCategory = TEXT("notification_template");
+const TCHAR* const FFlockNotificationProvider::WatermarkKey = TEXT("seen_watermark");
+const TCHAR* const FFlockNotificationProvider::PendingSchedulesKey = TEXT("pending_schedules");
 
 FFlockNotificationProvider::FFlockNotificationProvider(const TSharedRef<FFlockHttpClient>& InClient,
 	const FFlockRetryPolicy& InPolicy, const TSharedRef<IFlockLogger>& InLogger,
-	const TSharedRef<FFlockAuthSession>& InSession, const FString& InVersionedApiUrl,
+	const TSharedRef<FFlockAuthSession>& InSession, const TWeakObjectPtr<UFlockEvents>& InEvents,
+	const FString& InVersionedApiUrl,
 	const TSharedPtr<FFlockSnapshotStore>& InSnapshotStore, const FString& InGameVersionId)
 	: FFlockProviderBase(InClient, InPolicy, InLogger)
 	, Session(InSession)
+	, Events(InEvents)
 	, VersionedApiUrl(InVersionedApiUrl)
 {
 	SetSnapshotStore(InSnapshotStore, InGameVersionId);
@@ -50,6 +54,197 @@ void FFlockNotificationProvider::AppendParam(FString& Query, const FString& Key,
 FString FFlockNotificationProvider::PlayerScopedKey(const FString& Key) const
 {
 	return FString::Printf(TEXT("%s_%s"), *Key, *Session->GetPlayerId());
+}
+
+// Pending-schedule bookkeeping
+
+bool FFlockNotificationProvider::HasElapsed(const FString& DeliverAt)
+{
+	FDateTime Parsed;
+	if (!FDateTime::ParseIso8601(*DeliverAt, Parsed))
+	{
+		// Kept, not dropped. This is the only handle on a cancellable reminder, so carrying a stale row
+		// costs far less than losing the ability to cancel one.
+		return false;
+	}
+	return Parsed <= FDateTime::UtcNow();
+}
+
+TArray<FFlockPendingSchedule> FFlockNotificationProvider::LoadPendingSchedules() const
+{
+	TArray<FFlockPendingSchedule> Stored;
+	const TSharedPtr<FFlockSnapshotStore> Store = GetSnapshotStore();
+	FString Payload;
+	if (!Store.IsValid() || !Store->TryRead(GetSnapshotScope(SnapshotCategory), PlayerScopedKey(PendingSchedulesKey), Payload))
+	{
+		return Stored;
+	}
+	FFlockJsonUtils::ArrayFromPlainJson<FFlockPendingSchedule>(Payload, Stored);
+
+	// Delivery can only be inferred from the clock — there is nothing to query — so an entry whose time has
+	// passed stops being pending.
+	TArray<FFlockPendingSchedule> Live;
+	Live.Reserve(Stored.Num());
+	for (const FFlockPendingSchedule& Entry : Stored)
+	{
+		if (!Entry.Id.IsEmpty() && !HasElapsed(Entry.DeliverAt))
+		{
+			Live.Add(Entry);
+		}
+	}
+
+	// Rewritten only when something was actually dropped, so a plain read is not a write.
+	if (Live.Num() != Stored.Num())
+	{
+		SavePendingSchedules(Live);
+	}
+	return Live;
+}
+
+void FFlockNotificationProvider::SavePendingSchedules(const TArray<FFlockPendingSchedule>& Pending) const
+{
+	const TSharedPtr<FFlockSnapshotStore> Store = GetSnapshotStore();
+	if (!Store.IsValid())
+	{
+		// Cache disabled: scheduling still works, the game just has to keep the ids itself.
+		return;
+	}
+	FString Payload;
+	if (FFlockJsonUtils::ArrayToPlainJson<FFlockPendingSchedule>(Pending, Payload))
+	{
+		Store->Write(GetSnapshotScope(SnapshotCategory), PlayerScopedKey(PendingSchedulesKey), Payload);
+	}
+}
+
+void FFlockNotificationProvider::TrackPending(const FFlockScheduledNotification& Scheduled,
+	const FString& TemplateName, const FString& TemplateId) const
+{
+	if (Scheduled.Id.IsEmpty())
+	{
+		// No id means nothing to cancel later, so there is nothing worth remembering.
+		return;
+	}
+
+	TArray<FFlockPendingSchedule> Pending = LoadPendingSchedules();
+	FFlockPendingSchedule Entry;
+	Entry.Id = Scheduled.Id;
+	Entry.TemplateName = TemplateName;
+	Entry.TemplateId = TemplateId;
+	// The server's echoed deliver_at, not the caller's requested one: the server is what decides when this
+	// fires, and storing the request would let the two drift.
+	Entry.DeliverAt = Scheduled.DeliverAt;
+	Pending.Add(Entry);
+	SavePendingSchedules(Pending);
+}
+
+void FFlockNotificationProvider::UntrackPending(const FString& ScheduledId) const
+{
+	TArray<FFlockPendingSchedule> Pending = LoadPendingSchedules();
+	const int32 Removed = Pending.RemoveAll([&ScheduledId](const FFlockPendingSchedule& Entry)
+	{
+		return Entry.Id == ScheduledId;
+	});
+	if (Removed > 0)
+	{
+		SavePendingSchedules(Pending);
+	}
+}
+
+// Seen-watermark bookkeeping
+
+FFlockNotificationWatermark FFlockNotificationProvider::LoadWatermark() const
+{
+	FFlockNotificationWatermark Mark;
+	const TSharedPtr<FFlockSnapshotStore> Store = GetSnapshotStore();
+	FString Payload;
+	if (Store.IsValid() && Store->TryRead(GetSnapshotScope(SnapshotCategory), PlayerScopedKey(WatermarkKey), Payload))
+	{
+		// A corrupt or older-shaped record reads as unseeded, which costs one silent seed rather than a
+		// burst of stale events.
+		FFlockJsonUtils::PlainJsonToStruct<FFlockNotificationWatermark>(Payload, Mark);
+	}
+	return Mark;
+}
+
+void FFlockNotificationProvider::SaveWatermark(const FFlockNotificationWatermark& Mark) const
+{
+	const TSharedPtr<FFlockSnapshotStore> Store = GetSnapshotStore();
+	if (!Store.IsValid())
+	{
+		// Cache disabled: the events still fire this run, they just cannot survive a restart.
+		return;
+	}
+	FString Payload;
+	if (FFlockJsonUtils::StructToPlainJson<FFlockNotificationWatermark>(Mark, Payload))
+	{
+		Store->Write(GetSnapshotScope(SnapshotCategory), PlayerScopedKey(WatermarkKey), Payload);
+	}
+}
+
+void FFlockNotificationProvider::RaiseNewNotifications(const TArray<FFlockNotification>& Items) const
+{
+	UFlockEvents* Hub = Events.Get();
+	if (!Hub)
+	{
+		// No hub (a provider built outside the subsystem, or teardown): skip the whole pass rather than
+		// advancing the watermark past notifications nobody was told about.
+		return;
+	}
+
+	FFlockNotificationWatermark Mark = LoadWatermark();
+	const bool bFirstEver = !Mark.Seeded;
+
+	FDateTime Cutoff = FDateTime::MinValue();
+	if (!bFirstEver && !Mark.NewestCreatedAt.IsEmpty())
+	{
+		FDateTime::ParseIso8601(*Mark.NewestCreatedAt, Cutoff);
+	}
+
+	FDateTime Newest = Cutoff;
+	TArray<FFlockNotification> Fresh;
+	for (const FFlockNotification& Entry : Items)
+	{
+		FDateTime Created;
+		// An unparseable created_at is skipped rather than announced: a duplicate event is worse than a miss.
+		if (!FDateTime::ParseIso8601(*Entry.CreatedAt, Created))
+		{
+			continue;
+		}
+		if (Created > Newest)
+		{
+			Newest = Created;
+		}
+		if (!bFirstEver && Created > Cutoff)
+		{
+			Fresh.Add(Entry);
+		}
+	}
+
+	// Persisted *before* anything is raised, so a handler that throws or re-enters cannot make the same
+	// notification fire twice.
+	if (bFirstEver || Newest > Cutoff)
+	{
+		Mark.Seeded = true;
+		if (Newest > FDateTime::MinValue())
+		{
+			Mark.NewestCreatedAt = Newest.ToIso8601();
+		}
+		SaveWatermark(Mark);
+	}
+
+	// The page arrives newest-first, so walk it backwards and hand the game its mail in creation order.
+	for (int32 Index = Fresh.Num() - 1; Index >= 0; --Index)
+	{
+		Hub->InvokeNotificationReceived(Fresh[Index]);
+	}
+}
+
+void FFlockNotificationProvider::RaiseUnreadCount(int32 Count) const
+{
+	if (UFlockEvents* Hub = Events.Get())
+	{
+		Hub->InvokeUnreadCountChanged(Count);
+	}
 }
 
 // Reads
@@ -77,6 +272,7 @@ void FFlockNotificationProvider::GetNotifications(bool bUnreadOnly, int32 Page, 
 	const FString Url = MakeUrl(FString::Printf(TEXT("%s%s"), FlockEndpoints::Notification, *Query));
 	const TMap<FString, FString> Headers = HeadersNow();
 	const FString Key = PlayerScopedKey(FString::Printf(TEXT("inbox_p%d_l%d_u%d"), Page, Limit, bUnreadOnly ? 1 : 0));
+	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
 
 	FetchWithSnapshot<FFlockNotificationPage>(SnapshotCategory, Key,
 		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockNotificationPage>)> OnAttempt)
@@ -101,7 +297,23 @@ void FFlockNotificationProvider::GetNotifications(bool bUnreadOnly, int32 Page, 
 				});
 		},
 		TEXT("Fetch notifications"),
-		MoveTemp(OnComplete));
+		[WeakSelf, OnComplete](TFlockResult<FFlockNotificationPage> Result)
+		{
+			// Raised before the caller's completion so a handler that repaints an inbox badge sees the
+			// same state the caller is about to act on. A cache-served page runs through this too: the
+			// watermark is what decides novelty, not where the rows came from.
+			if (Result.bSuccess)
+			{
+				if (const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin())
+				{
+					Self->RaiseNewNotifications(Result.Value.Items);
+				}
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		});
 }
 
 void FFlockNotificationProvider::GetUnreadCount(TFunction<void(TFlockResult<int32>)> OnComplete)
@@ -114,6 +326,7 @@ void FFlockNotificationProvider::GetUnreadCount(TFunction<void(TFlockResult<int3
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::NotificationUnreadCount);
 	const TMap<FString, FString> Headers = HeadersNow();
+	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
 
 	FetchWithSnapshot<FFlockUnreadCount>(SnapshotCategory, PlayerScopedKey(TEXT("unread_count")),
 		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockUnreadCount>)> OnAttempt)
@@ -122,8 +335,15 @@ void FFlockNotificationProvider::GetUnreadCount(TFunction<void(TFlockResult<int3
 			return ClientRef->Get<FFlockUnreadCount>(Url, Headers, MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch unread count"),
-		[OnComplete](TFlockResult<FFlockUnreadCount> Result)
+		[WeakSelf, OnComplete](TFlockResult<FFlockUnreadCount> Result)
 		{
+			if (Result.bSuccess)
+			{
+				if (const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin())
+				{
+					Self->RaiseUnreadCount(Result.Value.Count);
+				}
+			}
 			if (!OnComplete)
 			{
 				return;
@@ -145,6 +365,7 @@ void FFlockNotificationProvider::GetSummary(int32 Limit, TFunction<void(TFlockRe
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FString::Printf(TEXT("%s?limit=%d"), FlockEndpoints::NotificationSummary, Limit));
 	const TMap<FString, FString> Headers = HeadersNow();
+	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
 
 	FetchWithSnapshot<FFlockNotificationSummary>(SnapshotCategory,
 		PlayerScopedKey(FString::Printf(TEXT("summary_l%d"), Limit)),
@@ -153,7 +374,22 @@ void FFlockNotificationProvider::GetSummary(int32 Limit, TFunction<void(TFlockRe
 			return ClientRef->Get<FFlockNotificationSummary>(Url, Headers, MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch notification summary"),
-		MoveTemp(OnComplete));
+		[WeakSelf, OnComplete](TFlockResult<FFlockNotificationSummary> Result)
+		{
+			// The one call that serves both events: it reports a count *and* carries rows.
+			if (Result.bSuccess)
+			{
+				if (const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin())
+				{
+					Self->RaiseUnreadCount(Result.Value.UnreadCount);
+					Self->RaiseNewNotifications(Result.Value.Items);
+				}
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		});
 }
 
 // Writes
@@ -197,13 +433,30 @@ void FFlockNotificationProvider::MarkAllRead(TFunction<void(TFlockResult<FFlockM
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(FlockEndpoints::NotificationReadAll);
+	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
 
 	Execute<FFlockMarkAllReadResult>(
 		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockMarkAllReadResult>)> OnAttempt)
 		{
 			return ClientRef->PostJson<FFlockMarkAllReadResult>(Url, SessionRef->GetAuthHeaders(), TEXT("{}"), MoveTemp(OnAttempt));
 		},
-		MoveTemp(OnComplete),
+		[WeakSelf, OnComplete](TFlockResult<FFlockMarkAllReadResult> Result)
+		{
+			// The server does not echo a count here, but a successful mark-all-read has exactly one
+			// possible outcome — nothing is unread — so zero is reported rather than left to a refetch.
+			// Raised even when Updated is 0: a badge that was already clear stays clear either way.
+			if (Result.bSuccess)
+			{
+				if (const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin())
+				{
+					Self->RaiseUnreadCount(0);
+				}
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		},
 		TEXT("Mark all notifications read"));
 }
 
@@ -347,12 +600,16 @@ void FFlockNotificationProvider::ScheduleByTemplateName(const FString& TemplateN
 	const FFlockCommandData Vars = Variables;
 	const TArray<EFlockNotificationChannel> Chans = Channels;
 
+	const FString Name = TemplateName;
+
 	WithTemplateId(TemplateName,
-		[WeakSelf, When, Vars, Chans, OnComplete](const FString& TemplateId)
+		[WeakSelf, Name, When, Vars, Chans, OnComplete](const FString& TemplateId)
 		{
 			if (const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin())
 			{
-				Self->ScheduleByTemplateId(TemplateId, When, Vars, Chans, OnComplete);
+				// Straight to the internal path, carrying the name — that is the only thing this entry
+				// point knows that the by-id one does not, and it is what makes a tracked entry readable.
+				Self->ScheduleInternal(TemplateId, Name, When, Vars, Chans, OnComplete);
 			}
 		},
 		[OnComplete](const FFlockError& Error)
@@ -365,6 +622,15 @@ void FFlockNotificationProvider::ScheduleByTemplateName(const FString& TemplateN
 }
 
 void FFlockNotificationProvider::ScheduleByTemplateId(const FString& TemplateId, const FDateTime& DeliverAtUtc,
+	const FFlockCommandData& Variables, const TArray<EFlockNotificationChannel>& Channels,
+	TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete)
+{
+	// No name to record: a caller who already holds an id never went through the catalog.
+	ScheduleInternal(TemplateId, FString(), DeliverAtUtc, Variables, Channels, MoveTemp(OnComplete));
+}
+
+void FFlockNotificationProvider::ScheduleInternal(const FString& TemplateId, const FString& TemplateName,
+	const FDateTime& DeliverAtUtc,
 	const FFlockCommandData& Variables, const TArray<EFlockNotificationChannel>& Channels,
 	TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete)
 {
@@ -408,12 +674,31 @@ void FFlockNotificationProvider::ScheduleByTemplateId(const FString& TemplateId,
 	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(FlockEndpoints::NotificationSchedule);
 
+	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
+	const FString TrackedName = TemplateName;
+	const FString TrackedId = TemplateId;
+
 	Execute<FFlockScheduledNotification>(
 		[ClientRef, SessionRef, Url, Json](TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnAttempt)
 		{
 			return ClientRef->PostJson<FFlockScheduledNotification>(Url, SessionRef->GetAuthHeaders(), Json, MoveTemp(OnAttempt));
 		},
-		MoveTemp(OnComplete),
+		[WeakSelf, TrackedName, TrackedId, OnComplete](TFlockResult<FFlockScheduledNotification> Result)
+		{
+			// Tracked before the caller is told, so a handler that immediately reads GetPendingSchedules()
+			// sees the entry it just created.
+			if (Result.bSuccess)
+			{
+				if (const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin())
+				{
+					Self->TrackPending(Result.Value, TrackedName, TrackedId);
+				}
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		},
 		TEXT("Schedule notification"),
 		// Not idempotent: a replay after an ambiguous failure would leave the player with two of the same
 		// reminder. Failing once and letting the caller decide beats silently double-scheduling.
@@ -436,6 +721,9 @@ void FFlockNotificationProvider::CancelScheduled(const FString& ScheduledId,
 	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(FlockEndpoints::NotificationScheduleById(ScheduledId));
 
+	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
+	const FString CancelledId = ScheduledId;
+
 	// Idempotent, unlike the schedule call: cancelling twice lands on the same state, so a retry after an
 	// ambiguous failure is safe and is what the caller wants.
 	Execute<FFlockScheduledNotification>(
@@ -443,8 +731,109 @@ void FFlockNotificationProvider::CancelScheduled(const FString& ScheduledId,
 		{
 			return ClientRef->Delete<FFlockScheduledNotification>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
-		MoveTemp(OnComplete),
+		[WeakSelf, CancelledId, OnComplete](TFlockResult<FFlockScheduledNotification> Result)
+		{
+			if (Result.bSuccess)
+			{
+				if (const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin())
+				{
+					Self->UntrackPending(CancelledId);
+				}
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		},
 		TEXT("Cancel scheduled notification"));
+}
+
+TArray<FFlockPendingSchedule> FFlockNotificationProvider::GetPendingSchedules() const
+{
+	// Deliberately not sign-in gated in the way the network calls are: there is no request to make, and the
+	// key is player-scoped, so a signed-out read simply finds nothing under an empty player id.
+	return LoadPendingSchedules();
+}
+
+void FFlockNotificationProvider::CancelAllScheduled(TFunction<void(TFlockResult<int32>)> OnComplete)
+{
+	if (!RequireSignedIn<int32>(OnComplete))
+	{
+		return;
+	}
+
+	const TArray<FFlockPendingSchedule> Pending = LoadPendingSchedules();
+	if (Pending.Num() == 0)
+	{
+		// Nothing tracked is a success with zero cancelled, not a failure — the caller asked for an end
+		// state, and it already holds.
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<int32>::Ok(0));
+		}
+		return;
+	}
+
+	// The ids are snapshotted up front: every cancel rewrites the stored list, so walking the live list
+	// while mutating it would skip entries.
+	TSharedRef<TArray<FString>> Ids = MakeShared<TArray<FString>>();
+	Ids->Reserve(Pending.Num());
+	for (const FFlockPendingSchedule& Entry : Pending)
+	{
+		Ids->Add(Entry.Id);
+	}
+
+	CancelAllStep(Ids, 0, MakeShared<int32>(0), MoveTemp(OnComplete));
+}
+
+void FFlockNotificationProvider::CancelAllStep(TSharedRef<TArray<FString>> Ids, int32 Index,
+	TSharedRef<int32> Cancelled, TFunction<void(TFlockResult<int32>)> OnComplete)
+{
+	if (!Ids->IsValidIndex(Index))
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<int32>::Ok(*Cancelled));
+		}
+		return;
+	}
+
+	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
+	const FString Id = (*Ids)[Index];
+
+	// Sequential rather than parallel: each cancel rewrites the persisted list, so overlapping writes would
+	// race and the last one home would resurrect entries the others had removed.
+	CancelScheduled(Id, [WeakSelf, Ids, Index, Cancelled, Id, OnComplete](TFlockResult<FFlockScheduledNotification> Result)
+	{
+		const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin();
+		if (!Self.IsValid())
+		{
+			return;
+		}
+
+		if (Result.bSuccess)
+		{
+			++(*Cancelled);
+		}
+		else if (FFlockError::IsPermanentStatus(Result.Error.StatusCode))
+		{
+			// Delivered, already cancelled, or unknown to the server — it is not pending either way, so
+			// drop it and keep going rather than failing the batch on an entry nothing can act on.
+			Self->UntrackPending(Id);
+		}
+		else
+		{
+			// Transient: stop here and surface it. The remaining entries stay tracked, so a later call
+			// picks up where this one left off instead of losing them.
+			if (OnComplete)
+			{
+				OnComplete(TFlockResult<int32>::Fail(Result.Error));
+			}
+			return;
+		}
+
+		Self->CancelAllStep(Ids, Index + 1, Cancelled, OnComplete);
+	});
 }
 
 // Push device tokens
@@ -540,7 +929,27 @@ void FFlockNotificationProvider::ClearCache()
 	// Writes deliberately leave the snapshot alone — the next successful read overwrites it, and an inbox
 	// with a slightly stale read flag beats an empty one on a plane. This is the logout path, where the
 	// rows must go because they belong to the player who just left.
+	//
+	// Two entries in this category are **state, not cache**, and are restored afterwards:
+	//
+	//   - the seen-watermark, because dropping it would make this player's next sign-in either re-announce
+	//     their whole inbox as newly received or silently swallow everything created before the sign-out;
+	//   - the pending-schedule list, because it is the only record of what this install scheduled and the
+	//     server has no route that could tell us again — losing it strands reminders nothing can cancel.
+	//
+	// Both are read before the delete and written back after, which is safe because Logout() calls this
+	// *before* clearing the tokens — so the player-scoped keys still resolve to the departing player.
+	const FFlockNotificationWatermark Mark = LoadWatermark();
+	const TArray<FFlockPendingSchedule> Pending = LoadPendingSchedules();
 	DeleteSnapshotCategory(SnapshotCategory);
+	if (Mark.Seeded)
+	{
+		SaveWatermark(Mark);
+	}
+	if (Pending.Num() > 0)
+	{
+		SavePendingSchedules(Pending);
+	}
 
 	// The template catalog and its name memo are **kept**: both are game-scoped, so nothing in them belongs
 	// to the departing player. Dropping them would make a title screen refetch the catalog after every

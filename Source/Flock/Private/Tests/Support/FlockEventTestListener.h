@@ -6,6 +6,7 @@
 #include "FlockEventModels.h"
 #include "Http/FlockError.h"
 #include "Models/FlockAuthModels.h"
+#include "Models/FlockNotificationModels.h"
 #include "FlockEventTestListener.generated.h"
 
 /**
@@ -38,6 +39,10 @@ public:
 	int32 AccountUnlinkedCount = 0;
 	EFlockCredentialProvider LastLinkedProvider = EFlockCredentialProvider::Unknown;
 	EFlockCredentialProvider LastUnlinkedProvider = EFlockCredentialProvider::Unknown;
+	int32 UnreadCountChangedCount = 0;
+	int32 LastUnreadCount = -1;
+	/** Every notification announced, in raise order — order is the assertion for the oldest-first rule. */
+	TArray<FFlockNotification> ReceivedNotifications;
 
 	UFUNCTION()
 	void HandleInitialized() { ++InitializedCount; }
@@ -74,6 +79,12 @@ public:
 
 	UFUNCTION()
 	void HandleAccountUnlinked(EFlockCredentialProvider Provider) { ++AccountUnlinkedCount; LastUnlinkedProvider = Provider; }
+
+	UFUNCTION()
+	void HandleUnreadCountChanged(int32 Count) { ++UnreadCountChangedCount; LastUnreadCount = Count; }
+
+	UFUNCTION()
+	void HandleNotificationReceived(const FFlockNotification& Notification) { ReceivedNotifications.Add(Notification); }
 };
 
 /** Bind target for the auth async-node pin tests (dynamic delegates need UFUNCTION handlers). */

@@ -2,9 +2,10 @@
 
 `GetEvents()` returns the SDK event hub (`UFlockEvents`): lifecycle (`OnInitialized`,
 `OnInitializationFailed`, `OnShutdown`), auth (`OnAuthenticated`, `OnTokenRefreshed`, `OnAuthExpired`,
-`OnLoggedOut`, `OnSessionRestored`), session (`OnSessionStarted`, `OnSessionEnded`, `OnSessionPaused`,
-`OnSessionResumed`), and consent (`OnConsentChanged`). All are Blueprint-assignable and raised on the
-game thread; auth/session/consent events are declared now and raised by their features as they land.
+`OnLoggedOut`, `OnSessionRestored`, `OnAccountLinked`, `OnAccountUnlinked`), session
+(`OnSessionStarted`, `OnSessionEnded`, `OnSessionPaused`, `OnSessionResumed`), notifications
+(`OnUnreadCountChanged`, `OnNotificationReceived`), and consent (`OnConsentChanged`). All are
+Blueprint-assignable and raised on the game thread.
 
 ## Blueprint
 
@@ -30,6 +31,10 @@ if (UFlockSubsystem* Sdk = UFlockSubsystem::Get(this))
   next init. One-shot.
 - **Subscriptions survive `ShutdownSdk()`.** They stay bound across re-initialization and are released
   with the GameInstance (dynamic delegates hold weak references, so destroyed subscribers are skipped).
+- **The notification events are fetch-derived, not pushed.** There is no realtime channel and the SDK
+  never polls, so `OnNotificationReceived` means *first seen by a read* — it rides the inbox and summary
+  calls your game already makes and adds no traffic of its own. The first read for a player is silent, so
+  an existing inbox never arrives as a burst on launch. See [Notifications](notifications.md).
 
 ---
 
