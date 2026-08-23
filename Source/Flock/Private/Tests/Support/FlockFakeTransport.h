@@ -15,6 +15,21 @@ class FFlockFakeTransport : public IFlockHttpAdapter
 {
 public:
 	/** Route a URL fragment to a single reused response (replaces any prior route for the same fragment). */
+	/**
+	 * Registers a route, removing any existing one with the same fragment and **appending** the new one.
+	 *
+	 * The append is load-bearing in both directions, which is why it has not been "fixed":
+	 *  - fixtures that re-register a whole table rely on it to *establish* specificity order (the analytics
+	 *    fixture's ApplyRoutes does exactly this — re-registering the broad `analytics/sessions` route is
+	 *    what moves it behind the per-session ones);
+	 *  - but a test that overrides a *single* route silently moves it to the end, behind any broader route
+	 *    that also matches — the override becomes unreachable and its assertions pass against the wrong
+	 *    fixture.
+	 *
+	 * So: **override a whole table, never one route of several that can match the same URL.** Fixtures that
+	 * need single-route overrides provide a helper that re-registers the table (see the leaderboard fixture's
+	 * RouteStandings/RouteRank and the notification fixture's RouteCancel/RouteTemplateByName).
+	 */
 	FFlockFakeTransport& On(const FString& UrlFragment, const FFlockHttpResponse& Response)
 	{
 		Routes.RemoveAll([&](const FRoute& R) { return R.Fragment == UrlFragment; });
@@ -124,11 +139,23 @@ private:
 	TArray<FRoute> Routes;
 	TArray<TFunction<void()>> Pending;
 
+	/**
+	 * First registered fragment the URL contains, matched **case-sensitively**.
+	 *
+	 * First-match, so **registration order is specificity order** and fixtures register narrow routes before
+	 * broad ones. Longest-match is *not* a safe substitute and was tried: `leaderboard/by-name/` is longer
+	 * than `/standings`, so preferring length answers a standings read with a board config — exactly
+	 * backwards. See `On()` for the override rule that keeps the order meaningful.
+	 *
+	 * Case-sensitivity is not optional. `FString::Contains` defaults to IgnoreCase, so a board legitimately
+	 * named "Medals" makes `leaderboard/by-name/Medals` contain "/me" — and a `/me` route would answer the
+	 * board-config request, with nothing in the test looking wrong.
+	 */
 	FFlockHttpResponse Resolve(const FFlockHttpRequest& Request)
 	{
 		for (FRoute& Route : Routes)
 		{
-			if (!Request.Url.Contains(Route.Fragment))
+			if (!Request.Url.Contains(Route.Fragment, ESearchCase::CaseSensitive))
 			{
 				continue;
 			}

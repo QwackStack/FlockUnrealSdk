@@ -263,7 +263,12 @@ private:
 		TFunction<void(TFlockResult<TValue>)> OnComplete)
 	{
 		const TSharedPtr<FFlockSnapshotStore> Store = SnapshotStore;
-		if (!Store.IsValid())
+		// An empty scope is treated as "no cache", never as a location. SanitizeScope culls empty segments and
+		// falls back to Sanitize(""), which is "_", so an empty scope would otherwise resolve to <Root>/_/ —
+		// outside any game-version directory, shared by every caller that got there, and unreachable by the
+		// scope delete that is supposed to clean it up. Providers that build a player-scoped scope return
+		// empty when no player is signed in, and this is what makes that safe rather than merely intended.
+		if (!Store.IsValid() || Scope.IsEmpty())
 		{
 			return Execute<TValue>(MoveTemp(Operation), MoveTemp(OnComplete), Context);
 		}

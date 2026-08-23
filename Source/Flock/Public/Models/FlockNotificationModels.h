@@ -174,8 +174,9 @@ struct FLOCK_API FFlockPendingSchedule
  * notification from one the game was told about on a previous run.
  *
  * **Not a wire model** — nothing sends or receives this. It is persisted through the snapshot store's
- * plain-JSON path and is *state, not cache*: `ClearCache()` deliberately preserves it, because losing it
- * would make the next read either re-announce a whole inbox or swallow everything up to that point.
+ * plain-JSON path and is *state, not cache*, so it lives in the provider's state category rather than its
+ * cache one and is therefore outside what `ClearCache()` deletes. Losing it would make the next read either
+ * re-announce a whole inbox or swallow everything up to that point.
  *
  * Bool named without the `b` prefix to match the serialized-model convention used by the wire structs it
  * sits beside, since it round-trips through the same reflection path.

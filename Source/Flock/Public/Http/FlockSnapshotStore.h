@@ -49,8 +49,19 @@ public:
 	 */
 	bool TryRead(const FString& Scope, const FString& Key, FString& OutPayload) const;
 
-	/** Removes an entire scope directory (e.g. one category under the current version). */
+	/**
+	 * Removes an entire scope directory (e.g. one category under the current version).
+	 *
+	 * This is a **recursive tree delete**, and a scope is the only unit of deletion the store offers, so
+	 * everything sharing a scope shares its fate. Anything that must outlive a delete belongs in a scope of
+	 * its own — that is why a per-player scope suffix exists and why state lives in a separate category from
+	 * cache. Keys are not enumerable back from disk (a name is sanitized, capped at 64 chars, and suffixed
+	 * with a hash), so "delete the scope but keep these entries" cannot be done by inspection.
+	 */
 	void DeleteScope(const FString& Scope);
+
+	/** Removes one entry. Silent when it was not there — this is a delete, not an assertion it existed. */
+	void DeleteKey(const FString& Scope, const FString& Key);
 
 	/** Drops every top-level scope directory except KeepGameVersionId and BootstrapScope. */
 	void PruneOtherVersions(const FString& KeepGameVersionId);

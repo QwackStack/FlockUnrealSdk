@@ -56,9 +56,19 @@ Sdk->GetCommandProvider()->AddGameFunds(TEXT("coins"), 250, OnComplete);
 - **Money does not.** `AddGameFunds` fails with a Connection error when the server is unreachable rather
   than queueing, and is never re-sent after an ambiguous failure (a timeout may mean the credit already
   landed). No offline grants, no double credits.
-- **A rejected write is dropped, not retried forever.** If the server permanently rejects a queued write
-  (a 4xx), it is discarded and the optimistic value rolled back, so it can't block everything behind it.
-  A temporary failure — or an expired session — keeps the whole queue for the next attempt.
+- **A queued write is only discarded when the backend rejects it** — which is a question of *who* said no,
+  not which number came back. A permanent 4xx from the server is an answer, so that write is dropped and
+  its optimistic value rolled back rather than blocking everything behind it. Everything else keeps the
+  whole queue for the next attempt: a temporary failure, an expired session (401 clears when you sign back
+  in), a response the SDK cannot parse — a captive-portal login page answering a write with an HTML `200`
+  means the server never saw it, and throwing the change away on that would lose work the player did — and
+  a **403 with no error code in it**, which is a proxy or network gateway rather than the backend refusing
+  the write.
+- **A write that never becomes deliverable is dropped after 50 replay attempts.** This is a backstop, not a
+  retry budget: a real outage should keep the player's writes, and a flush only happens on sign-in, on
+  returning to the foreground, and on reconnect, so 50 of them span a long time. It exists so that no
+  failure the SDK cannot classify is able to hold the queue — and every write behind it — indefinitely. The
+  count is persisted with the entry, so it spans relaunches the way the queue itself does.
 
 ---
 

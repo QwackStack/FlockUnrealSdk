@@ -105,6 +105,20 @@ public:
 	// ── Offline queue ──
 
 	/**
+	 * Replay attempts a single queued write gets before it is dropped as undeliverable.
+	 *
+	 * **Only a completed exchange counts.** A failure that never reached the server — Connection, Timeout,
+	 * Cancelled, all of which carry `StatusCode` 0 — does not spend budget, and that gate is what makes this
+	 * number safe. Without it a real outage burns the budget on its own: a flush fires on the rising edge of
+	 * reachability, the HTTP client's offline latch self-expires every 30 seconds, so a game left open with
+	 * no network manufactures an attempt every half-minute and would discard the player's change in about
+	 * half an hour. A real outage must keep the player's writes; this exists only so that a verdict the
+	 * classifier may have got wrong cannot block the queue forever — and a verdict needs a server to have
+	 * answered.
+	 */
+	static constexpr int32 MaxReplayAttempts = 50;
+
+	/**
 	 * Replays queued commands oldest-first, reporting how many were delivered. Stops at the first transient
 	 * failure (the rest stay queued); drops an entry the server permanently rejected. Single-flight: a
 	 * second call while one is running completes immediately with the count so far, which is zero.
@@ -168,8 +182,40 @@ private:
 	 */
 	void EvictOptimisticRow(const FString& PlayerDataId);
 
-	/** True for a failure that will never succeed on replay. Auth is recoverable by signing in, so it isn't. */
+	/**
+	 * True only when the **backend** authoritatively rejected this write, so replaying it can never succeed.
+	 *
+	 * The rule is "who said no", not "what number came back". A queued write is a change the player already
+	 * made; discarding it needs an answer from the server, and everything else keeps it queued for the next
+	 * flush. Three cases carry the whole thing, and each of them exists because the naive reading loses data
+	 * or wedges the queue:
+	 *
+	 *  - **Serialization is not permanent.** The status on one of these is whatever the exchange carried —
+	 *    a captive portal answering a write with an HTML 200 produces `Serialization` with `StatusCode` 200,
+	 *    which is outside the 4xx range. Reading the status alone therefore calls it transient and stalls
+	 *    the queue forever; reading the *type* alone and calling it permanent throws the write away when the
+	 *    server never even saw it. It is genuinely ambiguous, so it stays queued and the attempt cap bounds
+	 *    the stall.
+	 *  - **Only a backend-coded 403 is authoritative.** A 401 clears on the next sign-in. A bare 403 with no
+	 *    coded body is a proxy, WAF or corporate gateway — not this backend refusing the write.
+	 *  - **Everything else is decided by status**, where a permanent 4xx really is the server's answer.
+	 *
+	 * FFlockPendingCommand::Attempts backstops all three: no verdict this function can get wrong is able to
+	 * hold the queue indefinitely.
+	 */
 	static bool IsPermanentFailure(const FFlockError& Error);
+
+	/**
+	 * True when the head of the queue is still the entry a completion was sent for — i.e. ClearPendingWrites()
+	 * did not empty it and nothing reloaded a different queue underneath.
+	 *
+	 * **Not sufficient on its own**, and the flush completion checks the player id too. A sign-out/sign-in
+	 * during an in-flight replay does not reload the queue at all — nothing on that path calls
+	 * EnsureQueueLoaded, and the sign-in flush trigger returns early while a flush is in flight — so the head
+	 * still matches while the bearer has changed underneath it.
+	 */
+	bool HeadStillIs(const FFlockPendingCommand& Entry) const;
+
 
 	TSharedRef<FFlockAuthSession> Session;
 	TWeakPtr<FFlockPlayerProvider> PlayerProvider;

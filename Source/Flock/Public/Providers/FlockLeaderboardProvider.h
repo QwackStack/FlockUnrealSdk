@@ -14,9 +14,14 @@
  * up it by writing that field through the commands surface. Anyone looking for SubmitScore wants
  * FFlockCommandProvider::UpdatePlayerDataField.
  *
- * Every read takes a name. The board id is resolved once through the by-name route and memoized for the
- * session, because resolving a name should not cost a round trip on every read. ResolveId exists for
- * logging and deep links only — nothing in this provider's read API takes an id.
+ * Every read takes a name, and the name goes on the wire — all four `/v1` leaderboard routes are
+ * by-name. There is no id-addressed read to resolve *for*, so a read spends exactly one request: the
+ * board-config memo below serves GetByName, not a routing step. ResolveId exists for logging and deep
+ * links only — nothing in this provider's read API takes an id.
+ *
+ * A board name the game does not have answers 404 on all three read routes, and that surfaces as a
+ * **Validation** failure rather than a 404 or an empty page: it is a caller mistake, and standings with
+ * no rows would send someone hunting for a data problem that isn't there.
  *
  * Reads are snapshot-backed, so a board UI shows the last-known standings when the network is down
  * rather than an error screen. The /me and /around-me keys are **player-scoped**: one player's placement
@@ -89,11 +94,47 @@ private:
 	TMap<FString, FString> HeadersNow() const { return Session->GetAuthHeaders(); }
 
 	/**
-	 * Resolves a name to an id and hands it to Continue, or fails. A name this game does not have is a
-	 * caller mistake, so it is a Validation failure rather than an empty result.
+	 * Rewrites a 404 from a by-name read into a Validation failure naming the board. The 404 status is
+	 * **kept** on the translated error so the snapshot layer still reads it as an authoritative answer and
+	 * propagates it, rather than quietly serving a cached page for a board that no longer exists.
 	 */
-	void WithBoardId(const FString& LeaderboardName, TFunction<void(const FString&)> Continue,
-		TFunction<void(const FFlockError&)> OnFailure);
+	template <typename T>
+	static TFlockResult<T> AsCallerMistake(TFlockResult<T> Result, const FString& LeaderboardName)
+	{
+		if (!Result.bSuccess && Result.Error.StatusCode == 404)
+		{
+			// The name is the overwhelmingly likely cause, but it is not the only one a 404 can carry — a
+			// deleted season window or a misrouted API URL would land here too, and blaming the board name
+			// would send someone to check a spelling that is correct. So the server's own words are appended
+			// when it sent any, rather than replaced.
+			FString Message = FString::Printf(TEXT("No leaderboard named '%s'"), *LeaderboardName);
+			if (!Result.Error.ServerMessage.IsEmpty())
+			{
+				Message += FString::Printf(TEXT(" (server said: %s)"), *Result.Error.ServerMessage);
+			}
+			Result.Error = FFlockError::Make(EFlockErrorType::Validation, Message,
+				Result.Error.StatusCode, Result.Error.Body, Result.Error.Code, Result.Error.ServerMessage);
+		}
+		return Result;
+	}
+
+	/**
+	 * Wraps a by-name read so every failure it can produce runs through AsCallerMistake. The translation
+	 * happens **inside** the operation, before the retry and snapshot layers see the result, so those two
+	 * classify the same error the caller will be handed.
+	 */
+	template <typename T>
+	static FFlockRetryHandler::FOperation<T> TranslatingUnknownBoard(
+		FFlockRetryHandler::FOperation<T> Operation, const FString& LeaderboardName)
+	{
+		return [Operation, LeaderboardName](TFunction<void(TFlockResult<T>)> OnAttempt)
+		{
+			return Operation([OnAttempt, LeaderboardName](TFlockResult<T> Result)
+			{
+				OnAttempt(AsCallerMistake<T>(MoveTemp(Result), LeaderboardName));
+			});
+		};
+	}
 
 	/** Appends an optional query parameter, percent-encoded. Empty values are omitted, never sent blank. */
 	static void AppendParam(FString& Query, const FString& Key, const FString& Value);
@@ -104,7 +145,11 @@ private:
 	TSharedRef<FFlockAuthSession> Session;
 	FString VersionedApiUrl;
 
-	/** Name → board. Every read resolves a name first, and that must not cost a round trip each time. */
+	/**
+	 * Name → board config, for GetByName/ResolveId only. **Not a routing step**: the reads put the name on
+	 * the wire, so nothing consults this to build a URL. Re-adding a resolve in front of a read would
+	 * reintroduce the defect this memo used to serve.
+	 */
 	TMap<FString, FFlockLeaderboard> BoardsByName;
 
 	static const TCHAR* const SnapshotCategory;

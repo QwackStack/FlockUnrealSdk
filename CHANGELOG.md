@@ -5,6 +5,99 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-08-22
+
+Three defects found by a whole-codebase review, each shipping with the regression test it was missing,
+plus two more found reviewing those fixes.
+
+**Engine support re-verified for this release.** `Tooling/Build-AllEngines.ps1` cleaned, built and ran the
+full automation suite against **UE 5.5, 5.6, 5.7 and 5.8** — **385/385 editor and 108/108 `-game` on each**
+— and reported *"The declared claim (UE 5.5 to UE 5.8) is verified."*
+
+### Fixed
+
+- **The leaderboard read surface could not succeed against any backend.** `GetStandings`, `GetMyRank` and
+  `GetAroundMe` resolved the board name to an id and then requested `leaderboard/{id}`, `/{id}/me` and
+  `/{id}/around-me` — paths that do not exist under `/v1`. The id-addressed leaderboard routes in the API
+  are the unversioned dashboard ones, which take OAuth2 and a different game header and are not the SDK's
+  to call. All three now request `leaderboard/by-name/{name}/standings|me|around-me`, which take exactly
+  the query parameters the SDK already sent and return the same enveloped shapes, so nothing else changed.
+  Leaderboards were non-functional beyond `GetByName` in 1.2.0 through 1.6.0.
+- A read now costs **one request instead of two** — the name goes on the wire, so there is no id to
+  resolve first. The board-config memo still serves `GetByName` and `ResolveId`.
+- A board name your game does not have still fails as a **Validation** error naming the board, rather than
+  as a bare 404 or an empty page. The server is what reports it now, so the 404 is translated; the status
+  is kept on the error, so a board that really was deleted still propagates instead of serving a stale
+  cached page.
+- **One unparseable response could wedge the offline write queue forever.** A captive-portal login page
+  answering a write with an HTML `200` produces a serialization failure carrying status 200, which is
+  outside the 4xx range — so the classifier read it as transient, the replay stopped at that entry, and
+  every write behind it was blocked for the life of the install. The queue persists across relaunch, so
+  short of a game calling `ClearPendingWrites()` — which discards the writes rather than delivering them —
+  the block was permanent.
+- The rule is now **who said no, not what number came back**: a queued write is discarded only when the
+  backend authoritatively rejected it. An unparseable response stays queued (the server may never have
+  seen the write — discarding it would lose a change the player made), and a **bounded 50 replay attempts**
+  backstops it, so no failure the SDK cannot classify can hold the queue indefinitely. The attempt count
+  is persisted with the entry, so the bound survives the relaunch the queue survives.
+- A **403 now only ends a write when it carries a coded body from the backend.** A bare 403 is a proxy,
+  WAF or corporate gateway that never consulted the server, and the write is kept. 401 still keeps the
+  write and clears on the next sign-in, as before.
+- **Only a completed exchange counts against the 50-attempt budget.** A failure that never reached the
+  server — Connection, Timeout, Cancelled — does not spend one. Without this gate the backstop defeated
+  its own purpose: a flush fires on the rising edge of reachability and the offline latch self-expires
+  every 30 seconds, so a game left open with no network manufactured an attempt every half-minute and
+  would have discarded the player's change after about half an hour offline.
+- **A replay no longer continues under a different player's bearer.** Nothing on the sign-out/sign-in path
+  reloads the command queue, so a player switch during an in-flight replay left the queue's head matching
+  while the session had changed underneath it — the next write would post with the new player's token, and
+  the server rejecting it would drop the previous player's write for good. The flush now compares the
+  queue's player against the live one and abandons rather than continuing.
+- **The notification state migration no longer deletes the previous copy on an unverified write.**
+  `FFlockSnapshotStore::Write` returns void and has three exits that only log, so a full disk or a locked
+  file meant the new copy silently never landed while the old one was removed — losing exactly the pending
+  reminders the change exists to protect. The new location is read back first, and the old copy is kept for
+  a later retry if it did not.
+- **`Notification ClearCache()` warns instead of silently doing nothing when no player is signed in.** The
+  Logout-ordering hazard was inverted rather than removed: it used to be "clear before the tokens go or the
+  watermark is lost", and is now "clear before the tokens go or nothing is cleared at all". A reordered
+  logout would have left the departing player's inbox on disk with every test still passing.
+- **An empty snapshot scope is treated as "no cache" rather than as a location** (`FFlockProviderBase`).
+  `SanitizeScope` culls empty segments and falls back to `"_"`, so a player-scoped scope built with no
+  player would have resolved to a shared directory outside any game version — and outside the reach of the
+  delete meant to clean it up.
+- **`Notification ClearCache()` destroyed every other player's records on a shared device.** It deleted the
+  whole notification snapshot category — which held the inbox cache, the seen-watermark and the
+  pending-schedule list for *every* account on the device — and then restored the current player's two
+  state records. Another player's pending reminders were gone: a scheduled notification still fires
+  server-side and its id is the only handle on it, so those reminders became uncancellable. Called with
+  nobody signed in, an empty player id resolved to the bare category and it cleared everyone, restoring
+  nothing.
+- Inbox caches now live under a **per-player scope** (`<version>/notification/<player id>`), so clearing
+  one player's cache is a directory delete that cannot reach another's. The seen-watermark and the
+  pending-schedule list moved to their **own category**, so they survive a clear by construction rather
+  than by being read out and written back — which also removes the hazard that reordering `Logout()` would
+  silently break them. Signed out, `ClearCache()` now does nothing.
+- State written by 1.3.0–1.6.0 is **migrated on first read** and the old copy removed, so upgrading does
+  not strand a pending reminder.
+
+### Added
+
+- `Flock.Http.Endpoints.LeaderboardPathsMatchV1` — a literal lock on the four `/v1` leaderboard paths,
+  written against the API rather than against the implementation. The previous lock was literal, green,
+  and wrong: it locked the three id paths the provider was building, which is a test that can only ever
+  agree with the code it was derived from.
+- `FFlockSnapshotStore::DeleteKey` — removes one entry rather than a whole scope.
+- `FFlockCommandProvider::MaxReplayAttempts` and `FFlockPendingCommand::Attempts`.
+- Ten tests, all in both the editor and client contexts: leaderboard by-name routing and the unknown-name
+  translation; the write queue's unparseable-response, attempt-cap, attempt-persistence, coded-403,
+  connection-failures-do-not-spend-attempts and player-switch-mid-flight behaviours; and notification
+  `ClearCache` sparing other players, doing nothing signed out, and migrating state written by an earlier
+  version.
+- The fake transport used by the test suite now matches routes **case-sensitively**. `FString::Contains`
+  defaults to ignoring case, so a board legitimately named `Medals` made `leaderboard/by-name/Medals`
+  match a `/me` route — a fixture answering the wrong request with nothing looking wrong.
+
 ## [1.6.0] - 2026-08-17
 
 **Engine support re-verified for this release.** `Tooling/Build-AllEngines.ps1` cleaned, built and ran

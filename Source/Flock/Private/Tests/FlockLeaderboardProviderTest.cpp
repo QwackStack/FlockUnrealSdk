@@ -93,17 +93,38 @@ namespace FlockLeaderboardProviderTestHelpers
 		}
 
 		/**
-		 * Routes every leaderboard shape. Order matters and is load-bearing: the fake returns the first
-		 * route whose fragment the URL contains, and "leaderboard/lb-1" is a substring of both the /me and
-		 * /around-me URLs — so the specific ones have to be registered first.
+		 * The four responses in play, held as fixture state rather than registered ad hoc.
+		 *
+		 * All four live routes hang off `leaderboard/by-name/{name}`, so the bare board-config fragment is
+		 * a **prefix of the other three**. The fake answers the first route whose fragment the URL contains
+		 * and `On()` removes-then-**appends**, so any test that overrides one route with a bare `On()`
+		 * silently drops it behind the board-config route — and a standings read comes back answered by a
+		 * board config. Green, and proving nothing.
+		 *
+		 * Owning the table here makes that unreachable: every override reassigns one of these and re-runs
+		 * RouteAll(), which always registers most-specific-first.
+		 */
+		FFlockHttpResponse BoardResponse = FFlockFakeTransport::Ok(BoardBody());
+		FFlockHttpResponse StandingsResponse = FFlockFakeTransport::Ok(StandingsBody());
+		FFlockHttpResponse RankResponse = FFlockFakeTransport::Ok(RankBody());
+		FFlockHttpResponse AroundResponse = FFlockFakeTransport::Ok(StandingsBody());
+
+		/**
+		 * Re-registers all four in specificity order. Also the assertion that routing is by name: no
+		 * fragment in this file mentions a board id, because no URL the provider builds contains one.
 		 */
 		void RouteAll()
 		{
-			Fake->On(TEXT("lb-1/around-me"), FFlockFakeTransport::Ok(StandingsBody()));
-			Fake->On(TEXT("lb-1/me"), FFlockFakeTransport::Ok(RankBody()));
-			Fake->On(TEXT("leaderboard/by-name/"), FFlockFakeTransport::Ok(BoardBody()));
-			Fake->On(TEXT("leaderboard/lb-1"), FFlockFakeTransport::Ok(StandingsBody()));
+			Fake->On(TEXT("/around-me"), AroundResponse);
+			Fake->On(TEXT("/me"), RankResponse);
+			Fake->On(TEXT("/standings"), StandingsResponse);
+			Fake->On(TEXT("leaderboard/by-name/"), BoardResponse);
 		}
+
+		void RouteBoard(const FFlockHttpResponse& R) { BoardResponse = R; RouteAll(); }
+		void RouteStandings(const FFlockHttpResponse& R) { StandingsResponse = R; RouteAll(); }
+		void RouteRank(const FFlockHttpResponse& R) { RankResponse = R; RouteAll(); }
+		void RouteAround(const FFlockHttpResponse& R) { AroundResponse = R; RouteAll(); }
 
 		void SignIn(const FString& PlayerId = TEXT("player-a"))
 		{
@@ -117,17 +138,17 @@ namespace FlockLeaderboardProviderTestHelpers
 		 * requests came back with a connection error — so a false probe over a working transport is not a
 		 * state that can occur, and testing it would prove nothing.
 		 *
-		 * All four routes are re-registered rather than patched one at a time, because On() appends and the
-		 * fake returns the first fragment match: overriding "lb-1/me" alone would drop it behind the broader
-		 * "leaderboard/lb-1" route and quietly answer a rank read with standings.
+		 * All four responses are swapped and the table re-registered in one go — see RouteAll() for why
+		 * patching a single route with a bare On() is a trap.
 		 */
 		void GoOffline()
 		{
 			Provider->SetReachabilityProbe([]() { return false; });
-			Fake->On(TEXT("lb-1/around-me"), FFlockFakeTransport::Offline());
-			Fake->On(TEXT("lb-1/me"), FFlockFakeTransport::Offline());
-			Fake->On(TEXT("leaderboard/by-name/"), FFlockFakeTransport::Offline());
-			Fake->On(TEXT("leaderboard/lb-1"), FFlockFakeTransport::Offline());
+			BoardResponse = FFlockFakeTransport::Offline();
+			StandingsResponse = FFlockFakeTransport::Offline();
+			RankResponse = FFlockFakeTransport::Offline();
+			AroundResponse = FFlockFakeTransport::Offline();
+			RouteAll();
 		}
 
 		/** Offline for the cache-serving branch only: the probe says no, but nothing should reach the fake. */
@@ -155,13 +176,19 @@ namespace FlockLeaderboardProviderTestHelpers
 
 using namespace FlockLeaderboardProviderTestHelpers;
 
-// ── LB-01: a read takes a name; the id comes from the by-name route, then the id route is called ──
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLeaderboardResolvesNameTest, "Flock.Leaderboard.Provider.ResolvesNameThenReads",
+// ── LB-01: a read goes straight to the by-name route — the board name is what goes on the wire ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLeaderboardReadsByNameTest, "Flock.Leaderboard.Provider.ReadsAddressTheBoardByName",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
-bool FFlockLeaderboardResolvesNameTest::RunTest(const FString& Parameters)
+bool FFlockLeaderboardReadsByNameTest::RunTest(const FString& Parameters)
 {
+	// The three read routes are `by-name/{name}/standings|me|around-me`. There is no id-addressed read on
+	// the `/v1` surface, so a read must spend exactly one request and that request must carry the name.
+	// This assertion is written against the API rather than against the provider: the earlier version of
+	// this test derived its expectation from the code, which is how a whole read surface shipped 404ing.
 	FFixture F;
+	F.SignIn();
+
 	bool bDone = false;
 	F.Provider->GetStandings(TEXT("HighScoreTest"), [&](TFlockResult<FFlockStandings> Result)
 	{
@@ -170,10 +197,30 @@ bool FFlockLeaderboardResolvesNameTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("total"), Result.Value.Total, 2);
 		TestEqual(TEXT("rows"), Result.Value.Items.Num(), 1);
 	});
-
 	TestTrue(TEXT("completed"), bDone);
-	TestEqual(TEXT("resolved by name once"), F.Fake->CountTo(TEXT("leaderboard/by-name/")), 1);
-	TestEqual(TEXT("then read the id route"), F.Fake->CountTo(TEXT("leaderboard/lb-1")), 1);
+	TestEqual(TEXT("standings cost exactly one request"), F.Fake->Requests.Num(), 1);
+	TestTrue(TEXT("and it was the by-name standings route"),
+		F.LastUrlContaining(TEXT("/standings")).Contains(TEXT("leaderboard/by-name/HighScoreTest/standings")));
+
+	F.Provider->GetMyRank(TEXT("HighScoreTest"), [](TFlockResult<FFlockPlayerRank>) {});
+	TestTrue(TEXT("my rank uses by-name/me"),
+		F.LastUrlContaining(TEXT("/me")).Contains(TEXT("leaderboard/by-name/HighScoreTest/me")));
+
+	F.Provider->GetAroundMe(TEXT("HighScoreTest"), [](TFlockResult<FFlockStandings>) {});
+	TestTrue(TEXT("around me uses by-name/around-me"),
+		F.LastUrlContaining(TEXT("/around-me")).Contains(TEXT("leaderboard/by-name/HighScoreTest/around-me")));
+
+	// No request may carry a board id: the id routes belong to the unversioned dashboard API.
+	for (const FFlockHttpRequest& Request : F.Fake->Requests)
+	{
+		TestTrue(FString::Printf(TEXT("'%s' is addressed by name"), *Request.Url),
+			Request.Url.Contains(TEXT("leaderboard/by-name/"), ESearchCase::CaseSensitive));
+		TestFalse(FString::Printf(TEXT("'%s' carries no board id"), *Request.Url),
+			Request.Url.Contains(TEXT("leaderboard/lb-1"), ESearchCase::CaseSensitive));
+	}
+
+	// Three reads, three requests: no name-to-id resolve is spent on any of them.
+	TestEqual(TEXT("three reads, three requests"), F.Fake->Requests.Num(), 3);
 	Cleanup(F.Dir);
 	return true;
 }
@@ -185,10 +232,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLeaderboardMemoizesTest, "Flock.Leaderboa
 bool FFlockLeaderboardMemoizesTest::RunTest(const FString& Parameters)
 {
 	FFixture F;
-	F.Provider->GetStandings(TEXT("HighScoreTest"), [](TFlockResult<FFlockStandings>) {});
-	F.Provider->GetStandings(TEXT("HighScoreTest"), [](TFlockResult<FFlockStandings>) {});
+	F.Provider->GetByName(TEXT("HighScoreTest"), [](TFlockResult<FFlockLeaderboard>) {});
+	F.Provider->GetByName(TEXT("HighScoreTest"), [](TFlockResult<FFlockLeaderboard>) {});
 
-	TestEqual(TEXT("by-name fetched once for two reads"), F.Fake->CountTo(TEXT("leaderboard/by-name/")), 1);
+	// The memo serves GetByName itself. It is deliberately *not* a routing step any more: a standings read
+	// carries the name, so nothing about it consults this memo (LB-01 pins that it costs one request).
+	TestEqual(TEXT("board config fetched once for two lookups"), F.Fake->Requests.Num(), 1);
 
 	// ResolveId is the same lookup, so it must not spend another call either.
 	bool bResolved = false;
@@ -199,7 +248,7 @@ bool FFlockLeaderboardMemoizesTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("id"), Result.Value, FString(TEXT("lb-1")));
 	});
 	TestTrue(TEXT("resolve completed"), bResolved);
-	TestEqual(TEXT("still one by-name call"), F.Fake->CountTo(TEXT("leaderboard/by-name/")), 1);
+	TestEqual(TEXT("still one board-config call"), F.Fake->Requests.Num(), 1);
 	Cleanup(F.Dir);
 	return true;
 }
@@ -210,10 +259,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLeaderboardUnknownNameTest, "Flock.Leader
 
 bool FFlockLeaderboardUnknownNameTest::RunTest(const FString& Parameters)
 {
-	// A 2xx that resolves to no board at all: Validation, and the read route is never attempted.
+	// The server is the only thing that knows a name is unknown now that the name goes on the wire, and it
+	// says so with a 404. Handing that back as a 404 would be technically honest and practically useless —
+	// the caller mistyped a board name — so all three reads translate it into Validation naming the board.
+	// Standings-with-no-rows would be worse still: it sends someone hunting for a data problem.
 	{
 		FFixture F;
-		F.Fake->On(TEXT("leaderboard/by-name/"), FFlockFakeTransport::Ok(BoardBody(TEXT(""))));
+		F.SignIn();
+		F.RouteStandings(FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"missing\"}")));
 
 		bool bDone = false;
 		F.Provider->GetStandings(TEXT("Nope"), [&](TFlockResult<FFlockStandings> Result)
@@ -222,31 +275,52 @@ bool FFlockLeaderboardUnknownNameTest::RunTest(const FString& Parameters)
 			TestFalse(TEXT("fails"), Result.bSuccess);
 			TestTrue(TEXT("as a validation error"), Result.Error.Type == EFlockErrorType::Validation);
 			TestTrue(TEXT("error names the board"), Result.Error.Message.Contains(TEXT("Nope")));
+			// The status is kept so the snapshot layer still reads this as an authoritative answer.
+			TestEqual(TEXT("keeps the 404 status"), Result.Error.StatusCode, 404);
 		});
 		TestTrue(TEXT("completed"), bDone);
-		TestEqual(TEXT("no standings call attempted"), F.Fake->CountTo(TEXT("leaderboard/lb-1")), 0);
 		Cleanup(F.Dir);
 	}
 
-	// A 404 from the lookup propagates, and likewise never reaches the read route.
+	// The same translation on the two bearer routes — a 404 there is the board, not the player.
 	{
 		FFixture F;
-		F.Fake->On(TEXT("leaderboard/by-name/"), FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"missing\"}")));
+		F.SignIn();
+		F.RouteRank(FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"missing\"}")));
 
 		bool bDone = false;
-		F.Provider->GetStandings(TEXT("Nope"), [&](TFlockResult<FFlockStandings> Result)
+		F.Provider->GetMyRank(TEXT("Nope"), [&](TFlockResult<FFlockPlayerRank> Result)
 		{
 			bDone = true;
 			TestFalse(TEXT("fails"), Result.bSuccess);
+			TestTrue(TEXT("as a validation error"), Result.Error.Type == EFlockErrorType::Validation);
+			TestTrue(TEXT("error names the board"), Result.Error.Message.Contains(TEXT("Nope")));
 		});
 		TestTrue(TEXT("completed"), bDone);
-		TestEqual(TEXT("no standings call attempted"), F.Fake->CountTo(TEXT("leaderboard/lb-1")), 0);
+		Cleanup(F.Dir);
+	}
+
+	// A 404 must not be mistaken for a cache-worthy failure: with a warm snapshot in hand it still
+	// propagates, because the board really is gone.
+	{
+		FFixture F;
+		F.Provider->GetStandings(TEXT("HighScoreTest"), [](TFlockResult<FFlockStandings>) {});
+		F.RouteStandings(FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"missing\"}")));
+
+		bool bDone = false;
+		F.Provider->GetStandings(TEXT("HighScoreTest"), [&](TFlockResult<FFlockStandings> Result)
+		{
+			bDone = true;
+			TestFalse(TEXT("propagates despite the cache"), Result.bSuccess);
+			TestTrue(TEXT("as a validation error"), Result.Error.Type == EFlockErrorType::Validation);
+		});
+		TestTrue(TEXT("completed"), bDone);
 		Cleanup(F.Dir);
 	}
 	return true;
 }
 
-// ── LB-04: the two bearer routes fail fast, before the name lookup is spent ──
+// ── LB-04: the two bearer routes fail fast, without spending a request ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLeaderboardRequiresSignInTest, "Flock.Leaderboard.Provider.BearerRoutesRequireSignIn",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -272,8 +346,8 @@ bool FFlockLeaderboardRequiresSignInTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("my rank completed"), bRankDone);
 	TestTrue(TEXT("around me completed"), bAroundDone);
-	// The point of gating before the resolve: a guaranteed 401 should not cost a lookup first.
-	TestEqual(TEXT("no by-name lookup spent"), F.Fake->CountTo(TEXT("leaderboard/by-name/")), 0);
+	// The point of gating client-side: a guaranteed 401 should not cost a request at all.
+	TestEqual(TEXT("no request spent"), F.Fake->Requests.Num(), 0);
 
 	// Signed in, the same calls go through.
 	F.SignIn();
@@ -300,7 +374,7 @@ bool FFlockLeaderboardQueryParamsTest::RunTest(const FString& Parameters)
 	{
 		FFixture F;
 		F.Provider->GetStandings(TEXT("HighScoreTest"), [](TFlockResult<FFlockStandings>) {});
-		const FString Url = F.LastUrlContaining(TEXT("leaderboard/lb-1"));
+		const FString Url = F.LastUrlContaining(TEXT("/standings"));
 		TestFalse(TEXT("no window parameter"), Url.Contains(TEXT("window=")));
 		TestFalse(TEXT("no country parameter"), Url.Contains(TEXT("country=")));
 		TestTrue(TEXT("page always sent"), Url.Contains(TEXT("page=1")));
@@ -313,7 +387,7 @@ bool FFlockLeaderboardQueryParamsTest::RunTest(const FString& Parameters)
 		FFixture F;
 		F.Provider->GetStandings(TEXT("HighScoreTest"), FFlockLeaderboardWindow::Period(TEXT("2026 W31")),
 			TEXT("SA"), 2, 25, [](TFlockResult<FFlockStandings>) {});
-		const FString Url = F.LastUrlContaining(TEXT("leaderboard/lb-1"));
+		const FString Url = F.LastUrlContaining(TEXT("/standings"));
 		TestTrue(TEXT("window sent"), Url.Contains(TEXT("window=2026%20W31")));
 		TestFalse(TEXT("no raw space"), Url.Contains(TEXT(" ")));
 		TestTrue(TEXT("country sent"), Url.Contains(TEXT("country=SA")));
@@ -385,13 +459,16 @@ bool FFlockLeaderboardPermanentFailureTest::RunTest(const FString& Parameters)
 	FFixture F;
 	F.Provider->GetStandings(TEXT("HighScoreTest"), [](TFlockResult<FFlockStandings>) {});
 
-	// The board was deleted server-side. Serving the cache here would hide a real, permanent answer.
-	F.Fake->On(TEXT("leaderboard/lb-1"), FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"gone\"}")));
+	// A permanent 4xx that is *not* the unknown-board 404 — that one has its own translation and its own
+	// test (LB-03), so this pins the general rule rather than riding on the one status it special-cases.
+	// Serving the cache here would hide a real, permanent answer.
+	F.RouteStandings(FFlockFakeTransport::Status(410, TEXT("{\"detail\":\"gone\"}")));
 	bool bDone = false;
 	F.Provider->GetStandings(TEXT("HighScoreTest"), [&](TFlockResult<FFlockStandings> Result)
 	{
 		bDone = true;
-		TestFalse(TEXT("404 propagates despite the cache"), Result.bSuccess);
+		TestFalse(TEXT("a permanent 4xx propagates despite the cache"), Result.bSuccess);
+		TestEqual(TEXT("and keeps its status"), Result.Error.StatusCode, 410);
 	});
 	TestTrue(TEXT("completed"), bDone);
 	Cleanup(F.Dir);
@@ -430,14 +507,15 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLeaderboardClearCacheTest, "Flock.Leaderb
 bool FFlockLeaderboardClearCacheTest::RunTest(const FString& Parameters)
 {
 	FFixture F;
+	F.Provider->GetByName(TEXT("HighScoreTest"), [](TFlockResult<FFlockLeaderboard>) {});
 	F.Provider->GetStandings(TEXT("HighScoreTest"), [](TFlockResult<FFlockStandings>) {});
-	TestEqual(TEXT("one by-name call"), F.Fake->CountTo(TEXT("leaderboard/by-name/")), 1);
+	TestEqual(TEXT("a lookup and a standings read"), F.Fake->Requests.Num(), 2);
 
 	F.Provider->ClearCache();
 
-	// The memo is gone, so the name is resolved again.
-	F.Provider->GetStandings(TEXT("HighScoreTest"), [](TFlockResult<FFlockStandings>) {});
-	TestEqual(TEXT("by-name refetched after clear"), F.Fake->CountTo(TEXT("leaderboard/by-name/")), 2);
+	// The memo is gone, so the board config is fetched again.
+	F.Provider->GetByName(TEXT("HighScoreTest"), [](TFlockResult<FFlockLeaderboard>) {});
+	TestEqual(TEXT("board config refetched after clear"), F.Fake->Requests.Num(), 3);
 
 	// And so is the snapshot: offline after a clear has nothing to serve.
 	F.Provider->ClearCache();

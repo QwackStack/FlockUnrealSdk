@@ -567,6 +567,138 @@ bool FFlockNotificationPlayerScopedCacheTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// NF-08b: ClearCache clears for one player. Everyone else on the device is out of its reach.
+//
+// This is the two-player case, and it is the only one that can catch the defect: every single-player test
+// passes just as well against a whole-category delete that restores the current player's records
+// afterwards. Player A's pending schedules are the ones that matter — a reminder still fires server-side,
+// and its id is the only handle on it, so a lost list is a reminder A can never cancel.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationClearCacheOtherPlayerTest, "Flock.Notification.Provider.ClearCacheSparesOtherPlayers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationClearCacheOtherPlayerTest::RunTest(const FString& Parameters)
+{
+	FString Dir;
+	{
+		// Player A schedules a reminder, reads their inbox, and signs out.
+		FFixture A;
+		Dir = A.Dir;
+		A.SignIn(TEXT("player-a"));
+		A.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(4),
+			[](TFlockResult<FFlockScheduledNotification>) {});
+		A.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+		TestEqual(TEXT("player A has a pending reminder"), A.Provider->GetPendingSchedules().Num(), 1);
+	}
+
+	{
+		// Player B signs in on the same device and the game clears the notification cache — a settings
+		// screen, a "refresh" button, or simply B signing out again later.
+		FFixture B(Dir);
+		B.SignIn(TEXT("player-b"));
+		B.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+		B.Provider->ClearCache();
+	}
+
+	{
+		// Player A comes back. Their reminder is still cancellable.
+		FFixture A2(Dir);
+		A2.SignIn(TEXT("player-a"));
+		TestEqual(TEXT("player A's pending reminder survived player B's ClearCache"),
+			A2.Provider->GetPendingSchedules().Num(), 1);
+
+		// And their inbox cache is still there — proved the only way a cache can be: offline, where there
+		// is nothing else that could answer.
+		A2.GoOffline();
+		bool bDone = false;
+		A2.Provider->GetNotifications([&](TFlockResult<FFlockNotificationPage> Result)
+		{
+			bDone = true;
+			TestTrue(TEXT("player A's inbox cache survived too"), Result.bSuccess);
+		});
+		TestTrue(TEXT("completed"), bDone);
+	}
+
+	Cleanup(Dir);
+	return true;
+}
+
+// NF-08c: signed out there is no player to clear for, and no scope that could stand in for one.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationClearCacheSignedOutTest, "Flock.Notification.Provider.ClearCacheSignedOutClearsNothing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationClearCacheSignedOutTest::RunTest(const FString& Parameters)
+{
+	FString Dir;
+	{
+		FFixture F;
+		Dir = F.Dir;
+		F.SignIn(TEXT("player-a"));
+		F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(4),
+			[](TFlockResult<FFlockScheduledNotification>) {});
+		F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+	}
+
+	{
+		// Never signed in. An empty player id used to resolve to the bare category, so this call took every
+		// account on the device with it — the worst version of the bug, from the call that does least.
+		FFixture SignedOut(Dir);
+		SignedOut.Provider->ClearCache();
+	}
+
+	FFixture Back(Dir);
+	Back.SignIn(TEXT("player-a"));
+	TestEqual(TEXT("a signed-out clear left the pending list alone"), Back.Provider->GetPendingSchedules().Num(), 1);
+
+	Back.GoOffline();
+	bool bDone = false;
+	Back.Provider->GetNotifications([&](TFlockResult<FFlockNotificationPage> Result)
+	{
+		bDone = true;
+		TestTrue(TEXT("and left the inbox cache alone"), Result.bSuccess);
+	});
+	TestTrue(TEXT("completed"), bDone);
+	Cleanup(Dir);
+	return true;
+}
+
+// NF-08d: state written by an earlier version is picked up, not stranded.
+//
+// Before this change the watermark and the pending list lived in the cache category under "<key>_<player>".
+// An upgrade that simply started reading a new location would silently lose every pending reminder on the
+// device — the same harm as the bug, arriving with the fix for it.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationLegacyStateTest, "Flock.Notification.Provider.MigratesLegacyStateLocation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationLegacyStateTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn(TEXT("player-a"));
+
+	// Written exactly where the previous version put it: shared cache category, player id on the key.
+	const FString LegacyScope = TEXT("ver-1/notification");
+	F.Snapshot->Write(LegacyScope, TEXT("pending_schedules_player-a"),
+		FString::Printf(TEXT("[{\"Id\":\"sch-legacy\",\"TemplateName\":\"DailyBonus\",\"TemplateId\":\"tpl-1\",\"DeliverAt\":\"%s\"}]"),
+			*FutureIso()));
+
+	const TArray<FFlockPendingSchedule> Pending = F.Provider->GetPendingSchedules();
+	TestEqual(TEXT("the legacy list is read"), Pending.Num(), 1);
+	if (Pending.Num() == 1)
+	{
+		TestEqual(TEXT("and carries its id"), Pending[0].Id, FString(TEXT("sch-legacy")));
+	}
+
+	// Migrated, not merely read: the new location holds it and the old copy is gone, so a later
+	// ClearCache — which no longer reaches the old location either — cannot resurrect a stale list.
+	FString Payload;
+	TestTrue(TEXT("moved to the state scope"),
+		F.Snapshot->TryRead(TEXT("ver-1/notification_state/player-a"), TEXT("pending_schedules"), Payload));
+	TestFalse(TEXT("legacy copy removed"),
+		F.Snapshot->TryRead(LegacyScope, TEXT("pending_schedules_player-a"), Payload));
+
+	Cleanup(F.Dir);
+	return true;
+}
+
 // NF-09: writes are never deferred. A read-receipt replayed later marks messages the player never saw,
 // so an unreachable server must fail the call rather than quietly queue it.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationWritesNotQueuedTest, "Flock.Notification.Provider.WritesFailOfflineNotQueued",
