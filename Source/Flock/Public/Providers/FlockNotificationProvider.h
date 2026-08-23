@@ -197,15 +197,61 @@ public:
 	 */
 	static bool GetCurrentDevicePlatform(EFlockDevicePlatform& OutPlatform);
 
-	/** Drops the notification snapshot category, so the next read hits the backend. Called from Logout(). */
+	/**
+	 * Drops **this player's** inbox cache, so the next read hits the backend. Called from Logout().
+	 *
+	 * Deliberately narrow, and the narrowness is the point. Three things it must not touch, each because
+	 * touching them once lost real data: another player's records on a shared device (this used to delete
+	 * the whole category); this player's seen-watermark and pending schedules (state, now in their own
+	 * scope); and the template catalog (game-scoped — a title screen would refetch it after every sign-out).
+	 *
+	 * Signed out it does nothing at all. There is no player to clear for, and the version that resolved an
+	 * empty player id into a scope wiped every account on the device.
+	 */
 	void ClearCache();
 
 private:
 	FString MakeUrl(const FString& Path) const { return FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, *Path); }
 	TMap<FString, FString> HeadersNow() const { return Session->GetAuthHeaders(); }
 
-	/** Suffixes a snapshot key with the current player id, so an inbox cannot cross accounts. */
-	FString PlayerScopedKey(const FString& Key) const;
+	/**
+	 * "<version>/notification/<player id>" — this player's inbox cache, and the **only** thing ClearCache()
+	 * deletes.
+	 *
+	 * The player belongs in the *scope*, not in the key, because a scope is the store's unit of deletion:
+	 * with the player in the path, "drop this player's cache" is a directory delete that structurally cannot
+	 * reach another player's. Suffixing keys instead — which this provider did — meant the delete had to be
+	 * the whole shared category, and the only way to keep anything was to read it out first and write it
+	 * back afterwards, which restores exactly one player's records and destroys everyone else's.
+	 *
+	 * **Empty when no player is signed in**, and every caller treats that as "nothing to do". A signed-out
+	 * scope would collapse to the bare category (SanitizeScope culls empty segments) and take every player
+	 * on the device with it.
+	 */
+	FString PlayerCacheScope() const;
+
+	/**
+	 * "<version>/notification_state/<player id>" — the seen-watermark and the pending-schedule list.
+	 *
+	 * A separate category because these are **state, not cache**: the watermark decides whether the next
+	 * fetch re-announces an entire inbox, and the pending list is the only record of what this install
+	 * scheduled — no `/v1` route can tell us again. Being outside the cache scope is what makes them survive
+	 * ClearCache() by construction rather than by a read-then-restore, which also removes the ordering
+	 * hazard that dance carried (it only worked because Logout() cleared caches before tokens).
+	 *
+	 * Empty when no player is signed in, same rule as PlayerCacheScope().
+	 */
+	FString PlayerStateScope() const;
+
+	/**
+	 * Moves a state entry written by an earlier version — which kept both under the shared cache category,
+	 * keyed "<key>_<player id>" — into PlayerStateScope(), then deletes the old copy.
+	 *
+	 * Lazy, on read, and safe at any time: ClearCache() no longer deletes the old location either, since
+	 * that location is the category root rather than the per-player scope. Returns true when it recovered
+	 * something.
+	 */
+	bool TryMigrateLegacyState(const FString& Key, FString& OutPayload) const;
 
 	/**
 	 * Fails OnComplete with Auth when no player is signed in. Every route in this provider is player-scoped,
@@ -305,21 +351,19 @@ private:
 	/** Name -> template. Every name-addressed send resolves first, and that must not cost a round trip each time. */
 	TMap<FString, FFlockNotificationTemplate> TemplatesByName;
 
-	/** Player-scoped keys: inbox, counts, summary. Dropped wholesale on logout — except the watermark. */
+	/** Inbox, counts and summary, under a per-player scope. This is what ClearCache() drops. */
 	static const TCHAR* const SnapshotCategory;
 
 	/**
-	 * Key of the seen-watermark inside SnapshotCategory. It shares the category but **survives ClearCache**:
-	 * it is state, not cache. Losing it would make the next read either re-announce an entire inbox or
-	 * silently swallow everything created before the sign-out.
+	 * The seen-watermark and the pending-schedule list. Their own category because they are state rather
+	 * than cache and must outlive a ClearCache() — see PlayerStateScope().
 	 */
+	static const TCHAR* const StateSnapshotCategory;
+
+	/** Key of the seen-watermark within the state scope. */
 	static const TCHAR* const WatermarkKey;
 
-	/**
-	 * Key of the pending-schedule list inside SnapshotCategory. Like the watermark it shares the category
-	 * but **survives ClearCache** — it is the only record of what this install scheduled, and the server
-	 * cannot tell us again.
-	 */
+	/** Key of the pending-schedule list within the state scope. */
 	static const TCHAR* const PendingSchedulesKey;
 
 	/**

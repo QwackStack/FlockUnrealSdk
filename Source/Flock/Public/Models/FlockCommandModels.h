@@ -144,4 +144,15 @@ struct FLOCK_API FFlockPendingCommand
 	/** The `player_data_id` the body targets; empty when it had none. Cached so a replay needn't re-parse. */
 	UPROPERTY()
 	FString PlayerDataId;
+
+	/**
+	 * How many times a replay of this write has come back a failure. Persisted with the entry, so the count
+	 * spans relaunches — a queue that survives a restart is exactly the one that can wedge forever.
+	 *
+	 * This is a **backstop, not a policy**: the classifier decides what to drop, and this bounds how long a
+	 * write the classifier cannot decide about may hold the queue. Any classifier can be wrong about a
+	 * status it has never seen; without a cap, being wrong once is permanent.
+	 */
+	UPROPERTY()
+	int32 Attempts = 0;
 };

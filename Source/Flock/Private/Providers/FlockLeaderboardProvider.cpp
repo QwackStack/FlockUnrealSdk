@@ -96,28 +96,13 @@ void FFlockLeaderboardProvider::ResolveId(const FString& LeaderboardName,
 	});
 }
 
-void FFlockLeaderboardProvider::WithBoardId(const FString& LeaderboardName,
-	TFunction<void(const FString&)> Continue, TFunction<void(const FFlockError&)> OnFailure)
-{
-	GetByName(LeaderboardName, [LeaderboardName, Continue, OnFailure](TFlockResult<FFlockLeaderboard> Result)
-	{
-		if (!Result.bSuccess)
-		{
-			OnFailure(Result.Error);
-			return;
-		}
-		// A board the game does not have is a caller mistake, not an empty leaderboard — surfacing it as
-		// standings-with-no-rows would send someone hunting for a data problem that isn't there.
-		if (Result.Value.Id.IsEmpty())
-		{
-			OnFailure(FFlockError::Make(EFlockErrorType::Validation,
-				FString::Printf(TEXT("No leaderboard named '%s'"), *LeaderboardName)));
-			return;
-		}
-		Continue(Result.Value.Id);
-	});
-}
-
+/**
+ * Standings for a board.
+ *
+ * One request, addressed by name. The board-config memo is not consulted here: `by-name/{name}/standings`
+ * takes the name the caller passed, so resolving an id first would spend a round trip to learn something
+ * the URL never asks for.
+ */
 void FFlockLeaderboardProvider::GetStandings(const FString& LeaderboardName, const FFlockLeaderboardWindow& Window,
 	const FString& Country, int32 Page, int32 Limit, TFunction<void(TFlockResult<FFlockStandings>)> OnComplete)
 {
@@ -127,42 +112,26 @@ void FFlockLeaderboardProvider::GetStandings(const FString& LeaderboardName, con
 	}
 
 	const FString WindowKey = Window.Key;
+	FString Query;
+	AppendParam(Query, TEXT("window"), WindowKey);
+	AppendParam(Query, TEXT("country"), Country);
+	Query += Query.IsEmpty() ? TEXT("?") : TEXT("&");
+	Query += FString::Printf(TEXT("page=%d&limit=%d"), Page, Limit);
+
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const TMap<FString, FString> Headers = HeadersNow();
-	TWeakPtr<FFlockLeaderboardProvider> WeakSelf = AsShared();
+	const FString Url = MakeUrl(FlockEndpoints::LeaderboardStandings(LeaderboardName) + Query);
 
-	WithBoardId(LeaderboardName,
-		[WeakSelf, ClientRef, Headers, LeaderboardName, WindowKey, Country, Page, Limit, OnComplete](const FString& BoardId)
-		{
-			const TSharedPtr<FFlockLeaderboardProvider> Self = WeakSelf.Pin();
-			if (!Self.IsValid())
+	FetchWithSnapshot<FFlockStandings>(SnapshotCategory,
+		FString::Printf(TEXT("standings_%s_%s_%s_p%d_l%d"), *LeaderboardName, *WindowKey, *Country, Page, Limit),
+		TranslatingUnknownBoard<FFlockStandings>(
+			[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockStandings>)> OnAttempt)
 			{
-				return;
-			}
-
-			FString Query;
-			AppendParam(Query, TEXT("window"), WindowKey);
-			AppendParam(Query, TEXT("country"), Country);
-			Query += Query.IsEmpty() ? TEXT("?") : TEXT("&");
-			Query += FString::Printf(TEXT("page=%d&limit=%d"), Page, Limit);
-
-			const FString Url = Self->MakeUrl(FlockEndpoints::LeaderboardById(BoardId) + Query);
-
-			Self->FetchWithSnapshot<FFlockStandings>(SnapshotCategory,
-				FString::Printf(TEXT("standings_%s_%s_%s_p%d_l%d"), *LeaderboardName, *WindowKey, *Country, Page, Limit),
-				[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockStandings>)> OnAttempt)
-				{
-					return ClientRef->Get<FFlockStandings>(Url, Headers, MoveTemp(OnAttempt));
-				},
-				TEXT("Fetch leaderboard standings"), OnComplete);
-		},
-		[OnComplete](const FFlockError& Error)
-		{
-			if (OnComplete)
-			{
-				OnComplete(TFlockResult<FFlockStandings>::Fail(Error));
-			}
-		});
+				// Enveloped ({error,response,result}) — the enveloped verb unwraps `result`.
+				return ClientRef->Get<FFlockStandings>(Url, Headers, MoveTemp(OnAttempt));
+			},
+			LeaderboardName),
+		TEXT("Fetch leaderboard standings"), MoveTemp(OnComplete));
 }
 
 void FFlockLeaderboardProvider::GetMyRank(const FString& LeaderboardName, const FFlockLeaderboardWindow& Window,
@@ -172,8 +141,7 @@ void FFlockLeaderboardProvider::GetMyRank(const FString& LeaderboardName, const 
 	{
 		return;
 	}
-	// Bearer-only route: fail before the name lookup is spent, rather than paying for a resolve and then
-	// earning a guaranteed 401.
+	// Bearer-only route: fail before spending a request, rather than earning a guaranteed 401.
 	if (!Session->IsAuthenticated())
 	{
 		if (OnComplete)
@@ -185,40 +153,23 @@ void FFlockLeaderboardProvider::GetMyRank(const FString& LeaderboardName, const 
 	}
 
 	const FString WindowKey = Window.Key;
+	FString Query;
+	AppendParam(Query, TEXT("window"), WindowKey);
+	AppendParam(Query, TEXT("country"), Country);
+
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const TMap<FString, FString> Headers = HeadersNow();
-	TWeakPtr<FFlockLeaderboardProvider> WeakSelf = AsShared();
+	const FString Url = MakeUrl(FlockEndpoints::LeaderboardMe(LeaderboardName) + Query);
 
-	WithBoardId(LeaderboardName,
-		[WeakSelf, ClientRef, Headers, LeaderboardName, WindowKey, Country, OnComplete](const FString& BoardId)
-		{
-			const TSharedPtr<FFlockLeaderboardProvider> Self = WeakSelf.Pin();
-			if (!Self.IsValid())
+	FetchWithSnapshot<FFlockPlayerRank>(SnapshotCategory,
+		PlayerScopedKey(FString::Printf(TEXT("me_%s_%s_%s"), *LeaderboardName, *WindowKey, *Country)),
+		TranslatingUnknownBoard<FFlockPlayerRank>(
+			[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockPlayerRank>)> OnAttempt)
 			{
-				return;
-			}
-
-			FString Query;
-			AppendParam(Query, TEXT("window"), WindowKey);
-			AppendParam(Query, TEXT("country"), Country);
-
-			const FString Url = Self->MakeUrl(FlockEndpoints::LeaderboardMe(BoardId) + Query);
-
-			Self->FetchWithSnapshot<FFlockPlayerRank>(SnapshotCategory,
-				Self->PlayerScopedKey(FString::Printf(TEXT("me_%s_%s_%s"), *LeaderboardName, *WindowKey, *Country)),
-				[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockPlayerRank>)> OnAttempt)
-				{
-					return ClientRef->Get<FFlockPlayerRank>(Url, Headers, MoveTemp(OnAttempt));
-				},
-				TEXT("Fetch player rank"), OnComplete);
-		},
-		[OnComplete](const FFlockError& Error)
-		{
-			if (OnComplete)
-			{
-				OnComplete(TFlockResult<FFlockPlayerRank>::Fail(Error));
-			}
-		});
+				return ClientRef->Get<FFlockPlayerRank>(Url, Headers, MoveTemp(OnAttempt));
+			},
+			LeaderboardName),
+		TEXT("Fetch player rank"), MoveTemp(OnComplete));
 }
 
 void FFlockLeaderboardProvider::GetAroundMe(const FString& LeaderboardName, int32 Neighbours,
@@ -240,43 +191,26 @@ void FFlockLeaderboardProvider::GetAroundMe(const FString& LeaderboardName, int3
 	}
 
 	const FString WindowKey = Window.Key;
+	FString Query;
+	AppendParam(Query, TEXT("window"), WindowKey);
+	AppendParam(Query, TEXT("country"), Country);
+	Query += Query.IsEmpty() ? TEXT("?") : TEXT("&");
+	Query += FString::Printf(TEXT("n=%d"), Neighbours);
+
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const TMap<FString, FString> Headers = HeadersNow();
-	TWeakPtr<FFlockLeaderboardProvider> WeakSelf = AsShared();
+	const FString Url = MakeUrl(FlockEndpoints::LeaderboardAroundMe(LeaderboardName) + Query);
 
-	WithBoardId(LeaderboardName,
-		[WeakSelf, ClientRef, Headers, LeaderboardName, WindowKey, Country, Neighbours, OnComplete](const FString& BoardId)
-		{
-			const TSharedPtr<FFlockLeaderboardProvider> Self = WeakSelf.Pin();
-			if (!Self.IsValid())
+	FetchWithSnapshot<FFlockStandings>(SnapshotCategory,
+		PlayerScopedKey(FString::Printf(TEXT("around_%s_%s_%s_n%d"),
+			*LeaderboardName, *WindowKey, *Country, Neighbours)),
+		TranslatingUnknownBoard<FFlockStandings>(
+			[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockStandings>)> OnAttempt)
 			{
-				return;
-			}
-
-			FString Query;
-			AppendParam(Query, TEXT("window"), WindowKey);
-			AppendParam(Query, TEXT("country"), Country);
-			Query += Query.IsEmpty() ? TEXT("?") : TEXT("&");
-			Query += FString::Printf(TEXT("n=%d"), Neighbours);
-
-			const FString Url = Self->MakeUrl(FlockEndpoints::LeaderboardAroundMe(BoardId) + Query);
-
-			Self->FetchWithSnapshot<FFlockStandings>(SnapshotCategory,
-				Self->PlayerScopedKey(FString::Printf(TEXT("around_%s_%s_%s_n%d"),
-					*LeaderboardName, *WindowKey, *Country, Neighbours)),
-				[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockStandings>)> OnAttempt)
-				{
-					return ClientRef->Get<FFlockStandings>(Url, Headers, MoveTemp(OnAttempt));
-				},
-				TEXT("Fetch standings around player"), OnComplete);
-		},
-		[OnComplete](const FFlockError& Error)
-		{
-			if (OnComplete)
-			{
-				OnComplete(TFlockResult<FFlockStandings>::Fail(Error));
-			}
-		});
+				return ClientRef->Get<FFlockStandings>(Url, Headers, MoveTemp(OnAttempt));
+			},
+			LeaderboardName),
+		TEXT("Fetch standings around player"), MoveTemp(OnComplete));
 }
 
 void FFlockLeaderboardProvider::ClearCache()

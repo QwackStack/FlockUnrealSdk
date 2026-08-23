@@ -493,6 +493,253 @@ bool FFlockCommandFlushAuthTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── A response the SDK cannot parse is not the backend's answer: keep the write, don't wedge the queue ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandFlushUnparseableTest, "Flock.Command.Provider.FlushKeepsWriteQueuedOnUnparseableResponse",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCommandFlushUnparseableTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx;
+	Fx.SignIn();
+	Fx.PrimePlayerCache();
+	Fx.bReachable = false;
+	Fx.Commands->UpdatePlayerData(TEXT("pd-1"), FFlockCommandData().Set(TEXT("coins"), 250), nullptr);
+	Fx.Commands->UpdatePlayerDataField(TEXT("pd-1"), TEXT("coins"), 300, nullptr);
+	Fx.bReachable = true;
+
+	// A captive portal: HTTP 200, and an HTML login page where the row should be. This is the shape that
+	// makes both obvious readings of the classifier wrong — the error carries status 200, so "is it a
+	// permanent 4xx?" says no and the queue stalls forever; and it is a Serialization type, so "unparseable
+	// means permanent" throws away a write the server never saw. Neither. It stays queued.
+	Fx.Fake->On(TEXT("game_command/update_player_data"),
+		FFlockFakeTransport::Ok(TEXT("<html><body>Sign in to the hotel wifi</body></html>")));
+
+	int32 Delivered = -1;
+	Fx.Commands->FlushPendingWrites([&](TFlockResult<int32> R) { Delivered = R.Value; });
+
+	TestEqual(TEXT("nothing delivered"), Delivered, 0);
+	TestEqual(TEXT("both writes kept"), Fx.Commands->GetPendingWriteCount(), 2);
+	TestEqual(TEXT("the flush halted at the head rather than reordering"), Fx.Fake->CountTo(TEXT("game_command/")), 1);
+	// The player's change is still showing, because nothing has told us it was refused.
+	TestEqual(TEXT("optimistic value survives"), Fx.CachedCoins(), 300);
+
+	// And once the network is honest again it delivers — the stall was a pause, not a loss.
+	Fx.Fake->On(TEXT("game_command/update_player_data"),
+		FFlockFakeTransport::Ok(PlayerDataObj(TEXT("pd-1"), TEXT("tmpl-1"), TEXT("player-a"), 300)));
+	Fx.Fake->On(TEXT("game_command/update_player_data_key"),
+		FFlockFakeTransport::Ok(PlayerDataObj(TEXT("pd-1"), TEXT("tmpl-1"), TEXT("player-a"), 300)));
+	Fx.Commands->FlushPendingWrites([&](TFlockResult<int32> R) { Delivered = R.Value; });
+	TestEqual(TEXT("both delivered once the response parses"), Delivered, 2);
+	TestEqual(TEXT("queue drained"), Fx.Commands->GetPendingWriteCount(), 0);
+
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+// ── The attempt cap is what makes "keep it queued" safe: no verdict can hold the queue indefinitely ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandFlushAttemptCapTest, "Flock.Command.Provider.FlushDropsWriteAfterAttemptCap",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCommandFlushAttemptCapTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx;
+	Fx.SignIn();
+	Fx.PrimePlayerCache();
+	Fx.bReachable = false;
+	Fx.Commands->UpdatePlayerData(TEXT("pd-1"), FFlockCommandData().Set(TEXT("coins"), 250), nullptr);
+	Fx.Commands->UpdatePlayerDataField(TEXT("pd-1"), TEXT("coins"), 300, nullptr);
+	Fx.bReachable = true;
+
+	// Both command routes, most specific first. The fake picks the longest match so order does not decide,
+	// but registering the narrower one explicitly keeps the intent visible: `update_player_data` is a strict
+	// prefix of `update_player_data_key`, and a test that relies on one shadowing the other is asserting
+	// against its own fixture.
+	Fx.Fake->On(TEXT("game_command/update_player_data_key"),
+		FFlockFakeTransport::Ok(TEXT("<html>captive portal</html>")));
+	Fx.Fake->On(TEXT("game_command/update_player_data"),
+		FFlockFakeTransport::Ok(TEXT("<html>captive portal</html>")));
+
+	// The head never becomes deliverable. Every flush spends one attempt against it, and the write behind
+	// it is blocked the whole time — which is the harm the cap exists to bound.
+	for (int32 Flush = 0; Flush < FFlockCommandProvider::MaxReplayAttempts - 1; ++Flush)
+	{
+		Fx.Commands->FlushPendingWrites(nullptr);
+	}
+	TestEqual(TEXT("still queued one attempt short of the cap"), Fx.Commands->GetPendingWriteCount(), 2);
+
+	// The attempt that reaches the cap drops the head and lets the queue move again.
+	Fx.Commands->FlushPendingWrites(nullptr);
+	TestEqual(TEXT("undeliverable head dropped at the cap"), Fx.Commands->GetPendingWriteCount(), 1);
+
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+// ── The attempt count is queue state, so it has to survive the relaunch the queue itself survives ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandAttemptsPersistTest, "Flock.Command.Provider.AttemptCountSurvivesRestart",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCommandAttemptsPersistTest::RunTest(const FString& Parameters)
+{
+	FString Dir;
+	{
+		FFixture Fx;
+		Dir = Fx.Dir;
+		Fx.SignIn();
+		Fx.bReachable = false;
+		Fx.Commands->UpdatePlayerData(TEXT("pd-1"), FFlockCommandData().Set(TEXT("coins"), 250), nullptr);
+		Fx.bReachable = true;
+		Fx.Fake->On(TEXT("game_command/update_player_data"), FFlockFakeTransport::Ok(TEXT("<html/>")));
+		for (int32 Flush = 0; Flush < FFlockCommandProvider::MaxReplayAttempts - 1; ++Flush)
+		{
+			Fx.Commands->FlushPendingWrites(nullptr);
+		}
+		TestEqual(TEXT("still queued before the restart"), Fx.Commands->GetPendingWriteCount(), 1);
+	}
+
+	// A fresh provider over the same store. If attempts reset here the cap bounds nothing at all: an app
+	// relaunched more often than the cap would carry the wedge forever, which is the case that matters —
+	// a persisted queue is exactly the one that can outlive the process.
+	FFixture Restarted(NoRetry(), Dir);
+	Restarted.SignIn();
+	Restarted.Fake->On(TEXT("game_command/update_player_data"), FFlockFakeTransport::Ok(TEXT("<html/>")));
+	TestEqual(TEXT("queue restored"), Restarted.Commands->GetPendingWriteCount(), 1);
+
+	Restarted.Commands->FlushPendingWrites(nullptr);
+	TestEqual(TEXT("one more attempt reaches the cap carried across the restart"),
+		Restarted.Commands->GetPendingWriteCount(), 0);
+
+	Cleanup(Dir);
+	return true;
+}
+
+// ── An outage must not spend the drop budget: a server that never answered has not rejected anything ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandOfflineNoBudgetTest, "Flock.Command.Provider.ConnectionFailuresDoNotSpendAttempts",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCommandOfflineNoBudgetTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx;
+	Fx.SignIn();
+	Fx.PrimePlayerCache();
+	Fx.bReachable = false;
+	Fx.Commands->UpdatePlayerData(TEXT("pd-1"), FFlockCommandData().Set(TEXT("coins"), 250), nullptr);
+	Fx.bReachable = true;
+
+	// The network is down but the probe says go — exactly what happens in production, because the offline
+	// latch self-expires every 30 seconds and a flush fires on the rising edge. A player who leaves the game
+	// open on a plane generates one of these every half-minute.
+	Fx.Fake->On(TEXT("game_command/update_player_data_key"), FFlockFakeTransport::Offline());
+	Fx.Fake->On(TEXT("game_command/update_player_data"), FFlockFakeTransport::Offline());
+
+	// Far past the cap. If a connection failure counted, the write would be long gone.
+	for (int32 Flush = 0; Flush < FFlockCommandProvider::MaxReplayAttempts * 2; ++Flush)
+	{
+		Fx.Commands->FlushPendingWrites(nullptr);
+	}
+	TestEqual(TEXT("an outage never discards the write, however long it lasts"),
+		Fx.Commands->GetPendingWriteCount(), 1);
+	TestEqual(TEXT("and the optimistic value is still showing"), Fx.CachedCoins(), 250);
+
+	// And it still delivers the moment the network is honest again.
+	Fx.Fake->On(TEXT("game_command/update_player_data"),
+		FFlockFakeTransport::Ok(PlayerDataObj(TEXT("pd-1"), TEXT("tmpl-1"), TEXT("player-a"), 250)));
+	int32 Delivered = -1;
+	Fx.Commands->FlushPendingWrites([&](TFlockResult<int32> R) { Delivered = R.Value; });
+	TestEqual(TEXT("delivered on reconnect"), Delivered, 1);
+	TestEqual(TEXT("queue drained"), Fx.Commands->GetPendingWriteCount(), 0);
+
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+// ── A replay must never continue under a different player's bearer ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandPlayerSwitchMidFlightTest, "Flock.Command.Provider.FlushAbandonedOnPlayerSwitchMidFlight",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCommandPlayerSwitchMidFlightTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx;
+	Fx.SignIn(TEXT("player-a"));
+	Fx.PrimePlayerCache(TEXT("player-a"));
+	Fx.bReachable = false;
+	Fx.Commands->UpdatePlayerData(TEXT("pd-1"), FFlockCommandData().Set(TEXT("coins"), 1), nullptr);
+	Fx.Commands->UpdatePlayerDataField(TEXT("pd-1"), TEXT("coins"), 2, nullptr);
+	Fx.bReachable = true;
+
+	// Hold the first completion so the player can change while a replay is in flight. Nothing on the
+	// sign-out/sign-in path reloads the queue — Logout() does not touch this provider, and the sign-in flush
+	// trigger returns early while a flush is running — so the head still matches and only the *player* has
+	// changed. Continuing here would post player A's second write with player B's bearer.
+	Fx.Fake->On(TEXT("game_command/update_player_data_key"),
+		FFlockFakeTransport::Ok(PlayerDataObj(TEXT("pd-1"), TEXT("tmpl-1"), TEXT("player-a"), 2)));
+	Fx.Fake->On(TEXT("game_command/update_player_data"),
+		FFlockFakeTransport::Ok(PlayerDataObj(TEXT("pd-1"), TEXT("tmpl-1"), TEXT("player-a"), 1)));
+	Fx.Fake->bDeferred = true;
+	Fx.Commands->FlushPendingWrites(nullptr);
+	const int32 SentBeforeSwitch = Fx.Fake->CountTo(TEXT("game_command/"));
+	TestEqual(TEXT("one write is in flight"), SentBeforeSwitch, 1);
+
+	Fx.SignIn(TEXT("player-b"));
+	Fx.Fake->bDeferred = false;
+	Fx.Fake->FlushPending();
+
+	TestEqual(TEXT("the flush stopped rather than replaying under the new player"),
+		Fx.Fake->CountTo(TEXT("game_command/")), SentBeforeSwitch);
+
+	// Player A's writes are intact under their own queue, waiting for them to sign back in.
+	Fx.SignIn(TEXT("player-a"));
+	TestEqual(TEXT("both of player A's writes survive"), Fx.Commands->GetPendingWriteCount(), 2);
+
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+// ── A 403 only ends a write when this backend said so; a bare one is an intermediary ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandFlushForbiddenTest, "Flock.Command.Provider.FlushDropsOnlyBackendCodedForbidden",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCommandFlushForbiddenTest::RunTest(const FString& Parameters)
+{
+	// A bare 403 — no coded body. A proxy, WAF or corporate gateway answers like this, and none of them
+	// consulted the backend. Dropping the write here loses a change on an intermediary's say-so.
+	{
+		FFixture Fx;
+		Fx.SignIn();
+		Fx.bReachable = false;
+		Fx.Commands->UpdatePlayerData(TEXT("pd-1"), FFlockCommandData().Set(TEXT("coins"), 1), nullptr);
+		Fx.bReachable = true;
+		Fx.Fake->On(TEXT("game_command/update_player_data"),
+			FFlockFakeTransport::Status(403, TEXT("<html>Blocked by network policy</html>")));
+		Fx.Fake->On(TEXT("player/token/refresh"), FFlockFakeTransport::Status(401, TEXT("{}")));
+
+		Fx.Commands->FlushPendingWrites(nullptr);
+		// A rejected refresh can end the session, which swaps the active queue to the signed-out one — so
+		// the count is read back under the player the write belongs to, as the auth test does.
+		Fx.SignIn(TEXT("player-a"));
+		TestEqual(TEXT("a bare 403 keeps the write"), Fx.Commands->GetPendingWriteCount(), 1);
+		Cleanup(Fx.Dir);
+	}
+
+	// A coded 403 is this backend refusing the write. That is an answer, so the write goes.
+	{
+		FFixture Fx;
+		Fx.SignIn();
+		Fx.bReachable = false;
+		Fx.Commands->UpdatePlayerData(TEXT("pd-1"), FFlockCommandData().Set(TEXT("coins"), 1), nullptr);
+		Fx.bReachable = true;
+		Fx.Fake->On(TEXT("game_command/update_player_data"),
+			FFlockFakeTransport::Coded(403, TEXT("game_command.forbidden")));
+		Fx.Fake->On(TEXT("player/token/refresh"), FFlockFakeTransport::Status(401, TEXT("{}")));
+
+		Fx.Commands->FlushPendingWrites(nullptr);
+		Fx.SignIn(TEXT("player-a"));
+		TestEqual(TEXT("a coded 403 drops the write"), Fx.Commands->GetPendingWriteCount(), 0);
+		Cleanup(Fx.Dir);
+	}
+	return true;
+}
+
 // ── A queue belongs to one player: signing in as someone else must not replay their writes ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandQueueScopeTest, "Flock.Command.Provider.QueueIsPlayerScoped",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)

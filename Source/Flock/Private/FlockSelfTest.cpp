@@ -1351,8 +1351,9 @@ namespace
 			return;
 		}
 
-		// Step 1: the board's own config plus the two helpers that hang off it. Everything after this
-		// calls GetByName first (memoized), so a wrong name fails here rather than three steps later.
+		// Step 1: the board's own config plus the two helpers that hang off it. The reads that follow address
+		// the board by name directly, so each one is a single request and a wrong name is rejected by the
+		// server rather than by a lookup in front of it (step 6 exercises exactly that).
 		Leaderboards->GetByName(BoardName,
 			[Leaderboards, Players, Commands, Logger, Next, BoardName](TFlockResult<FFlockLeaderboard> BoardResult)
 			{

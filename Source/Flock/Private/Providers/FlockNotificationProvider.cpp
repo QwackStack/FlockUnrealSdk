@@ -21,6 +21,7 @@ namespace
 }
 
 const TCHAR* const FFlockNotificationProvider::SnapshotCategory = TEXT("notification");
+const TCHAR* const FFlockNotificationProvider::StateSnapshotCategory = TEXT("notification_state");
 const TCHAR* const FFlockNotificationProvider::TemplateSnapshotCategory = TEXT("notification_template");
 const TCHAR* const FFlockNotificationProvider::WatermarkKey = TEXT("seen_watermark");
 const TCHAR* const FFlockNotificationProvider::PendingSchedulesKey = TEXT("pending_schedules");
@@ -51,9 +52,55 @@ void FFlockNotificationProvider::AppendParam(FString& Query, const FString& Key,
 	Query += Key + TEXT("=") + FlockEndpoints::Encode(Value);
 }
 
-FString FFlockNotificationProvider::PlayerScopedKey(const FString& Key) const
+FString FFlockNotificationProvider::PlayerCacheScope() const
 {
-	return FString::Printf(TEXT("%s_%s"), *Key, *Session->GetPlayerId());
+	const FString PlayerId = Session->GetPlayerId();
+	return PlayerId.IsEmpty() ? FString() : FString::Printf(TEXT("%s/%s"), *GetSnapshotScope(SnapshotCategory), *PlayerId);
+}
+
+FString FFlockNotificationProvider::PlayerStateScope() const
+{
+	const FString PlayerId = Session->GetPlayerId();
+	return PlayerId.IsEmpty() ? FString() : FString::Printf(TEXT("%s/%s"), *GetSnapshotScope(StateSnapshotCategory), *PlayerId);
+}
+
+bool FFlockNotificationProvider::TryMigrateLegacyState(const FString& Key, FString& OutPayload) const
+{
+	const TSharedPtr<FFlockSnapshotStore> Store = GetSnapshotStore();
+	const FString PlayerId = Session->GetPlayerId();
+	if (!Store.IsValid() || PlayerId.IsEmpty())
+	{
+		return false;
+	}
+
+	// Where an earlier version put it: the shared cache category, with the player id suffixed onto the key.
+	const FString LegacyScope = GetSnapshotScope(SnapshotCategory);
+	const FString LegacyKey = FString::Printf(TEXT("%s_%s"), *Key, *PlayerId);
+	if (!Store->TryRead(LegacyScope, LegacyKey, OutPayload))
+	{
+		return false;
+	}
+
+	// Read the new location back before dropping the old one. FFlockSnapshotStore::Write returns void and
+	// has three exits that only log — a failed serialize, a failed temp write, a failed move — so "it wrote"
+	// cannot be assumed. Deleting on an unverified write is a one-way door: the pending-schedule list would
+	// exist only in OutPayload for the rest of this call, and the next launch would read an empty list while
+	// the server-side reminders still fire with their ids gone for good. That is precisely the harm this
+	// whole change exists to prevent, arriving through its own migration.
+	//
+	// Keeping the legacy copy costs nothing on a retry: the precedence check above always prefers the new
+	// location, so a later successful migration still wins and this simply runs again.
+	Store->Write(PlayerStateScope(), Key, OutPayload);
+	FString Verify;
+	if (!Store->TryRead(PlayerStateScope(), Key, Verify))
+	{
+		Logger->LogWarning(FString::Printf(
+			TEXT("Notification state '%s' could not be migrated (the new copy did not read back); keeping the ")
+			TEXT("previous copy so nothing is lost. It will be retried on the next read."), *Key));
+		return true;
+	}
+	Store->DeleteKey(LegacyScope, LegacyKey);
+	return true;
 }
 
 // Pending-schedule bookkeeping
@@ -74,8 +121,13 @@ TArray<FFlockPendingSchedule> FFlockNotificationProvider::LoadPendingSchedules()
 {
 	TArray<FFlockPendingSchedule> Stored;
 	const TSharedPtr<FFlockSnapshotStore> Store = GetSnapshotStore();
+	const FString Scope = PlayerStateScope();
 	FString Payload;
-	if (!Store.IsValid() || !Store->TryRead(GetSnapshotScope(SnapshotCategory), PlayerScopedKey(PendingSchedulesKey), Payload))
+	if (!Store.IsValid() || Scope.IsEmpty())
+	{
+		return Stored;
+	}
+	if (!Store->TryRead(Scope, PendingSchedulesKey, Payload) && !TryMigrateLegacyState(PendingSchedulesKey, Payload))
 	{
 		return Stored;
 	}
@@ -104,15 +156,16 @@ TArray<FFlockPendingSchedule> FFlockNotificationProvider::LoadPendingSchedules()
 void FFlockNotificationProvider::SavePendingSchedules(const TArray<FFlockPendingSchedule>& Pending) const
 {
 	const TSharedPtr<FFlockSnapshotStore> Store = GetSnapshotStore();
-	if (!Store.IsValid())
+	const FString Scope = PlayerStateScope();
+	if (!Store.IsValid() || Scope.IsEmpty())
 	{
-		// Cache disabled: scheduling still works, the game just has to keep the ids itself.
+		// Cache disabled, or nobody signed in: scheduling still works, the game just has to keep the ids.
 		return;
 	}
 	FString Payload;
 	if (FFlockJsonUtils::ArrayToPlainJson<FFlockPendingSchedule>(Pending, Payload))
 	{
-		Store->Write(GetSnapshotScope(SnapshotCategory), PlayerScopedKey(PendingSchedulesKey), Payload);
+		Store->Write(Scope, PendingSchedulesKey, Payload);
 	}
 }
 
@@ -156,8 +209,13 @@ FFlockNotificationWatermark FFlockNotificationProvider::LoadWatermark() const
 {
 	FFlockNotificationWatermark Mark;
 	const TSharedPtr<FFlockSnapshotStore> Store = GetSnapshotStore();
+	const FString Scope = PlayerStateScope();
+	if (!Store.IsValid() || Scope.IsEmpty())
+	{
+		return Mark;
+	}
 	FString Payload;
-	if (Store.IsValid() && Store->TryRead(GetSnapshotScope(SnapshotCategory), PlayerScopedKey(WatermarkKey), Payload))
+	if (Store->TryRead(Scope, WatermarkKey, Payload) || TryMigrateLegacyState(WatermarkKey, Payload))
 	{
 		// A corrupt or older-shaped record reads as unseeded, which costs one silent seed rather than a
 		// burst of stale events.
@@ -169,15 +227,17 @@ FFlockNotificationWatermark FFlockNotificationProvider::LoadWatermark() const
 void FFlockNotificationProvider::SaveWatermark(const FFlockNotificationWatermark& Mark) const
 {
 	const TSharedPtr<FFlockSnapshotStore> Store = GetSnapshotStore();
-	if (!Store.IsValid())
+	const FString Scope = PlayerStateScope();
+	if (!Store.IsValid() || Scope.IsEmpty())
 	{
-		// Cache disabled: the events still fire this run, they just cannot survive a restart.
+		// Cache disabled, or nobody signed in: the events still fire this run, they just cannot survive a
+		// restart.
 		return;
 	}
 	FString Payload;
 	if (FFlockJsonUtils::StructToPlainJson<FFlockNotificationWatermark>(Mark, Payload))
 	{
-		Store->Write(GetSnapshotScope(SnapshotCategory), PlayerScopedKey(WatermarkKey), Payload);
+		Store->Write(Scope, WatermarkKey, Payload);
 	}
 }
 
@@ -271,10 +331,12 @@ void FFlockNotificationProvider::GetNotifications(bool bUnreadOnly, int32 Page, 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FString::Printf(TEXT("%s%s"), FlockEndpoints::Notification, *Query));
 	const TMap<FString, FString> Headers = HeadersNow();
-	const FString Key = PlayerScopedKey(FString::Printf(TEXT("inbox_p%d_l%d_u%d"), Page, Limit, bUnreadOnly ? 1 : 0));
+	// The player is in the scope, not the key — see PlayerCacheScope(). RequireSignedIn above guarantees it
+	// is non-empty by the time we get here.
+	const FString Key = FString::Printf(TEXT("inbox_p%d_l%d_u%d"), Page, Limit, bUnreadOnly ? 1 : 0);
 	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
 
-	FetchWithSnapshot<FFlockNotificationPage>(SnapshotCategory, Key,
+	FetchAtScope<FFlockNotificationPage>(PlayerCacheScope(), Key,
 		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockNotificationPage>)> OnAttempt)
 		{
 			// **Bare** route: {items,total,page,limit} at the root, not under `result`. UnwrapPaginated
@@ -328,7 +390,7 @@ void FFlockNotificationProvider::GetUnreadCount(TFunction<void(TFlockResult<int3
 	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
 
-	FetchWithSnapshot<FFlockUnreadCount>(SnapshotCategory, PlayerScopedKey(TEXT("unread_count")),
+	FetchAtScope<FFlockUnreadCount>(PlayerCacheScope(), TEXT("unread_count"),
 		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockUnreadCount>)> OnAttempt)
 		{
 			// Enveloped ({error,response,result}) — the enveloped verb unwraps `result`.
@@ -367,8 +429,8 @@ void FFlockNotificationProvider::GetSummary(int32 Limit, TFunction<void(TFlockRe
 	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
 
-	FetchWithSnapshot<FFlockNotificationSummary>(SnapshotCategory,
-		PlayerScopedKey(FString::Printf(TEXT("summary_l%d"), Limit)),
+	FetchAtScope<FFlockNotificationSummary>(PlayerCacheScope(),
+		FString::Printf(TEXT("summary_l%d"), Limit),
 		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockNotificationSummary>)> OnAttempt)
 		{
 			return ClientRef->Get<FFlockNotificationSummary>(Url, Headers, MoveTemp(OnAttempt));
@@ -751,7 +813,7 @@ void FFlockNotificationProvider::CancelScheduled(const FString& ScheduledId,
 TArray<FFlockPendingSchedule> FFlockNotificationProvider::GetPendingSchedules() const
 {
 	// Deliberately not sign-in gated in the way the network calls are: there is no request to make, and the
-	// key is player-scoped, so a signed-out read simply finds nothing under an empty player id.
+	// signed out there is no state scope at all, so LoadPendingSchedules bails out and this reads empty.
 	return LoadPendingSchedules();
 }
 
@@ -930,28 +992,44 @@ void FFlockNotificationProvider::ClearCache()
 	// with a slightly stale read flag beats an empty one on a plane. This is the logout path, where the
 	// rows must go because they belong to the player who just left.
 	//
-	// Two entries in this category are **state, not cache**, and are restored afterwards:
+	// **Still call this while the departing player's session is live.** The read-restore dance is gone, but
+	// the precondition is not — it inverted. It used to be "clear before the tokens go, or the watermark is
+	// lost"; it is now "clear before the tokens go, or nothing is cleared at all". With no player id there is
+	// no scope to delete, so a reordered Logout() would leave the departing player's whole inbox on disk, and
+	// **every existing test would still pass** (they call this directly while signed in, and the signed-out
+	// no-op is itself pinned as correct). Hence the warning below rather than a silent return.
 	//
-	//   - the seen-watermark, because dropping it would make this player's next sign-in either re-announce
-	//     their whole inbox as newly received or silently swallow everything created before the sign-out;
-	//   - the pending-schedule list, because it is the only record of what this install scheduled and the
-	//     server has no route that could tell us again — losing it strands reminders nothing can cancel.
+	// One scope, one player. Everything this deletes belongs to the player signing out; everything that
+	// must survive is somewhere else already:
 	//
-	// Both are read before the delete and written back after, which is safe because Logout() calls this
-	// *before* clearing the tokens — so the player-scoped keys still resolve to the departing player.
-	const FFlockNotificationWatermark Mark = LoadWatermark();
-	const TArray<FFlockPendingSchedule> Pending = LoadPendingSchedules();
-	DeleteSnapshotCategory(SnapshotCategory);
-	if (Mark.Seeded)
+	//   - another player's inbox lives under their own scope — a shared device is the case this exists for;
+	//   - the seen-watermark and the pending-schedule list are state, and live in StateSnapshotCategory;
+	//   - the template catalog and its name memo are game-scoped, and live in TemplateSnapshotCategory.
+	//
+	// None of that is a rule this function enforces — it is where the data is, which is why there is no
+	// read-then-restore here any more, and why the ordering inside Logout() no longer matters.
+	const TSharedPtr<FFlockSnapshotStore> Store = GetSnapshotStore();
+	const FString Scope = PlayerCacheScope();
+	if (!Store.IsValid())
 	{
-		SaveWatermark(Mark);
+		return;
 	}
-	if (Pending.Num() > 0)
+	if (Scope.IsEmpty())
 	{
-		SavePendingSchedules(Pending);
+		// Nobody signed in: there is no cache to clear, and no scope that could safely stand in for one (an
+		// empty segment collapses to the bare category and takes every account on the device). Logged rather
+		// than returned silently, because the other way to reach this is a Logout() that cleared the tokens
+		// first — in which case a player's inbox is being left behind and nothing else would say so.
+		Logger->LogWarning(TEXT("Notification ClearCache called with no player signed in; nothing was cleared. ")
+			TEXT("If this ran during logout, the cache must be cleared before the session tokens are."));
+		return;
 	}
 
-	// The template catalog and its name memo are **kept**: both are game-scoped, so nothing in them belongs
-	// to the departing player. Dropping them would make a title screen refetch the catalog after every
-	// sign-out for no benefit. This is why templates get their own snapshot category.
+	// A **one-upgrade residue, deliberately accepted.** Inbox snapshots written by 1.3.0-1.6.0 sit directly
+	// in the category rather than in this player's subdirectory, and they are not removed here. There is no
+	// safe way to: the delete is recursive (it would take the new per-player subdirectories with it), another
+	// player's not-yet-migrated state still lives in that flat directory, and a filename filter is
+	// untrustworthy because Sanitize caps the readable prefix at 64 chars. They are inert — nothing writes
+	// there any more — and PruneOtherVersions culls the whole tree on a game-version change.
+	Store->DeleteScope(Scope);
 }

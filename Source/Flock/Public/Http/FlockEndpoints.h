@@ -117,12 +117,18 @@ namespace FlockEndpoints
 	inline FString AssetById(const FString& AssetId) { return FString::Printf(TEXT("asset/%s"), *AssetId); }
 
 	// Leaderboards — read-only. There is no submit path by design: a board projects over a player-data
-	// field, so a score moves by writing that field through the commands surface. Reads are addressed by
-	// name; the id these builders take is resolved internally through LeaderboardByName.
+	// field, so a score moves by writing that field through the commands surface.
+	//
+	// **Every read is addressed by name, and there is no id-addressed builder here on purpose.** The `/v1`
+	// surface exposes exactly these four routes; `leaderboard/{id}`, `/{id}/me` and `/{id}/around-me` are
+	// *not* among them — the id-addressed leaderboard paths in the spec are the unversioned dashboard ones,
+	// which take OAuth2 and `X-Game-Id` and are not this SDK's to call. Builders for them existed here once
+	// and every read 404'd against a live backend, so they are absent rather than unused: an unused builder
+	// for a route that does not exist is a loaded gun, not documentation.
 	inline FString LeaderboardByName(const FString& Name) { return FString::Printf(TEXT("leaderboard/by-name/%s"), *Encode(Name)); }
-	inline FString LeaderboardById(const FString& LeaderboardId) { return FString::Printf(TEXT("leaderboard/%s"), *LeaderboardId); }
-	inline FString LeaderboardMe(const FString& LeaderboardId) { return FString::Printf(TEXT("leaderboard/%s/me"), *LeaderboardId); }
-	inline FString LeaderboardAroundMe(const FString& LeaderboardId) { return FString::Printf(TEXT("leaderboard/%s/around-me"), *LeaderboardId); }
+	inline FString LeaderboardStandings(const FString& Name) { return LeaderboardByName(Name) + TEXT("/standings"); }
+	inline FString LeaderboardMe(const FString& Name) { return LeaderboardByName(Name) + TEXT("/me"); }
+	inline FString LeaderboardAroundMe(const FString& Name) { return LeaderboardByName(Name) + TEXT("/around-me"); }
 
 	// Notifications — the signed-in player's own inbox. No route declares `security`, but every one is
 	// player-scoped by its own schema, so the provider gates them on sign-in rather than earning a

@@ -134,6 +134,11 @@ void FFlockSnapshotStore::DeleteScope(const FString& Scope)
 	}
 }
 
+void FFlockSnapshotStore::DeleteKey(const FString& Scope, const FString& Key)
+{
+	TryDelete(BuildPath(Scope, Key));
+}
+
 void FFlockSnapshotStore::PruneOtherVersions(const FString& KeepGameVersionId)
 {
 	if (KeepGameVersionId.IsEmpty() || !IFileManager::Get().DirectoryExists(*Root))
@@ -163,6 +168,12 @@ FString FFlockSnapshotStore::SanitizeScope(const FString& Scope)
 {
 	// Each path segment is sanitized independently so the "/" separators in a "<version>/<category>" scope
 	// survive as real directory boundaries.
+	//
+	// Unlike a key, a segment gets **no Hash8 suffix** — so this assumes every segment is already
+	// filename-safe and under 64 characters. That holds for the ids used today (ULIDs, plus fixed category
+	// names). It matters because a player id is a segment now: two ids differing only in a character
+	// Sanitize maps to '_', or only past character 64, would share one directory and reintroduce exactly the
+	// cross-account bleed the per-player scoping removed. Revisit this if an id format ever changes.
 	TArray<FString> Segments;
 	Scope.ParseIntoArray(Segments, TEXT("/"), /*CullEmpty*/ true);
 	FString Result;

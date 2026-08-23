@@ -58,6 +58,13 @@ the network is down rather than an error. Mark-read calls are the opposite: they
 offline and fail with `Connection` instead, because a read receipt replayed an hour later marks messages the
 player never saw.
 
+**`ClearCache()` clears for one player.** It drops the signed-in player's cached inbox, counts and summary,
+and nothing else. Another account on the same device keeps its own — including its pending reminders, which
+matters because a scheduled notification still fires server-side and its id is the only handle on it. The
+seen-watermark and the pending-schedule list are state rather than cache and are kept for the signing-out
+player too; the template catalog is game-scoped and is kept for everyone. Called with nobody signed in it
+does nothing at all.
+
 ### Reacting to arrivals
 
 Two events on the hub save you diffing pages yourself:

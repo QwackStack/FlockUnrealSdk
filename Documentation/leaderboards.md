@@ -7,8 +7,8 @@ field it projects over, how repeated writes fold together, and which direction w
 writing the field it ranks — with a game command, exactly as any other data write. If you are looking for
 `SubmitScore`, it is [`UpdatePlayerDataField`](game-commands.md).
 
-Boards are addressed by **name** — the name you gave the board on the dashboard. The SDK resolves the id
-internally and caches it, so no read ever takes one.
+Boards are addressed by **name** — the name you gave the board on the dashboard. The name is what goes on
+the wire, so a read is a single request and no read ever takes an id.
 
 ## Blueprint
 
@@ -108,7 +108,8 @@ Boards->GetStandings(TEXT("HighScoreTest"), FFlockLeaderboardWindow::Season(TEXT
     TEXT("SA"), /*Page*/ 1, /*Limit*/ 25, [](TFlockResult<FFlockStandings> Result) {});
 ```
 
-`ResolveId` exists for logging and deep links. Nothing in the read API consumes the id it returns.
+`ResolveId` exists for logging and deep links. Nothing in the read API consumes the id it returns — every
+read addresses the board by name, and the name is what goes on the wire.
 
 ## Submitting a score
 

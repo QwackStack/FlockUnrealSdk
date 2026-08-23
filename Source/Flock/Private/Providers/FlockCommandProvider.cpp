@@ -340,6 +340,24 @@ void FFlockCommandProvider::FlushNext(const TSharedRef<int32>& Delivered, TFunct
 				return;
 			}
 
+			// The queue can be replaced under an in-flight replay, and the player can change under it without
+			// the queue being reloaded at all — nothing on the logout/sign-in path calls EnsureQueueLoaded,
+			// and the sign-in flush trigger returns early while a flush is in flight. So the head's bytes are
+			// not enough: a replay that continued here would post the *next* entry with the new player's
+			// bearer, and the server rejecting A's row under B's token would drop A's write for good.
+			// Compare the identity of the queue, not just its head.
+			// A *different signed-in player*, specifically. Signing out mid-flight is not this hazard: with no
+			// bearer the next post simply fails Auth and stays queued, and treating it as a switch would
+			// abandon the flush on the very failure being processed — a rejected write that ends the session
+			// would then never be dropped.
+			const FString LivePlayerId = Self->Session->GetPlayerId();
+			const bool bPlayerSwitched = !LivePlayerId.IsEmpty() && LivePlayerId != Self->QueuePlayerId;
+			if (bPlayerSwitched || !Self->HeadStillIs(Head))
+			{
+				Self->FinishFlush(*Delivered, OnComplete);
+				return;
+			}
+
 			if (Result.bSuccess)
 			{
 				Self->PendingWrites.RemoveAt(0);
@@ -349,20 +367,50 @@ void FFlockCommandProvider::FlushNext(const TSharedRef<int32>& Delivered, TFunct
 				return;
 			}
 
-			if (!IsPermanentFailure(Result.Error))
+			// **Only a completed exchange counts against the budget.** Connection, Timeout and Cancelled are
+			// the no-HTTP-response set and all carry StatusCode 0; counting them would point the backstop at
+			// exactly the case it exists to protect. A flush fires on the rising edge of reachability, and
+			// the offline latch self-expires every 30 seconds — so a player who simply keeps the game open on
+			// a plane generates an attempt every half-minute, and a budget that counted those would discard
+			// their change after about half an hour of no network at all. The backstop is for verdicts the
+			// classifier may have got wrong, and a verdict requires a server to have answered.
+			const bool bServerAnswered = Result.Error.StatusCode != 0;
+			const int32 Attempts = bServerAnswered ? ++Self->PendingWrites[0].Attempts : Self->PendingWrites[0].Attempts;
+			const bool bRejected = IsPermanentFailure(Result.Error);
+			const bool bExhausted = bServerAnswered && Attempts >= MaxReplayAttempts;
+
+			if (!bRejected && !bExhausted)
 			{
-				// Transient or auth: keep it queued and stop here, so ordering survives to the next flush.
+				// Not the backend's answer, and there is budget left: keep it queued and stop here, so
+				// ordering survives to the next flush.
+				if (bServerAnswered)
+				{
+					// Only persist when the count actually moved; an offline halt stays a read-only halt.
+					Self->PersistQueue();
+				}
 				Self->Logger->LogWarning(FString::Printf(
-					TEXT("Pending-write flush halted at '%s', will retry next flush: %s"),
-					*Head.Context, *Result.Error.Message));
+					TEXT("Pending-write flush halted at '%s' (attempt %d of %d), will retry next flush: %s"),
+					*Head.Context, Attempts, MaxReplayAttempts, *Result.Error.Message));
 				Self->FinishFlush(*Delivered, OnComplete);
 				return;
 			}
 
-			// Authoritatively rejected — it will never succeed, so drop it rather than let it block the
-			// queue, and drop the optimistic row it wrote since the server never accepted it.
-			Self->Logger->LogError(FString::Printf(TEXT("Dropping rejected queued write '%s' (HTTP %d): %s"),
-				*Head.Context, Result.Error.StatusCode, *Result.Error.Message));
+			if (bRejected)
+			{
+				// The backend said no. It will never succeed, so drop it rather than let it block the queue.
+				Self->Logger->LogError(FString::Printf(TEXT("Dropping rejected queued write '%s' (HTTP %d): %s"),
+					*Head.Context, Result.Error.StatusCode, *Result.Error.Message));
+			}
+			else
+			{
+				// Nobody ever authoritatively rejected this one — it simply never became deliverable. Said
+				// plainly, because this is the case where a change the player made is being discarded.
+				Self->Logger->LogError(FString::Printf(
+					TEXT("Dropping queued write '%s' after %d failed replays — it never became deliverable: %s"),
+					*Head.Context, Attempts, *Result.Error.Message));
+			}
+
+			// Either way the server never accepted it, so the optimistic row it wrote has to go too.
 			Self->PendingWrites.RemoveAt(0);
 			Self->PersistQueue();
 			Self->EvictOptimisticRow(Head.PlayerDataId);
@@ -591,11 +639,30 @@ void FFlockCommandProvider::EvictOptimisticRow(const FString& PlayerDataId)
 
 bool FFlockCommandProvider::IsPermanentFailure(const FFlockError& Error)
 {
-	// Auth is recoverable by signing in again, so an auth failure keeps the write queued rather than
-	// discarding a change the player made.
-	if (Error.Type == EFlockErrorType::Auth)
+	// Ambiguous, not authoritative: the SDK could not read the response, which says nothing about whether
+	// the server applied the write. The status rides along from the exchange, so a captive portal's HTML
+	// 200 arrives here as Serialization/200 — decided by status it looks transient and stalls the queue,
+	// decided by type it looks permanent and throws away a change the server never saw. Keep it; Attempts
+	// is what stops it holding the queue forever.
+	if (Error.Type == EFlockErrorType::Serialization)
 	{
 		return false;
 	}
+
+	// 401 clears on the next sign-in. A 403 is only this backend's answer when it carries a coded body —
+	// a bare one is a proxy or WAF between us and the server, and dropping the write on that loses data to
+	// an intermediary that never consulted the backend at all.
+	if (Error.Type == EFlockErrorType::Auth)
+	{
+		return Error.StatusCode == 403 && !Error.Code.IsEmpty();
+	}
+
 	return FFlockError::IsPermanentStatus(Error.StatusCode);
+}
+
+bool FFlockCommandProvider::HeadStillIs(const FFlockPendingCommand& Entry) const
+{
+	return PendingWrites.Num() > 0
+		&& PendingWrites[0].Path == Entry.Path
+		&& PendingWrites[0].PayloadJson == Entry.PayloadJson;
 }

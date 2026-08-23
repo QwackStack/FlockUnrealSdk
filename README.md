@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.6.0.** Everything documented below ships today. Requires Unreal Engine 5.5 to 5.8;
+> **1.6.1.** Everything documented below ships today. Requires Unreal Engine 5.5 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -469,7 +469,9 @@ the per-player inbox, server-side scheduled reminders, the template catalog, and
 registration. **1.4.0 adds account linking** — attaching and detaching credentials on a signed-in player.
 **1.6.0 completes the notification surface**: an unread-count and a notification-received event on the
 event hub, and the pending-schedule list (`Get Pending Schedules`, `Cancel All Scheduled`) that lets a
-game see and clear the reminders it created.
+game see and clear the reminders it created. **1.6.1 is a correctness release** — leaderboard standings,
+rank and around-me now address the board by name, which is the only form the API serves; see the
+[CHANGELOG](CHANGELOG.md) for that and two data-durability fixes.
 
 Deliberate omissions and known gaps:
 

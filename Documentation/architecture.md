@@ -97,11 +97,17 @@ backend. Test fixtures therefore mirror the real wire shape.
 an ambiguous failure surfaces rather than risking a double charge, and both fail outright when the server
 is unreachable rather than replaying later. Everything else in the commands surface does queue offline.
 
-**Cache and state are different things.** Read caches are disposable — clearing one costs a refetch. State
-is not: the notification seen-watermark and the pending-schedule list survive `ClearCache()`, because
-losing them either re-announces old notifications or strands a reminder nothing can cancel. Anything
-stored per player carries the player id in its key, so a shared device cannot serve one account's data to
-the next.
+**Cache and state are different things, and they live in different places.** Read caches are disposable —
+clearing one costs a refetch. State is not: the notification seen-watermark and the pending-schedule list
+survive `ClearCache()`, because losing them either re-announces old notifications or strands a reminder
+nothing can cancel. They survive because they are stored under a separate category, not because the clear
+remembers to put them back.
+
+**A snapshot scope is the unit of deletion.** The store deletes a scope directory, so everything sharing a
+scope shares its fate. Two things follow, and both are structural rather than conventions to remember:
+anything that must outlive a delete lives in its own category, and anything belonging to one player lives
+under a scope carrying that player's id — so "drop this player's cache" is a directory delete that cannot
+reach another account on a shared device.
 
 **Completion lambdas never capture `this`.** They capture shared references, weak object pointers, or
 values. A provider that re-enters itself pins a `TWeakPtr` to itself first. This is what makes teardown
