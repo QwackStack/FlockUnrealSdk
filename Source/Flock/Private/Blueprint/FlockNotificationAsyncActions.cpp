@@ -439,6 +439,98 @@ void UFlockCancelScheduledNotificationAction::Complete(const TFlockResult<FFlock
 	SetReadyToDestroy();
 }
 
+// Get Scheduled Notifications
+
+UFlockGetScheduledNotificationsAction* UFlockGetScheduledNotificationsAction::GetScheduled(UObject* WorldContextObject,
+	const FString& Status, int32 Page, int32 Limit)
+{
+	UFlockGetScheduledNotificationsAction* Action = NewObject<UFlockGetScheduledNotificationsAction>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->Status = Status;
+	Action->Page = Page;
+	Action->Limit = Limit;
+	return Action;
+}
+
+void UFlockGetScheduledNotificationsAction::Activate()
+{
+	FFlockError Error;
+	FFlockNotificationProvider* Provider = ResolveNotifications(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockScheduledNotificationPage>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockGetScheduledNotificationsAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	Provider->GetScheduled(Status, Page, Limit, [WeakThis](TFlockResult<FFlockScheduledNotificationPage> Result)
+	{
+		if (UFlockGetScheduledNotificationsAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockGetScheduledNotificationsAction::Complete(const TFlockResult<FFlockScheduledNotificationPage>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(FFlockScheduledNotificationPage(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
+// Cancel All Scheduled Notifications
+
+UFlockCancelAllScheduledNotificationsAction* UFlockCancelAllScheduledNotificationsAction::CancelAll(UObject* WorldContextObject)
+{
+	UFlockCancelAllScheduledNotificationsAction* Action = NewObject<UFlockCancelAllScheduledNotificationsAction>();
+	Action->WorldContextObject = WorldContextObject;
+	return Action;
+}
+
+void UFlockCancelAllScheduledNotificationsAction::Activate()
+{
+	FFlockError Error;
+	FFlockNotificationProvider* Provider = ResolveNotifications(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<int32>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockCancelAllScheduledNotificationsAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	Provider->CancelAllScheduled([WeakThis](TFlockResult<int32> Result)
+	{
+		if (UFlockCancelAllScheduledNotificationsAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockCancelAllScheduledNotificationsAction::Complete(const TFlockResult<int32>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		// Zero rather than a partial count: a transient failure stops the run, and reporting how many
+		// happened to land before it would read as a completed batch.
+		OnFailure.Broadcast(0, Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
 // Register Device Token
 
 UFlockRegisterDeviceTokenAction* UFlockRegisterDeviceTokenAction::Register(UObject* WorldContextObject, const FString& Token)

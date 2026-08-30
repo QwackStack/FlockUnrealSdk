@@ -5,6 +5,7 @@
 #include "Http/FlockEndpoints.h"
 #include "Http/FlockJsonUtils.h"
 #include "Providers/FlockAnalyticsProvider.h"
+#include "Providers/FlockPlayerProvider.h"
 
 const TCHAR* const FFlockShopProvider::SnapshotCategory = TEXT("shop");
 
@@ -278,7 +279,7 @@ void FFlockShopProvider::GetItemsByShop(const FString& ShopId, const FString& Pa
 // ───────────────────────────── Purchase + inventory ────────────────────────────
 
 void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& PlayerId,
-	TFunction<void(TFlockResult<FFlockPlayerInventory>)> OnComplete)
+	TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnComplete)
 {
 	if (!RequireNotEmpty(ShopItemId, TEXT("Shop Item ID"), OnComplete))
 	{
@@ -303,7 +304,7 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockPlayerInventory>::Fail(FFlockError::Make(
+					OnComplete(TFlockResult<FFlockPurchaseResult>::Fail(FFlockError::Make(
 						EFlockErrorType::Cancelled, TEXT("Shop provider was destroyed"))));
 				}
 				return;
@@ -312,7 +313,7 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockPlayerInventory>::Fail(ItemResult.Error));
+					OnComplete(TFlockResult<FFlockPurchaseResult>::Fail(ItemResult.Error));
 				}
 				return;
 			}
@@ -327,7 +328,7 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockPlayerInventory>::Fail(FFlockError::Make(
+					OnComplete(TFlockResult<FFlockPurchaseResult>::Fail(FFlockError::Make(
 						EFlockErrorType::Serialization, TEXT("Failed to serialize purchase request"))));
 				}
 				return;
@@ -342,18 +343,25 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 
 			// Non-idempotent (money): an ambiguous failure may mean the charge cleared, so it surfaces
 			// rather than being re-sent. Bare response — PostJsonRaw reads the model at the root.
-			Self->Execute<FFlockPlayerInventory>(
-				[ClientRef, Url, Headers, Body](TFunction<void(TFlockResult<FFlockPlayerInventory>)> OnAttempt)
+			Self->Execute<FFlockPurchaseResult>(
+				[ClientRef, Url, Headers, Body](TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnAttempt)
 				{
-					return ClientRef->PostJsonRaw<FFlockPlayerInventory>(Url, Headers, Body, MoveTemp(OnAttempt));
+					return ClientRef->PostJsonRaw<FFlockPurchaseResult>(Url, Headers, Body, MoveTemp(OnAttempt));
 				},
-				[WeakSelf, Item, OnComplete](TFlockResult<FFlockPlayerInventory> PurchaseResult)
+				[WeakSelf, Item, OnComplete](TFlockResult<FFlockPurchaseResult> PurchaseResult)
 				{
 					// Fire the outcome record (best-effort) and deliver the result immediately — neither
 					// waits on the other. If the provider is gone, the record is simply skipped.
 					if (const TSharedPtr<FFlockShopProvider> Self2 = WeakSelf.Pin())
 					{
 						Self2->RecordPurchaseStatus(PurchaseResult.bSuccess ? TEXT("Purchased") : TEXT("Failed"), Item);
+						if (PurchaseResult.bSuccess)
+						{
+							// Applied before the caller is told, so a handler that reads player data straight
+							// after the purchase sees the balances the purchase produced rather than the ones
+							// it replaced.
+							Self2->ApplyWalletToPlayerCache(PurchaseResult.Value.Wallet);
+						}
 					}
 					if (OnComplete)
 					{
@@ -362,6 +370,48 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 				},
 				TEXT("Purchase shop item"), /*bIdempotent*/ false);
 		});
+}
+
+void FFlockShopProvider::Consume(const FString& InventoryId, TFunction<void(TFlockResult<FFlockConsumeResult>)> OnComplete)
+{
+	if (!RequireNotEmpty(InventoryId, TEXT("Inventory ID"), OnComplete))
+	{
+		return;
+	}
+
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const FString Url = MakeUrl(FlockEndpoints::PlayerInventoryConsume(InventoryId));
+	const TMap<FString, FString> Headers = HeadersNow();
+
+	// Consuming credits currency, so it carries a purchase's risk in the other direction: re-sending after
+	// an ambiguous failure grants twice, and nothing on the client can undo that. bIdempotent=false keeps
+	// the retry budget to failures that prove the request was never processed, and surfaces the rest.
+	// Bare response — PostJsonRaw reads the model at the root. The route declares no request body; an
+	// empty object is sent so the POST stays well-formed.
+	TWeakPtr<FFlockShopProvider> WeakSelf = AsShared();
+
+	Execute<FFlockConsumeResult>(
+		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockConsumeResult>)> OnAttempt)
+		{
+			return ClientRef->PostJsonRaw<FFlockConsumeResult>(Url, Headers, TEXT("{}"), MoveTemp(OnAttempt));
+		},
+		[WeakSelf, OnComplete](TFlockResult<FFlockConsumeResult> Result)
+		{
+			// Consuming credits currency, so the cached wallet goes stale here exactly as it does on a
+			// purchase — same write-through, same ordering.
+			if (Result.bSuccess)
+			{
+				if (const TSharedPtr<FFlockShopProvider> Self = WeakSelf.Pin())
+				{
+					Self->ApplyWalletToPlayerCache(Result.Value.Wallet);
+				}
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		},
+		TEXT("Consume inventory item"), /*bIdempotent*/ false);
 }
 
 void FFlockShopProvider::GetPlayerInventory(const FString& PlayerId, int32 Page, int32 Limit,
@@ -434,6 +484,24 @@ TArray<FFlockShopItem> FFlockShopProvider::ResolveItems(const TArray<FString>& I
 		}
 	}
 	return Result;
+}
+
+void FFlockShopProvider::ApplyWalletToPlayerCache(const FFlockPlayerData& Wallet) const
+{
+	if (Wallet.Id.IsEmpty())
+	{
+		// The server omits the wallet when the purchase moved no currency, so there is nothing to update
+		// and nothing stale to correct.
+		return;
+	}
+	const TSharedPtr<FFlockPlayerProvider> Players = PlayerProvider.Pin();
+	if (!Players.IsValid())
+	{
+		// Built outside the subsystem, or torn down: the purchase still succeeds, the cache is just not
+		// refreshed. ApplyServerPlayerData is likewise a no-op for a player whose rows were never cached.
+		return;
+	}
+	Players->ApplyServerPlayerData(Wallet);
 }
 
 void FFlockShopProvider::RecordPurchaseStatus(const FString& Status, const FFlockShopItem& Item)

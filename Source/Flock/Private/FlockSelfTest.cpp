@@ -18,6 +18,7 @@
 #include "Analytics/FlockMetadata.h"
 #include "FlockEvents.h"
 #include "FlockSelfTestListener.h"
+#include "FlockSelfTestNarration.h"
 #include "Dom/JsonObject.h"
 #include "FlockLogger.h"
 #include "Http/FlockJsonUtils.h"
@@ -68,6 +69,15 @@ namespace
 	// that rejection is coded, so it still proves the authenticated round trip, and it is narrated as such.
 	const TCHAR* const DemoCurrencyFallback = TEXT("coins");
 	const TCHAR* const DemoAchievement = TEXT("self_test_achievement_UE");
+
+	// Shop sweep. The item NAME to buy, preferred over "whatever came first in the catalog".
+	//
+	// This exists because taking the first item is a silent coverage hole: a catalog whose first entry is a
+	// plain item means the purchase leg never exercises the reward path at all, and the run still looks
+	// green. Naming a reward-bearing item makes the interesting response the one under test. Empty, or a
+	// name this backend does not stock, falls back to the first item and says so — a backend without this
+	// item still gets a working sweep.
+	const TCHAR* const DemoShopItemName = TEXT("RewardTest");
 
 	// Leaderboards sweep. The board NAME as it appears on the dashboard — the SDK takes names only, and
 	// resolves the id internally. Empty board name skips the whole block, so a backend without this board
@@ -330,32 +340,55 @@ namespace
 
 		Shop->GetAll(1, 50, [Shop, Commands, Analytics, Logger, Next](TFlockResult<FFlockShopPage> ShopsResult)
 		{
-			// The first shop item across the catalog is the purchase candidate. Its price and currency come
-			// along because the sweep funds the wallet before buying — see the grant step below.
+			// The purchase candidate: DemoShopItemName if the catalog stocks it, else the first item.
+			// Its price and currency come along because the sweep funds the wallet before buying.
 			FString ItemId;
 			FString ItemName;
 			FString ItemCurrency;
 			int32 ItemPrice = 0;
+			int32 ItemRewardCount = 0;
+			bool bPreferredFound = false;
 			if (ShopsResult.bSuccess)
 			{
+				const FString Preferred(DemoShopItemName);
 				for (const FFlockShop& S : ShopsResult.Value.Items)
 				{
 					for (const FFlockShopItem& Item : S.ShopItems)
 					{
-						if (!Item.Id.IsEmpty())
+						if (Item.Id.IsEmpty())
+						{
+							continue;
+						}
+						// Take the first item as a floor, then upgrade to the named one if it turns up.
+						const bool bIsPreferred = !Preferred.IsEmpty() && Item.Name == Preferred;
+						if (ItemId.IsEmpty() || bIsPreferred)
 						{
 							ItemId = Item.Id;
 							ItemName = Item.Name;
 							ItemCurrency = Item.Currency;
 							ItemPrice = Item.Price;
+							ItemRewardCount = Item.Rewards.Num();
+							bPreferredFound = bIsPreferred;
+						}
+						if (bPreferredFound)
+						{
 							break;
 						}
 					}
-					if (!ItemId.IsEmpty())
+					if (bPreferredFound)
 					{
 						break;
 					}
 				}
+			}
+			if (!ItemId.IsEmpty())
+			{
+				// Narrated because it decides which response shape the purchase leg actually exercises:
+				// a reward-bearing item is the only way to see a populated `granted` on the wire.
+				Logger->LogInfo(FString::Printf(
+					TEXT("Self-test: purchase candidate '%s' (%s) advertises %d reward(s)%s"),
+					*ItemName, *ItemId, ItemRewardCount,
+					bPreferredFound ? TEXT("") : TEXT(" [fell back to the first item; DemoShopItemName not stocked]")));
 			}
 			Logger->LogInfo(ShopsResult.bSuccess
 				? FString::Printf(TEXT("Self-test: shop catalog (signed in) -> %d shop(s); purchase candidate: %s"),
@@ -388,19 +421,13 @@ namespace
 				Logger->LogInfo(FString::Printf(
 					TEXT("Self-test: purchasing shop item '%s' (%s) for the signed-in player."), *ItemName, *ItemId));
 				Shop->Purchase(ItemId, FString(),
-					[Analytics, Logger, ReadInventory, ItemId, ItemCurrency, ItemPrice](TFlockResult<FFlockPlayerInventory> PurchaseResult)
+					[Analytics, Logger, ReadInventory, ItemId, ItemCurrency, ItemPrice](TFlockResult<FFlockPurchaseResult> PurchaseResult)
 				{
 					if (PurchaseResult.bSuccess)
 					{
-						Logger->LogInfo(FString::Printf(TEXT("Self-test: purchase -> owned inventory entry %s (status=%s)"),
-							*PurchaseResult.Value.Id, *PurchaseResult.Value.Status));
-						// The reward-granting question, answered by what the response actually carries: an
-						// inventory row and nothing else. There is no currency delta, no granted-item list
-						// and no wallet in `PlayerInventorySchema`, so a game that sells 100 gold has to
-						// re-read player data to see the balance move. Narrated rather than assumed,
-						// because it is a contract fact worth seeing every run.
-						Logger->LogInfo(TEXT("Self-test: purchase response carries {id, player_id, shop_item_id, status, created_at, used_at} ")
-							TEXT("— no reward/currency detail, so granted rewards must be observed by re-reading player data."));
+						// Narration lives in FlockSelfTestNarration.h so its three branches can be pinned
+						// by tests — the live run cannot reach them while BE-5 blocks reward granting.
+						FlockNarratePurchaseResult(PurchaseResult.Value, *Logger);
 					}
 					else
 					{

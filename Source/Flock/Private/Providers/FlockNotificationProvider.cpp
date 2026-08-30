@@ -810,11 +810,109 @@ void FFlockNotificationProvider::CancelScheduled(const FString& ScheduledId,
 		TEXT("Cancel scheduled notification"));
 }
 
+void FFlockNotificationProvider::GetScheduled(const FString& Status, int32 Page, int32 Limit,
+	TFunction<void(TFlockResult<FFlockScheduledNotificationPage>)> OnComplete)
+{
+	if (!RequireSignedIn<FFlockScheduledNotificationPage>(OnComplete))
+	{
+		return;
+	}
+
+	FString Query;
+	Query += TEXT("?page=") + FString::FromInt(Page);
+	Query += TEXT("&limit=") + FString::FromInt(Limit);
+	// Omitted rather than sent blank, so an empty status reads as "every status" instead of leaving the
+	// server to guess what a blank filter meant.
+	AppendParam(Query, TEXT("status"), Status);
+
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const FString Url = MakeUrl(FString::Printf(TEXT("%s%s"), FlockEndpoints::NotificationSchedule, *Query));
+	const TMap<FString, FString> Headers = HeadersNow();
+
+	// Plain Execute, not FetchWithSnapshot: a schedule list is never cached. Delivery happens server-side
+	// with nothing to tell the client, so a stored page would report reminders as pending that have
+	// already fired — wrong rather than stale, which is the line this SDK draws for caching. The same call
+	// the inbox makes, and the reason GetPendingSchedules still exists for the offline case.
+	Execute<FFlockScheduledNotificationPage>(
+		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockScheduledNotificationPage>)> OnAttempt)
+		{
+			// **Bare** route, like the inbox: {items,total,page,limit} at the root, not under `result`.
+			// UnwrapPaginated starts at the root and descends into `result` only when present, so GetPaged
+			// serves both shapes — but a fixture must still mirror the bare one, or it proves nothing.
+			return ClientRef->GetPaged<FFlockScheduledNotification>(Url, Headers,
+				[OnAttempt](TFlockResult<TFlockPage<FFlockScheduledNotification>> Result)
+				{
+					if (!Result.bSuccess)
+					{
+						OnAttempt(TFlockResult<FFlockScheduledNotificationPage>::Fail(Result.Error));
+						return;
+					}
+					FFlockScheduledNotificationPage Page;
+					Page.Items = Result.Value.Items;
+					Page.Total = Result.Value.Total;
+					Page.Page = Result.Value.Page;
+					Page.Limit = Result.Value.Limit;
+					OnAttempt(TFlockResult<FFlockScheduledNotificationPage>::Ok(Page));
+				});
+		},
+		MoveTemp(OnComplete), TEXT("List scheduled notifications"));
+}
+
 TArray<FFlockPendingSchedule> FFlockNotificationProvider::GetPendingSchedules() const
 {
 	// Deliberately not sign-in gated in the way the network calls are: there is no request to make, and the
 	// signed out there is no state scope at all, so LoadPendingSchedules bails out and this reads empty.
 	return LoadPendingSchedules();
+}
+
+void FFlockNotificationProvider::ResolveCancellableScheduleIds(TFunction<void(TArray<FString>)> Continue)
+{
+	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
+
+	GetScheduled(FlockScheduledNotificationStatuses::Pending, 1, 100,
+		[WeakSelf, Continue](TFlockResult<FFlockScheduledNotificationPage> Result)
+	{
+		const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin();
+		if (!Self.IsValid())
+		{
+			return;
+		}
+
+		TArray<FString> Ids;
+		if (Result.bSuccess)
+		{
+			// The server answered, so its list is the whole truth — including reminders this install never
+			// saw (a reinstall, a second device) and excluding local rows it no longer considers pending.
+			// Not merged with the local list: an id the server does not return is one it will not fire, so
+			// cancelling it anyway spends a request to be told 404.
+			//
+			// One page. A player holding more than a hundred pending reminders is not a case worth walking
+			// pages for, and a second call picks up whatever is left.
+			for (const FFlockScheduledNotification& Entry : Result.Value.Items)
+			{
+				if (!Entry.Id.IsEmpty())
+				{
+					Ids.Add(Entry.Id);
+				}
+			}
+			Continue(MoveTemp(Ids));
+			return;
+		}
+
+		// Only a *failed read* falls back. Cancelling the local list is strictly worse — it cannot see
+		// another device's reminders — but it is what this SDK could always do, so it stays the floor
+		// rather than letting the whole call fail.
+		Self->Logger->LogWarning(TEXT("Could not read scheduled notifications from the server; ")
+			TEXT("cancelling only what this install tracked."));
+		for (const FFlockPendingSchedule& Entry : Self->LoadPendingSchedules())
+		{
+			if (!Entry.Id.IsEmpty())
+			{
+				Ids.Add(Entry.Id);
+			}
+		}
+		Continue(MoveTemp(Ids));
+	});
 }
 
 void FFlockNotificationProvider::CancelAllScheduled(TFunction<void(TFlockResult<int32>)> OnComplete)
@@ -824,28 +922,32 @@ void FFlockNotificationProvider::CancelAllScheduled(TFunction<void(TFlockResult<
 		return;
 	}
 
-	const TArray<FFlockPendingSchedule> Pending = LoadPendingSchedules();
-	if (Pending.Num() == 0)
+	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
+
+	ResolveCancellableScheduleIds([WeakSelf, OnComplete](TArray<FString> Resolved)
 	{
-		// Nothing tracked is a success with zero cancelled, not a failure — the caller asked for an end
-		// state, and it already holds.
-		if (OnComplete)
+		const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin();
+		if (!Self.IsValid())
 		{
-			OnComplete(TFlockResult<int32>::Ok(0));
+			return;
 		}
-		return;
-	}
 
-	// The ids are snapshotted up front: every cancel rewrites the stored list, so walking the live list
-	// while mutating it would skip entries.
-	TSharedRef<TArray<FString>> Ids = MakeShared<TArray<FString>>();
-	Ids->Reserve(Pending.Num());
-	for (const FFlockPendingSchedule& Entry : Pending)
-	{
-		Ids->Add(Entry.Id);
-	}
+		if (Resolved.Num() == 0)
+		{
+			// Nothing pending is a success with zero cancelled, not a failure — the caller asked for an end
+			// state, and it already holds.
+			if (OnComplete)
+			{
+				OnComplete(TFlockResult<int32>::Ok(0));
+			}
+			return;
+		}
 
-	CancelAllStep(Ids, 0, MakeShared<int32>(0), MoveTemp(OnComplete));
+		// The ids are snapshotted up front: every cancel rewrites the stored list, so walking the live list
+		// while mutating it would skip entries.
+		TSharedRef<TArray<FString>> Ids = MakeShared<TArray<FString>>(MoveTemp(Resolved));
+		Self->CancelAllStep(Ids, 0, MakeShared<int32>(0), OnComplete);
+	});
 }
 
 void FFlockNotificationProvider::CancelAllStep(TSharedRef<TArray<FString>> Ids, int32 Index,

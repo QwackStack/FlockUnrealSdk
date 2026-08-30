@@ -18,7 +18,8 @@ The nodes live under *Flock | Shop*:
 | `Flock Get Shop By Name` | one shop, found by its dashboard name |
 | `Flock Get Shop Item` | one item by its id |
 | `Flock Get Shop Items` | every item in a shop (optional `Patch Id`) |
-| `Flock Purchase` | the resulting inventory entry |
+| `Flock Purchase` | the purchase result: what was bought, what it granted, and the wallet after |
+| `Flock Consume Inventory Item` | the consumed entry, what it granted, and the wallet after |
 | `Flock Get Player Inventory` | a page of what a player owns |
 
 ![A graph showing Flock Get Shop By Name feeding Flock Get Shop Items, with the item list driving a ForEach loop](images/shop-browse.png)
@@ -30,7 +31,18 @@ An item's free-form **Data** and **Stats** pins are `FFlockJsonData` handles, no
 the *Get Json Int / Float / String / Bool / String Array* nodes, which take a dotted path and a fallback —
 no JSON parsing node needed.
 
-![A Flock Purchase node with its Shop Item Id wired from a picked item, both exec pins handled, and the Entry output feeding a UI update](images/shop-purchase.png)
+![A Flock Purchase node with its Shop Item Id wired from a picked item, both exec pins handled, and the Purchase Result output feeding a UI update](images/shop-purchase.png)
+
+**Break the Purchase Result to see what actually happened.** It carries `Inventory` (the row the player
+now owns), `Granted` (what the purchase handed over immediately) and `Wallet` (the balances afterwards).
+
+`Inventory` can be **empty**, and that is not an error: an item that grants its contents outright — a
+currency pack — creates nothing to own and reports the grant instead. Use *Has Inventory Row* before
+reading it rather than checking the Id yourself.
+
+For rewards, branch with *Is Currency Reward* rather than comparing `Type` to a typed-out `"currency"`.
+The server owns that set and can add kinds; a literal that does not match reads as "not a currency
+reward" and silently skips the grant.
 
 After a schema sync you can replace the id wiring entirely: the generated `Purchase` macro takes a typed
 `FlockShopItemId` dropdown instead. See [Code generation](codegen.md).
@@ -57,13 +69,27 @@ Sdk->GetShopProvider()->GetByName(TEXT("Starter"),
 
 // Buy. An empty player id resolves the signed-in player.
 Sdk->GetShopProvider()->Purchase(ItemId, FString(),
-    [](TFlockResult<FFlockPlayerInventory> Entry)
+    [](TFlockResult<FFlockPurchaseResult> Bought)
     {
-        if (!Entry.bSuccess && Entry.Error.Code == EFlockErrorCode::ShopInsufficientFunds)
+        if (!Bought.bSuccess && Bought.Error.ErrorCode == EFlockErrorCode::ShopInsufficientFunds)
         {
             // The server declined — show the player, don't retry.
+            return;
+        }
+
+        // The row can be absent: a currency pack grants its contents and creates nothing to own.
+        if (Bought.Value.HasInventoryRow()) { /* the player now owns this */ }
+
+        for (const FFlockShopItemReward& Reward : Bought.Value.Granted)
+        {
+            // Compare against the constant, never a literal — the server can add kinds.
+            if (Reward.Type == FlockShopItemRewardTypes::Currency) { /* Reward.Code, Reward.Amount */ }
         }
     });
+
+// Use something up. Grants whatever the entry carries.
+Sdk->GetShopProvider()->Consume(InventoryId,
+    [](TFlockResult<FFlockConsumeResult> Consumed) { /* Consumed.Value.Granted, .Wallet */ });
 
 // What they own.
 Sdk->GetShopProvider()->GetPlayerInventory(FString(), /*Page*/ 1, /*Limit*/ 100, OnInventory);
@@ -74,8 +100,13 @@ Sdk->GetShopProvider()->GetPlayerInventory(FString(), /*Page*/ 1, /*Limit*/ 100,
 - **A purchase is never retried.** It posts non-idempotently, so an ambiguous failure — a timeout, a
   dropped connection — is reported rather than re-sent. A timeout may mean the charge already landed, and
   the SDK will not risk charging twice. Show the failure and let the player decide.
-- **A purchase is never queued offline.** Unlike a player-data write, it fails immediately when the server
-  is unreachable. There is no offline shopping.
+- **Consuming follows the same rule, in the other direction.** It credits currency, so a re-send after an
+  ambiguous failure would grant twice. Only a failure that proves the server never processed the request
+  is retried; everything else is reported.
+- **A purchase is never queued offline**, and neither is a consume. Unlike a player-data write, they fail
+  immediately when the server is unreachable. There is no offline shopping.
+- **Rewards are advertised before they are bought.** An item's `Rewards` says what buying it will grant,
+  so a shop tile can show "500 gold" without a transaction. It is empty for a plain item.
 - **Inventory is always fetched fresh.** It is never cached and never snapshotted, because it is what a
   player owns — stale here is worse than a round trip.
 - **Catalog reads are cached and snapshot-backed.** Shops and items are memoized in-process and written to

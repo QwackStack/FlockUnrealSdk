@@ -239,6 +239,22 @@ enum class EFlockNotificationChannel : uint8
 FLOCK_API const TCHAR* FlockNotificationChannelToWire(EFlockNotificationChannel Channel);
 
 /**
+ * The delivery states a schedule can be in, as **string constants rather than a UENUM**.
+ *
+ * A scheduled notification's `status` is typed as a plain string on the response, and the lifecycle it
+ * describes is the server's to extend. An enum would answer a state added later by failing the parse or
+ * by defaulting to the first enumerator, turning an additive server change into a client break or a
+ * wrong answer. Use these when filtering a schedule listing; read delivery state off the timestamps
+ * (IsDelivered/IsCanceled/IsPending), which are structural and cannot drift.
+ */
+namespace FlockScheduledNotificationStatuses
+{
+	inline constexpr const TCHAR* Pending = TEXT("pending");
+	inline constexpr const TCHAR* Delivered = TEXT("delivered");
+	inline constexpr const TCHAR* Canceled = TEXT("canceled");
+}
+
+/**
  * A notification the game asked the backend to deliver later.
  *
  * `Channels` is TArray<FString> rather than the enum, deliberately: the *request* declares a closed set,
@@ -314,6 +330,30 @@ struct FLOCK_API FFlockScheduledNotification
 	bool IsPending() const { return !IsDelivered() && !IsCanceled(); }
 
 	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockScheduledNotification& OutStruct, FString& OutError);
+};
+
+/**
+ * One page of the player's schedules ({items, total, page, limit}). Concrete rather than the template
+ * TFlockPage<T>, for the same reasons as the inbox page: it has to be a Blueprint type.
+ *
+ * Total is the server's count for the requested status filter, not Items.Num().
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockScheduledNotificationPage
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockScheduledNotification> Items;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int32 Total = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int32 Page = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int32 Limit = 0;
 };
 
 /**

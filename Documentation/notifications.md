@@ -129,15 +129,22 @@ idempotent and does retry.
 `ScheduleByTemplateId` exists for a caller that already holds an id. It is named rather than overloaded,
 because two `FString` overloads would be indistinguishable at a call site.
 
-### What you scheduled
+### What is scheduled
 
-`/v1` has no route to list or read a schedule back, so the SDK keeps its own record of what it scheduled:
+Ask the server. `GetScheduled` reads the player's schedules as the backend knows them, which means it sees
+reminders set before a reinstall or on another device:
 
 ```cpp
-for (const FFlockPendingSchedule& Entry : Notifications->GetPendingSchedules())
+Notifications->GetScheduled([](TFlockResult<FFlockScheduledNotificationPage> Result)
 {
-    // Entry.Id is what CancelScheduled takes; Entry.TemplateName is what you scheduled it by.
-}
+    for (const FFlockScheduledNotification& Entry : Result.Value.Items)
+    {
+        // Entry.Id is what CancelScheduled takes.
+    }
+});
+
+// Or filter explicitly. Status is a string, not an enum — the server owns the set.
+Notifications->GetScheduled(FlockScheduledNotificationStatuses::Delivered, /*Page*/ 1, /*Limit*/ 100, OnPage);
 
 Notifications->CancelAllScheduled([](TFlockResult<int32> Result)
 {
@@ -145,18 +152,47 @@ Notifications->CancelAllScheduled([](TFlockResult<int32> Result)
 });
 ```
 
-`GetPendingSchedules` is synchronous — there is no network call to make. What that buys, and what it costs:
+In Blueprint this is **Flock Get Scheduled Notifications**, whose `Status` pin defaults to pending. Feed it
+from *Flock Schedule Status Pending / Delivered / Canceled* rather than typing the value — note the wire
+spelling is the single-l `canceled`.
+
+`GetScheduled` is **never cached**. A schedule is delivered server-side with nothing to tell the client, so
+a stored page would report a reminder that has already fired as still pending — wrong rather than stale.
+It needs a network, and it needs a signed-in player.
+
+`CancelAllScheduled` cancels **what the server lists**, so it also clears reminders this install never
+created. It drops entries the server no longer recognises — delivered, already cancelled, or unknown —
+instead of failing the whole batch, since they are not pending either way. A transient failure stops the
+run and reports the error, leaving the remaining entries tracked so a later call can retry them.
+
+### The offline fallback
+
+`GetPendingSchedules` is the SDK's own record of what **this install** scheduled. It is synchronous, since
+there is no call to make, which makes it the one that still answers with no network:
+
+```cpp
+for (const FFlockPendingSchedule& Entry : Notifications->GetPendingSchedules())
+{
+    // Entry.Id is what CancelScheduled takes; Entry.TemplateName is what you scheduled it by.
+}
+```
+
+Prefer `GetScheduled`. What this one costs:
 
 - It knows only what **this install** scheduled. A reminder set on the player's other device is invisible
-  here, because nothing can be asked.
+  here, and one set before a reinstall is gone from it.
 - Delivery is inferred from the **clock**: once an entry's `DeliverAt` passes it stops being pending and is
-  dropped as the list is read.
+  dropped as the list is read. The server is not consulted, so an entry cancelled elsewhere still appears.
 - The list is **per player** and survives sign-out, so a second player on a shared device neither sees nor
   can cancel the first player's reminders — and signing back in does not lose them.
 
-`CancelAllScheduled` drops entries the server no longer recognises — delivered, already cancelled, or
-unknown — instead of failing the whole batch, since they are not pending either way. A transient failure
-stops the run and reports the error, leaving the remaining entries tracked so a later call can retry them.
+`CancelAllScheduled` falls back to this list, and only when the server read fails. The two are never
+merged: an id the server does not report is one it no longer considers pending.
+
+In Blueprint: **Flock Cancel All Scheduled Notifications** and **Flock Get Pending Schedules**. Reach for
+the cancel-all node rather than looping *Flock Cancel Scheduled Notification* over a listing — a ForEach
+fires every cancel in the same frame, and each one rewrites the stored pending list as it completes, so
+they race and the last writer restores entries the others removed. The node walks them sequentially.
 
 ## The template catalog
 

@@ -247,21 +247,21 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 		Declarations +=
 			TEXT("\t/** Buys a shop item for the signed-in player. Never retried on an ambiguous failure. */\n")
 			TEXT("\tstatic void Purchase(const UObject* WorldContextObject, EFlockShopItemId Item,\n")
-			TEXT("\t\tTFunction<void(TFlockResult<FFlockPlayerInventory>)> OnDone);\n\n");
+			TEXT("\t\tTFunction<void(TFlockResult<FFlockPurchaseResult>)> OnDone);\n\n");
 
 		Definitions +=
 			TEXT("void FFlockGenerated::Purchase(const UObject* WorldContextObject, EFlockShopItemId Item,\n")
-			TEXT("\tTFunction<void(TFlockResult<FFlockPlayerInventory>)> OnDone)\n")
+			TEXT("\tTFunction<void(TFlockResult<FFlockPurchaseResult>)> OnDone)\n")
 			TEXT("{\n")
 			TEXT("\tFFlockShopProvider* Provider = ResolveShop(WorldContextObject);\n")
 			TEXT("\tif (!Provider)\n")
 			TEXT("\t{\n")
-			TEXT("\t\tif (OnDone) { OnDone(TFlockResult<FFlockPlayerInventory>::Fail(NotReady())); }\n")
+			TEXT("\t\tif (OnDone) { OnDone(TFlockResult<FFlockPurchaseResult>::Fail(NotReady())); }\n")
 			TEXT("\t\treturn;\n")
 			TEXT("\t}\n")
 			TEXT("\t// The signed-in-player overload - no id to resolve or pass.\n")
 			TEXT("\tProvider->Purchase(FlockShopItemIdToWire(Item),\n")
-			TEXT("\t\t[OnDone](TFlockResult<FFlockPlayerInventory> R) { if (OnDone) { OnDone(R); } });\n")
+			TEXT("\t\t[OnDone](TFlockResult<FFlockPurchaseResult> R) { if (OnDone) { OnDone(R); } });\n")
 			TEXT("}\n\n");
 		++Result.FunctionCount;
 	}
