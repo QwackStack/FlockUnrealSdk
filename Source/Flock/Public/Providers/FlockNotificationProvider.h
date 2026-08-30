@@ -139,17 +139,49 @@ public:
 	void CancelScheduled(const FString& ScheduledId, TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnComplete);
 
 	/**
+	 * The player's schedules **as the server knows them**, filtered by status.
+	 *
+	 * This is the authoritative listing and the one to prefer: unlike GetPendingSchedules it survives a
+	 * reinstall and sees schedules made on another device, because it asks the backend rather than reading
+	 * what this install happened to write down.
+	 *
+	 * Status is a string on purpose (see FlockScheduledNotificationStatuses) — the server owns the set. An
+	 * empty Status omits the filter rather than sending a blank one.
+	 *
+	 * **Never cached, in process or on disk.** A schedule list changes whenever one is created, cancelled
+	 * or delivered, and a delivery happens server-side with nothing to tell the client — so a cached page
+	 * would go wrong rather than merely stale, the same call the inbox and the player inventory make.
+	 * Offline it therefore fails, which is what GetPendingSchedules is for.
+	 */
+	void GetScheduled(const FString& Status, int32 Page, int32 Limit,
+		TFunction<void(TFlockResult<FFlockScheduledNotificationPage>)> OnComplete);
+
+	/** The pending schedules with the usual defaults — first page of 100. */
+	void GetScheduled(TFunction<void(TFlockResult<FFlockScheduledNotificationPage>)> OnComplete)
+	{
+		GetScheduled(FlockScheduledNotificationStatuses::Pending, 1, 100, MoveTemp(OnComplete));
+	}
+
+	/**
 	 * Schedules this install created that have not reached their delivery time yet.
 	 *
-	 * **Local bookkeeping, not a server query.** `/v1` has no route to list or read a schedule back, so the
-	 * SDK persists what it scheduled — which means this knows only what *this install* created, and infers
-	 * delivery from the clock. Entries whose time has passed are dropped as they are read. Synchronous,
-	 * because it never touches the network.
+	 * **Local bookkeeping, not a server query** — it knows only what *this install* scheduled, and infers
+	 * delivery from the clock rather than being told. Entries whose time has passed are dropped as they
+	 * are read. Synchronous, because it never touches the network.
+	 *
+	 * Now that the server can be asked, this is the **offline fallback** rather than the primary: prefer
+	 * GetScheduled, and reach for this when a listing has to work without a network.
 	 */
 	TArray<FFlockPendingSchedule> GetPendingSchedules() const;
 
 	/**
-	 * Cancels every schedule still tracked here and reports how many the server actually cancelled.
+	 * Cancels every schedule the player has pending and reports how many the server actually cancelled.
+	 *
+	 * **The server's list is what gets cancelled**, so this also clears reminders made before a reinstall
+	 * or on another device — the case that used to strand them permanently, since a scheduled notification
+	 * still fires server-side with its id as the only handle. The local list is the fallback and is used
+	 * only when that read fails; the two are never merged, because the server's answer is authoritative
+	 * and a local entry it does not list is one it no longer considers pending.
 	 *
 	 * Entries the server no longer recognises (delivered, already cancelled, unknown) are **dropped rather
 	 * than failing the batch** — they are not pending either way. A transient failure stops the run and
@@ -311,6 +343,16 @@ private:
 	/** One step of CancelAllScheduled's sequential walk. Kept a member so the recursion never captures `this`. */
 	void CancelAllStep(TSharedRef<TArray<FString>> Ids, int32 Index, TSharedRef<int32> Cancelled,
 		TFunction<void(TFlockResult<int32>)> OnComplete);
+
+	/**
+	 * Decides what CancelAllScheduled will cancel: the server's pending list, or this install's local one
+	 * when that read fails.
+	 *
+	 * A fallback, never a merge. The server is authoritative about what is still pending, so an id it does
+	 * not return is one it will not fire — cancelling it anyway spends a request to be told 404. The local
+	 * list only earns a say when the server could not be reached at all.
+	 */
+	void ResolveCancellableScheduleIds(TFunction<void(TArray<FString>)> Continue);
 
 	/**
 	 * True when DeliverAt is in the past. An **unparseable** timestamp answers false, so the entry is kept:

@@ -365,7 +365,9 @@ bool FFlockMacroCommandTest::RunTest(const FString& Parameters)
 			TestNotNull(TEXT("of the generated enum type"),
 				Cast<UUserDefinedEnum>(ItemPin->PinType.PinSubCategoryObject.Get()));
 		}
-		TestNotNull(TEXT("and hands back what was bought"), MacroOutput(Purchase, TEXT("Entry")));
+		// The purchase result, not just the inventory row: the pin carries what was granted and the
+		// wallet alongside it, and an item can grant its contents without creating a row at all.
+		TestNotNull(TEXT("and hands back the purchase result"), MacroOutput(Purchase, TEXT("PurchaseResult")));
 	}
 
 	TestNotNull(TEXT("Unlock Achievement exists"), FindMacro(Built.Macros.Library, TEXT("UnlockAchievement")));

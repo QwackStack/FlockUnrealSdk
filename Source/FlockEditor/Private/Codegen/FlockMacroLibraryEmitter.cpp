@@ -791,7 +791,7 @@ FFlockMacroLibraryEmitter::FEmitResult FFlockMacroLibraryEmitter::BuildLibrary(
 		UsedNames.Add(PurchaseMacroName);
 		if (AddCommandMacro(Library, PurchaseMacroName, ShopItems.Key, ShopItems.Value, TEXT("Item"),
 			UFlockPurchaseAction::StaticClass(), TEXT("Purchase"), TEXT("ShopItemId"),
-			TEXT("Entry"), FFlockPlayerInventory::StaticStruct(),
+			TEXT("PurchaseResult"), FFlockPurchaseResult::StaticStruct(),
 			/*ExtraInputPin*/ nullptr, /*ExtraInputType*/ nullptr,
 			/*BakedPinName*/ nullptr, FString(), Result.Warnings))
 		{

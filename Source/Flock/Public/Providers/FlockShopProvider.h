@@ -9,6 +9,7 @@
 #include "UObject/WeakObjectPtrTemplates.h"
 
 class FFlockAnalyticsProvider;
+class FFlockPlayerProvider;
 
 /**
  * Shop catalog + purchase + player inventory.
@@ -46,6 +47,19 @@ public:
 	 */
 	void SetAnalyticsProvider(const TWeakPtr<FFlockAnalyticsProvider>& InAnalytics) { Analytics = InAnalytics; }
 
+	/**
+	 * Wires the player provider so a purchase or consume can fold the wallet it returns into the cached
+	 * player row. Weak, and may be null — the write-through is skipped when it cannot be pinned.
+	 *
+	 * Without this a purchase leaves the per-player data cache holding **pre-purchase balances**, and the
+	 * next `GetMyDataByTemplate` serves them: the money moved on the server while the game still reads the
+	 * old number. Worse, a caller that then writes that stale row back — which is exactly what a
+	 * read-modify-write does — silently undoes the purchase. Found live on 2026-08-30, where the
+	 * self-test's own commands sweep echoed a stale wallet back and reset the balance a purchase had
+	 * just changed.
+	 */
+	void SetPlayerProvider(const TWeakPtr<FFlockPlayerProvider>& InPlayerProvider) { PlayerProvider = InPlayerProvider; }
+
 	// ── Catalog ──
 
 	/** A page of shops. Page metadata is not part of the Shop entity, so pages cache separately from ShopsById. */
@@ -65,9 +79,13 @@ public:
 	 * (non-idempotent — no retry on an ambiguous failure) and fires Started (before the post) and
 	 * Purchased/Failed (after) analytics transactions fire-and-forget: they are dispatched alongside the
 	 * purchase, never awaited, so a slow, failed, or absent analytics endpoint never delays or fails it.
+	 *
+	 * Completes with the whole purchase result — the inventory row **under `.Inventory`**, plus anything
+	 * the purchase granted on the spot (`.Granted`) and the wallet afterwards (`.Wallet`). The row can be
+	 * empty: an item that hands its contents over outright creates nothing to own.
 	 */
 	void Purchase(const FString& ShopItemId, const FString& PlayerId,
-		TFunction<void(TFlockResult<FFlockPlayerInventory>)> OnComplete);
+		TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnComplete);
 
 	/**
 	 * Buys for the **signed-in player** — the overload nearly every call site wants.
@@ -76,10 +94,27 @@ public:
 	 * middle argument, so without this every ordinary purchase has to spell out `FString()` to say
 	 * "whoever is signed in", which reads like an oversight rather than a choice.
 	 */
-	void Purchase(const FString& ShopItemId, TFunction<void(TFlockResult<FFlockPlayerInventory>)> OnComplete)
+	void Purchase(const FString& ShopItemId, TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnComplete)
 	{
 		Purchase(ShopItemId, FString(), MoveTemp(OnComplete));
 	}
+
+	/**
+	 * Consumes an owned inventory entry, granting whatever it carries. Completes with the updated row,
+	 * what was granted, and the wallet afterwards.
+	 *
+	 * **Money-moving, so it takes the purchase's path and not the ordinary one.** Consuming credits
+	 * currency, which means a re-send after an ambiguous failure double-grants — the mirror image of a
+	 * double-charge and just as unrecoverable from the client. It posts with bIdempotent=false, so only a
+	 * failure that proves the request was never processed (408/429) is retried and everything else
+	 * surfaces for the caller to decide about. Never queued offline, for the same reason.
+	 *
+	 * The route takes **no request body**; an empty JSON object goes on the wire to keep the POST
+	 * well-formed. It is not gated on sign-in: the entry is addressed by its own id and the spec declares
+	 * neither `security` nor an Authorization header, so a client-side gate would be this SDK inventing a
+	 * rule the server never stated.
+	 */
+	void Consume(const FString& InventoryId, TFunction<void(TFlockResult<FFlockConsumeResult>)> OnComplete);
 
 	/** A page of a player's owned items (empty PlayerId = the signed-in player). Never cached. */
 	void GetPlayerInventory(const FString& PlayerId, int32 Page, int32 Limit,
@@ -108,8 +143,16 @@ private:
 	 */
 	void RecordPurchaseStatus(const FString& Status, const FFlockShopItem& Item);
 
+	/**
+	 * Folds a server-returned wallet into the cached player row. No-op when the wallet is absent (the
+	 * purchase moved no currency, so there is nothing to update) or the player provider is gone.
+	 * `ApplyServerPlayerData` itself ignores a player whose rows are not cached.
+	 */
+	void ApplyWalletToPlayerCache(const FFlockPlayerData& Wallet) const;
+
 	TSharedRef<FFlockAuthSession> Session;
 	TWeakPtr<FFlockAnalyticsProvider> Analytics;
+	TWeakPtr<FFlockPlayerProvider> PlayerProvider;
 	FString VersionedApiUrl;
 
 	// Full paginated pages cache separately (page metadata isn't part of a Shop). Every shop/item lives

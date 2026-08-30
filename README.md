@@ -422,7 +422,7 @@ Every call answers with a `TFlockResult<T>` rather than throwing — Unreal buil
 Check `bSuccess`, then read `Value` or `Error`:
 
 ```cpp
-if (!Result.bSuccess && Result.Error.Code == EFlockErrorCode::ShopInsufficientFunds)
+if (!Result.bSuccess && Result.Error.ErrorCode == EFlockErrorCode::ShopInsufficientFunds)
 {
     // The server declined — not enough funds.
 }

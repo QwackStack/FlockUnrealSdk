@@ -188,6 +188,30 @@ namespace FlockNotificationProviderTestHelpers
 			*Id, *(DeliverAt.IsEmpty() ? FutureIso() : DeliverAt),
 			bCanceled ? TEXT("\"2026-08-12T02:00:00Z\"") : TEXT("null")));
 	}
+	/**
+	 * A **bare** paginated schedule page: {items,total,page,limit} at the root, no envelope — the shape
+	 * GET /v1/notification/schedule actually answers with. An enveloped fixture would still parse (the
+	 * unwrapper descends into `result` only when it is there) and would prove nothing about the real wire.
+	 *
+	 * Takes explicit row bodies, because the point of most of these tests is *which* ids the server lists.
+	 */
+	inline FString SchedulePageOf(const TArray<FString>& Ids)
+	{
+		TArray<FString> Rows;
+		for (const FString& Id : Ids)
+		{
+			// ScheduledBody envelopes; the rows inside a page are bare, so strip back to the object itself.
+			Rows.Add(FString::Printf(
+				TEXT("{\"id\":\"%s\",\"game_id\":\"g1\",\"studio_id\":\"s1\",\"player_id\":\"player-a\",")
+				TEXT("\"template_id\":\"tpl-1\",\"variables\":{},\"channels\":[\"in_app\"],\"deliver_at\":\"%s\",")
+				TEXT("\"status\":\"pending\",\"source\":\"sdk\",\"notification_id\":null,\"delivered_at\":null,")
+				TEXT("\"canceled_at\":null,\"created_at\":\"2026-08-12T00:00:00Z\",\"updated_at\":\"2026-08-12T00:00:00Z\"}"),
+				*Id, *FutureIso()));
+		}
+		return FString::Printf(TEXT("{\"items\":[%s],\"total\":%d,\"page\":1,\"limit\":100}"),
+			*FString::Join(Rows, TEXT(",")), Rows.Num());
+	}
+
 	inline FString SummaryBody() { return Env(FString::Printf(TEXT("{\"unread_count\":4,\"items\":[%s]}"), *Row(TEXT("n-1"), false))); }
 	inline FString MarkReadBody() { return Env(Row(TEXT("n-1"), /*bRead*/ true)); }
 	inline FString MarkAllReadBody() { return Env(TEXT("{\"updated\":4}")); }
@@ -236,6 +260,10 @@ namespace FlockNotificationProviderTestHelpers
 			Fake->On(TEXT("notification_template/by-name"), FFlockFakeTransport::Ok(TemplateByNameBody()));
 			Fake->On(TEXT("notification_template"), FFlockFakeTransport::Ok(TemplatesBody()));
 			Fake->On(TEXT("notification/schedule/sch-1"), FFlockFakeTransport::Ok(ScheduledBody(/*bCanceled*/ true)));
+			// The listing GET and the scheduling POST share a path and differ only by a query string, and
+			// the fake matches on URL fragments with no notion of method — so "notification/schedule?" has
+			// to be registered ahead of the bare fragment or the POST fixture answers the list as well.
+			Fake->On(TEXT("notification/schedule?"), FFlockFakeTransport::Ok(SchedulePageOf({ TEXT("sch-1") })));
 			Fake->On(TEXT("notification/schedule"), FFlockFakeTransport::Ok(ScheduledBody()));
 			Fake->On(TEXT("notification/unread_count"), FFlockFakeTransport::Ok(UnreadCountBody()));
 			Fake->On(TEXT("notification/summary"), FFlockFakeTransport::Ok(SummaryBody()));
@@ -270,6 +298,26 @@ namespace FlockNotificationProviderTestHelpers
 			Fake->On(TEXT("notification/schedule"), FFlockFakeTransport::Ok(ScheduledBody()));
 		}
 
+		/**
+		 * Sets what the **server** reports as pending, which is what CancelAllScheduled now cancels.
+		 *
+		 * Re-registers the bare fragment afterwards for the same reason RouteCancel does: On() appends, and
+		 * the fake answers the first fragment the URL contains, so registering the query route alone would
+		 * leave it behind the bare one and the POST fixture would answer the listing.
+		 */
+		void RouteScheduleList(const TArray<FString>& Ids)
+		{
+			Fake->On(TEXT("notification/schedule?"), FFlockFakeTransport::Ok(SchedulePageOf(Ids)));
+			Fake->On(TEXT("notification/schedule"), FFlockFakeTransport::Ok(ScheduledBody()));
+		}
+
+		/** The server listing fails, which is the only thing that lets the local list have a say. */
+		void RouteScheduleListFailure(const FFlockHttpResponse& Response)
+		{
+			Fake->On(TEXT("notification/schedule?"), Response);
+			Fake->On(TEXT("notification/schedule"), FFlockFakeTransport::Ok(ScheduledBody()));
+		}
+
 		/** The body of the last request whose URL contains Fragment, for asserting what went on the wire. */
 		FString LastBodyContaining(const FString& Fragment) const
 		{
@@ -296,6 +344,7 @@ namespace FlockNotificationProviderTestHelpers
 			Fake->On(TEXT("notification_template/by-name"), FFlockFakeTransport::Offline());
 			Fake->On(TEXT("notification_template"), FFlockFakeTransport::Offline());
 			Fake->On(TEXT("notification/schedule/sch-1"), FFlockFakeTransport::Offline());
+			Fake->On(TEXT("notification/schedule?"), FFlockFakeTransport::Offline());
 			Fake->On(TEXT("notification/schedule"), FFlockFakeTransport::Offline());
 			Fake->On(TEXT("notification/unread_count"), FFlockFakeTransport::Offline());
 			Fake->On(TEXT("notification/summary"), FFlockFakeTransport::Offline());
@@ -1531,6 +1580,8 @@ bool FFlockNotificationCancelAllTest::RunTest(const FString& Parameters)
 		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
 	TestEqual(TEXT("two tracked"), F.Provider->GetPendingSchedules().Num(), 2);
 
+	// The server reports both as pending — that list, not the local one, is what gets cancelled now.
+	F.RouteScheduleList({ TEXT("sch-1"), TEXT("sch-2") });
 	F.RouteCancel(TEXT("sch-2"), FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"gone\"}")));
 	F.RouteCancel(TEXT("sch-1"), FFlockFakeTransport::Ok(ScheduledBody(/*bCanceled*/ true)));
 
@@ -1565,6 +1616,7 @@ bool FFlockNotificationCancelAllTransientTest::RunTest(const FString& Parameters
 
 	// A 500 is not an authoritative answer about the schedule, so the entry must stay tracked for a retry
 	// rather than being silently forgotten.
+	F.RouteScheduleList({ TEXT("sch-1") });
 	F.RouteCancel(TEXT("sch-1"), FFlockFakeTransport::Status(500, TEXT("{\"detail\":\"boom\"}")));
 
 	bool bDone = false;
@@ -1577,6 +1629,243 @@ bool FFlockNotificationCancelAllTransientTest::RunTest(const FString& Parameters
 	TestTrue(TEXT("completed"), bDone);
 	TestEqual(TEXT("the entry is still tracked, so a later call can retry it"),
 		F.Provider->GetPendingSchedules().Num(), 1);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// ── The schedule listing: the route exists now, so the SDK stops guessing ──
+// Bare-shaped on purpose. GetPaged descends into `result` only when it is present, so an enveloped
+// fixture would parse too and would prove nothing about what the server actually sends.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationGetScheduledTest, "Flock.Notification.Schedule.GetScheduledParsesBarePage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationGetScheduledTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+	F.RouteScheduleList({ TEXT("sch-1"), TEXT("sch-7") });
+
+	FFlockScheduledNotificationPage Page;
+	bool bDone = false;
+	F.Provider->GetScheduled([&](TFlockResult<FFlockScheduledNotificationPage> Result)
+	{
+		bDone = Result.bSuccess;
+		Page = Result.Value;
+	});
+
+	TestTrue(TEXT("the listing succeeds"), bDone);
+	if (TestEqual(TEXT("both rows parsed from the bare page"), Page.Items.Num(), 2))
+	{
+		TestEqual(TEXT("first id"), FlockTestAt(Page.Items, 0).Id, FString(TEXT("sch-1")));
+		TestEqual(TEXT("second id"), FlockTestAt(Page.Items, 1).Id, FString(TEXT("sch-7")));
+		TestTrue(TEXT("and a row still reads its state off the timestamps"), FlockTestAt(Page.Items, 0).IsPending());
+	}
+	TestEqual(TEXT("page metadata came from the root, not from Items.Num()"), Page.Total, 2);
+	TestEqual(TEXT("limit echoed"), Page.Limit, 100);
+
+	// The defaults the SDK sends: pending, first page of 100.
+	const FString Url = F.LastUrlContaining(TEXT("notification/schedule?"));
+	TestTrue(TEXT("status filter sent"), Url.Contains(TEXT("status=pending")));
+	TestTrue(TEXT("page sent"), Url.Contains(TEXT("page=1")));
+	TestTrue(TEXT("limit sent"), Url.Contains(TEXT("limit=100")));
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// ── An empty status omits the filter rather than sending a blank one ──
+// A blank `status=` leaves the server to guess whether it meant "all" or "none"; omitting it is the
+// SDK's standing convention for optional query parameters.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationGetScheduledStatusTest, "Flock.Notification.Schedule.StatusIsAnOpenStringFilter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationGetScheduledStatusTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+	F.RouteScheduleList({ TEXT("sch-1") });
+
+	F.Provider->GetScheduled(FlockScheduledNotificationStatuses::Delivered, 2, 25,
+		[](TFlockResult<FFlockScheduledNotificationPage>) {});
+	FString Url = F.LastUrlContaining(TEXT("notification/schedule?"));
+	TestTrue(TEXT("a non-default status is sent verbatim"), Url.Contains(TEXT("status=delivered")));
+	TestTrue(TEXT("with the requested page"), Url.Contains(TEXT("page=2")));
+	TestTrue(TEXT("and limit"), Url.Contains(TEXT("limit=25")));
+
+	// A status the server adds later is just a string — nothing here can reject it, which is the whole
+	// reason this is not an enum.
+	F.Provider->GetScheduled(TEXT("expired"), 1, 100, [](TFlockResult<FFlockScheduledNotificationPage>) {});
+	Url = F.LastUrlContaining(TEXT("notification/schedule?"));
+	TestTrue(TEXT("an unknown status is passed through untouched"), Url.Contains(TEXT("status=expired")));
+
+	F.Provider->GetScheduled(FString(), 1, 100, [](TFlockResult<FFlockScheduledNotificationPage>) {});
+	Url = F.LastUrlContaining(TEXT("notification/schedule?"));
+	TestFalse(TEXT("an empty status is omitted, never sent blank"), Url.Contains(TEXT("status=")));
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// ── Player-scoped by its own schema, so it fails fast when signed out ──
+// Same carve-out as the rest of this provider: read off the schema, not inferred from an observed 401.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationGetScheduledAuthTest, "Flock.Notification.Schedule.GetScheduledRequiresSignIn",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationGetScheduledAuthTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+
+	bool bFailed = false;
+	F.Provider->GetScheduled([&](TFlockResult<FFlockScheduledNotificationPage> Result)
+	{
+		bFailed = !Result.bSuccess && Result.Error.Type == EFlockErrorType::Auth;
+	});
+
+	TestTrue(TEXT("signed out is an Auth failure"), bFailed);
+	TestEqual(TEXT("and no request was spent"), F.Fake->CountTo(TEXT("notification/schedule?")), 0);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// ── The point of the feature: CancelAllScheduled cancels what the SERVER lists ──
+// A reinstall or a second device leaves reminders this install never wrote down, and they still fire
+// server-side with their id as the only handle. Cancelling only the local list stranded them forever.
+// sch-99 is exactly that case: the server knows it, this install does not.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationCancelAllUsesServerListTest, "Flock.Notification.Schedule.CancelAllCancelsServerList",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationCancelAllUsesServerListTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+
+	// Nothing was scheduled through this install, so the local list is empty — the pre-feature behaviour
+	// would report zero cancelled and leave the reminder to fire.
+	TestEqual(TEXT("this install tracked nothing"), F.Provider->GetPendingSchedules().Num(), 0);
+
+	F.RouteScheduleList({ TEXT("sch-99") });
+	F.RouteCancel(TEXT("sch-99"), FFlockFakeTransport::Ok(ScheduledBody(/*bCanceled*/ true)));
+
+	bool bDone = false;
+	int32 Count = -1;
+	F.Provider->CancelAllScheduled([&](TFlockResult<int32> Result)
+	{
+		bDone = true;
+		TestTrue(TEXT("the batch succeeds"), Result.bSuccess);
+		Count = Result.Value;
+	});
+
+	TestTrue(TEXT("completed"), bDone);
+	TestEqual(TEXT("a reminder this install never saw is still cancelled"), Count, 1);
+	TestEqual(TEXT("and it was cancelled by id"), F.Fake->CountTo(TEXT("notification/schedule/sch-99")), 1);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// ── The server's list is authoritative, not merged with the local one ──
+// A locally-tracked id the server does not list is one it no longer considers pending: cancelling it
+// anyway would spend a request to be told 404. Merging the two lists is the tempting wrong answer here.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationCancelAllNotMergedTest, "Flock.Notification.Schedule.CancelAllDoesNotMergeLocalList",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationCancelAllNotMergedTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+
+	// One schedule this install created and still tracks locally.
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2),
+		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
+	TestEqual(TEXT("tracked locally"), F.Provider->GetPendingSchedules().Num(), 1);
+
+	// The server says something else entirely is pending — sch-1 has been delivered since, and it has one
+	// this install has never heard of.
+	F.RouteScheduleList({ TEXT("sch-42") });
+	F.RouteCancel(TEXT("sch-42"), FFlockFakeTransport::Ok(ScheduledBody(/*bCanceled*/ true)));
+
+	bool bDone = false;
+	int32 Count = -1;
+	F.Provider->CancelAllScheduled([&](TFlockResult<int32> Result) { bDone = true; Count = Result.Value; });
+
+	TestTrue(TEXT("completed"), bDone);
+	TestEqual(TEXT("only the server's entry was cancelled"), Count, 1);
+	TestEqual(TEXT("the server's id was cancelled"), F.Fake->CountTo(TEXT("notification/schedule/sch-42")), 1);
+	// The local id is never sent: it is not in the server's answer, so it is not pending.
+	TestEqual(TEXT("the stale local id is not also cancelled"), F.Fake->CountTo(TEXT("notification/schedule/sch-1")), 0);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// ── Only a failed read falls back to local bookkeeping ──
+// The fallback is what keeps the old behaviour available when the network is down; it is a floor, not a
+// merge, and it must not engage while the server is answering.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationCancelAllFallsBackTest, "Flock.Notification.Schedule.CancelAllFallsBackToLocalWhenReadFails",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationCancelAllFallsBackTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2),
+		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
+	TestEqual(TEXT("tracked locally"), F.Provider->GetPendingSchedules().Num(), 1);
+
+	// The listing is unreachable, so the local list is all there is to go on.
+	F.RouteScheduleListFailure(FFlockFakeTransport::Offline());
+	F.RouteCancel(TEXT("sch-1"), FFlockFakeTransport::Ok(ScheduledBody(/*bCanceled*/ true)));
+
+	bool bDone = false;
+	int32 Count = -1;
+	F.Provider->CancelAllScheduled([&](TFlockResult<int32> Result)
+	{
+		bDone = true;
+		TestTrue(TEXT("a failed listing does not fail the whole call"), Result.bSuccess);
+		Count = Result.Value;
+	});
+
+	TestTrue(TEXT("completed"), bDone);
+	TestEqual(TEXT("the locally tracked reminder is still cancelled"), Count, 1);
+	TestEqual(TEXT("by id"), F.Fake->CountTo(TEXT("notification/schedule/sch-1")), 1);
+	TestEqual(TEXT("and it is no longer tracked"), F.Provider->GetPendingSchedules().Num(), 0);
+
+	Cleanup(F.Dir);
+	return true;
+}
+
+// ── An empty server list is a clean success, and cancels nothing ──
+// The caller asked for an end state that already holds. It must not fall through to the local list,
+// which is the difference between "the server says nothing is pending" and "the server did not answer".
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationCancelAllEmptyServerListTest, "Flock.Notification.Schedule.CancelAllEmptyServerListCancelsNothing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationCancelAllEmptyServerListTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+
+	// Locally tracked, but the server reports nothing pending — it has already been delivered.
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2),
+		FFlockCommandData(), {}, [](TFlockResult<FFlockScheduledNotification>) {});
+	F.RouteScheduleList({});
+
+	bool bDone = false;
+	int32 Count = -1;
+	F.Provider->CancelAllScheduled([&](TFlockResult<int32> Result)
+	{
+		bDone = true;
+		TestTrue(TEXT("an empty list is a success"), Result.bSuccess);
+		Count = Result.Value;
+	});
+
+	TestTrue(TEXT("completed"), bDone);
+	TestEqual(TEXT("nothing was cancelled"), Count, 0);
+	TestEqual(TEXT("and no cancel was attempted for the stale local entry"),
+		F.Fake->CountTo(TEXT("notification/schedule/sch-1")), 0);
 
 	Cleanup(F.Dir);
 	return true;

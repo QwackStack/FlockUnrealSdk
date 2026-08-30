@@ -5,6 +5,93 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-08-30
+
+Shop items can grant rewards server-side and the SDK now surfaces them, and the player's scheduled
+notifications can be read back from the server instead of only from what this install wrote down.
+
+**Engine support re-verified for this release.** `Tooling/Build-AllEngines.ps1` cleaned, built and ran
+the full automation suite against **UE 5.5, 5.6, 5.7 and 5.8** — **409/409 editor and 132/132 `-game` on
+each** — and reported *"The declared claim (UE 5.5 to UE 5.8) is verified."*
+
+### Added
+
+- **Shop item rewards.** `FFlockShopItemReward` (`Type`, `Code`, `Amount`) with `FFlockShopItem::Type`
+  and `::Rewards`, so a shop tile can show "500 gold" before anyone buys. A plain item carries an empty
+  list, never a null to check.
+- **`FFlockShopProvider::Consume(InventoryId, OnComplete)`** — consumes an owned inventory entry and
+  reports the updated row, what it granted, and the wallet afterwards. It is money-moving, so it takes
+  the same non-idempotent path as a purchase: an ambiguous failure surfaces rather than being re-sent,
+  and only a failure that proves the request was never processed is retried. Never queued offline.
+- **`FFlockConsumeResult`** and **`FFlockPurchaseResult`**, both parsed from the route's real root-shaped
+  response.
+- **`FFlockPlayerInventory::Rewards`** — the reward snapshot taken when a row was bought. Empty on the
+  plain inventory listing, which does not carry it.
+- **`Flock Consume Inventory Item`** Blueprint node, and **`UFlockShopLibrary`**: `Is Currency Reward`,
+  `Flock Currency Reward Type`, `Has Inventory Row`, `Has Wallet`, `Has Wallet (Consume)`.
+- **`FFlockNotificationProvider::GetScheduled(Status, Page, Limit, OnComplete)`** — the player's
+  schedules as the *server* knows them, so a listing survives a reinstall and sees reminders made on
+  another device. Filtered by status, never cached, with a `FFlockScheduledNotificationPage` result.
+- **`Flock Get Scheduled Notifications`** Blueprint node, plus `Flock Schedule Status Pending` /
+  `Delivered` / `Canceled` for its filter pin.
+- **`Flock Cancel All Scheduled Notifications`** and **`Flock Get Pending Schedules`** Blueprint nodes.
+  Both surfaces were C++-only, so a "clear my reminders" button could not be built in a graph — and the
+  natural substitute (a ForEach over Cancel Scheduled Notification) fires every cancel in one frame,
+  where they race over the stored pending list and resurrect entries each other removed. The node walks
+  them sequentially.
+- `FFlockPurchaseResult::HasInventoryRow()` / `::HasWallet()` and `FFlockConsumeResult::HasWallet()`, so
+  the "this may legitimately be empty" check has a name at the call site instead of a bare `Id.IsEmpty()`.
+- `FlockShopItemRewardTypes` and `FlockScheduledNotificationStatuses` — the wire spellings as constants.
+  Both are **string constants rather than enums, deliberately**: the server owns each set and can extend
+  it, and an enum would answer a value added later by failing to parse or by silently defaulting.
+
+### Upgrading
+
+- A shop snapshot written by 1.6.1 has no `Type` or `Rewards` on its items, so the first **offline** launch
+  after upgrading can show a catalog with empty reward lists. It self-heals on the next successful fetch;
+  the snapshot envelope version is deliberately unchanged rather than invalidating every cached shop.
+
+### Fixed
+
+- **A purchase or consume now updates the cached player row with the wallet it returns.** The
+  per-player data cache previously kept pre-purchase balances, so the next `GetMyDataByTemplate` served
+  the old number while the money had already moved on the server — and a read-modify-write wrote that
+  stale row straight back, silently undoing the purchase. Found live: the self-test's own commands sweep
+  was resetting a balance its purchase had just changed. `FFlockShopProvider::SetPlayerProvider` wires
+  the same write-through seam the commands surface already used. An absent wallet (the purchase moved no
+  currency) leaves the cache untouched rather than blanking it.
+
+### Changed
+
+- **BREAKING — `FFlockShopProvider::Purchase` now completes with `TFlockResult<FFlockPurchaseResult>`
+  instead of `TFlockResult<FFlockPlayerInventory>`.** The inventory row moved to `.Inventory`, joined by
+  `.Granted` and `.Wallet`. The SDK had been deserializing `POST shop/transaction` onto the inventory
+  model, but the route answers a purchase result with the row *nested* — against a real backend that
+  produced a populated-looking object whose fields were all empty. Fixing it is a compile error at every
+  call site, which is the point: silent nulls are worse.
+  - **`.Inventory` can legitimately be empty.** An item that hands its contents over outright creates
+    nothing to own and reports the grant instead. Use `HasInventoryRow()` (C++) or *Has Inventory Row*
+    (Blueprint) rather than assuming a row.
+  - **`.PurchaseId` is the transaction id, not the row id** — the row id is `.Inventory.Id`. Old code
+    reading `Result.Value.Id` will not compile, but `.PurchaseId` sits first in the struct and looks like
+    the obvious replacement; it is not. This is the one part of the migration the compiler cannot catch.
+  - **Blueprint graphs need reconnecting too.** The `Flock Purchase` success pin changed type, so wires
+    downstream of it are orphaned. Break the result for `Inventory`, `Granted` and `Wallet`.
+  - The `Flock Purchase` Blueprint node's output pin changes type to match, and a generated `Purchase`
+    macro's output pin is renamed `Entry` -> `Purchase Result`. Regenerate after upgrading.
+- **`CancelAllScheduled` now cancels what the server lists**, falling back to this install's local list
+  only when that read fails. It previously walked local bookkeeping alone, so a reinstall or a second
+  device left the player's own reminders firing with no way to cancel them. The two lists are never
+  merged: an id the server does not report is one it no longer considers pending.
+- `GetPendingSchedules()` is unchanged and still synchronous. Its role changed — it is now the offline
+  fallback rather than the primary way to list schedules.
+- `Flock.SelfTest`'s shop leg reports the purchase id, item type, each granted reward and the wallet.
+  Its previous narration — that the response carries an inventory row and no reward detail — was a
+  contract fact that has stopped being true. That narration moved into `FlockSelfTestNarration.h` so it
+  can be covered by tests: the three states it distinguishes (no inventory row, nothing granted, no
+  wallet) are exactly the ones a live run cannot reach while reward granting fails server-side, so
+  without them the first sight of this output would be the first time the backend fix worked.
+
 ## [1.6.1] - 2026-08-22
 
 Three defects found by a whole-codebase review, each shipping with the regression test it was missing,

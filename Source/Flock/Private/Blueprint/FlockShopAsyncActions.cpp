@@ -249,13 +249,13 @@ void UFlockPurchaseAction::Activate()
 	FFlockShopProvider* Provider = ResolveShop(WorldContextObject, Error);
 	if (!Provider)
 	{
-		Complete(TFlockResult<FFlockPlayerInventory>::Fail(Error));
+		Complete(TFlockResult<FFlockPurchaseResult>::Fail(Error));
 		return;
 	}
 
 	TWeakObjectPtr<UFlockPurchaseAction> WeakThis(this);
 	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
-	Provider->Purchase(ShopItemId, PlayerId, [WeakThis](TFlockResult<FFlockPlayerInventory> Result)
+	Provider->Purchase(ShopItemId, PlayerId, [WeakThis](TFlockResult<FFlockPurchaseResult> Result)
 	{
 		if (UFlockPurchaseAction* Self = WeakThis.Get())
 		{
@@ -264,7 +264,7 @@ void UFlockPurchaseAction::Activate()
 	});
 }
 
-void UFlockPurchaseAction::Complete(const TFlockResult<FFlockPlayerInventory>& Result)
+void UFlockPurchaseAction::Complete(const TFlockResult<FFlockPurchaseResult>& Result)
 {
 	if (Result.bSuccess)
 	{
@@ -272,7 +272,52 @@ void UFlockPurchaseAction::Complete(const TFlockResult<FFlockPlayerInventory>& R
 	}
 	else
 	{
-		OnFailure.Broadcast(FFlockPlayerInventory(), Result.Error);
+		OnFailure.Broadcast(FFlockPurchaseResult(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
+// ─────────────────────────── Consume Inventory Item ────────────────────────
+
+UFlockConsumeInventoryAction* UFlockConsumeInventoryAction::ConsumeInventoryItem(UObject* WorldContextObject,
+	const FString& InventoryId)
+{
+	UFlockConsumeInventoryAction* Action = NewObject<UFlockConsumeInventoryAction>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->InventoryId = InventoryId;
+	return Action;
+}
+
+void UFlockConsumeInventoryAction::Activate()
+{
+	FFlockError Error;
+	FFlockShopProvider* Provider = ResolveShop(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockConsumeResult>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockConsumeInventoryAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	Provider->Consume(InventoryId, [WeakThis](TFlockResult<FFlockConsumeResult> Result)
+	{
+		if (UFlockConsumeInventoryAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockConsumeInventoryAction::Complete(const TFlockResult<FFlockConsumeResult>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(FFlockConsumeResult(), Result.Error);
 	}
 	SetReadyToDestroy();
 }

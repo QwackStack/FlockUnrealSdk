@@ -30,6 +30,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockMarkAllReadPin, const FFlockM
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockNotificationTemplatesPin, const TArray<FFlockNotificationTemplate>&, Templates, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockNotificationTemplatePin, const FFlockNotificationTemplate&, Template, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockScheduledNotificationPin, const FFlockScheduledNotification&, Scheduled, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockScheduledNotificationPagePin, const FFlockScheduledNotificationPage&, Scheduled, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockCancelAllSchedulesPin, int32, CanceledCount, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockDeviceTokenPin, const FFlockDeviceToken&, DeviceToken, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockUnregisterDeviceTokenPin, const FFlockUnregisterDeviceTokenResult&, Result, const FFlockError&, Error);
 
@@ -297,6 +299,83 @@ private:
 	TObjectPtr<UObject> WorldContextObject;
 
 	FString ScheduledId;
+};
+
+/**
+ * Lists the player's scheduled notifications **as the server knows them**.
+ *
+ * Prefer this over anything this install wrote down: it survives a reinstall and sees reminders scheduled
+ * on another device, which is exactly the case that used to leave a player unable to cancel their own.
+ *
+ * Status filters the listing and defaults to pending. It is a plain string because the server owns the
+ * set of states — use the Flock Schedule Status nodes rather than typing one, so a graph and C++ compare
+ * against the same spelling. Never cached, so this needs a network.
+ */
+UCLASS()
+class FLOCK_API UFlockGetScheduledNotificationsAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockScheduledNotificationPagePin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockScheduledNotificationPagePin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Get Scheduled Notifications", AdvancedDisplay = "Page,Limit"), Category = "Flock|Notifications")
+	static UFlockGetScheduledNotificationsAction* GetScheduled(UObject* WorldContextObject,
+		const FString& Status = TEXT("pending"), int32 Page = 1, int32 Limit = 100);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockScheduledNotificationPage>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+
+	FString Status;
+	int32 Page = 1;
+	int32 Limit = 100;
+};
+
+/**
+ * Cancels every reminder the player has pending and reports how many the server actually cancelled.
+ *
+ * **Use this rather than looping Cancel Scheduled Notification over a listing.** A Blueprint ForEach
+ * fires every iteration in the same frame, and each cancel rewrites the stored pending list on
+ * completion — so parallel cancels race and the last one home resurrects entries the others removed.
+ * This node walks them sequentially for exactly that reason.
+ *
+ * It cancels what the *server* lists, so it also clears reminders set before a reinstall or on another
+ * device. Entries the server no longer recognises are dropped rather than failing the batch; a transient
+ * failure stops the run and reports the error, leaving the rest for a later call.
+ */
+UCLASS()
+class FLOCK_API UFlockCancelAllScheduledNotificationsAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockCancelAllSchedulesPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockCancelAllSchedulesPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Cancel All Scheduled Notifications"), Category = "Flock|Notifications")
+	static UFlockCancelAllScheduledNotificationsAction* CancelAll(UObject* WorldContextObject);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<int32>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
 };
 
 /**

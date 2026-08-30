@@ -60,4 +60,34 @@ public:
 	/** The wire spelling of a delivery channel ("in_app", "email", "push"). */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Notification Channel To String"), Category = "Flock|Notifications")
 	static FString NotificationChannelToString(EFlockNotificationChannel Channel) { return FlockNotificationChannelToWire(Channel); }
+
+	/**
+	 * The reminders **this install** scheduled that have not fired yet.
+	 *
+	 * Synchronous and network-free, which is why it is a pure node rather than an async one — the same
+	 * reasoning as the asset-cache questions. It is the **offline fallback**: it cannot see a reminder set
+	 * before a reinstall or on another device. Prefer Flock Get Scheduled Notifications when there is a
+	 * network.
+	 */
+	UFUNCTION(BlueprintCallable, meta = (WorldContext = "WorldContextObject",
+		DisplayName = "Flock Get Pending Schedules"), Category = "Flock|Notifications")
+	static TArray<FFlockPendingSchedule> GetPendingSchedules(UObject* WorldContextObject);
+
+	// Schedule status filters for Flock Get Scheduled Notifications.
+	//
+	// Nodes rather than an enum pin, because the server owns this set and may extend it — an enum would
+	// have to fail or default on a state added later. Nodes rather than a typed literal, because a graph
+	// that spells "cancelled" the British way silently filters to nothing instead of failing.
+
+	/** Scheduled and not yet fired — the filter a "my reminders" screen wants. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Schedule Status Pending"), Category = "Flock|Notifications")
+	static FString ScheduleStatusPending() { return FlockScheduledNotificationStatuses::Pending; }
+
+	/** Already delivered. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Schedule Status Delivered"), Category = "Flock|Notifications")
+	static FString ScheduleStatusDelivered() { return FlockScheduledNotificationStatuses::Delivered; }
+
+	/** Cancelled before it fired. Note the single-l wire spelling. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Schedule Status Canceled"), Category = "Flock|Notifications")
+	static FString ScheduleStatusCanceled() { return FlockScheduledNotificationStatuses::Canceled; }
 };

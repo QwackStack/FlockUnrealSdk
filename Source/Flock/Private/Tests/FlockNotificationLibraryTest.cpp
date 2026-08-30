@@ -4,6 +4,7 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Blueprint/FlockNotificationAsyncActions.h"
 #include "Blueprint/FlockNotificationLibrary.h"
 #include "Providers/FlockNotificationProvider.h"
 
@@ -55,6 +56,42 @@ bool FFlockNotificationLibraryParityTest::RunTest(const FString& Parameters)
 	const bool bProv = FFlockNotificationProvider::GetCurrentDevicePlatform(FromProvider);
 	TestEqual(TEXT("platform support parity"), bLib, bProv);
 	TestEqual(TEXT("platform value parity"), static_cast<uint8>(FromLibrary), static_cast<uint8>(FromProvider));
+
+	return true;
+}
+
+// ── The schedule-status nodes answer the wire spellings, and the node default matches the constant ──
+// These nodes exist so a graph never types a status literal. Nothing asserted them, which left the SDK
+// shipping the same unguarded literal it tells users to avoid — including the async node's own default,
+// which UHT forces to be written out longhand.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationScheduleStatusParityTest, "Flock.Notification.Library.ScheduleStatusParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationScheduleStatusParityTest::RunTest(const FString& Parameters)
+{
+	TestEqual(TEXT("pending node matches the constant"),
+		UFlockNotificationLibrary::ScheduleStatusPending(), FString(FlockScheduledNotificationStatuses::Pending));
+	TestEqual(TEXT("delivered node matches the constant"),
+		UFlockNotificationLibrary::ScheduleStatusDelivered(), FString(FlockScheduledNotificationStatuses::Delivered));
+	TestEqual(TEXT("canceled node matches the constant"),
+		UFlockNotificationLibrary::ScheduleStatusCanceled(), FString(FlockScheduledNotificationStatuses::Canceled));
+
+	// The single-l spelling is the whole reason these are nodes; pin it against the British form.
+	TestNotEqual(TEXT("the wire spelling is not the double-l form"),
+		FString(FlockScheduledNotificationStatuses::Canceled), FString(TEXT("cancelled")));
+
+	// UHT needs a literal for a BP pin default, so the constant cannot be used there. Nothing else stops
+	// the two drifting — a changed constant would leave the node silently defaulting to the old value.
+	if (const UFunction* Fn = UFlockGetScheduledNotificationsAction::StaticClass()
+			->FindFunctionByName(TEXT("GetScheduled")))
+	{
+		TestEqual(TEXT("the node's Status pin defaults to the pending constant"),
+			Fn->GetMetaData(TEXT("CPP_Default_Status")), FString(FlockScheduledNotificationStatuses::Pending));
+	}
+	else
+	{
+		AddError(TEXT("Flock Get Scheduled Notifications has no GetScheduled UFunction to inspect."));
+	}
 
 	return true;
 }

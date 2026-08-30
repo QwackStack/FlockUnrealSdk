@@ -23,7 +23,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockShopPagePin, const FFlockShop
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockShopPin, const FFlockShop&, Shop, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockShopItemPin, const FFlockShopItem&, Item, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockShopItemListPin, const TArray<FFlockShopItem>&, Items, const FFlockError&, Error);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPlayerInventoryPin, const FFlockPlayerInventory&, Entry, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPurchaseResultPin, const FFlockPurchaseResult&, PurchaseResult, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockConsumeResultPin, const FFlockConsumeResult&, ConsumeResult, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPlayerInventoryPagePin, const FFlockPlayerInventoryPage&, Page, const FFlockError&, Error);
 
 /** Fetches a page of shops. */
@@ -145,7 +146,13 @@ private:
 	FString PatchId;
 };
 
-/** Buys an item for a player (empty player id = the signed-in player). */
+/**
+ * Buys an item for a player (empty player id = the signed-in player).
+ *
+ * The success pin carries the whole purchase result, not just the inventory row: break it for Inventory,
+ * Granted and Wallet. An item that grants its contents outright leaves Inventory empty — check its Id
+ * before treating it as something the player now owns.
+ */
 UCLASS()
 class FLOCK_API UFlockPurchaseAction : public UBlueprintAsyncActionBase
 {
@@ -153,10 +160,10 @@ class FLOCK_API UFlockPurchaseAction : public UBlueprintAsyncActionBase
 
 public:
 	UPROPERTY(BlueprintAssignable)
-	FFlockPlayerInventoryPin OnSuccess;
+	FFlockPurchaseResultPin OnSuccess;
 
 	UPROPERTY(BlueprintAssignable)
-	FFlockPlayerInventoryPin OnFailure;
+	FFlockPurchaseResultPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
 		DisplayName = "Flock Purchase", AdvancedDisplay = "PlayerId"), Category = "Flock|Shop")
@@ -165,13 +172,47 @@ public:
 	virtual void Activate() override;
 
 private:
-	void Complete(const TFlockResult<FFlockPlayerInventory>& Result);
+	void Complete(const TFlockResult<FFlockPurchaseResult>& Result);
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
 
 	FString ShopItemId;
 	FString PlayerId;
+};
+
+/**
+ * Consumes an owned inventory entry, granting whatever it carries.
+ *
+ * Money-moving, like Purchase: an ambiguous failure fires the failure pin rather than quietly re-sending,
+ * because a second attempt would grant twice. Take the Inventory Id from a Get Player Inventory row or
+ * from a purchase result.
+ */
+UCLASS()
+class FLOCK_API UFlockConsumeInventoryAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockConsumeResultPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockConsumeResultPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Consume Inventory Item"), Category = "Flock|Shop")
+	static UFlockConsumeInventoryAction* ConsumeInventoryItem(UObject* WorldContextObject, const FString& InventoryId);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockConsumeResult>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+
+	FString InventoryId;
 };
 
 /** Fetches a page of a player's owned items (empty player id = the signed-in player). */

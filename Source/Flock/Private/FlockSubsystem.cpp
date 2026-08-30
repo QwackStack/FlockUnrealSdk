@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.6.1");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.7.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -224,6 +224,9 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	ShopProvider = MakeShared<FFlockShopProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
 	ShopProvider->SetAnalyticsProvider(AnalyticsProvider);
+	// A purchase and a consume both return the wallet; feeding it back keeps the cached player row from
+	// serving pre-purchase balances (and from being written back over the purchase by a read-modify-write).
+	ShopProvider->SetPlayerProvider(PlayerProvider);
 
 	// After the player provider, which it writes mutated rows back through. Signing in is one of its
 	// auto-flush triggers; the other two come from its own lifecycle pump, started in Initialize() below.
