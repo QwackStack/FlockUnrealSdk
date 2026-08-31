@@ -6,6 +6,7 @@
 #include "Auth/FlockAuthSession.h"
 #include "FlockEventModels.h"
 #include "FlockEvents.h"
+#include "Http/FlockErrorHints.h"
 #include "Http/FlockProviderBase.h"
 #include "Models/FlockAuthModels.h"
 #include "UObject/WeakObjectPtrTemplates.h"
@@ -260,6 +261,10 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 		{
 			if (!Result.bSuccess)
 			{
+				// One code is genuinely ambiguous — invalid_login_credentials means "register this
+				// device first" for a device login but "wrong password" for email. The HTTP layer has
+				// no way to know which, so the credential refines the context-free hint here.
+				Result.Error.Hint = FFlockErrorHints::ForAuth(Result.Error.ErrorCode, Method);
 				if (OnComplete)
 				{
 					OnComplete(Result);

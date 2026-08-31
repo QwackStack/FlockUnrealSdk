@@ -7,6 +7,7 @@
 #include "Auth/FlockAuthSession.h"
 #include "FlockEvents.h"
 #include "FlockLogger.h"
+#include "Http/FlockErrorHints.h"
 #include "Http/FlockHttpClient.h"
 #include "Http/FlockProviderBase.h"
 #include "Misc/Base64.h"
@@ -307,6 +308,60 @@ bool FFlockAuthProviderLoginTest::RunTest(const FString& Parameters)
 			[&](TFlockResult<FFlockPlayerLoginResponse> R) { Type = R.Error.Type; });
 		TestEqual(TEXT("auth error surfaces"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
 		TestEqual(TEXT("no refresh triggered"), F.Fake->CountTo(TEXT("token/refresh")), 0);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAuthProviderFailureTextTest, "Flock.Auth.Provider.FailureNamesTheFix",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAuthProviderFailureTextTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockAuthProviderTestHelpers;
+
+	const TCHAR* Credentials = TEXT("{\"detail\":{\"code\":\"player.invalid_login_credentials\",\"message\":\"Invalid credentials\"}}");
+
+	// Device login: the operation label the call site declares, and the device-specific refinement.
+	{
+		FProviderFixture F;
+		F.Fake->On(TEXT("player/login"), FFlockFakeTransport::Status(401, Credentials));
+		FFlockError Error;
+		F.Provider->LoginWithDevice(TEXT("dev-1"), [&](TFlockResult<FFlockPlayerLoginResponse> R) { Error = R.Error; });
+
+		TestEqual(TEXT("operation stamped"), Error.Operation, FString(TEXT("Device login")));
+		TestEqual(TEXT("device hint"), Error.Hint,
+			FFlockErrorHints::ForAuth(EFlockErrorCode::PlayerInvalidLoginCredentials, EFlockAuthMethod::Device));
+
+		const FString Text = Error.ToDisplayText();
+		TestTrue(TEXT("names the call"), Text.StartsWith(TEXT("Device login failed: ")));
+		TestTrue(TEXT("carries the server reason"), Text.Contains(TEXT("Invalid credentials")));
+		TestTrue(TEXT("tags the code"), Text.Contains(TEXT("[player.invalid_login_credentials, HTTP 401]")));
+		TestTrue(TEXT("points at device registration"), Text.Contains(TEXT("Fix: This device is not registered yet.")));
+	}
+	// Same code, same route family, different remedy — which is the entire reason ForAuth exists.
+	{
+		FProviderFixture F;
+		F.Fake->On(TEXT("player/login"), FFlockFakeTransport::Status(401, Credentials));
+		FFlockError Error;
+		F.Provider->LoginWithEmail(TEXT("a@b.c"), TEXT("bad-pw"),
+			[&](TFlockResult<FFlockPlayerLoginResponse> R) { Error = R.Error; });
+
+		TestEqual(TEXT("operation stamped"), Error.Operation, FString(TEXT("Email login")));
+		TestTrue(TEXT("email hint, not the device one"), Error.Hint.Contains(TEXT("Wrong email or password")));
+	}
+	// A non-auth provider gets the operation stamp from the same funnel and the context-free hint.
+	{
+		FProviderFixture F;
+		FString SetError;
+		F.Session->SetTokens(MakeJwt(TEXT("p-1")), TEXT("r-1"), SetError); // signed in for the account route
+		F.Fake->On(TEXT("player/link/device"), FFlockFakeTransport::Status(400,
+			TEXT("{\"detail\":{\"code\":\"player.account_already_linked\",\"message\":\"Already linked\"}}")));
+		FFlockError Error;
+		F.Provider->LinkDevice(TEXT("dev-1"), [&](TFlockResult<FFlockPlayerAccountsResponse> R) { Error = R.Error; });
+
+		TestEqual(TEXT("operation stamped"), Error.Operation, FString(TEXT("Link device")));
+		TestEqual(TEXT("context-free hint for the code"), Error.Hint,
+			FFlockErrorHints::For(EFlockErrorCode::PlayerAccountAlreadyLinked));
 	}
 	return true;
 }

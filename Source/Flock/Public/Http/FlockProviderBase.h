@@ -110,10 +110,13 @@ protected:
 		// Resolved now, at dispatch, so the completion still reports the origin that made the call.
 		const FString LoggedContext = DecorateContext(Context);
 		TFunction<void(TFlockResult<T>)> Finish =
-			[Log, LoggedContext, OnComplete, IsExpectedFailure](TFlockResult<T> Result)
+			[Log, Context, LoggedContext, OnComplete, IsExpectedFailure](TFlockResult<T> Result)
 		{
 			if (!Result.bSuccess)
 			{
+				// The label each call site already declares, so a failure names the call that produced
+				// it. Stamped here rather than per provider: every call funnels through this one place.
+				Result.Error.Operation = Context;
 				// Some failures are a normal outcome the caller converts into a success (registering
 				// an identity that already exists). Logging those as errors is noise that devalues
 				// the real ones, so the caller can declare them and they drop to debug.

@@ -18,7 +18,11 @@ class FLOCK_API UFlockErrorLibrary : public UBlueprintFunctionLibrary
 	GENERATED_BODY()
 
 public:
-	/** Log-friendly text: [Type] Message (HTTP status), plus the raw server body when present. */
+	/**
+	 * One line naming both the problem and the fix: the operation that failed, the server's own reason,
+	 * a [code, HTTP n] tag, and a "Fix:" line. The raw response body is deliberately not included —
+	 * read FFlockError::Body for that.
+	 */
 	UFUNCTION(BlueprintPure, Category = "Flock|Error", meta = (DisplayName = "To String (Flock Error)"))
 	static FString ToDisplayString(const FFlockError& Error);
 

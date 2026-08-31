@@ -18,6 +18,7 @@ enum class EFlockErrorCode : uint8
 
 	// analytics.*
 	AnalyticsCurrencyNotFound,
+	AnalyticsInvalidCurrencyId,
 	AnalyticsPlayerNotFound,
 	AnalyticsSessionNotFound,
 
@@ -37,6 +38,7 @@ enum class EFlockErrorCode : uint8
 	GameCommandPlayerDataNotFound,
 	GameCommandPlayerDataNotLinkedToTemplate,
 	GameCommandPlayerTemplateNotFound,
+	GameCommandRateLimited,
 	GameCommandTemplateValidationFailed,
 
 	// game_config.*
@@ -64,6 +66,13 @@ enum class EFlockErrorCode : uint8
 
 	// log_event.*
 	LogEventGameNotFound,
+
+	// notification_template.*
+	//
+	// The wire code is `notification_template.not_found`, so the PascalCased name collapses to this —
+	// it is not `notification.template_not_found`. The inbox and schedule routes raise no code of their
+	// own; an unknown template is the only coded failure in the notification family.
+	NotificationTemplateNotFound,
 
 	// player.*
 	PlayerAccountAlreadyLinked,
@@ -96,6 +105,8 @@ enum class EFlockErrorCode : uint8
 	PlayerDataPlayerNotFound,
 
 	// player_inventory.*
+	PlayerInventoryAlreadyUsed,
+	PlayerInventoryInventoryEntryNotFound,
 	PlayerInventoryPlayerNotFound,
 
 	// player_template.*
@@ -107,7 +118,10 @@ enum class EFlockErrorCode : uint8
 	ShopCurrencyTemplateNotFound,
 	ShopInsufficientFunds,
 	ShopItemNotFound,
+	ShopMalformedReward,
+	ShopPackGrantsNothing,
 	ShopPlayerNotFound,
+	ShopRewardCurrencyNotHeld,
 	ShopShopNotFound,
 	ShopWalletNotFound,
 

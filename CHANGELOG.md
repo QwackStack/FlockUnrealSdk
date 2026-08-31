@@ -5,6 +5,56 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-08-31
+
+A failure now tells you what broke and what to do about it. Printing an error names the call that
+failed, the server's own reason, the coded error, and the next step to take.
+
+**Engine support re-verified for this release.** `Tooling/Build-AllEngines.ps1` cleaned, built and ran
+the full automation suite against **UE 5.5, 5.6, 5.7 and 5.8** — **415/415 editor and 133/133 `-game` on
+each** — and reported *"The declared claim (UE 5.5 to UE 5.8) is verified."*
+
+### Added
+
+- **`FFlockError::Hint`** — the SDK's next step for this failure, filled from a table keyed on
+  `EFlockErrorCode` and stamped when the error is built, so any coded failure carries its remedy
+  whichever layer produced it.
+- **`FFlockError::Operation`** — a short label of the call that failed (`Device login`,
+  `Purchase shop item`), taken from the context each provider call site already declares.
+- **`FFlockError::ToDisplayText()`** — one line naming both the problem and the fix:
+  `Device login failed: Invalid credentials [player.invalid_login_credentials, HTTP 401]` followed by
+  `Fix: This device is not registered yet. Call Flock Register With Device once...`. Each segment is
+  dropped when its source is empty, so a client-side failure still composes to exactly its message.
+- **`FFlockErrorHints`** — the `EFlockErrorCode` to next-step table, public so a game can reuse the
+  wording in its own UI. `ForAuth(Code, Method)` exists because one code is genuinely ambiguous:
+  `player.invalid_login_credentials` means "register this device first" for a device login and "wrong
+  password" for email, and the HTTP layer cannot know which.
+- **Eight `EFlockErrorCode` members** that were missing, all on surface this SDK calls:
+  `NotificationTemplateNotFound`, `PlayerInventoryAlreadyUsed`, `PlayerInventoryInventoryEntryNotFound`,
+  `ShopMalformedReward`, `ShopPackGrantsNothing`, `ShopRewardCurrencyNotHeld`, `GameCommandRateLimited`
+  and `AnalyticsInvalidCurrencyId`. Each previously arrived as `Unknown` — including both `Consume`
+  failures and all three reward failures, which had shipped uncovered alongside 1.7.0's own shop work.
+- **[Errors guide](Documentation/errors.md)** — what an `FFlockError` carries, branching on codes rather
+  than text, and what is worth retrying yourself.
+
+### Changed
+
+- **`To String (Flock Error)` now composes the developer-facing line** rather than returning the log
+  text. The raw response body is no longer part of it — bucketing an error tracker by unbounded payload
+  is what that exclusion was always about. Read `FFlockError::Body`, or `ToString()`, which is unchanged
+  and still appends it.
+- `FFlockError::Message` is unchanged and stays terse. The composed text is additive.
+
+### Fixed
+
+- **A request-validation failure now names the offending field.** `detail` arrives in two shapes: the
+  game routes' coded `{code,message}` object, and the request-validation layer's array of `{loc,msg}`,
+  which carries no code at all. Only the object was read, so that entire class of 422 surfaced as a bare
+  "Validation failed" with no reason — the server's explanation sat unread in the body. Arrays now render
+  as `body.player_data: Input should be a valid dictionary`, three fields spelled out and the rest
+  collapsed into a `(+n more)` tail. A plain-string `detail`, which is what an authentication failure
+  returns, is carried through the same way.
+
 ## [1.7.0] - 2026-08-30
 
 Shop items can grant rewards server-side and the SDK now surfaces them, and the player's scheduled

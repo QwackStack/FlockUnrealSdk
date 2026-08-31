@@ -4,7 +4,7 @@
 
 FString UFlockErrorLibrary::ToDisplayString(const FFlockError& Error)
 {
-	return Error.ToString();
+	return Error.ToDisplayText();
 }
 
 bool UFlockErrorLibrary::IsAlreadyRegistered(const FFlockError& Error)

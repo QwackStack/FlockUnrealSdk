@@ -79,6 +79,51 @@ bool FFlockJsonCodedErrorTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonFieldErrorsTest, "Flock.Http.Json.FieldErrors",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockJsonFieldErrorsTest::RunTest(const FString& Parameters)
+{
+	FString OutCode;
+	FString OutMessage;
+
+	// The other shape of `detail`: an array of field errors, which carries no code at all. Reading only
+	// the object shape left this class of 422 reporting no reason whatsoever.
+	FFlockJsonUtils::ParseCodedError(
+		TEXT("{\"detail\":[{\"loc\":[\"body\",\"player_data\"],\"msg\":\"Input should be a valid dictionary\",\"type\":\"dict_type\"}]}"),
+		OutCode, OutMessage);
+	TestEqual(TEXT("field errors carry no code"), OutCode, FString());
+	TestEqual(TEXT("field error names the field"), OutMessage,
+		FString(TEXT("body.player_data: Input should be a valid dictionary")));
+
+	// Three are spelled out; the rest are counted, so one bad request can't flood a log line.
+	FFlockJsonUtils::ParseCodedError(
+		TEXT("{\"detail\":[")
+		TEXT("{\"loc\":[\"body\",\"a\"],\"msg\":\"one\"},")
+		TEXT("{\"loc\":[\"body\",\"b\"],\"msg\":\"two\"},")
+		TEXT("{\"loc\":[\"body\",\"c\"],\"msg\":\"three\"},")
+		TEXT("{\"loc\":[\"body\",\"d\"],\"msg\":\"four\"},")
+		TEXT("{\"loc\":[\"body\",\"e\"],\"msg\":\"five\"}]}"),
+		OutCode, OutMessage);
+	TestEqual(TEXT("first three then a tail"), OutMessage,
+		FString(TEXT("body.a: one; body.b: two; body.c: three; (+2 more)")));
+
+	// No loc: the reason still beats saying nothing.
+	FFlockJsonUtils::ParseCodedError(TEXT("{\"detail\":[{\"msg\":\"Field required\"}]}"), OutCode, OutMessage);
+	TestEqual(TEXT("message without a location"), OutMessage, FString(TEXT("Field required")));
+
+	// A plain string detail is neither shape, and is still the server's only explanation.
+	FFlockJsonUtils::ParseCodedError(TEXT("{\"detail\":\"Not authenticated\"}"), OutCode, OutMessage);
+	TestEqual(TEXT("string detail passed through"), OutMessage, FString(TEXT("Not authenticated")));
+
+	// An entry with nothing readable is skipped rather than rendered as an empty clause.
+	FFlockJsonUtils::ParseCodedError(TEXT("{\"detail\":[{\"loc\":[\"body\"]},{\"loc\":[\"body\",\"x\"],\"msg\":\"bad\"}]}"),
+		OutCode, OutMessage);
+	TestEqual(TEXT("unreadable entry skipped"), OutMessage, FString(TEXT("body.x: bad")));
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonPaginatedTest, "Flock.Http.Json.Paginated",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
