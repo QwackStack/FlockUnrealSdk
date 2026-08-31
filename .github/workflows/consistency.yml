@@ -99,3 +99,193 @@ jobs:
             exit 1
           fi
           echo "$total wire error codes checked against $(wc -l < /tmp/members.txt) enum members — no drift."
+
+  version:
+    # Three facts about a release have to agree and nothing mechanical links them: Flock.uplugin's
+    # VersionName is what the archive is named for and what UFlockSubsystem::SdkVersion is bumped
+    # alongside, CHANGELOG.md is where a user finds out what actually changed, and main's VersionName is
+    # what the last release shipped as.
+    #
+    # release.yml already refuses a tag that disagrees with VersionName, and that check is not repeated
+    # here — it has exactly one correct place to live. But it fires on a tag push, which is the last
+    # possible moment: by then the branch is merged, and the fix is a fresh commit on main plus a moved
+    # tag. The dangling v1.5.0 tag is what that costs. VersionName still read 1.4.0 at the
+    # notification-work merge, so the tag named a version the manifest had never been bumped to; nothing
+    # published, and 1.5.0 is now a number this project has to skip. A bump check on the pull request
+    # would have caught it while it was still one amend.
+    #
+    # Needs no engine, same as the checks above — these read text files.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # At v4 this is documented as "all history for all branches and tags". The bump check reads the
+          # manifest out of the pull request's base commit, and the default depth of 1 does not contain
+          # it. Resolving the base by sha rather than re-deriving a merge base is what makes the
+          # comparison exact: main can move between the event being created and this job running.
+          fetch-depth: 0
+
+      # Each step re-reads the manifest instead of passing a step output along. They are meant to be
+      # liftable — copied out and run against a doctored file to prove they fail — and a step that only
+      # works downstream of another cannot be run that way.
+      - name: Flock.uplugin VersionName is valid semver
+        run: |
+          set -euo pipefail
+
+          MANIFEST=Flock.uplugin
+
+          # The same extraction release.yml uses, so the two cannot disagree about what the version *is*
+          # while arguing about whether it is valid.
+          VERSION=$(grep -o '"VersionName": *"[^"]*"' "$MANIFEST" | cut -d'"' -f4 || true)
+
+          if [ -z "$VERSION" ]; then
+            echo "::error file=$MANIFEST::No VersionName found in $MANIFEST. Add a \"VersionName\": \"X.Y.Z\" entry — the release archive and the tag check both read it."
+            exit 1
+          fi
+
+          # Strict MAJOR.MINOR.PATCH: no prerelease suffix, no leading zeros. Narrower than semver
+          # proper, deliberately. Every version this plugin has shipped is X.Y.Z, the tag check is a
+          # string comparison, and `sort -V` orders a prerelease suffix in a way that would make the bump
+          # check below quietly wrong. Widen this and that comparison has to be rewritten with it.
+          if ! printf '%s' "$VERSION" | grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "::error file=$MANIFEST::VersionName \"$VERSION\" is not valid semver. Write it as MAJOR.MINOR.PATCH with no prerelease suffix and no leading zeros, e.g. 1.8.0 — and bump UFlockSubsystem::SdkVersion and CHANGELOG.md with it."
+            exit 1
+          fi
+
+          echo "Flock.uplugin VersionName is $VERSION."
+
+      - name: CHANGELOG.md has an entry for that version
+        run: |
+          set -euo pipefail
+
+          MANIFEST=Flock.uplugin
+          LOG=CHANGELOG.md
+
+          VERSION=$(grep -o '"VersionName": *"[^"]*"' "$MANIFEST" | cut -d'"' -f4 || true)
+          if [ -z "$VERSION" ]; then
+            echo "::error file=$MANIFEST::No VersionName found in $MANIFEST, so there is nothing to look for in $LOG."
+            exit 1
+          fi
+
+          if [ ! -f "$LOG" ]; then
+            echo "::error::$LOG is missing. This check reads it; if it moved, update this workflow with it."
+            exit 1
+          fi
+
+          # The dots are literal. Unescaped, "1.8.0" also matches "1a8b0" — the kind of match that makes
+          # a check pass for the wrong reason.
+          ESCAPED=$(printf '%s' "$VERSION" | sed 's/\./\\./g')
+
+          # The Keep a Changelog heading, as every entry in this file is written: "## [1.8.0] - 2026-08-31".
+          if ! grep -qE "^##[[:space:]]+\[${ESCAPED}\]" "$LOG"; then
+            echo "::error file=$LOG::No entry for $VERSION. Add a '## [$VERSION] - YYYY-MM-DD' heading describing what changed — the release notes and the plugin download both claim this version, and this file is the only place that says what is in it."
+            exit 1
+          fi
+
+          echo "$LOG documents $VERSION."
+
+      - name: UFlockSubsystem::SdkVersion matches the manifest
+        run: |
+          set -euo pipefail
+
+          # The third leg of the version trio, and the one with no other check behind it. A bump touches
+          # Flock.uplugin, this constant and CHANGELOG.md together; the steps above cover the first two,
+          # and release.yml covers the tag. Nothing covered this one.
+          #
+          # A stale value here fails silently and keeps failing after the release: it is what the SDK
+          # reports at *runtime*, so it stamps the analytics device record, the crash tombstone, and the
+          # `sdk` field of every snapshot envelope written to disk. Telemetry then attributes a fleet of
+          # sessions to a version that never shipped, and nothing anywhere goes red — the number is just
+          # wrong, in the backend, for as long as those builds are live.
+          MANIFEST=Flock.uplugin
+          SUBSYSTEM=Source/Flock/Private/FlockSubsystem.cpp
+
+          VERSION=$(grep -o '"VersionName": *"[^"]*"' "$MANIFEST" | cut -d'"' -f4 || true)
+          if [ -z "$VERSION" ]; then
+            echo "::error file=$MANIFEST::No VersionName found in $MANIFEST, so there is nothing to compare the runtime constant against."
+            exit 1
+          fi
+
+          if [ ! -f "$SUBSYSTEM" ]; then
+            echo "::error::$SUBSYSTEM is missing. This check reads UFlockSubsystem::SdkVersion out of it; if the definition moved, update this workflow with it."
+            exit 1
+          fi
+
+          # Matches the definition, not a mention: the assignment and its TEXT() literal have to be on the
+          # line. `head -1` because a match is the definition and there is exactly one — a second would
+          # mean the constant is defined twice, which the compiler would reject first.
+          SDK_VERSION=$(grep -oE 'UFlockSubsystem::SdkVersion[[:space:]]*=[[:space:]]*TEXT\("[^"]*"\)' "$SUBSYSTEM" \
+                          | head -1 | grep -oE '"[^"]*"' | tr -d '"' || true)
+
+          if [ -z "$SDK_VERSION" ]; then
+            echo "::error file=$SUBSYSTEM::Could not read UFlockSubsystem::SdkVersion. This check expects the definition to stay on one line, as: const FString UFlockSubsystem::SdkVersion = TEXT(\"X.Y.Z\"); — if it was reformatted or moved, update this workflow with it rather than relaxing the pattern."
+            exit 1
+          fi
+
+          if [ "$SDK_VERSION" != "$VERSION" ]; then
+            echo "::error file=$SUBSYSTEM::UFlockSubsystem::SdkVersion is $SDK_VERSION but $MANIFEST says $VERSION. Bump the constant to $VERSION — it is what the SDK reports at runtime, so a stale value misattributes analytics, crash markers and snapshot envelopes to a version that never shipped."
+            exit 1
+          fi
+
+          echo "UFlockSubsystem::SdkVersion and $MANIFEST both read $VERSION."
+
+      - name: VersionName is ahead of main
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          MANIFEST=Flock.uplugin
+
+          if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
+            echo "Not a pull request — there is no base version to compare against."
+            exit 0
+          fi
+
+          if [ "$BASE_REF" != "main" ]; then
+            echo "This pull request targets '$BASE_REF', not main — the bump is enforced on the way into main."
+            exit 0
+          fi
+
+          if [ -z "${BASE_SHA:-}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::Could not resolve the base commit '${BASE_SHA:-<empty>}'. This step needs the checkout above to keep fetch-depth: 0."
+            exit 1
+          fi
+
+          # Skipped, not failed, when nothing under Source/ moved. A docs, workflow or CHANGELOG-only
+          # pull request ships no code, and demanding a bump for one either trains people to bump for
+          # nothing or trains them to merge past a red check. Both are worse than not asking.
+          CHANGED=$(git diff --name-only "$BASE_SHA" HEAD)
+          if ! printf '%s\n' "$CHANGED" | grep -q '^Source/'; then
+            echo "No files under Source/ changed — no version bump required. Changed:"
+            printf '%s\n' "$CHANGED" | sed 's/^/  /'
+            exit 0
+          fi
+
+          VERSION=$(grep -o '"VersionName": *"[^"]*"' "$MANIFEST" | cut -d'"' -f4 || true)
+          BASE_VERSION=$(git show "${BASE_SHA}:${MANIFEST}" | grep -o '"VersionName": *"[^"]*"' | cut -d'"' -f4 || true)
+
+          if [ -z "$VERSION" ] || [ -z "$BASE_VERSION" ]; then
+            echo "::error file=$MANIFEST::Could not read VersionName from this branch ('${VERSION:-<empty>}') or from main ('${BASE_VERSION:-<empty>}')."
+            exit 1
+          fi
+
+          echo "this branch: $VERSION   main: $BASE_VERSION"
+
+          if [ "$VERSION" = "$BASE_VERSION" ]; then
+            echo "::error file=$MANIFEST::This pull request changes code under Source/ but leaves VersionName at $BASE_VERSION, the version main already shipped. Bump it, and bump UFlockSubsystem::SdkVersion and CHANGELOG.md with it."
+            exit 1
+          fi
+
+          # sort -V puts the higher version last. Equality is handled above, so anything not strictly
+          # greater is a version that went backwards.
+          HIGHEST=$(printf '%s\n%s\n' "$VERSION" "$BASE_VERSION" | sort -V | tail -1)
+          if [ "$HIGHEST" != "$VERSION" ]; then
+            echo "::error file=$MANIFEST::VersionName $VERSION is lower than main's $BASE_VERSION. A release can only move forward — the tag, the archive name and the CHANGELOG all read this field."
+            exit 1
+          fi
+
+          echo "VersionName $VERSION is ahead of main's $BASE_VERSION."

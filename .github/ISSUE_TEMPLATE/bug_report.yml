@@ -1,0 +1,83 @@
+name: Bug report
+description: Report a problem with the Flock Unreal SDK
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: What did you do, and what went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Say whether the call came from C++ or from a Blueprint graph — the two take different paths into the SDK.
+      placeholder: |
+        1. Get the Flock subsystem and call InitializeWithConfig
+        2. Call Flock Login With Email (Blueprint) / FFlockAuthProvider::LoginWithEmail (C++)
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: VersionName from Flock.uplugin, or Flock Get Sdk Version at runtime.
+      placeholder: "1.8.0"
+    validations:
+      required: true
+  - type: input
+    id: engine-version
+    attributes:
+      label: Unreal Engine version
+      description: Including the hotfix, e.g. 5.5.4. Say so if this is a source build.
+      placeholder: "5.5.4"
+    validations:
+      required: true
+  - type: dropdown
+    id: build-type
+    attributes:
+      label: Where did this happen?
+      description: A defect that only appears in a packaged build is a different defect — the editor hosts things a cooked build does not.
+      options:
+        - Editor
+        - Play In Editor (PIE)
+        - Standalone -game
+        - Packaged Development build
+        - Packaged Shipping build
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Target platform
+      multiple: true
+      options:
+        - Windows (Win64)
+        - macOS
+        - Linux
+        - Android
+        - iOS
+        - Console
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: |
+        LogFlock lines from Saved/Logs/. Debug breadcrumbs are written at Verbose, so turn on Enable
+        Debug Logs in Project Settings (or run `Log LogFlock Verbose`) before reproducing — the calls
+        are always there, but the category is filtered out by default.
+      render: shell
