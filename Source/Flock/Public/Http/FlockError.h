@@ -73,6 +73,14 @@ struct FLOCK_API FFlockError
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString ServerMessage;
 
+	/** SDK-authored next step for this failure; empty when the SDK has nothing to add beyond the server's reason. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Hint;
+
+	/** Short label of the SDK call that failed (e.g. "Device login"), stamped by the provider that issued it. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Operation;
+
 	/** True when the server sent a Retry-After hint (429/503) parsed into RetryAfterSeconds. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	bool bHasRetryAfter = false;
@@ -81,13 +89,22 @@ struct FLOCK_API FFlockError
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	float RetryAfterSeconds = 0.f;
 
-	/** Builds an error and parses ErrorCode from the coded string. */
+	/** Builds an error, parses ErrorCode from the coded string, and stamps the hint for that code. */
 	static FFlockError Make(EFlockErrorType InType, const FString& InMessage, int32 InStatusCode = 0,
 		const FString& InBody = FString(), const FString& InCode = FString(),
 		const FString& InServerMessage = FString());
 
 	/** Standard text plus the server body (so logs show the reason while Message stays terse). */
 	FString ToString() const;
+
+	/**
+	 * One developer-facing line naming both the problem and the fix: the operation, the server's own
+	 * reason (or the terse Message when it sent none), a [code, HTTP n] tag, and a "Fix:" line from
+	 * Hint. Each segment is omitted when its source is empty. The status joins the tag only when the
+	 * reason came from the server, since the terse fallback already carries it. Body stays out — that
+	 * is unbounded payload, and it is what ToString() is for.
+	 */
+	FString ToDisplayText() const;
 
 	/**
 	 * True when a register/login route reports this identity (email/device/OAuth) already belongs to an

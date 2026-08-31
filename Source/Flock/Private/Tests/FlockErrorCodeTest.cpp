@@ -24,6 +24,22 @@ bool FFlockErrorCodeParseTest::RunTest(const FString& Parameters)
 		static_cast<int32>(FFlockErrorCodes::Parse(TEXT("leaderboard.not_found"))),
 		static_cast<int32>(EFlockErrorCode::LeaderboardNotFound));
 
+	// Observed live: `notification_template.not_found`, not `notification.template_not_found` — the two
+	// spellings PascalCase to the same member name, so only the wire string tells them apart.
+	TestEqual(TEXT("known notification template code"),
+		static_cast<int32>(FFlockErrorCodes::Parse(TEXT("notification_template.not_found"))),
+		static_cast<int32>(EFlockErrorCode::NotificationTemplateNotFound));
+
+	// The namespace repeats inside the reason here, and the doubled word is not a typo.
+	TestEqual(TEXT("known player_inventory code"),
+		static_cast<int32>(FFlockErrorCodes::Parse(TEXT("player_inventory.inventory_entry_not_found"))),
+		static_cast<int32>(EFlockErrorCode::PlayerInventoryInventoryEntryNotFound));
+
+	// Consume and purchase share their reward failures; both arrive as shop.* even from the inventory route.
+	TestEqual(TEXT("known shop reward code"),
+		static_cast<int32>(FFlockErrorCodes::Parse(TEXT("shop.reward_currency_not_held"))),
+		static_cast<int32>(EFlockErrorCode::ShopRewardCurrencyNotHeld));
+
 	TestEqual(TEXT("unknown code -> Unknown"),
 		static_cast<int32>(FFlockErrorCodes::Parse(TEXT("nope.not_a_real_code"))),
 		static_cast<int32>(EFlockErrorCode::Unknown));

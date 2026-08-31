@@ -413,6 +413,7 @@ so you can read only the half you work in.
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, logs and events, transactions, consent, crash detection |
 | [SDK events](Documentation/events.md) | The event hub — lifecycle, auth, and session events |
+| [Errors](Documentation/errors.md) | What an `FFlockError` carries, branching on codes, the hint that names the fix, field-error validation failures |
 | [Logging & debugging](Documentation/logging.md) | Debug logs, the network call trace, the self-test |
 | [Architecture](Documentation/architecture.md) | How the SDK is layered and why, the module split, the folder map, and the rules that hold across every feature |
 
@@ -432,6 +433,16 @@ if (!Result.bSuccess && Result.Error.ErrorCode == EFlockErrorCode::ShopInsuffici
 Serialization, Cancelled), the server's `EFlockErrorCode`, and the server's own human-readable
 `ServerMessage`. `UFlockErrorLibrary` exposes display text and coded-error group checks to Blueprint, so
 a graph can branch on a failure without matching strings.
+
+Printing one is meant to be enough to act on — `To String (Flock Error)`, or
+`FFlockError::ToDisplayText()`, names the call, the server's reason, the code and the next step:
+
+```
+Device login failed: Invalid credentials [player.invalid_login_credentials, HTTP 401]
+Fix: This device is not registered yet. Call Flock Register With Device once to create the account, then Flock Login With Device on later launches.
+```
+
+Full details in the [errors guide](Documentation/errors.md).
 
 ## Offline caching
 

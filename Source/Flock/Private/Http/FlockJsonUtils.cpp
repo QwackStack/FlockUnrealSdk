@@ -43,6 +43,71 @@ namespace
 			return In;
 		}
 	}
+
+	/** At most this many field errors are spelled out; the rest collapse into a "(+n more)" tail. */
+	constexpr int32 MaxFieldErrorsShown = 3;
+
+	/** "body.player_data" — the dotted path the framework reports a rejected field at. */
+	FString JoinLocation(const TArray<TSharedPtr<FJsonValue>>* Location)
+	{
+		FString Path;
+		if (Location == nullptr)
+		{
+			return Path;
+		}
+		for (const TSharedPtr<FJsonValue>& Part : *Location)
+		{
+			if (!Part.IsValid())
+			{
+				continue;
+			}
+			if (!Path.IsEmpty())
+			{
+				Path += TEXT(".");
+			}
+			Path += Part->AsString();
+		}
+		return Path;
+	}
+
+	/** "body.player_data: Input should be a valid dictionary" — names the field so the caller can fix the payload. */
+	FString DescribeFieldErrors(const TArray<TSharedPtr<FJsonValue>>& Errors)
+	{
+		FString Text;
+		int32 Shown = 0;
+		for (const TSharedPtr<FJsonValue>& Entry : Errors)
+		{
+			if (Shown == MaxFieldErrorsShown)
+			{
+				Text += FString::Printf(TEXT("; (+%d more)"), Errors.Num() - Shown);
+				break;
+			}
+
+			const TSharedPtr<FJsonObject>* Error = nullptr;
+			if (!Entry.IsValid() || !Entry->TryGetObject(Error) || Error == nullptr || !Error->IsValid())
+			{
+				continue;
+			}
+
+			FString Why;
+			if (!(*Error)->TryGetStringField(TEXT("msg"), Why) || Why.IsEmpty())
+			{
+				continue;
+			}
+
+			const TArray<TSharedPtr<FJsonValue>>* Location = nullptr;
+			(*Error)->TryGetArrayField(TEXT("loc"), Location);
+			const FString Where = JoinLocation(Location);
+
+			if (Shown > 0)
+			{
+				Text += TEXT("; ");
+			}
+			Text += Where.IsEmpty() ? Why : FString::Printf(TEXT("%s: %s"), *Where, *Why);
+			++Shown;
+		}
+		return Text;
+	}
 }
 
 FString FFlockJsonUtils::SnakeToPascal(const FString& In)
@@ -138,12 +203,25 @@ void FFlockJsonUtils::ParseCodedError(const FString& Body, FString& OutCode, FSt
 		return;
 	}
 
-	// Prefer detail (the coded-error shape), fall back to error.code (the enveloped shape).
-	const TSharedPtr<FJsonObject>* Detail = nullptr;
-	if (Root->TryGetObjectField(TEXT("detail"), Detail) && Detail->IsValid())
+	// Two shapes share `detail`: the game routes' coded {code,message} object, and the framework's own
+	// 422 array of field errors. Reading only the object left that class of failure with no reason at all.
+	const TSharedPtr<FJsonValue> Detail = Root->TryGetField(TEXT("detail"));
+	if (Detail.IsValid() && Detail->Type == EJson::Object)
 	{
-		(*Detail)->TryGetStringField(TEXT("code"), OutCode);
-		(*Detail)->TryGetStringField(TEXT("message"), OutMessage);
+		const TSharedPtr<FJsonObject> DetailObject = Detail->AsObject();
+		if (DetailObject.IsValid())
+		{
+			DetailObject->TryGetStringField(TEXT("code"), OutCode);
+			DetailObject->TryGetStringField(TEXT("message"), OutMessage);
+		}
+	}
+	else if (Detail.IsValid() && Detail->Type == EJson::Array)
+	{
+		OutMessage = DescribeFieldErrors(Detail->AsArray());
+	}
+	else if (Detail.IsValid() && Detail->Type == EJson::String)
+	{
+		OutMessage = Detail->AsString();
 	}
 
 	if (OutCode.IsEmpty())
