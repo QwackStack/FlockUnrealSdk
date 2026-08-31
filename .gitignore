@@ -1,7 +1,7 @@
 # ────────────────────────────────────────────────────────────
 #  Unreal Engine — build artifacts & generated output
-#  (mirrors the Flock Unity SDK's intent: never commit generated
-#   build output; do commit source, config, .uplugin and Resources)
+#  (never commit generated build output; do commit source, config,
+#   .uplugin and Resources)
 # ────────────────────────────────────────────────────────────
 Binaries/
 Intermediate/
@@ -42,7 +42,7 @@ Saved/
 .vscode/
 
 # ────────────────────────────────────────────────────────────
-#  Local tooling — parity with the Flock Unity SDK's .gitignore
+#  Local tooling
 # ────────────────────────────────────────────────────────────
 # Local Claude Code context (not shared)
 CLAUDE.md
