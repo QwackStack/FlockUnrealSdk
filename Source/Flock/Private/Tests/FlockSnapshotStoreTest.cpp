@@ -203,4 +203,90 @@ bool FFlockSnapshotPruneTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSnapshotStateSurvivesPruneTest, "Flock.Http.SnapshotStore.StateSurvivesVersionBump",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSnapshotStateSurvivesPruneTest::RunTest(const FString& Parameters)
+{
+	const FString Root = MakeTempRoot();
+	{
+		FFlockSnapshotStore Store(Root, MakeLogger(), TEXT("9.9.9"));
+
+		// The defect: the offline write queue used to live at "<version>/command/<player>", so shipping a
+		// build with a new GameVersionId deleted the player's unsent writes — no error, no log.
+		const FString StateQueue = FString::Printf(TEXT("%s/command/p-1"), FFlockSnapshotStore::StateScope);
+		Store.Write(StateQueue, TEXT("pending_writes"), TEXT("{\"op\":1}"));
+		Store.Write(TEXT("ver-old/config"), TEXT("a"), TEXT("{\"n\":1}"));
+
+		// Asserted before the prune so a write that never landed cannot masquerade as a prune that ate
+		// it — the two have different fixes and the failure text should say which happened.
+		FString Landed;
+		TestTrue(TEXT("the state write landed"),
+			Store.TryRead(StateQueue, TEXT("pending_writes"), Landed));
+
+		Store.PruneOtherVersions(TEXT("ver-new"));
+
+		FString Value;
+		TestTrue(TEXT("queued writes survive a version change"),
+			Store.TryRead(StateQueue, TEXT("pending_writes"), Value));
+		TestFalse(TEXT("cached answers from another version are still pruned"),
+			Store.TryRead(TEXT("ver-old/config"), TEXT("a"), Value));
+
+		// And every subsequent one, not just the first.
+		Store.PruneOtherVersions(TEXT("ver-newer-still"));
+		TestTrue(TEXT("state survives repeated prunes"),
+			Store.TryRead(StateQueue, TEXT("pending_writes"), Value));
+
+		// A version id is a ULID, so it can never sanitize to the reserved name. Without that the pruner
+		// would either eat state or spare a stale version, and neither would be visible.
+		Store.PruneOtherVersions(TEXT("01KZ3ZY8RQHTXRK9VS8H89P296"));
+		TestTrue(TEXT("a realistic ULID version does not collide with the state scope"),
+			Store.TryRead(StateQueue, TEXT("pending_writes"), Value));
+	}
+	DeleteTempRoot(Root);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSnapshotLegacyStateMigrationTest, "Flock.Http.SnapshotStore.MigrateLegacyState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSnapshotLegacyStateMigrationTest::RunTest(const FString& Parameters)
+{
+	const FString Root = MakeTempRoot();
+	{
+		FFlockSnapshotStore Store(Root, MakeLogger(), TEXT("9.9.9"));
+		const FString StateQueue = FString::Printf(TEXT("%s/command/p-1"), FFlockSnapshotStore::StateScope);
+
+		// Exactly what a pre-1.9.0 install has on disk.
+		Store.Write(TEXT("ver-old/command/p-1"), TEXT("pending_writes"), TEXT("{\"op\":1}"));
+		Store.Write(TEXT("ver-old/config"), TEXT("a"), TEXT("{\"n\":1}"));
+
+		TestEqual(TEXT("one queue file moved"), Store.MigrateLegacyState({ TEXT("command") }), 1);
+		Store.PruneOtherVersions(TEXT("ver-new"));
+
+		FString Value;
+		TestTrue(TEXT("the queued write survived the upgrade"),
+			Store.TryRead(StateQueue, TEXT("pending_writes"), Value));
+		TestFalse(TEXT("and is no longer in the version tree"),
+			Store.TryRead(TEXT("ver-old/command/p-1"), TEXT("pending_writes"), Value));
+		TestFalse(TEXT("cache beside it was left for the pruner"),
+			Store.TryRead(TEXT("ver-old/config"), TEXT("a"), Value));
+
+		// It runs on every subsystem init, so it has to be idempotent rather than merely correct once.
+		TestEqual(TEXT("a second run moves nothing"), Store.MigrateLegacyState({ TEXT("command") }), 0);
+
+		// Two versions can each hold a queue for one player — one from before an upgrade, one from a build
+		// that was rolled back. The newer layout wins; the point is that neither is left for the pruner.
+		Store.Write(TEXT("ver-older/command/p-1"), TEXT("pending_writes"), TEXT("{\"op\":2}"));
+		Store.MigrateLegacyState({ TEXT("command") });
+		TestTrue(TEXT("the already-migrated copy is kept"),
+			Store.TryRead(StateQueue, TEXT("pending_writes"), Value));
+		TestTrue(TEXT("and it is the newer one"), Value.Contains(TEXT("\"op\":1")));
+		TestFalse(TEXT("the legacy copy is not left behind"),
+			Store.TryRead(TEXT("ver-older/command/p-1"), TEXT("pending_writes"), Value));
+	}
+	DeleteTempRoot(Root);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

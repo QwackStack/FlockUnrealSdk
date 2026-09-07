@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.8.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.9.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -181,6 +181,11 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	if (Settings->bEnableOfflineCache)
 	{
 		SnapshotStore = MakeShared<FFlockSnapshotStore>(Settings->OfflineCacheDirectory, LoggerRef, SdkVersion);
+
+		// Order matters and is the whole fix: rescue state out of the version-scoped tree BEFORE pruning it.
+		// A queue left where builds before 1.9.0 put it would already be deleted by the time its provider
+		// went looking, which is how a game-version change used to lose a player's unsent offline writes.
+		SnapshotStore->MigrateLegacyState({ FFlockCommandProvider::SnapshotCategory });
 		SnapshotStore->PruneOtherVersions(Config.GameVersionId);
 	}
 

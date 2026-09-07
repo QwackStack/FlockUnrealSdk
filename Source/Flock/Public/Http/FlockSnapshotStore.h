@@ -29,6 +29,22 @@ public:
 	/** Reserved scope for pre-version lookups; never pruned by PruneOtherVersions. */
 	static const TCHAR* const BootstrapScope;
 
+	/**
+	 * Reserved first scope segment for STATE, as opposed to cache. Never pruned.
+	 *
+	 * The layout puts the game version first and every other version is deleted at startup, which is right
+	 * for a cached response and catastrophic for anything that is not re-fetchable. A queued offline write
+	 * exists nowhere else — the server has never seen it — so deleting it does not cost a request, it loses
+	 * the player's data.
+	 *
+	 * Compose a state scope with this first and the owning player last: "_state/command/<PlayerId>". Cache
+	 * keeps the version first, unchanged: "<GameVersionId>/leaderboard".
+	 *
+	 * Safe as a reserved name because a game version id is a ULID ([0-9A-Z]) and can never sanitize to it,
+	 * and an unset version sanitizes to "_" rather than to it.
+	 */
+	static const TCHAR* const StateScope;
+
 	/** Empty root defaults to <ProjectSavedDir>/Flock/snapshots. SdkVersion is stamped into the envelope. */
 	FFlockSnapshotStore(const FString& InRootDirectory, const TSharedRef<IFlockLogger>& InLogger, const FString& InSdkVersion);
 
@@ -63,10 +79,27 @@ public:
 	/** Removes one entry. Silent when it was not there — this is a delete, not an assertion it existed. */
 	void DeleteKey(const FString& Scope, const FString& Key);
 
-	/** Drops every top-level scope directory except KeepGameVersionId and BootstrapScope. */
+	/** Drops every top-level scope directory except KeepGameVersionId, BootstrapScope and StateScope. */
 	void PruneOtherVersions(const FString& KeepGameVersionId);
 
+	/**
+	 * Moves pre-1.9.0 state out of the version-scoped tree and under StateScope. Returns how many files moved.
+	 *
+	 * One-time, legacy-only, and deliberately not a general mechanism. The offline write queue used to live
+	 * at "<GameVersionId>/command/<PlayerId>", so shipping a build with a new game version had
+	 * PruneOtherVersions delete the player's unsent writes — silently, with no error and no log. State now
+	 * lives outside that tree by construction, so nothing written from this version on needs rescuing.
+	 *
+	 * It has to run BEFORE the prune, which is why the subsystem calls it rather than a provider rescuing
+	 * its own queue when it loads: by then the directory is already gone.
+	 *
+	 * Delete this once no install predating 1.9.0 can still be upgraded.
+	 */
+	int32 MigrateLegacyState(const TArray<FString>& Leaves);
+
 private:
+	int32 MoveTree(const FString& From, const FString& To);
+
 	FString BuildPath(const FString& Scope, const FString& Key) const;
 	static FString SanitizeScope(const FString& Scope);
 	static FString Sanitize(const FString& Id);

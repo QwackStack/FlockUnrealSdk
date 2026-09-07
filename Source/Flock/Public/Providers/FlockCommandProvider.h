@@ -46,6 +46,15 @@ class FLOCK_API FFlockCommandProvider
 	, public TSharedFromThis<FFlockCommandProvider>
 {
 public:
+	/**
+	 * The scope segment the offline write queue lives under.
+	 *
+	 * Public because the subsystem names it when migrating a queue written by a build before 1.9.0 — see
+	 * FFlockSnapshotStore::MigrateLegacyState. One source of truth, so the migration cannot drift from the
+	 * location it migrates to.
+	 */
+	static const TCHAR* const SnapshotCategory;
+
 	FFlockCommandProvider(const TSharedRef<FFlockHttpClient>& InClient, const FFlockRetryPolicy& InPolicy,
 		const TSharedRef<IFlockLogger>& InLogger, const TSharedRef<FFlockAuthSession>& InSession,
 		const FString& InVersionedApiUrl, const TSharedPtr<FFlockSnapshotStore>& InSnapshotStore,
@@ -231,6 +240,5 @@ private:
 	bool bFlushInFlight = false;
 	bool bWasReachable = true;
 
-	static const TCHAR* const SnapshotCategory;
 	static const TCHAR* const PendingWritesKey;
 };

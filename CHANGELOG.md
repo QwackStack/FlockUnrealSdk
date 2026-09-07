@@ -5,6 +5,36 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-09-07
+
+### Fixed
+
+- **Shipping a build with a new Game Version no longer discards the player's queued offline writes.** A
+  write made with no reachable server is kept on disk and replayed when one comes back — but the queue
+  was stored under the game version, and the plugin deletes every *other* version's stored data at
+  startup. So a player who saved offline and then took an app update lost those writes: no error, no
+  log, nothing to look at. The queue now lives outside the version-scoped tree, where that cleanup
+  cannot reach it.
+
+  **A queue written by an older build is moved for you, once, on the next start** — nothing is lost by
+  upgrading.
+
+  A write queued under an older version still routes correctly and still addresses the right row. If
+  that row's template changed in the meantime the server refuses the replay, and the queue reports that
+  and drops it — a far better outcome than deleting the write unasked.
+
+### Added
+
+- **`FFlockSnapshotStore::StateScope`**, the reserved place for things that are not re-fetchable. The
+  offline cache is scoped by game version and pruned when that version changes, which is right for a
+  cached response and wrong for anything the server has never seen. Anything written under this scope
+  survives a version change.
+
+### Notes
+
+- **Cached answers behave exactly as before**: a new game version still drops the previous one's
+  snapshots, so a running build picks up dashboard changes rather than serving stale content.
+
 ## [1.8.0] - 2026-08-31
 
 A failure now tells you what broke and what to do about it. Printing an error names the call that
