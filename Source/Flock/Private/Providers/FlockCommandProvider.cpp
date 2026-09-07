@@ -3,6 +3,7 @@
 #include "Providers/FlockCommandProvider.h"
 
 #include "Http/FlockEndpoints.h"
+#include "Http/FlockSnapshotStore.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Providers/FlockPlayerProvider.h"
 #include "Serialization/JsonSerializer.h"
@@ -607,7 +608,19 @@ void FFlockCommandProvider::PersistQueue()
 FString FFlockCommandProvider::GetQueueScope() const
 {
 	// QueuePlayerId, not the live player id, so a persist always writes back to the scope it loaded from.
-	return FString::Printf(TEXT("%s/%s"), *GetSnapshotScope(SnapshotCategory), *QueuePlayerId);
+	//
+	// NOT version-scoped, and that is the point. Every other scope in this SDK starts with the game version
+	// so a new build drops the previous one's cached answers. A queued write is not a cached answer — it
+	// exists nowhere else and the server has never seen it. This scope used to start with the version, so
+	// shipping a build with a new GameVersionId had PruneOtherVersions delete the player's unsent writes: no
+	// error, no log, and the player simply lost what they did offline.
+	//
+	// A write queued against an older version still routes (the entry stores the operation, not a URL) and
+	// still addresses the right row (PlayerDataId is version-independent). If the template changed underneath
+	// it the server refuses the replay — an ANSWERED failure, which the queue drops and reports. Far better
+	// than deleting the write unasked.
+	return FString::Printf(TEXT("%s/%s/%s"),
+		FFlockSnapshotStore::StateScope, SnapshotCategory, *QueuePlayerId);
 }
 
 void FFlockCommandProvider::ApplyToPlayerCache(const FFlockPlayerData& Row)

@@ -19,6 +19,7 @@ namespace
 }
 
 const TCHAR* const FFlockSnapshotStore::BootstrapScope = TEXT("bootstrap");
+const TCHAR* const FFlockSnapshotStore::StateScope = TEXT("_state");
 
 FFlockSnapshotStore::FFlockSnapshotStore(const FString& InRootDirectory, const TSharedRef<IFlockLogger>& InLogger,
 	const FString& InSdkVersion)
@@ -151,12 +152,93 @@ void FFlockSnapshotStore::PruneOtherVersions(const FString& KeepGameVersionId)
 	IFileManager::Get().FindFiles(Directories, *(Root / TEXT("*")), /*Files*/ false, /*Directories*/ true);
 	for (const FString& Dir : Directories)
 	{
-		if (Dir.Equals(Keep, ESearchCase::CaseSensitive) || Dir.Equals(BootstrapScope, ESearchCase::CaseSensitive))
+		if (Dir.Equals(Keep, ESearchCase::CaseSensitive)
+			|| Dir.Equals(BootstrapScope, ESearchCase::CaseSensitive)
+			|| Dir.Equals(StateScope, ESearchCase::CaseSensitive))
 		{
 			continue;
 		}
 		IFileManager::Get().DeleteDirectory(*FPaths::Combine(Root, Dir), /*RequireExists*/ false, /*Tree*/ true);
 	}
+}
+
+int32 FFlockSnapshotStore::MigrateLegacyState(const TArray<FString>& Leaves)
+{
+	if (Leaves.Num() == 0 || !IFileManager::Get().DirectoryExists(*Root))
+	{
+		return 0;
+	}
+
+	int32 Moved = 0;
+	TArray<FString> Directories;
+	IFileManager::Get().FindFiles(Directories, *(Root / TEXT("*")), /*Files*/ false, /*Directories*/ true);
+	for (const FString& Dir : Directories)
+	{
+		if (Dir.Equals(StateScope, ESearchCase::CaseSensitive))
+		{
+			continue;
+		}
+
+		for (const FString& Leaf : Leaves)
+		{
+			const FString Sanitized = Sanitize(Leaf);
+			const FString Legacy = FPaths::Combine(Root, Dir, Sanitized);
+			if (IFileManager::Get().DirectoryExists(*Legacy))
+			{
+				Moved += MoveTree(Legacy, FPaths::Combine(Root, StateScope, Sanitized));
+			}
+		}
+	}
+
+	if (Moved > 0)
+	{
+		Logger->LogWarning(FString::Printf(
+			TEXT("Flock: rescued %d queued write file(s) into '%s' — they would otherwise have been deleted ")
+			TEXT("by this build's game-version change."), Moved, StateScope));
+	}
+	return Moved;
+}
+
+int32 FFlockSnapshotStore::MoveTree(const FString& From, const FString& To)
+{
+	IFileManager& Files = IFileManager::Get();
+	if (!Files.MakeDirectory(*To, /*Tree*/ true))
+	{
+		return 0;
+	}
+
+	int32 Moved = 0;
+
+	// Merges rather than replaces: two game versions can each hold a queue for one player — one from before
+	// an upgrade, one from a build that was rolled back — and losing either is the bug this exists to fix. A
+	// file already at the destination wins; it belongs to the newer layout.
+	TArray<FString> FileNames;
+	Files.FindFiles(FileNames, *(From / TEXT("*")), /*Files*/ true, /*Directories*/ false);
+	for (const FString& Name : FileNames)
+	{
+		const FString Source = FPaths::Combine(From, Name);
+		const FString Destination = FPaths::Combine(To, Name);
+		if (Files.FileExists(*Destination))
+		{
+			Files.Delete(*Source, /*RequireExists*/ false);
+		}
+		else if (Files.Move(*Destination, *Source, /*Replace*/ false))
+		{
+			++Moved;
+		}
+	}
+
+	TArray<FString> SubDirectories;
+	Files.FindFiles(SubDirectories, *(From / TEXT("*")), /*Files*/ false, /*Directories*/ true);
+	for (const FString& Name : SubDirectories)
+	{
+		Moved += MoveTree(FPaths::Combine(From, Name), FPaths::Combine(To, Name));
+	}
+
+	// Only ever removes what it has just emptied, so a file it could not move keeps its directory alive
+	// rather than being orphaned.
+	Files.DeleteDirectory(*From, /*RequireExists*/ false, /*Tree*/ false);
+	return Moved;
 }
 
 FString FFlockSnapshotStore::BuildPath(const FString& Scope, const FString& Key) const
