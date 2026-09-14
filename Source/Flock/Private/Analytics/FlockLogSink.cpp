@@ -5,9 +5,14 @@
 #include "Analytics/FlockStackTrace.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/OutputDeviceRedirector.h"
+#include "UObject/Script.h"
+#include "UObject/Stack.h"
 
 namespace
 {
+	/** Script exceptions are filed under the category the engine logs them in, so an exclusion list reads naturally. */
+	const FName ScriptCategory(TEXT("LogScript"));
+
 	/**
 	 * Frames dropped so a trace starts at the logging site: FFlockStackTrace::Capture, this sink's
 	 * caller of it, and Serialize itself. See FlockStackTrace.h for why it cannot also strip the
@@ -72,6 +77,10 @@ void FFlockLogSink::Start()
 
 	SystemErrorHandle = FCoreDelegates::OnHandleSystemError.AddLambda([this]() { HandleSystemError(); });
 	ShutdownAfterErrorHandle = FCoreDelegates::OnShutdownAfterError.AddLambda([this]() { HandleSystemError(); });
+
+	// Read before binding: once anything is bound, the engine stops logging a script exception's stack trace.
+	bWriteBackScriptWarning = !FBlueprintCoreDelegates::OnScriptException.IsBound();
+	ScriptExceptionHandle = FBlueprintCoreDelegates::OnScriptException.AddRaw(this, &FFlockLogSink::HandleScriptException);
 }
 
 void FFlockLogSink::Stop()
@@ -90,8 +99,11 @@ void FFlockLogSink::Stop()
 
 	FCoreDelegates::OnHandleSystemError.Remove(SystemErrorHandle);
 	FCoreDelegates::OnShutdownAfterError.Remove(ShutdownAfterErrorHandle);
+	// A sink destroyed while still bound here would be called through a dangling pointer on the next script error.
+	FBlueprintCoreDelegates::OnScriptException.Remove(ScriptExceptionHandle);
 	SystemErrorHandle.Reset();
 	ShutdownAfterErrorHandle.Reset();
+	ScriptExceptionHandle.Reset();
 }
 
 void FFlockLogSink::AddExcludedCategory(FName Category)
@@ -133,6 +145,7 @@ void FFlockLogSink::Serialize(const TCHAR* Message, ELogVerbosity::Type Verbosit
 	Captured.Category = Category;
 	Captured.bFatal = bFatal;
 	Captured.TimestampUtc = FDateTime::UtcNow();
+	Captured.Source = TEXT("log");
 	Captured.StackTrace = FFlockStackTrace::Capture(StackFramesToSkip);
 
 	if (bFatal)
@@ -175,7 +188,88 @@ void FFlockLogSink::HandleSystemError()
 	Captured.Category = FName(TEXT("SystemError"));
 	Captured.bFatal = true;
 	Captured.TimestampUtc = FDateTime::UtcNow();
+	Captured.Source = TEXT("crash");
 	// The crash delegates carry no message of their own, so the stack is the only useful evidence.
 	Captured.StackTrace = FFlockStackTrace::Capture(StackFramesToSkip);
 	OnFatal.Broadcast(Captured);
+}
+
+bool FFlockLogSink::IsReportableScriptException(EBlueprintExceptionType::Type Type)
+{
+	return !ScriptExceptionTypeToWire(Type).IsEmpty();
+}
+
+FString FFlockLogSink::ScriptExceptionTypeToWire(EBlueprintExceptionType::Type Type)
+{
+	switch (Type)
+	{
+	case EBlueprintExceptionType::AccessViolation:
+		return TEXT("access_violation");
+	case EBlueprintExceptionType::InfiniteLoop:
+		return TEXT("infinite_loop");
+	case EBlueprintExceptionType::NonFatalError:
+		return TEXT("non_fatal_error");
+	// Despite the name the engine does not crash on this one — it carries on after broadcasting — so nothing
+	// else would ever report it.
+	case EBlueprintExceptionType::FatalError:
+		return TEXT("fatal_error");
+	case EBlueprintExceptionType::AbortExecution:
+		return TEXT("abort_execution");
+	default:
+		// Breakpoint, Tracepoint, WireTracepoint, and any type a later engine adds: not reported until someone
+		// decides what it means, rather than guessed at.
+		return FString();
+	}
+}
+
+void FFlockLogSink::HandleScriptException(const UObject* ActiveObject, const FFrame& StackFrame,
+	const FBlueprintExceptionInfo& Info)
+{
+	// The Blueprint call stack is what locates the node; a native stack here would only show the script VM.
+	CaptureScriptException(Info.GetType(), Info.GetDescription().ToString(), StackFrame.GetStackTrace());
+}
+
+void FFlockLogSink::CaptureScriptException(EBlueprintExceptionType::Type Type, const FString& Description,
+	const FString& ScriptStack)
+{
+	const FString TypeWire = ScriptExceptionTypeToWire(Type);
+	if (TypeWire.IsEmpty())
+	{
+		return;
+	}
+
+	const FScopedReentrancyGuard Guard;
+	if (!Guard.bEntered)
+	{
+		return;
+	}
+
+	// Written back before any filtering: it is the engine's own diagnostic, owed to the developer whether or not
+	// this fault is reported anywhere. A Warning, so it never comes back through Serialize as a capture.
+	if (bWriteBackScriptWarning && !ScriptStack.IsEmpty())
+	{
+		++WrittenBackScriptWarnings;
+		UE_LOG(LogScript, Warning, TEXT("%s"), *ScriptStack);
+	}
+
+	if (IsExcluded(ScriptCategory))
+	{
+		return;
+	}
+	if (QueuedCount.GetValue() >= MaxQueued)
+	{
+		DroppedCount.Increment();
+		return;
+	}
+
+	FFlockCapturedLog Captured;
+	Captured.Message = Description.IsEmpty() ? TEXT("Blueprint script exception") : Description;
+	Captured.Category = ScriptCategory;
+	Captured.TimestampUtc = FDateTime::UtcNow();
+	Captured.Source = TEXT("blueprint");
+	Captured.ScriptExceptionType = TypeWire;
+	Captured.StackTrace = ScriptStack;
+
+	QueuedCount.Increment();
+	Queue.Enqueue(MoveTemp(Captured));
 }

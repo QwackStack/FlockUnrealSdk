@@ -1,131 +1,116 @@
 # Analytics
 
-Session tracking, diagnostic logging, automatic exception capture, and an offline queue that survives a
-crash. Everything below is off when **Analytics Enabled** is unticked in
-*Project Settings → Plugins → Flock SDK*.
+Sessions, screen views, gameplay events and transactions — what your players did. Everything below is off
+when **Analytics Enabled** is unticked in *Project Settings → Plugins → Flock SDK*.
+
+The *Flock | Analytics* nodes carry two surfaces that are easy to confuse and must not be. This page covers
+the first. The second — reports of what went wrong — is [Diagnostics](diagnostics.md), and it is read
+somewhere else entirely.
+
+| | Analytics | [Log events](diagnostics.md) |
+|---|---|---|
+| Answers | What did players do? | What went wrong? |
+| Read by | Design, product, LiveOps | Engineering |
+| Routes | `/v1/analytics/*` | `/v1/log_event` |
+| Dashboard | **Dashboards → Game Metrics** | **Diagnostics → Events** / **Diagnostics → Errors** |
+| Calls | `Flock Track Event`, `Flock Record Screen View`, sessions, purchase transactions | `Flock Log Event`, `Flock Log Error`, `Flock Log Exception`, automatic exception capture |
+
+A crash is not a funnel step. A level-complete written as a log entry is accepted, stored and shown under
+Diagnostics, where nobody building a retention chart will look — and it never reaches Game Metrics. Pick
+the call by the question you want answered, not by which node name is closest to hand.
 
 ## Blueprint
 
 The nodes live under *Flock | Analytics* and **none of them needs the subsystem wired in** — they resolve
-it from the calling graph: `Flock Log Event`, `Flock Log Error`, `Flock Log Exception`,
-`Flock Record Screen View`, `Flock Set Analytics Consent`, `Flock Flush Analytics`, plus the session
-nodes. All are safe no-ops before the SDK has initialized.
+it from the calling graph: `Flock Track Event`, `Flock Record Screen View`, `Flock Set Analytics Consent`,
+`Flock Flush Analytics`, plus the session nodes. All are safe no-ops before the SDK has initialized.
 
-![A graph showing Flock Log Event with an Event Name filled in and its Extra Data pin fed by two chained Flock Metadata builder nodes](images/analytics-log-event.png)
-
-Build the **Extra Data** map by dragging off that pin — the same builders the C++ side uses appear as
-chainable nodes: *Flock Metadata (Integer)*, *(Float)*, *(Boolean)*, *(String)*. Add one per field and
-chain them:
-
-```
-Flock Metadata (Integer) "level" 3 → Flock Metadata (Boolean) "flawless" true → Extra Data
-```
-
-**The first node needs nothing wired into its own Metadata pin** — leaving it empty starts a fresh map.
+Build a gameplay event's **Properties** with the *Flock Command Data Set* nodes — *(Int)*, *(Float)*,
+*(String)*, *(Bool)* and *(String Array)* — chained left to right. Keys reach the dashboard exactly as you
+write them, and a number stays a number, so it can be charted.
 
 ## C++
 
 ```cpp
 UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
 
-Sdk->LogAnalyticsEvent(TEXT("level_complete"),
-    FFlockMetadata().Add(TEXT("level"), 3).Add(TEXT("deaths"), 0).Add(TEXT("flawless"), true));
+Sdk->TrackAnalyticsEvent(TEXT("level_complete"),
+    FFlockCommandData().Set(TEXT("level"), 3).Set(TEXT("deaths"), 0).Set(TEXT("flawless"), true),
+    TEXT("progression"));
 
-FFlockLogDetails Details;
-Details.LogicalExpression = TEXT("ItemCount >= 0");
-Details.ErrorCode = TEXT("INV_DESYNC");
-Sdk->LogAnalyticsError(TEXT("Inventory desynced"), Details);
-
-Sdk->LogAnalyticsException(TEXT("Save failed"));   // callstack captured for you
 Sdk->RecordAnalyticsScreenView(TEXT("MainMenu"));
 ```
 
-`FFlockMetadata` builds the string map the wire wants without an `FString::FromInt` at every call site —
-it takes ints, floats and bools directly and converts implicitly.
+## Gameplay events
 
-## Things worth knowing
+`Flock Track Event` (`TrackAnalyticsEvent`) records one thing a player did: a name, an optional category,
+and properties.
 
-**Logging.** `LogAnalyticsEvent` records a diagnostic, `LogAnalyticsError` a recoverable logic fault,
-and `LogAnalyticsException` an exception. All three return immediately: the entry is written to disk
-and delivered later, so a call is cheap and nothing is lost to a crash or a dead network. Keys in
-your metadata reach the backend exactly as you write them.
+- **It never waits on the network.** The event is written to disk and delivered on the next flush, so it is
+  safe to call often and while offline. It returns false only when it refuses the event outright.
+- **It is refused on the spot** when analytics is off, when consent is withheld, when the name is empty or
+  blank, and for the name `session_started` — the server records that one itself when a session starts, and
+  a copy from the game would count every session twice.
+- **Every event belongs to a player.** An event recorded with nobody signed in is held, and credited to
+  whoever signs in next. Events are delivered only while a player is signed in; one recorded earlier keeps
+  the player it was recorded under.
+- **The player's session is attached** when one is open, even if the server has not answered the session
+  start yet: its id is filled in when the event is sent.
+- **An event the server refuses is dropped**, and the flush that met the refusal reports it — the rest of
+  the queue is still delivered. An event the server merely could not take yet (an outage, a rate limit)
+  stays queued.
 
-`FFlockMetadata` builds the string map the wire wants without an `FString::FromInt` at every call
-site — it takes ints, floats and bools directly and converts implicitly, so it drops into any call
-taking metadata.
+## Sessions
 
-**Metadata builder note:** the first builder node needs nothing wired into its own Metadata pin —
-leaving it empty starts a fresh map,
-so a single field is a single node. (*Make Flock Metadata* exists to produce an explicitly empty map;
-you don't need it to begin a chain.) Each node copies the map coming in and adds its one key, so the
-chain reads left to right, mixes types freely, and writes values identically to the C++ builder. Keys
-are a map, so order doesn't matter — but if two nodes use the same key, the **last one wins**. Leaving
-an *Extra Data* pin unconnected is fine — you get empty metadata.
+**Sessions** open when a player signs in and close on logout or quit, tracking duration, screen views,
+pauses, and FPS. Backgrounding pauses the session; returning after **Analytics Session Timeout** starts a
+fresh one. Starting a session while one is open replaces it, closing the old one first. Bind
+`OnSessionStarted` / `OnSessionEnded` / `OnSessionPaused` / `OnSessionResumed` on `GetEvents()`, or read
+`GetAnalyticsSnapshot()` for live metrics.
 
-On *Flock Log Error*, right-click the **Details** pin and choose **Split Struct Pin** to get Logical
-Expression, Error Code, Error Data and Extra Data as separate pins.
+**A session end is never lost.** Every close is written to disk before it is sent, so quitting, signing
+out, losing the network, or crashing outright all cost delivery time rather than the record — whatever did
+not go out drains on the next flush or the next launch. Queued ends wait for a signed-in player rather than
+retrying against a closed door, so a game sitting on its title screen makes no analytics traffic at all. A
+run that dies with a session open is picked up on the following launch and closed at the last moment it was
+known to be alive, so a crashed session does not sit open on the backend forever. A session that could not
+be registered when it started (offline at sign-in, say) registers itself when its end is finally delivered.
 
-> If a logged event never reaches the backend, check consent first: logging is **silently dropped**
-> without it, and entries are spooled to disk rather than sent immediately. Call `Flock Set Analytics
-> Consent (true)` once, and use `Flock Flush Analytics` to drain the spool now instead of waiting for
-> the next interval.
+## Transactions
 
-`FFlockLogDetails` carries the optional detail on an error or exception as one named argument:
-`LogicalExpression` (the invariant that failed), `ErrorCode` (yours), `ErrorData` (structured facts
-about *what* was wrong) and `ExtraData` (context about *where* the player was). Leave it default when
-you have nothing to add.
+Purchases through the shop record their own transactions with no call from you. To record one yourself,
+call `RecordTransaction` on the analytics provider. Transactions are sent at once rather than queued, and
+need a signed-in player.
 
-**You do not need a stack trace to report an exception.** Leave the trace argument off and the SDK
-walks the callstack itself. Pass one only when you genuinely have something better — a script VM's
-stack, say.
+## Delivery and the offline queue
 
-**Automatic exception capture.** Engine `Error` and `Fatal` log lines are reported as exceptions with
-no wiring, along with hard crashes that never reach the log. Each carries the callstack from the point
-of capture, with frames as `Module+0xOffset` — measured from the module base rather than the raw
-address, so a frame reads the same on every run and stays symbolicatable from your build's symbols
-after the fact. Function names and source lines are included when symbols are available locally.
-The SDK's own categories are excluded so a failed upload cannot report itself in a loop.
-Once the queue is full, further entries are dropped *before* their callstack is walked, so an error
-storm stays cheap.
+Gameplay events, log entries and session ends each have their own queue under the project's Saved
+directory, capped by **Analytics Max Cached Events** (oldest dropped first). They are sent in batches on an
+interval, when the app is backgrounded, or when you call Flush.
 
-**Sessions** open when a player signs in and close on logout or quit, tracking duration, screen
-views, pauses, and FPS. Backgrounding pauses the session; returning after **Analytics Session
-Timeout** starts a fresh one. Starting a session while one is open replaces it, closing the old one
-first. Bind `OnSessionStarted` / `OnSessionEnded` / `OnSessionPaused` / `OnSessionResumed` on
-`GetEvents()`, or read `GetAnalyticsSnapshot()` for live metrics.
+- **A send that never reached the server keeps everything queued**, however long the game is offline.
+- **A send the server answered without accepting counts against the entries it carried.** A gameplay event
+  or log entry is dropped after 50 of those. After each one the interval flush waits twice as long, up to 15
+  minutes, so a server outage uses up hours of retries rather than minutes.
+- **An entry the server refuses outright is dropped.** When the server refuses a whole batch because of
+  what is in it, the entries are sent one at a time, so only the entry it refused is lost.
 
-**A session end is never lost.** Every close is written to disk before it is sent, so quitting,
-signing out, losing the network, or crashing outright all cost delivery time rather than the record —
-whatever did not go out drains on the next flush or the next launch. Queued ends wait for a
-signed-in player rather than retrying against a closed door, so a game sitting on its title screen
-makes no analytics traffic at all. A run that dies with a session
-open is picked up on the following launch and closed at the last moment it was known to be alive, so
-a crashed session does not sit open on the backend forever. A session that could not be registered
-when it started (offline at sign-in, say) registers itself when its end is finally delivered.
+## Consent
 
-**Offline queue.** Entries are stored under the project's Saved directory and sent in batches on an
-interval, when the app is backgrounded, or when you call Flush. A failed send keeps the batch queued
-for the next attempt; the queue is capped by **Analytics Max Cached Events**, dropping oldest first.
-
-**Crash reporting.** A run that ends without a clean quit is detected on the next launch and reported
-once, classified `background_kill` (OS eviction or swipe-close) or `abnormal` (died in the
-foreground), with the lost session's id, an approximate time of death, and how many unhandled
-exceptions preceded it. Disabled in the editor, where stopping Play-In-Editor is not an app death.
-
-**Consent** is a gate, not a filter. With consent withheld there is no session and nothing is
-collected, not even on disk. The decision persists between runs; withdrawing it discards the session
-outright — it is not reported, not queued, and no `OnSessionEnded` is raised — along with anything
-already queued. Granting it opens the session that sign-in could not — so in an opt-in flow, a player
-who agrees after signing in still gets a session.
+**Consent** is a gate, not a filter. With consent withheld there is no session and nothing is collected,
+not even on disk. The decision persists between runs; withdrawing it discards the session outright — it is
+not reported, not queued, and no `OnSessionEnded` is raised — along with anything already queued. Granting
+it opens the session that sign-in could not — so in an opt-in flow, a player who agrees after signing in
+still gets a session.
 
 ```cpp
 Sdk->SetAnalyticsConsent(true);            // persists; raises OnConsentChanged
 const bool bOptedIn = Sdk->HasAnalyticsConsent();
-Sdk->EraseLocalAnalyticsData();            // drops the queue, the decision, and any crash marker
+Sdk->EraseLocalAnalyticsData();            // drops the queues, the decision, and any crash marker
 ```
 
-Leave **Analytics Require Explicit Consent** off to collect by default (a withdrawal still applies),
-or tick it for an opt-in flow where nothing is collected until you call `SetAnalyticsConsent(true)`.
+Leave **Analytics Require Explicit Consent** off to collect by default (a withdrawal still applies), or tick
+it for an opt-in flow where nothing is collected until you call `SetAnalyticsConsent(true)`.
 
 > Analytics timestamps come from the device clock, so they are wrong if the player's clock is wrong.
 > Session durations are unaffected — they are measured from frame deltas, not clock readings.

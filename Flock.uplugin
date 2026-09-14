@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 27,
-	"VersionName": "1.9.0",
+	"Version": 28,
+	"VersionName": "1.10.0",
 	"FriendlyName": "Flock SDK",
 	"Description": "A game backend SDK for Unreal Engine with authentication, game configuration, player data, shop, and analytics.",
 	"Category": "Online Platform",

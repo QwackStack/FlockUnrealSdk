@@ -41,6 +41,19 @@ void UFlockLibrary::RecordScreenView(const UObject* WorldContextObject, const FS
 	}
 }
 
+bool UFlockLibrary::TrackEvent(const UObject* WorldContextObject, const FString& EventName,
+	const FFlockCommandData& Properties, const FString& EventCategory)
+{
+	UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
+	return Sdk && Sdk->TrackAnalyticsEvent(EventName, Properties, EventCategory);
+}
+
+FFlockExceptionCaptureCoverage UFlockLibrary::GetExceptionCaptureCoverage(const UObject* WorldContextObject)
+{
+	UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
+	return Sdk ? Sdk->GetExceptionCaptureCoverage() : FFlockExceptionCaptureCoverage();
+}
+
 void UFlockLibrary::SetAnalyticsConsent(const UObject* WorldContextObject, bool bGranted)
 {
 	if (UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject))

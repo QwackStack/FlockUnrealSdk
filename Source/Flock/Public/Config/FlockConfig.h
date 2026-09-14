@@ -157,6 +157,30 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Analytics")
 	bool bAnalyticsRequireExplicitConsent = false;
 
+	// ───────────────────────── Analytics | Exceptions ─────────────────────────
+
+	/**
+	 * Automatically report engine errors, crashes and Blueprint script exceptions as exceptions.
+	 * A manual Log Exception call still records with this off. Error log lines and ensures are compiled out
+	 * of Shipping and Test builds by the engine, so those builds report crashes and Blueprint exceptions only.
+	 */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Analytics|Exceptions")
+	bool bAnalyticsCaptureExceptions = true;
+
+	/**
+	 * Log categories whose errors are never reported as exceptions. The SDK's own categories are always
+	 * excluded; the defaults add the automation framework's, which logs failing tests as errors.
+	 */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Analytics|Exceptions")
+	TArray<FString> AnalyticsExceptionExcludedCategories = { TEXT("LogAutomationController"), TEXT("LogAutomationCommandLine") };
+
+	/**
+	 * Repeats of the same exception inside this window are counted and reported once, as a summary carrying
+	 * the count. Set to 0 to report every occurrence.
+	 */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Analytics|Exceptions", meta = (ClampMin = "0.0", Units = "s"))
+	float AnalyticsExceptionRepeatWindow = 60.f;
+
 	// ─────────────────────────── Analytics | Caching ──────────────────────────
 
 	/** Cache failed analytics events on disk and retry on the next session. */

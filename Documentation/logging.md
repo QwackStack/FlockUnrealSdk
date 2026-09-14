@@ -3,6 +3,9 @@
 The SDK routes every breadcrumb and error through a logger. Turn on **Enable Debug Logs** in the
 settings for verbose output under the `LogFlock` category; warnings and errors always surface.
 
+> This page is about the SDK's own log output. Reports your game sends to the Flock dashboard are
+> [Diagnostics](diagnostics.md) (what went wrong) and [Analytics](analytics.md) (what players did).
+
 ## Turning logs on
 
 Turning it on also raises the `LogFlock` category to `Verbose` so the breadcrumbs actually reach the

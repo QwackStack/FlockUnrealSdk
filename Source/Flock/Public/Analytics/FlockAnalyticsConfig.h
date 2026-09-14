@@ -54,6 +54,25 @@ struct FLOCK_API FFlockAnalyticsConfig
 	/** 0 disables the periodic flush; an explicit Flush() still works. */
 	float EventBufferFlushIntervalSeconds = 10.f;
 
+	/**
+	 * Automatic capture of engine errors, fatals and Blueprint script exceptions as `exception` log events.
+	 * Governed by these settings alone. A manual LogException still records with this off.
+	 */
+	bool bCaptureExceptions = true;
+
+	/**
+	 * Log categories whose errors are never reported as exceptions, on top of the SDK's own, which are always
+	 * excluded. The defaults are the automation framework's: it reports a failing test as an Error line, and
+	 * that is not a fault in the game.
+	 */
+	TArray<FString> ExcludedExceptionCategories = { TEXT("LogAutomationController"), TEXT("LogAutomationCommandLine") };
+
+	/**
+	 * Repeats of the same captured exception inside this window are counted rather than reported, then sent as
+	 * one summary carrying the count. 0 reports every occurrence.
+	 */
+	float ExceptionRepeatWindowSeconds = 60.f;
+
 	/** Builds the runtime config from the project's UFlockConfig settings. */
 	static FFlockAnalyticsConfig FromSettings(const UFlockConfig& Settings);
 };

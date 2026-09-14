@@ -12,6 +12,12 @@ namespace
 	const TCHAR* WireLogicError = TEXT("logic_error");
 	const TCHAR* WireDebug = TEXT("debug");
 
+	/**
+	 * Where a spooled entry keeps its answered-failure count. Underscore-prefixed and never written by the wire
+	 * serializers, which build bodies from the struct rather than from the stored payload.
+	 */
+	const TCHAR* FailedSendCountKey = TEXT("_flock_failed_sends");
+
 	void SetStringIfSet(const TSharedRef<FJsonObject>& Object, const TCHAR* Key, const FString& Value)
 	{
 		if (!Value.IsEmpty())
@@ -174,6 +180,104 @@ bool FFlockAnalyticsJson::DeserializeEvent(const FString& Json, FFlockLogEventRe
 		return false;
 	}
 	return FromJson(Root.ToSharedRef(), OutEvent);
+}
+
+int32 FFlockAnalyticsJson::ReadFailedSendCount(const FString& Payload)
+{
+	TSharedPtr<FJsonObject> Root;
+	if (!FFlockJsonUtils::TryParseObject(Payload, Root) || !Root.IsValid())
+	{
+		return 0;
+	}
+	int32 FailedSends = 0;
+	Root->TryGetNumberField(FailedSendCountKey, FailedSends);
+	return FMath::Max(FailedSends, 0);
+}
+
+FString FFlockAnalyticsJson::WithFailedSendCount(const FString& Payload, int32 FailedSends)
+{
+	TSharedPtr<FJsonObject> Root;
+	if (!FFlockJsonUtils::TryParseObject(Payload, Root) || !Root.IsValid())
+	{
+		return Payload;
+	}
+	Root->SetNumberField(FailedSendCountKey, FMath::Max(FailedSends, 0));
+	return SerializeObject(Root.ToSharedRef());
+}
+
+TSharedRef<FJsonObject> FFlockAnalyticsJson::AnalyticsEventToJson(const FFlockAnalyticsEventRequest& Event)
+{
+	const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	// Always written, even empty: a held event is never sent, and an empty id on the wire is the server's 404.
+	Object->SetStringField(TEXT("player_id"), Event.PlayerId);
+	Object->SetStringField(TEXT("event_name"), Event.EventName);
+	SetStringIfSet(Object, TEXT("event_category"), Event.EventCategory);
+	SetStringIfSet(Object, TEXT("session_id"), Event.SessionId);
+	SetStringIfSet(Object, TEXT("timestamp"), Event.Timestamp);
+	// The server refuses a null or list here, so an empty bag goes out as {}.
+	Object->SetObjectField(TEXT("properties"), Event.Properties.ToJsonObject());
+	return Object;
+}
+
+FString FFlockAnalyticsJson::SerializeAnalyticsEvents(const TArray<FFlockAnalyticsEventRequest>& Events)
+{
+	TArray<TSharedPtr<FJsonValue>> Items;
+	Items.Reserve(Events.Num());
+	for (const FFlockAnalyticsEventRequest& Event : Events)
+	{
+		Items.Add(MakeShared<FJsonValueObject>(AnalyticsEventToJson(Event)));
+	}
+
+	const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetArrayField(TEXT("events"), Items);
+	return SerializeObject(Root);
+}
+
+FString FFlockAnalyticsJson::SerializeSpooledAnalyticsEvent(const FFlockSpooledAnalyticsEvent& Entry)
+{
+	const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetObjectField(TEXT("event"), AnalyticsEventToJson(Entry.Event));
+	SetStringIfSet(Root, TEXT("local_session_id"), Entry.LocalSessionId);
+	Root->SetNumberField(FailedSendCountKey, FMath::Max(Entry.FailedSends, 0));
+	return SerializeObject(Root);
+}
+
+bool FFlockAnalyticsJson::DeserializeSpooledAnalyticsEvent(const FString& Json, FFlockSpooledAnalyticsEvent& OutEntry)
+{
+	OutEntry = FFlockSpooledAnalyticsEvent();
+
+	TSharedPtr<FJsonObject> Root;
+	if (!FFlockJsonUtils::TryParseObject(Json, Root) || !Root.IsValid())
+	{
+		return false;
+	}
+	const TSharedPtr<FJsonObject>* EventObject = nullptr;
+	if (!Root->TryGetObjectField(TEXT("event"), EventObject) || !EventObject->IsValid())
+	{
+		return false;
+	}
+
+	const TSharedRef<FJsonObject> Event = EventObject->ToSharedRef();
+	Event->TryGetStringField(TEXT("player_id"), OutEntry.Event.PlayerId);
+	if (!Event->TryGetStringField(TEXT("event_name"), OutEntry.Event.EventName) || OutEntry.Event.EventName.IsEmpty())
+	{
+		return false;
+	}
+	Event->TryGetStringField(TEXT("event_category"), OutEntry.Event.EventCategory);
+	Event->TryGetStringField(TEXT("session_id"), OutEntry.Event.SessionId);
+	Event->TryGetStringField(TEXT("timestamp"), OutEntry.Event.Timestamp);
+
+	const TSharedPtr<FJsonObject>* Properties = nullptr;
+	if (Event->TryGetObjectField(TEXT("properties"), Properties) && Properties->IsValid())
+	{
+		OutEntry.Event.Properties = FFlockCommandData::FromJsonString(SerializeObject(Properties->ToSharedRef()));
+	}
+
+	Root->TryGetStringField(TEXT("local_session_id"), OutEntry.LocalSessionId);
+	int32 FailedSends = 0;
+	Root->TryGetNumberField(FailedSendCountKey, FailedSends);
+	OutEntry.FailedSends = FMath::Max(FailedSends, 0);
+	return true;
 }
 
 TSharedPtr<FJsonObject> FFlockAnalyticsJson::SnapshotToJson(const FFlockSessionSnapshot& Snapshot)

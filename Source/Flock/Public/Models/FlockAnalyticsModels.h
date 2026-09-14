@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Models/FlockCommandModels.h"
 #include "FlockAnalyticsModels.generated.h"
 
 /**
@@ -329,6 +330,92 @@ struct FLOCK_API FFlockAnalyticsTransactionRequest
 	/** ISO-8601 UTC. Stamped when the record is created when left empty. */
 	UPROPERTY(BlueprintReadWrite, Category = "Flock")
 	FString CreatedAt;
+};
+
+/**
+ * One gameplay event: an element of the batch for `POST analytics/events`, read on the Game Metrics
+ * dashboards. Not a log entry — `log_event` is the diagnostics stream.
+ *
+ * Properties keep game-authored keys verbatim and values their JSON type, so a numeric property stays a
+ * number a dashboard can aggregate. The server rejects a null or list `properties`, so an empty bag is
+ * always sent as `{}`.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockAnalyticsEventRequest
+{
+	GENERATED_BODY()
+
+	/** Empty while held: an event recorded with nobody signed in is attributed to whoever signs in next. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PlayerId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString EventName;
+
+	/** Omitted from the body when empty. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString EventCategory;
+
+	/** The server's id for the session. Never a local id: the server refuses an unknown session with 409. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString SessionId;
+
+	/** ISO-8601 UTC, stamped when the event is recorded rather than when it is delivered. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Timestamp;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FFlockCommandData Properties;
+};
+
+/**
+ * What automatic exception capture can see in the running build.
+ *
+ * The engine compiles error log lines and ensures out of Shipping and Test builds, and a game on an installed
+ * engine cannot turn logging back on, so those builds report crashes and Blueprint script exceptions but not
+ * error log lines. Nothing about that is visible from inside a failing build unless it is asked.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockExceptionCaptureCoverage
+{
+	GENERATED_BODY()
+
+	/**
+	 * Automatic capture is running: analytics and capture are on in settings, the SDK is initialized, and this
+	 * process taps the log. False before initialization and after shutdown.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool bEnabled = false;
+
+	/** Error and Fatal log lines. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool bLogErrors = false;
+
+	/** Failed ensure() conditions, which reach the SDK as Error log lines. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool bEnsures = false;
+
+	/** Blueprint script exceptions such as Accessed None. Broadcast by the engine in every configuration. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool bBlueprintExceptions = false;
+
+	/** Blueprint infinite-loop and runaway-recursion detection, which the engine compiles out of Shipping and Test. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool bBlueprintInfiniteLoops = false;
+
+	/** Hard crashes reported through the engine's system-error delegates. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool bCrashes = false;
+
+	/** The build configuration this was computed for (Development, Shipping, ...). */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString BuildConfiguration;
+
+	/** True when capture is on and nothing above is out of reach. */
+	bool IsComplete() const
+	{
+		return bEnabled && bLogErrors && bEnsures && bBlueprintExceptions && bBlueprintInfiniteLoops && bCrashes;
+	}
 };
 
 /**

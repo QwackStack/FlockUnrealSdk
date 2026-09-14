@@ -21,5 +21,8 @@ FFlockAnalyticsConfig FFlockAnalyticsConfig::FromSettings(const UFlockConfig& Se
 	Config.MaxCachedEvents = Settings.AnalyticsMaxCachedEvents;
 	Config.CacheFlushBatchSize = Settings.AnalyticsCacheFlushBatchSize;
 	Config.EventBufferFlushIntervalSeconds = Settings.AnalyticsEventBufferFlushInterval;
+	Config.bCaptureExceptions = Settings.bAnalyticsCaptureExceptions;
+	Config.ExcludedExceptionCategories = Settings.AnalyticsExceptionExcludedCategories;
+	Config.ExceptionRepeatWindowSeconds = Settings.AnalyticsExceptionRepeatWindow;
 	return Config;
 }

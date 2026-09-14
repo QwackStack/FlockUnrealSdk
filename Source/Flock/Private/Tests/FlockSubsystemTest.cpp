@@ -12,6 +12,10 @@
 #include "Tests/Support/FlockEventTestListener.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
+#include "Config/FlockConfig.h"
+#include "Misc/ScopeExit.h"
+#include "Providers/FlockAnalyticsProvider.h"
+#include "Providers/FlockAuthProvider.h"
 #include "UObject/Package.h"
 
 namespace
@@ -183,6 +187,70 @@ bool FFlockSubsystemAuthWiringTest::RunTest(const FString& Parameters)
 
 		F.Sdk->ShutdownSdk();
 	}
+	return true;
+}
+
+/**
+ * A sign-in hands analytics its player whatever the auto-start setting: events recorded before sign-in belong to that
+ * player either way. Only opening a session waits on auto-start.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSubsystemWiringTest, "Flock.Analytics.Subsystem.AuthWiring",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSubsystemWiringTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockSubsystemAuthTestHelpers;
+
+	UFlockConfig* Settings = GetMutableDefault<UFlockConfig>();
+	const bool bAutoStartWas = Settings->bAnalyticsAutoStartSession;
+	Settings->bAnalyticsAutoStartSession = false;
+	ON_SCOPE_EXIT
+	{
+		Settings->bAnalyticsAutoStartSession = bAutoStartWas;
+	};
+
+	FSubsystemAuthFixture F;
+	F.Sdk->InitializeWithConfig(MakeValidConfig());
+	FFlockAnalyticsProvider* Analytics = F.Sdk->GetAnalyticsProvider();
+	TestNotNull(TEXT("analytics wired"), Analytics);
+	if (Analytics == nullptr)
+	{
+		F.Sdk->ShutdownSdk();
+		return false;
+	}
+	// The subsystem's spool is a real file on this machine: start from nothing and leave nothing behind.
+	Analytics->EraseLocalData();
+
+	TestTrue(TEXT("accepted while signed out"), F.Sdk->TrackAnalyticsEvent(TEXT("before_sign_in"), FFlockCommandData(), FString()));
+	TestEqual(TEXT("held"), Analytics->GetPendingAnalyticsEventCount(), 1);
+
+	// A real sign-in rather than a raised event: gameplay events are delivered only while a player is signed in. A
+	// stored session restored now raises OnAuthenticated the way a login does.
+	F.Store->bHasTokens = true;
+	F.Store->Stored.AccessToken = MakeJwt(TEXT("p-wired"));
+	F.Store->Stored.RefreshToken = TEXT("r-wired");
+	F.Store->Stored.AuthMethod = EFlockAuthMethod::Device;
+	FFlockAuthProvider* Auth = F.Sdk->GetAuthProvider();
+	TestNotNull(TEXT("auth wired"), Auth);
+	if (Auth != nullptr)
+	{
+		Auth->TryRestoreSession([](bool) {});
+	}
+	TestTrue(TEXT("precondition: signed in"), F.Sdk->IsAuthenticated());
+
+	TestFalse(TEXT("auto-start off: no session opened"), Analytics->HasActiveSession());
+	TestEqual(TEXT("but the held event was sent"), F.Fake->CountTo(TEXT("analytics/events")), 1);
+	const FFlockHttpRequest* Sent = F.Fake->Requests.FindByPredicate(
+		[](const FFlockHttpRequest& Request) { return Request.Url.Contains(TEXT("analytics/events")); });
+	TestTrue(TEXT("attributed to the player who signed in"),
+		Sent != nullptr && Sent->JsonBody.Contains(TEXT("\"player_id\":\"p-wired\"")));
+	TestEqual(TEXT("nothing left held"), Analytics->GetPendingAnalyticsEventCount(), 0);
+
+	TestFalse(TEXT("the subsystem refuses the reserved name too"),
+		F.Sdk->TrackAnalyticsEvent(TEXT("session_started"), FFlockCommandData(), FString()));
+
+	Analytics->EraseLocalData();
+	F.Sdk->ShutdownSdk();
 	return true;
 }
 

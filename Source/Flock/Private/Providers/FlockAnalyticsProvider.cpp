@@ -5,9 +5,13 @@
 #include "Analytics/FlockAnalyticsJson.h"
 #include "Analytics/FlockLogSink.h"
 #include "Analytics/FlockStackTrace.h"
+#include "Async/Async.h"
+#include "HAL/PlatformTime.h"
 #include "Http/FlockEndpoints.h"
 #include "Http/FlockJsonUtils.h"
 #include "Misc/App.h"
+#include "Misc/CoreMisc.h"
+#include "Misc/FileHelper.h"
 
 namespace
 {
@@ -19,6 +23,30 @@ namespace
 	const TCHAR* KeyExceptionCount = TEXT("unhandled_exception_count");
 	const TCHAR* KeyAppVersion = TEXT("app_version");
 	const TCHAR* KeySdkVersion = TEXT("sdk_version");
+
+	/** The diagnostics entry a build sends when it cannot see every class of fault. */
+	const TCHAR* CoverageNoticeName = TEXT("exception_capture_limited");
+
+	const TCHAR* BoolWire(bool bValue)
+	{
+		return bValue ? TEXT("true") : TEXT("false");
+	}
+
+	/** What every automatically captured fault carries, on either path, so a dashboard can tell where it came from. */
+	FFlockLogDetails DetailsOfCapturedFault(const FFlockCapturedLog& Captured)
+	{
+		FFlockLogDetails Details;
+		Details.ExtraData.Add(TEXT("category"), Captured.Category.ToString());
+		if (!Captured.Source.IsEmpty())
+		{
+			Details.ExtraData.Add(TEXT("exception_source"), Captured.Source);
+		}
+		if (!Captured.ScriptExceptionType.IsEmpty())
+		{
+			Details.ExtraData.Add(TEXT("blueprint_exception_type"), Captured.ScriptExceptionType);
+		}
+		return Details;
+	}
 
 	FString PlatformDeviceType()
 	{
@@ -73,6 +101,7 @@ FFlockAnalyticsProvider::FFlockAnalyticsProvider(const TSharedRef<FFlockHttpClie
 	, VersionedApiUrl(InVersionedApiUrl)
 	, GameVersion(InGameVersion)
 	, SdkVersion(InSdkVersion)
+	, RepeatedExceptions(InConfig.ExceptionRepeatWindowSeconds)
 {
 	SetAuthSession(InSession);
 	if (Deps.ConsentStore.IsValid())
@@ -115,6 +144,16 @@ int32 FFlockAnalyticsProvider::GetPendingEventCount() const
 	return Deps.LogEventCache.IsValid() ? Deps.LogEventCache->PendingCount() : 0;
 }
 
+int32 FFlockAnalyticsProvider::GetPendingAnalyticsEventCount() const
+{
+	return Deps.AnalyticsEventCache.IsValid() ? Deps.AnalyticsEventCache->PendingCount() : 0;
+}
+
+double FFlockAnalyticsProvider::NowSeconds() const
+{
+	return Clock ? Clock() : FPlatformTime::Seconds();
+}
+
 bool FFlockAnalyticsProvider::HasActiveSession() const
 {
 	return Deps.Session.IsValid() && Deps.Session->IsActive();
@@ -145,9 +184,18 @@ void FFlockAnalyticsProvider::Initialize()
 	// between them is free.
 	RecoverOrphanedSession();
 
-	if (Deps.bEnableLogSink)
+	// Two switches with two owners: Deps.bEnableLogSink says whether this process may tap GLog at all (off inside
+	// the automation runner), Config.bCaptureExceptions is the project's own choice.
+	if (Deps.bEnableLogSink && Config.bCaptureExceptions)
 	{
 		LogSink = MakeShared<FFlockLogSink>();
+		for (const FString& Category : Config.ExcludedExceptionCategories)
+		{
+			if (!Category.IsEmpty())
+			{
+				LogSink->AddExcludedCategory(FName(*Category));
+			}
+		}
 		const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
 		LogSink->OnFatal.AddLambda([WeakSelf](const FFlockCapturedLog& Captured)
 		{
@@ -155,11 +203,13 @@ void FFlockAnalyticsProvider::Initialize()
 			const TSharedPtr<FFlockAnalyticsProvider> Self = WeakSelf.Pin();
 			if (Self.IsValid())
 			{
-				Self->LogException(Captured.Message, Captured.StackTrace);
+				Self->LogException(Captured.Message, Captured.StackTrace, DetailsOfCapturedFault(Captured));
 			}
 		});
 		LogSink->Start();
 	}
+
+	ReportCaptureCoverage();
 
 	if (Deps.Pump.IsValid())
 	{
@@ -199,6 +249,11 @@ void FFlockAnalyticsProvider::Shutdown()
 		return;
 	}
 	bInitialized = false;
+
+	// Faults captured since the last tick, and repeats still inside an open window: no tick will come for either,
+	// so they are spooled now or never.
+	DrainLogSink();
+	QueueRepeatReports(RepeatedExceptions.CollectAll());
 
 	if (Config.bAutoEndSessionOnQuit && HasActiveSession())
 	{
@@ -283,6 +338,10 @@ void FFlockAnalyticsProvider::SetConsent(bool bGranted)
 		{
 			Deps.SessionEndCache->Clear();
 		}
+		if (Deps.AnalyticsEventCache.IsValid())
+		{
+			Deps.AnalyticsEventCache->Clear();
+		}
 		if (Deps.TerminationTracker.IsValid())
 		{
 			Deps.TerminationTracker->StopTracking();
@@ -320,13 +379,15 @@ void FFlockAnalyticsProvider::QueueLogEvent(FFlockLogEventRequest&& Event)
 
 	const FString Payload = FFlockAnalyticsJson::SerializeEvent(Event);
 
-	if (Deps.LogEventCache.IsValid())
+	// A spool that stores nothing answers with an empty handle — which is exactly what switching caching off
+	// builds (a cap of 0). Treating that as spooled lost every entry with caching off, so an entry the spool did
+	// not take is delivered straight away instead.
+	if (Deps.LogEventCache.IsValid() && !Deps.LogEventCache->Enqueue(Payload).IsEmpty())
 	{
-		Deps.LogEventCache->Enqueue(Payload);
 		return;
 	}
 
-	// No spool configured: deliver straight away and accept that a failure loses the entry.
+	// Not spooled: deliver straight away and accept that a failure loses the entry.
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const TSharedRef<FFlockAuthSession> SessionRef = AuthSessionRef;
 	const FString Url = AnalyticsUrl(FlockEndpoints::LogEventSingle);
@@ -359,14 +420,26 @@ void FFlockAnalyticsProvider::LogError(const FString& Message, const FFlockLogDe
 void FFlockAnalyticsProvider::LogException(const FString& Message, const FString& StackTrace,
 	const FFlockLogDetails& Details)
 {
-	FFlockLogEventRequest Event = MakeLogEvent(EFlockLogEventType::Exception, Message);
-	Event.Data.ErrorMessage = Message;
-
 	// No trace supplied means walk one now. 3 frames drop the two inside the walker plus this
 	// function, so the first frame is the caller — verified against a printed trace, because an
-	// off-by-one here is invisible except by reading one. The automatic sink path always supplies its
-	// own, captured where the error was logged, so it never re-walks here.
-	Event.Data.ErrorTraceback = StackTrace.IsEmpty() ? FFlockStackTrace::Capture(/*FramesToSkip*/ 3) : StackTrace;
+	// off-by-one here is invisible except by reading one. The walk stays in this function for that
+	// reason: moved one call deeper, the first frame would be LogException itself. The automatic sink
+	// path always supplies its own, captured where the error was logged, so it never re-walks here.
+	SpoolException(Message, StackTrace.IsEmpty() ? FFlockStackTrace::Capture(/*FramesToSkip*/ 3) : StackTrace, Details);
+
+	// Exception pressure is context for the next launch's termination report.
+	if (Deps.TerminationTracker.IsValid())
+	{
+		Deps.TerminationTracker->NoteException();
+	}
+}
+
+void FFlockAnalyticsProvider::SpoolException(const FString& Message, const FString& StackTrace,
+	const FFlockLogDetails& Details)
+{
+	FFlockLogEventRequest Event = MakeLogEvent(EFlockLogEventType::Exception, Message);
+	Event.Data.ErrorMessage = Message;
+	Event.Data.ErrorTraceback = StackTrace;
 	if (!Event.Data.ErrorTraceback.IsEmpty())
 	{
 		Event.Data.ErrorTraceback.ParseIntoArrayLines(Event.Data.ErrorTracebackLines);
@@ -374,12 +447,6 @@ void FFlockAnalyticsProvider::LogException(const FString& Message, const FString
 	Event.Data.ErrorData = Details.ErrorData;
 	Event.Data.ExtraData = Details.ExtraData;
 	QueueLogEvent(MoveTemp(Event));
-
-	// Exception pressure is context for the next launch's termination report.
-	if (Deps.TerminationTracker.IsValid())
-	{
-		Deps.TerminationTracker->NoteException();
-	}
 }
 
 void FFlockAnalyticsProvider::RecordScreenView(const FString& ScreenName)
@@ -389,6 +456,208 @@ void FFlockAnalyticsProvider::RecordScreenView(const FString& ScreenName)
 		return;
 	}
 	Deps.Session->RecordScreenView(ScreenName);
+}
+
+bool FFlockAnalyticsProvider::TrackEvent(const FString& EventName, const FFlockCommandData& Properties,
+	const FString& EventCategory)
+{
+	// The provider is game-thread only. A game recording an event from a worker has done nothing wrong, so the
+	// call is forwarded rather than refused — which means it cannot be judged here, and answers true.
+	if (!IsInGameThread())
+	{
+		const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
+		AsyncTask(ENamedThreads::GameThread, [WeakSelf, EventName, Properties, EventCategory]()
+		{
+			if (const TSharedPtr<FFlockAnalyticsProvider> Self = WeakSelf.Pin())
+			{
+				Self->TrackEvent(EventName, Properties, EventCategory);
+			}
+		});
+		return true;
+	}
+
+	if (!IsCollecting())
+	{
+		return false;
+	}
+	// The server stores an empty name as a row of its own, so the refusal has to happen here.
+	if (EventName.TrimStartAndEnd().IsEmpty())
+	{
+		Logger->LogWarning(TEXT("Track event refused: an event needs a name."));
+		return false;
+	}
+	// The server writes session_started itself when a session starts, and accepts the name from a client without
+	// complaint — so recording it here would count every session twice, silently.
+	if (EventName.Equals(ReservedSessionStartedEvent, ESearchCase::CaseSensitive))
+	{
+		Logger->LogWarning(FString::Printf(
+			TEXT("Track event refused: '%s' is reserved; the server records it when a session starts."),
+			ReservedSessionStartedEvent));
+		return false;
+	}
+
+	FFlockSpooledAnalyticsEvent Entry;
+	Entry.Event.PlayerId = AuthSessionRef->IsAuthenticated() ? AuthSessionRef->GetPlayerId() : FString();
+	Entry.Event.EventName = EventName;
+	Entry.Event.EventCategory = EventCategory;
+	Entry.Event.Timestamp = FDateTime::UtcNow().ToIso8601();
+	Entry.Event.Properties = Properties;
+
+	// Only the session of this event's own player is attached. Its server id may not be known yet, so the local id
+	// is kept alongside: the server id can still be attached when the event is sent.
+	// A server id the server has already refused a batch for is not attached either: every event carrying it would
+	// cost a refusal and a resend.
+	if (HasActiveSession() && !Entry.Event.PlayerId.IsEmpty() && Deps.Session->GetPlayerId() == Entry.Event.PlayerId
+		&& !RefusedSessionIds.Contains(Deps.Session->GetServerSessionId()))
+	{
+		Entry.LocalSessionId = Deps.Session->GetSessionId();
+		Entry.Event.SessionId = Deps.Session->GetServerSessionId();
+	}
+
+	if (Deps.AnalyticsEventCache.IsValid()
+		&& !Deps.AnalyticsEventCache->Enqueue(FFlockAnalyticsJson::SerializeSpooledAnalyticsEvent(Entry)).IsEmpty())
+	{
+		return true;
+	}
+
+	// Not spooled — caching is off, or the disk refused it. Without a spool an event with no player cannot be held,
+	// and sent it would only be refused.
+	if (Entry.Event.PlayerId.IsEmpty())
+	{
+		Logger->LogDebug(FString::Printf(
+			TEXT("Event '%s' dropped: nobody is signed in and there is no spool to hold it."), *EventName));
+		return false;
+	}
+
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = AuthSessionRef;
+	const FString Url = AnalyticsUrl(FlockEndpoints::AnalyticsEvents);
+	const FString Body = FFlockAnalyticsJson::SerializeAnalyticsEvents({ Entry.Event });
+	Execute<FFlockAnalyticsAck>(
+		[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnAttempt)
+		{
+			return ClientRef->PostJsonRaw<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
+		},
+		nullptr, TEXT("Track event"), /*bIdempotent*/ false);
+	return true;
+}
+
+void FFlockAnalyticsProvider::HandleAuthenticated(const FString& PlayerId)
+{
+	if (PlayerId.IsEmpty() || !Deps.AnalyticsEventCache.IsValid())
+	{
+		return;
+	}
+
+	// Events recorded while nobody was signed in belong to whoever signs in next. An event that already carries a
+	// player keeps it: reassigning it would credit one player's play to another.
+	TArray<FString> Handles;
+	TArray<FString> Payloads;
+	Deps.AnalyticsEventCache->PeekBatch(Deps.AnalyticsEventCache->PendingCount(), Handles, Payloads);
+
+	int32 Attributed = 0;
+	for (int32 Index = 0; Index < Handles.Num(); ++Index)
+	{
+		FFlockSpooledAnalyticsEvent Entry;
+		if (!FFlockAnalyticsJson::DeserializeSpooledAnalyticsEvent(Payloads[Index], Entry) || !Entry.Event.PlayerId.IsEmpty())
+		{
+			continue;
+		}
+		Entry.Event.PlayerId = PlayerId;
+		Deps.AnalyticsEventCache->Replace(Handles[Index], FFlockAnalyticsJson::SerializeSpooledAnalyticsEvent(Entry));
+		++Attributed;
+	}
+
+	if (Attributed > 0)
+	{
+		Logger->LogDebug(FString::Printf(TEXT("Attributed %d event(s) recorded before sign-in to %s"),
+			Attributed, *PlayerId));
+	}
+	// Whether or not anything was attributed: nothing is delivered while nobody is signed in, so a previous player's
+	// events have been waiting for this too.
+	FlushAnalyticsEvents(nullptr);
+}
+
+FFlockExceptionCaptureCoverage FFlockAnalyticsProvider::ComputeCoverage(bool bCaptureEnabled, bool bLoggingCompiledIn,
+	bool bEnsuresCompiledIn, bool bBlueprintGuardCompiledIn, const FString& BuildConfiguration)
+{
+	FFlockExceptionCaptureCoverage Coverage;
+	Coverage.bEnabled = bCaptureEnabled;
+	Coverage.bLogErrors = bCaptureEnabled && bLoggingCompiledIn;
+	// An ensure reaches the SDK only as an Error line, so it needs logging compiled in as well as ensures.
+	Coverage.bEnsures = bCaptureEnabled && bLoggingCompiledIn && bEnsuresCompiledIn;
+	// The engine broadcasts script exceptions in every configuration; only its loop and recursion detection is
+	// compiled out of Shipping and Test.
+	Coverage.bBlueprintExceptions = bCaptureEnabled;
+	Coverage.bBlueprintInfiniteLoops = bCaptureEnabled && bBlueprintGuardCompiledIn;
+	Coverage.bCrashes = bCaptureEnabled;
+	Coverage.BuildConfiguration = BuildConfiguration;
+	return Coverage;
+}
+
+FFlockExceptionCaptureCoverage FFlockAnalyticsProvider::GetExceptionCaptureCoverage() const
+{
+	if (CoverageOverride.IsSet())
+	{
+		return CoverageOverride.GetValue();
+	}
+	// A running sink, not the setting: capture is also off when analytics is, or when this process may not tap the log
+	// at all, and coverage must not claim faults nothing is listening for.
+	return ComputeCoverage(LogSink.IsValid(), !NO_LOGGING, DO_ENSURE != 0, DO_BLUEPRINT_GUARD != 0,
+		LexToString(FApp::GetBuildConfiguration()));
+}
+
+void FFlockAnalyticsProvider::ReportCaptureCoverage()
+{
+	const FFlockExceptionCaptureCoverage Coverage = GetExceptionCaptureCoverage();
+	// Nothing to say when capture is off — the project chose that — or when nothing is out of reach. Nor while nothing
+	// is collected: the notice would be dropped, and then recorded as sent.
+	if (!Coverage.bEnabled || Coverage.IsComplete() || !IsCollecting())
+	{
+		return;
+	}
+
+	// Once per build, not per launch: the answer cannot change until the build does, and a shipped game would
+	// otherwise send the same notice every time a player starts it.
+	const FString BuildKey = FString::Printf(TEXT("%s|%s|%s"), *Coverage.BuildConfiguration, *GameVersion, *SdkVersion);
+	if (!Deps.CoverageNoticeMarkerPath.IsEmpty())
+	{
+		FString SentFor;
+		if (FFileHelper::LoadFileToString(SentFor, *Deps.CoverageNoticeMarkerPath) && SentFor == BuildKey)
+		{
+			return;
+		}
+	}
+
+	// A Shipping or Test build compiles its own log output away, so a warning in the log would never be read. The
+	// notice goes to the diagnostics dashboard instead.
+	FFlockLogEventRequest Event = MakeLogEvent(EFlockLogEventType::Debug, CoverageNoticeName);
+	Event.Data.ExtraData.Add(TEXT("build_configuration"), Coverage.BuildConfiguration);
+	Event.Data.ExtraData.Add(TEXT("log_errors"), BoolWire(Coverage.bLogErrors));
+	Event.Data.ExtraData.Add(TEXT("ensures"), BoolWire(Coverage.bEnsures));
+	Event.Data.ExtraData.Add(TEXT("blueprint_exceptions"), BoolWire(Coverage.bBlueprintExceptions));
+	Event.Data.ExtraData.Add(TEXT("blueprint_infinite_loops"), BoolWire(Coverage.bBlueprintInfiniteLoops));
+	Event.Data.ExtraData.Add(TEXT("crashes"), BoolWire(Coverage.bCrashes));
+	QueueLogEvent(MoveTemp(Event));
+
+	if (!Deps.CoverageNoticeMarkerPath.IsEmpty())
+	{
+		FFileHelper::SaveStringToFile(BuildKey, *Deps.CoverageNoticeMarkerPath);
+	}
+}
+
+void FFlockAnalyticsProvider::QueueRepeatReports(const TArray<FFlockRepeatedExceptionCounter::FRepeatReport>& Summaries)
+{
+	for (const FFlockRepeatedExceptionCounter::FRepeatReport& Summary : Summaries)
+	{
+		// The category, source and kind the first report carried, so the repeats are counted where it was.
+		FFlockLogDetails Details = Summary.Details;
+		// The first occurrence was reported when its window opened; this entry carries only what came after it.
+		Details.ExtraData.Add(TEXT("repeat_count"), FString::FromInt(Summary.Repeats));
+		Details.ExtraData.Add(TEXT("repeat_window_seconds"), FString::SanitizeFloat(RepeatedExceptions.GetRepeatWindowSeconds()));
+		// Already counted toward the termination report when each repeat arrived, so SpoolException, not LogException.
+		SpoolException(Summary.Message, Summary.StackTrace, Details);
+	}
 }
 
 void FFlockAnalyticsProvider::RecordTransaction(const FFlockAnalyticsTransactionRequest& InRequest,
@@ -990,12 +1259,21 @@ void FFlockAnalyticsProvider::Flush(TFunction<void(TFlockResult<FFlockAnalyticsA
 		// The log spool is drained whatever the ends did — one failing queue must not hold the other
 		// hostage. The reported outcome is the first failure, so a caller is never told "delivered"
 		// when something was left behind.
-		Self->FlushLogEvents([EndResult, OnComplete](TFlockResult<FFlockAnalyticsAck> LogResult)
+		Self->FlushLogEvents([WeakSelf, EndResult, OnComplete](TFlockResult<FFlockAnalyticsAck> LogResult)
 		{
-			if (OnComplete)
+			const TSharedPtr<FFlockAnalyticsProvider> Inner = WeakSelf.Pin();
+			if (!Inner.IsValid())
 			{
-				OnComplete(EndResult.bSuccess ? LogResult : EndResult);
+				return;
 			}
+			// Gameplay events last, on their own flag: no queue's failure holds another hostage.
+			Inner->FlushAnalyticsEvents([EndResult, LogResult, OnComplete](TFlockResult<FFlockAnalyticsAck> EventResult)
+			{
+				if (OnComplete)
+				{
+					OnComplete(!EndResult.bSuccess ? EndResult : (!LogResult.bSuccess ? LogResult : EventResult));
+				}
+			});
 		});
 	});
 }
@@ -1021,48 +1299,49 @@ void FFlockAnalyticsProvider::FlushLogEvents(TFunction<void(TFlockResult<FFlockA
 	}
 
 	bFlushInFlight = true;
-	SendNextBatch(MoveTemp(OnComplete));
+	SendNextBatch(MakeShared<FDeliveryPass>(), MoveTemp(OnComplete));
 }
 
-void FFlockAnalyticsProvider::SendNextBatch(TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete)
+void FFlockAnalyticsProvider::SendNextBatch(const TSharedRef<FDeliveryPass>& Pass,
+	TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete)
 {
 	TArray<FString> Handles;
 	TArray<FString> Payloads;
-	Deps.LogEventCache->PeekBatch(FMath::Max(Config.CacheFlushBatchSize, 1), Handles, Payloads);
+	Deps.LogEventCache->PeekBatch(Pass->NextBatchSize(Config.CacheFlushBatchSize), Handles, Payloads);
 
 	if (Handles.Num() == 0)
 	{
 		bFlushInFlight = false;
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockAnalyticsAck>::Ok(FFlockAnalyticsAck()));
+			OnComplete(Pass->ResultToReport());
 		}
 		return;
 	}
 
 	TArray<FFlockLogEventRequest> Batch;
-	TArray<FString> Undeliverable;
+	TArray<FString> SentHandles;
+	TArray<FString> SentPayloads;
 	for (int32 Index = 0; Index < Handles.Num(); ++Index)
 	{
 		FFlockLogEventRequest Event;
 		if (FFlockAnalyticsJson::DeserializeEvent(Payloads[Index], Event))
 		{
 			Batch.Add(MoveTemp(Event));
+			SentHandles.Add(Handles[Index]);
+			SentPayloads.Add(Payloads[Index]);
 		}
 		else
 		{
 			// A spool entry we can no longer parse will never become deliverable; drop it rather
 			// than wedging the queue behind it forever.
-			Undeliverable.Add(Handles[Index]);
+			Deps.LogEventCache->Remove(Handles[Index]);
+			Pass->NoteEntryDone();
 		}
-	}
-	for (const FString& Handle : Undeliverable)
-	{
-		Deps.LogEventCache->Remove(Handle);
 	}
 	if (Batch.Num() == 0)
 	{
-		SendNextBatch(MoveTemp(OnComplete));
+		SendNextBatch(Pass, MoveTemp(OnComplete));
 		return;
 	}
 
@@ -1072,19 +1351,12 @@ void FFlockAnalyticsProvider::SendNextBatch(TFunction<void(TFlockResult<FFlockAn
 	const FString Url = AnalyticsUrl(FlockEndpoints::LogEvent);
 	const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
 
-	// Handles the batch carried, so only what was actually sent is acknowledged.
-	TArray<FString> SentHandles = Handles;
-	for (const FString& Handle : Undeliverable)
-	{
-		SentHandles.Remove(Handle);
-	}
-
 	Execute<FFlockAnalyticsAck>(
 		[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnAttempt)
 		{
 			return ClientRef->PostJsonRaw<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
 		},
-		[WeakSelf, SentHandles, OnComplete](TFlockResult<FFlockAnalyticsAck> Result)
+		[WeakSelf, Pass, SentHandles, SentPayloads, OnComplete](TFlockResult<FFlockAnalyticsAck> Result)
 		{
 			const TSharedPtr<FFlockAnalyticsProvider> Self = WeakSelf.Pin();
 			if (!Self.IsValid())
@@ -1092,24 +1364,282 @@ void FFlockAnalyticsProvider::SendNextBatch(TFunction<void(TFlockResult<FFlockAn
 				return;
 			}
 
-			if (!Result.bSuccess)
+			if (Result.bSuccess)
 			{
-				// Leave the batch spooled; the next flush retries it.
-				Self->bFlushInFlight = false;
-				if (OnComplete)
+				for (const FString& Handle : SentHandles)
 				{
-					OnComplete(Result);
+					Self->Deps.LogEventCache->Remove(Handle);
 				}
+				Pass->NoteEntryDone();
+				Self->SendNextBatch(Pass, OnComplete);
 				return;
 			}
 
-			for (const FString& Handle : SentHandles)
+			switch (DecideFailedSendAction(Result.Error))
 			{
-				Self->Deps.LogEventCache->Remove(Handle);
+			case EFlockFailedSendAction::Discard:
+				if (SentHandles.Num() > 1 && IsRefusalOfContent(Result.Error))
+				{
+					// One entry can make the server refuse the whole body. Sent apart, only that entry goes.
+					Pass->EntriesToSendOneAtATime = SentHandles.Num();
+				}
+				else
+				{
+					// Refused, and it would be refused on every flush forever, holding every later entry behind it.
+					Self->Logger->LogWarning(FString::Printf(TEXT("Dropping %d log entr%s the server refused (%s)"),
+						SentHandles.Num(), SentHandles.Num() == 1 ? TEXT("y") : TEXT("ies"), *Result.Error.Message));
+					for (const FString& Handle : SentHandles)
+					{
+						Self->Deps.LogEventCache->Remove(Handle);
+					}
+					Pass->NoteEntryRefused(Result.Error);
+				}
+				Self->SendNextBatch(Pass, OnComplete);
+				return;
+			case EFlockFailedSendAction::RetryCountingAttempt:
+				Self->CountFailedLogSends(SentHandles, SentPayloads);
+				break;
+			case EFlockFailedSendAction::RetryWithoutCountingAttempt:
+				break;
 			}
-			Self->SendNextBatch(OnComplete);
+
+			// Kept for the next flush, and the pass stops here.
+			Self->bFlushInFlight = false;
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
 		},
 		TEXT("Flush log events"));
+}
+
+void FFlockAnalyticsProvider::CountFailedLogSends(const TArray<FString>& Handles, const TArray<FString>& Payloads)
+{
+	// The payloads the batch was built from, so charging costs no second read. Replace ignores a handle the spool no
+	// longer holds, so an entry cleared while its batch was away is not written back.
+	for (int32 Index = 0; Index < Handles.Num() && Index < Payloads.Num(); ++Index)
+	{
+		const int32 FailedSends = FFlockAnalyticsJson::ReadFailedSendCount(Payloads[Index]) + 1;
+		if (FailedSends >= MaxFailedSends)
+		{
+			Logger->LogWarning(FString::Printf(TEXT("Dropping a log entry after %d failed sends"), FailedSends));
+			Deps.LogEventCache->Remove(Handles[Index]);
+			continue;
+		}
+		Deps.LogEventCache->Replace(Handles[Index], FFlockAnalyticsJson::WithFailedSendCount(Payloads[Index], FailedSends));
+	}
+}
+
+void FFlockAnalyticsProvider::FlushAnalyticsEvents(TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete)
+{
+	// Nothing goes while nobody is signed in. A held event has no player to send, and a previous player's events can
+	// wait for the next sign-in, which flushes — scanning the spool every interval only to skip it would not.
+	if (!Deps.AnalyticsEventCache.IsValid() || Deps.AnalyticsEventCache->PendingCount() == 0 || bEventsFlushInFlight
+		|| !AuthSessionRef->IsAuthenticated())
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockAnalyticsAck>::Ok(FFlockAnalyticsAck()));
+		}
+		return;
+	}
+
+	bEventsFlushInFlight = true;
+	SendNextEventBatch(MakeShared<FDeliveryPass>(), MoveTemp(OnComplete));
+}
+
+void FFlockAnalyticsProvider::SendNextEventBatch(const TSharedRef<FDeliveryPass>& Pass,
+	TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete)
+{
+	// No consent check per batch: withdrawing consent clears this spool, so a pass that outlives it finds nothing.
+	if (!Deps.AnalyticsEventCache.IsValid())
+	{
+		bEventsFlushInFlight = false;
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockAnalyticsAck>::Ok(FFlockAnalyticsAck()));
+		}
+		return;
+	}
+
+	// One player per batch. The route checks every event's player and refuses the whole batch for one it does not
+	// know — measured: the good events in that batch are not stored — so mixing players would let one deleted
+	// account take everyone else's events down with it.
+	//
+	// Held events (nobody was signed in) are skipped, not sent: an empty player is the same refusal. The scan is
+	// bounded, so a long signed-out stretch does not cost a disk read per held event on every flush; held events
+	// become sendable the moment someone signs in anyway.
+	const int32 BatchSize = Pass->NextBatchSize(Config.CacheFlushBatchSize);
+	TArray<FString> ScanHandles;
+	TArray<FString> ScanPayloads;
+	Deps.AnalyticsEventCache->PeekBatch(FMath::Max(BatchSize * 4, 200), ScanHandles, ScanPayloads);
+
+	TArray<FString> Handles;
+	TArray<FFlockSpooledAnalyticsEvent> Entries;
+	FString BatchPlayer;
+	for (int32 Index = 0; Index < ScanHandles.Num() && Handles.Num() < BatchSize; ++Index)
+	{
+		FFlockSpooledAnalyticsEvent Entry;
+		if (!FFlockAnalyticsJson::DeserializeSpooledAnalyticsEvent(ScanPayloads[Index], Entry))
+		{
+			// Unreadable, or not an event: it can never become deliverable.
+			Deps.AnalyticsEventCache->Remove(ScanHandles[Index]);
+			continue;
+		}
+		if (Entry.Event.PlayerId.IsEmpty())
+		{
+			continue;
+		}
+		if (BatchPlayer.IsEmpty())
+		{
+			BatchPlayer = Entry.Event.PlayerId;
+		}
+		else if (Entry.Event.PlayerId != BatchPlayer)
+		{
+			continue;
+		}
+
+		// Recorded before its session registered: attach the id the server knows that session by now.
+		if (Entry.Event.SessionId.IsEmpty() && !Entry.LocalSessionId.IsEmpty() && Deps.Session.IsValid()
+			&& Entry.LocalSessionId == Deps.Session->GetSessionId() && !Deps.Session->GetServerSessionId().IsEmpty()
+			&& !RefusedSessionIds.Contains(Deps.Session->GetServerSessionId()))
+		{
+			Entry.Event.SessionId = Deps.Session->GetServerSessionId();
+			Deps.AnalyticsEventCache->Replace(ScanHandles[Index], FFlockAnalyticsJson::SerializeSpooledAnalyticsEvent(Entry));
+		}
+
+		Handles.Add(ScanHandles[Index]);
+		Entries.Add(MoveTemp(Entry));
+	}
+
+	if (Handles.Num() == 0)
+	{
+		bEventsFlushInFlight = false;
+		if (OnComplete)
+		{
+			OnComplete(Pass->ResultToReport());
+		}
+		return;
+	}
+
+	TArray<FFlockAnalyticsEventRequest> Batch;
+	Batch.Reserve(Entries.Num());
+	for (const FFlockSpooledAnalyticsEvent& Entry : Entries)
+	{
+		Batch.Add(Entry.Event);
+	}
+
+	const FString Body = FFlockAnalyticsJson::SerializeAnalyticsEvents(Batch);
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = AuthSessionRef;
+	const FString Url = AnalyticsUrl(FlockEndpoints::AnalyticsEvents);
+	const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
+
+	// Not idempotent: the server stores every event it is sent, so an ambiguous failure is not retried in place.
+	// The batch stays spooled and the next flush sends it once more.
+	Execute<FFlockAnalyticsAck>(
+		[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnAttempt)
+		{
+			return ClientRef->PostJsonRaw<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
+		},
+		[WeakSelf, Pass, Handles, Entries, BatchPlayer, OnComplete](TFlockResult<FFlockAnalyticsAck> Result)
+		{
+			const TSharedPtr<FFlockAnalyticsProvider> Self = WeakSelf.Pin();
+			if (!Self.IsValid())
+			{
+				return;
+			}
+			if (Result.bSuccess)
+			{
+				for (const FString& Handle : Handles)
+				{
+					Self->Deps.AnalyticsEventCache->Remove(Handle);
+				}
+				Pass->bRetriedWithoutSession = false;
+				Pass->NoteEntryDone();
+				Self->SendNextEventBatch(Pass, OnComplete);
+				return;
+			}
+			Self->HandleEventBatchFailure(Pass, Handles, Entries, BatchPlayer, Result.Error, OnComplete);
+		},
+		TEXT("Flush analytics events"), /*bIdempotent*/ false);
+}
+
+void FFlockAnalyticsProvider::HandleEventBatchFailure(const TSharedRef<FDeliveryPass>& Pass, const TArray<FString>& Handles,
+	const TArray<FFlockSpooledAnalyticsEvent>& Entries, const FString& BatchPlayer, const FFlockError& Error,
+	TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete)
+{
+	// 409 is a session id the server does not know. The events themselves are fine, so they go out once more
+	// without session ids before anything is dropped.
+	bool bCarriesSessionIds = false;
+	for (const FFlockSpooledAnalyticsEvent& Entry : Entries)
+	{
+		bCarriesSessionIds |= !Entry.Event.SessionId.IsEmpty();
+	}
+	if (Error.StatusCode == 409 && bCarriesSessionIds && !Pass->bRetriedWithoutSession)
+	{
+		for (int32 Index = 0; Index < Handles.Num(); ++Index)
+		{
+			FFlockSpooledAnalyticsEvent Stripped = Entries[Index];
+			if (!Stripped.Event.SessionId.IsEmpty())
+			{
+				// Remembered, so neither this resend nor any event recorded later attaches it again: each would cost a
+				// refusal and a resend.
+				RefusedSessionIds.Add(Stripped.Event.SessionId);
+			}
+			Stripped.Event.SessionId.Reset();
+			Deps.AnalyticsEventCache->Replace(Handles[Index], FFlockAnalyticsJson::SerializeSpooledAnalyticsEvent(Stripped));
+		}
+		Pass->bRetriedWithoutSession = true;
+		SendNextEventBatch(Pass, MoveTemp(OnComplete));
+		return;
+	}
+
+	switch (DecideFailedSendAction(Error))
+	{
+	case EFlockFailedSendAction::Discard:
+		if (Handles.Num() > 1 && IsRefusalOfContent(Error))
+		{
+			// One event can make the server refuse the whole body. Sent apart, only that event goes.
+			Pass->EntriesToSendOneAtATime = Handles.Num();
+		}
+		else
+		{
+			Logger->LogWarning(FString::Printf(TEXT("Dropping %d analytics event(s) for player '%s' the server refused (%s)"),
+				Handles.Num(), *BatchPlayer, *Error.Message));
+			for (const FString& Handle : Handles)
+			{
+				Deps.AnalyticsEventCache->Remove(Handle);
+			}
+			Pass->NoteEntryRefused(Error);
+		}
+		Pass->bRetriedWithoutSession = false;
+		SendNextEventBatch(Pass, MoveTemp(OnComplete));
+		return;
+	case EFlockFailedSendAction::RetryCountingAttempt:
+		for (int32 Index = 0; Index < Handles.Num(); ++Index)
+		{
+			FFlockSpooledAnalyticsEvent Counted = Entries[Index];
+			if (++Counted.FailedSends >= MaxFailedSends)
+			{
+				Logger->LogWarning(FString::Printf(TEXT("Dropping analytics event '%s' after %d failed sends"),
+					*Counted.Event.EventName, Counted.FailedSends));
+				Deps.AnalyticsEventCache->Remove(Handles[Index]);
+				continue;
+			}
+			Deps.AnalyticsEventCache->Replace(Handles[Index], FFlockAnalyticsJson::SerializeSpooledAnalyticsEvent(Counted));
+		}
+		break;
+	case EFlockFailedSendAction::RetryWithoutCountingAttempt:
+		break;
+	}
+
+	// Kept for the next flush, and the pass stops here.
+	bEventsFlushInFlight = false;
+	if (OnComplete)
+	{
+		OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(Error));
+	}
 }
 
 void FFlockAnalyticsProvider::EraseLocalData()
@@ -1121,6 +1651,10 @@ void FFlockAnalyticsProvider::EraseLocalData()
 	if (Deps.SessionEndCache.IsValid())
 	{
 		Deps.SessionEndCache->Clear();
+	}
+	if (Deps.AnalyticsEventCache.IsValid())
+	{
+		Deps.AnalyticsEventCache->Clear();
 	}
 	if (Deps.Session.IsValid())
 	{
@@ -1142,11 +1676,25 @@ void FFlockAnalyticsProvider::DrainLogSink()
 	{
 		return;
 	}
+	const double Now = NowSeconds();
+	// Windows that closed since the last drain go out first, so a storm's summary is not overtaken by the next one.
+	QueueRepeatReports(RepeatedExceptions.CollectFinished(Now));
+
 	FFlockCapturedLog Captured;
 	while (LogSink->Dequeue(Captured))
 	{
-		FFlockLogDetails Details;
-		Details.ExtraData.Add(TEXT("category"), Captured.Category.ToString());
+		const FFlockLogDetails Details = DetailsOfCapturedFault(Captured);
+		const FString SameFaultKey = FFlockRepeatedExceptionCounter::MakeSameFaultKey(Captured.Category, Captured.Message, Captured.StackTrace);
+		if (!RepeatedExceptions.ShouldReportNow(SameFaultKey, Captured.Message, Captured.StackTrace, Details, Now))
+		{
+			// A repeat inside an open window: counted into its summary, and still pressure for the termination report.
+			if (Deps.TerminationTracker.IsValid())
+			{
+				Deps.TerminationTracker->NoteException();
+			}
+			continue;
+		}
+
 		// The sink already walked the stack where the error happened; passing it here stops
 		// LogException walking a second, useless one rooted in the drain loop.
 		LogException(Captured.Message, Captured.StackTrace, Details);
@@ -1194,12 +1742,57 @@ void FFlockAnalyticsProvider::HandleTick(float DeltaSeconds)
 	if (Config.EventBufferFlushIntervalSeconds > 0.f)
 	{
 		FlushAccumulator += DeltaSeconds;
-		if (FlushAccumulator >= Config.EventBufferFlushIntervalSeconds)
+		if (FlushAccumulator >= FMath::Max(Config.EventBufferFlushIntervalSeconds, FlushWaitSeconds))
 		{
 			FlushAccumulator = 0.f;
-			Flush();
+			const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
+			Flush([WeakSelf](TFlockResult<FFlockAnalyticsAck> Result)
+			{
+				if (const TSharedPtr<FFlockAnalyticsProvider> Self = WeakSelf.Pin())
+				{
+					Self->UpdateFlushWait(Result);
+				}
+			});
 		}
 	}
+}
+
+void FFlockAnalyticsProvider::UpdateFlushWait(const TFlockResult<FFlockAnalyticsAck>& Result)
+{
+	const bool bStillQueued = GetPendingEventCount() > 0 || GetPendingAnalyticsEventCount() > 0
+		|| (Deps.SessionEndCache.IsValid() && Deps.SessionEndCache->PendingCount() > 0);
+	if (Result.bSuccess || !bStillQueued)
+	{
+		FlushWaitSeconds = 0.f;
+		return;
+	}
+	// An unanswered failure spends no attempt, so there is nothing to stretch the wait for.
+	if (Result.Error.StatusCode == 0)
+	{
+		return;
+	}
+	const float Ceiling = FMath::Max(MaxFlushWaitSeconds, Config.EventBufferFlushIntervalSeconds);
+	FlushWaitSeconds = FMath::Min(FMath::Max(FlushWaitSeconds, Config.EventBufferFlushIntervalSeconds) * 2.f, Ceiling);
+}
+
+bool FFlockAnalyticsProvider::IsRefusalOfContent(const FFlockError& Error)
+{
+	// Malformed, too large, or a field the server will not take: each can come from one entry in the batch. A refusal
+	// about who is asking or what is addressed cannot, and taking the batch apart for one would only repeat it.
+	return Error.StatusCode == 400 || Error.StatusCode == 413 || Error.StatusCode == 422;
+}
+
+void FFlockAnalyticsProvider::TrackEventAsPlayerForTesting(const FString& PlayerId, const FString& EventName)
+{
+	if (!Deps.AnalyticsEventCache.IsValid())
+	{
+		return;
+	}
+	FFlockSpooledAnalyticsEvent Entry;
+	Entry.Event.PlayerId = PlayerId;
+	Entry.Event.EventName = EventName;
+	Entry.Event.Timestamp = FDateTime::UtcNow().ToIso8601();
+	Deps.AnalyticsEventCache->Enqueue(FFlockAnalyticsJson::SerializeSpooledAnalyticsEvent(Entry));
 }
 
 void FFlockAnalyticsProvider::HandleBackgroundChanged(bool bBackgrounded)
@@ -1254,6 +1847,10 @@ void FFlockAnalyticsProvider::HandleBackgroundChanged(bool bBackgrounded)
 
 void FFlockAnalyticsProvider::HandleQuit()
 {
+	// Same as Shutdown: faults and repeat counts with no later tick to spool them.
+	DrainLogSink();
+	QueueRepeatReports(RepeatedExceptions.CollectAll());
+
 	if (Config.bAutoEndSessionOnQuit && HasActiveSession())
 	{
 		EndSession(EFlockSessionEndReason::Quit);

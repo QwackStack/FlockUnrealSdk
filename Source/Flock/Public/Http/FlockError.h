@@ -117,4 +117,42 @@ struct FLOCK_API FFlockError
 
 	/** 408/429 mean the server rejected the request before processing it (safe to retry non-idempotents). */
 	static bool IsNotProcessed(int32 InStatusCode);
+
+	/**
+	 * True when a queued write should be dropped because the server refused it — sending it again would only be
+	 * refused again. The one verdict every spool and queue in the SDK asks, so it has one owner:
+	 *
+	 *  - **Serialization is not permanent.** Its status is whatever the exchange carried: a captive portal
+	 *    answering with an HTML 200 arrives as Serialization/200. It says nothing about whether the server
+	 *    applied the write, so it stays queued and an attempt cap bounds the stall.
+	 *  - **Only a backend-coded 403 is authoritative.** A 401 clears on the next sign-in; a bare 403 is a proxy
+	 *    or WAF, not this backend refusing the write.
+	 *  - **Everything else is decided by status**, where a permanent 4xx really is the server's answer.
+	 */
+	static bool IsPermanentFailure(const FFlockError& Error);
 };
+
+/** What a queue does with a queued write the server did not accept. */
+enum class EFlockFailedSendAction : uint8
+{
+	/** The server refused it, so sending it again would be refused again: it goes. */
+	Discard,
+	/** The server answered without accepting or refusing it: it stays, and spends one attempt of its budget. */
+	RetryCountingAttempt,
+	/** Nothing answered — offline, a timeout, a cancellation: it stays, and nothing about the write was learned. */
+	RetryWithoutCountingAttempt,
+};
+
+/**
+ * The verdict every SDK queue acts on after a failed send, so no queue restates it. Only an answered failure is
+ * counted: counting unanswered ones would discard a player's writes for having been offline, which is exactly
+ * what the queues exist to survive.
+ */
+inline EFlockFailedSendAction DecideFailedSendAction(const FFlockError& Error)
+{
+	if (FFlockError::IsPermanentFailure(Error))
+	{
+		return EFlockFailedSendAction::Discard;
+	}
+	return Error.StatusCode != 0 ? EFlockFailedSendAction::RetryCountingAttempt : EFlockFailedSendAction::RetryWithoutCountingAttempt;
+}
