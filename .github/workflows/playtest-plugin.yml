@@ -1,0 +1,189 @@
+name: Playtest plugin
+
+# FlockPlaytest lives in this repository but installs as a separate, optional plugin
+# (OptionalPlugins/FlockPlaytest/, released as its own zip). Four rules keep it optional, and the compiler
+# enforces none of them:
+#
+#   - Flock never names it. A Flock file that includes a playtest header compiles here, where the two sit
+#     side by side, and fails in every project that installed Flock alone.
+#   - It is off until a project turns it on: EnabledByDefault is false in its manifest, and Enable
+#     Playtesting defaults to false in its settings. Playtest data can include screen recordings and what
+#     players type into a feedback form.
+#   - It depends on Flock, so enabling it brings Flock with it.
+#   - It carries Flock's version. Both zips come from one tag, and a plugin dependency cannot state a
+#     minimum version, so the matching number is what says the two belong together.
+#
+# Called from consistency.yml and from release.yml, for the same reason as engine-claim.yml: a tag can be
+# pushed at a commit no pull request ever checked. Needs no engine; every step reads text files.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  playtest-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Each step names its own files instead of sharing a variable, so any one of them can be copied out
+      # and run against a doctored tree to prove it fails.
+      - name: Flock never refers to the playtest plugin
+        run: |
+          set -euo pipefail
+
+          # Everything a project that installed only Flock builds or loads: its runtime and editor sources,
+          # its config and its manifest. Case-insensitive, because an include or a module name in another
+          # letter case still resolves on a case-insensitive file system.
+          for CHECKED in Source Config Flock.uplugin; do
+            if [ ! -e "$CHECKED" ]; then
+              echo "::error::$CHECKED is missing. This check reads it; if it moved, update this workflow with it."
+              exit 1
+            fi
+          done
+
+          HITS=$(grep -rniI 'FlockPlaytest' Source Config Flock.uplugin || true)
+          if [ -n "$HITS" ]; then
+            echo "::error::Flock refers to the optional playtest plugin, so a project that installed Flock alone would fail to build or load. Keep the code in OptionalPlugins/FlockPlaytest/, and if the playtest plugin needs something from Flock, add it to Flock without naming the plugin:"
+            echo "$HITS"
+            exit 1
+          fi
+
+          # Assets are binary, but an asset that uses a playtest type stores its /Script/FlockPlaytest import as
+          # plain text, so Content/ is searched as text too (-a), whenever Flock has one.
+          if [ -d Content ]; then
+            ASSET_HITS=$(grep -rlia 'FlockPlaytest' Content || true)
+            if [ -n "$ASSET_HITS" ]; then
+              echo "::error::Flock content refers to the optional playtest plugin, so it would fail to load in a project that installed Flock alone:"
+              echo "$ASSET_HITS"
+              exit 1
+            fi
+          fi
+
+          echo "Nothing in Source/, Config/, Content/ or Flock.uplugin refers to FlockPlaytest."
+
+      - name: Every optional plugin is one these checks and the release know about
+        run: |
+          set -euo pipefail
+
+          # OptionalPlugins/ is left out of Flock's zip as a whole, but the rules in this workflow and the second
+          # archive in release.yml name FlockPlaytest only. A new plugin folder would pass every check here and
+          # then be missing from every release, so an unknown folder fails until both cover it.
+          for DIR in OptionalPlugins/*/; do
+            NAME=$(basename "$DIR")
+            if [ "$NAME" != "FlockPlaytest" ]; then
+              echo "::error::OptionalPlugins/$NAME is not covered by playtest-plugin.yml or release.yml. Give it the same rules and an archive of its own before adding it."
+              exit 1
+            fi
+          done
+
+          echo "OptionalPlugins/ holds only FlockPlaytest."
+
+      - name: The playtest plugin stays off until a project turns it on
+        run: |
+          set -euo pipefail
+
+          MANIFEST=OptionalPlugins/FlockPlaytest/FlockPlaytest.uplugin
+          SETTINGS=OptionalPlugins/FlockPlaytest/Source/FlockPlaytest/Public/FlockPlaytestSettings.h
+
+          for f in "$MANIFEST" "$SETTINGS"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::$f is missing. This check reads it; if it moved, update this workflow with it."
+              exit 1
+            fi
+          done
+
+          # Parsed as JSON rather than grepped, because a missing EnabledByDefault is not "off": Unreal enables
+          # a project plugin whose manifest does not say. Absence has to fail exactly like true.
+          python3 - "$MANIFEST" <<'PY'
+          import json
+          import sys
+
+          path = sys.argv[1]
+          with open(path, encoding="utf-8-sig") as f:
+              manifest = json.load(f)
+          if manifest.get("EnabledByDefault") is not False:
+              found = repr(manifest["EnabledByDefault"]) if "EnabledByDefault" in manifest else "no entry"
+              print(f"::error file={path}::EnabledByDefault must be false, found {found}. Installing the playtest plugin must not turn it on in every project that has it.")
+              sys.exit(1)
+          print(f"{path}: EnabledByDefault is false.")
+          PY
+
+          # The settings half. Checked in the source, because the member's initializer is the value every
+          # project starts from until someone saves a different one.
+          if ! grep -qE '^[[:space:]]*bool[[:space:]]+bPlaytestingEnabled[[:space:]]*=[[:space:]]*false[[:space:]]*;' "$SETTINGS"; then
+            echo "::error file=$SETTINGS::Declare the setting as 'bool bPlaytestingEnabled = false;'. Playtest data can include screen recordings and what players type, so a build collects it only when someone turned Enable Playtesting on."
+            exit 1
+          fi
+
+          # And no config file shipped inside the plugin may turn it back on.
+          SHIPPED_ON=$(grep -rniI --include='*.ini' 'bPlaytestingEnabled[[:space:]]*=[[:space:]]*true' OptionalPlugins/FlockPlaytest || true)
+          if [ -n "$SHIPPED_ON" ]; then
+            echo "::error::A config file inside the playtest plugin turns Enable Playtesting on for every project that installs it:"
+            echo "$SHIPPED_ON"
+            exit 1
+          fi
+
+          echo "$SETTINGS: Enable Playtesting defaults to off, and no shipped config turns it on."
+
+      - name: The playtest plugin depends on Flock
+        run: |
+          set -euo pipefail
+
+          MANIFEST=OptionalPlugins/FlockPlaytest/FlockPlaytest.uplugin
+          if [ ! -f "$MANIFEST" ]; then
+            echo "::error::$MANIFEST is missing. This check reads it; if it moved, update this workflow with it."
+            exit 1
+          fi
+
+          python3 - "$MANIFEST" <<'PY'
+          import json
+          import sys
+
+          path = sys.argv[1]
+          with open(path, encoding="utf-8-sig") as f:
+              manifest = json.load(f)
+          depends_on_flock = any(
+              plugin.get("Name") == "Flock" and plugin.get("Enabled") is True and not plugin.get("Optional", False)
+              for plugin in manifest.get("Plugins", [])
+          )
+          if not depends_on_flock:
+              print(f"::error file={path}::List Flock under Plugins, enabled and not optional. Without it, a project can enable the playtest plugin with Flock off, and the playtest module then fails to load.")
+              sys.exit(1)
+          print(f"{path}: depends on Flock.")
+          PY
+
+      - name: The playtest plugin carries Flock's version
+        run: |
+          set -euo pipefail
+
+          FLOCK=Flock.uplugin
+          PLAYTEST=OptionalPlugins/FlockPlaytest/FlockPlaytest.uplugin
+
+          for f in "$FLOCK" "$PLAYTEST"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::$f is missing. This check reads it; if it moved, update this workflow with it."
+              exit 1
+            fi
+          done
+
+          # VersionName is read the way release.yml and the version job read it, so all three agree on what
+          # the version is. Version (the integer) is compared as well: it moves with every release.
+          FLOCK_NAME=$(grep -o '"VersionName": *"[^"]*"' "$FLOCK" | cut -d'"' -f4 || true)
+          PLAYTEST_NAME=$(grep -o '"VersionName": *"[^"]*"' "$PLAYTEST" | cut -d'"' -f4 || true)
+          FLOCK_NUMBER=$(grep -oE '"Version": *[0-9]+' "$FLOCK" | grep -oE '[0-9]+$' || true)
+          PLAYTEST_NUMBER=$(grep -oE '"Version": *[0-9]+' "$PLAYTEST" | grep -oE '[0-9]+$' || true)
+
+          if [ -z "$FLOCK_NAME" ] || [ -z "$PLAYTEST_NAME" ] || [ -z "$FLOCK_NUMBER" ] || [ -z "$PLAYTEST_NUMBER" ]; then
+            echo "::error::Could not read VersionName and Version from both manifests (Flock: '${FLOCK_NAME}' / '${FLOCK_NUMBER}', playtest: '${PLAYTEST_NAME}' / '${PLAYTEST_NUMBER}')."
+            exit 1
+          fi
+
+          if [ "$FLOCK_NAME" != "$PLAYTEST_NAME" ] || [ "$FLOCK_NUMBER" != "$PLAYTEST_NUMBER" ]; then
+            echo "::error file=$PLAYTEST::The playtest plugin is at $PLAYTEST_NAME (Version $PLAYTEST_NUMBER) but Flock is at $FLOCK_NAME (Version $FLOCK_NUMBER). Both ship from one tag, so bump VersionName and Version in both manifests together."
+            exit 1
+          fi
+
+          echo "Both plugins are at $FLOCK_NAME (Version $FLOCK_NUMBER)."

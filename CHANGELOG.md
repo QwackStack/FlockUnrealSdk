@@ -5,6 +5,33 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-09-14
+
+### Added
+
+- **Flock Playtest, an optional plugin for Protokite playtests (beta).** It ships as its own download,
+  `FlockPlaytest-<version>.zip`, and installs next to the Flock SDK as `Plugins/FlockPlaytest/` — never inside
+  `Plugins/FlockUnrealSdk/`, where Unreal does not look for it. It stays disabled until you enable it for your
+  project, and even then does nothing until **Enable Playtesting** is turned on.
+- **Flock Playtest Settings** (*Project Settings > Plugins*): **Enable Playtesting**, off by default, and
+  **Protokite API URL**. A URL that does not start with `http://` or `https://`, names no host, or contains a
+  space or line break is refused with a warning that quotes it, rather than quietly trimmed.
+- **`UFlockPlaytestSubsystem::GetStatus()`** says whether playtest work may run and, if not, why: turned off,
+  Protokite API URL missing or unusable, waiting for the Flock SDK to initialize, ready, or stopped. This release
+  collects no playtest data yet; later releases build on this status.
+
+### Changed
+
+- **Each release publishes two zips from the same tag, at the same version**: the Flock SDK and the optional
+  playtest plugin. The release notes say where each one goes.
+
+### Notes
+
+- **Cloning this repository into `Plugins/FlockUnrealSdk/` does not install the playtest plugin.** Its source sits
+  at `OptionalPlugins/FlockPlaytest/`, where Unreal does not load it; copy or link that folder to
+  `Plugins/FlockPlaytest/`. An `AdditionalPluginDirectories` entry pointing inside `Plugins/` does not work: the
+  editor ignores it.
+
 ## [1.10.0] - 2026-09-14
 
 ### Added

@@ -12,3 +12,8 @@
 # project has no use for it, and a stray .ps1 in a plugin folder invites the question of whether they
 # are meant to run it.
 Tooling/        export-ignore
+
+# The optional plugins install beside Flock, never inside it: Unreal stops looking for plugins below the
+# first .uplugin it finds, so a copy nested in Flock's folder would never load. Each one is released as an
+# archive of its own (release.yml) and kept out of Flock's.
+OptionalPlugins/ export-ignore

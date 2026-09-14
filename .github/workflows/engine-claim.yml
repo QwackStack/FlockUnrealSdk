@@ -54,10 +54,17 @@ jobs:
           #
           # Marketplace plugins have to set it, which is why they ship one build per engine. This one is
           # source-distributed into a project's Plugins/ folder, so it must not.
-          if grep -q '"EngineVersion"' Flock.uplugin; then
-            echo "::error::Flock.uplugin declares EngineVersion. That version-gates plugin loading and breaks every engine in the range except the one named. Remove it; the supported range lives in FlockEngineCompat.h and README.md."
-            exit 1
-          fi
+          #
+          # Every manifest in the repository is checked, the optional plugins' included: they are built on the
+          # same range, and the same field would stop them loading on the same engines.
+          shopt -s nullglob
+          for MANIFEST in Flock.uplugin OptionalPlugins/*/*.uplugin; do
+            if grep -q '"EngineVersion"' "$MANIFEST"; then
+              echo "::error file=$MANIFEST::$MANIFEST declares EngineVersion. That version-gates plugin loading and breaks every engine in the range except the one named. Remove it; the supported range lives in FlockEngineCompat.h and README.md."
+              exit 1
+            fi
+          done
+          shopt -u nullglob
 
           # -oE, not -oP: PCRE is unavailable in some grep builds/locales, and a check that only runs on
           # one machine is not a check.
@@ -118,7 +125,9 @@ jobs:
           # check listed only MINOR, so a guard written on MAJOR or PATCH passed silently.
           GUARD_PATTERN='UE_VERSION_(NEWER|OLDER)_THAN|ENGINE_(MAJOR|MINOR|PATCH)_VERSION'
 
-          STRAY=$(grep -rnE --include='*.h' --include='*.cpp' "$GUARD_PATTERN" Source/ \
+          # The optional plugins are swept too: they are built on the same range, and a guard they need belongs
+          # in the same header.
+          STRAY=$(grep -rnE --include='*.h' --include='*.cpp' "$GUARD_PATTERN" Source/ OptionalPlugins/ \
                     | grep -v 'Source/Flock/Public/Misc/FlockEngineCompat.h' || true)
 
           if [ -n "$STRAY" ]; then
@@ -133,7 +142,7 @@ jobs:
           # UBT decides things a C++ header cannot express - which modules to link, which definitions to
           # set - so `Target.Version` branching in a .Build.cs has nowhere else to live. Listed rather
           # than banned, so it stays visible when the floor moves.
-          BUILD_RULES=$(grep -rnE --include='*.Build.cs' 'Target\.Version' Source/ || true)
+          BUILD_RULES=$(grep -rnE --include='*.Build.cs' 'Target\.Version' Source/ OptionalPlugins/ || true)
 
           if [ -n "$BUILD_RULES" ]; then
             echo "Engine-version branching in build rules (allowed - review when changing the floor):"
