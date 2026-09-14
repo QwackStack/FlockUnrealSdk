@@ -375,9 +375,10 @@ void FFlockCommandProvider::FlushNext(const TSharedRef<int32>& Delivered, TFunct
 			// a plane generates an attempt every half-minute, and a budget that counted those would discard
 			// their change after about half an hour of no network at all. The backstop is for verdicts the
 			// classifier may have got wrong, and a verdict requires a server to have answered.
-			const bool bServerAnswered = Result.Error.StatusCode != 0;
+			const EFlockFailedSendAction Action = DecideFailedSendAction(Result.Error);
+			const bool bServerAnswered = Action != EFlockFailedSendAction::RetryWithoutCountingAttempt;
 			const int32 Attempts = bServerAnswered ? ++Self->PendingWrites[0].Attempts : Self->PendingWrites[0].Attempts;
-			const bool bRejected = IsPermanentFailure(Result.Error);
+			const bool bRejected = Action == EFlockFailedSendAction::Discard;
 			const bool bExhausted = bServerAnswered && Attempts >= MaxReplayAttempts;
 
 			if (!bRejected && !bExhausted)
@@ -650,28 +651,6 @@ void FFlockCommandProvider::EvictOptimisticRow(const FString& PlayerDataId)
 	}
 }
 
-bool FFlockCommandProvider::IsPermanentFailure(const FFlockError& Error)
-{
-	// Ambiguous, not authoritative: the SDK could not read the response, which says nothing about whether
-	// the server applied the write. The status rides along from the exchange, so a captive portal's HTML
-	// 200 arrives here as Serialization/200 — decided by status it looks transient and stalls the queue,
-	// decided by type it looks permanent and throws away a change the server never saw. Keep it; Attempts
-	// is what stops it holding the queue forever.
-	if (Error.Type == EFlockErrorType::Serialization)
-	{
-		return false;
-	}
-
-	// 401 clears on the next sign-in. A 403 is only this backend's answer when it carries a coded body —
-	// a bare one is a proxy or WAF between us and the server, and dropping the write on that loses data to
-	// an intermediary that never consulted the backend at all.
-	if (Error.Type == EFlockErrorType::Auth)
-	{
-		return Error.StatusCode == 403 && !Error.Code.IsEmpty();
-	}
-
-	return FFlockError::IsPermanentStatus(Error.StatusCode);
-}
 
 bool FFlockCommandProvider::HeadStillIs(const FFlockPendingCommand& Entry) const
 {

@@ -8,6 +8,7 @@
 #include "Flock.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
+#include "UObject/Script.h"
 
 namespace
 {
@@ -213,6 +214,140 @@ bool FFlockLogSinkRegistrationTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("still stopped"), Sink.IsRunning());
 
 	// Destruction after an explicit Stop must not double-remove from GLog.
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLogSinkScriptExceptionTypesTest, "Flock.Analytics.LogSink.ScriptExceptionTypes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockLogSinkScriptExceptionTypesTest::RunTest(const FString& Parameters)
+{
+	// Faults are reported, under the spelling a dashboard filters on.
+	TestEqual(TEXT("access violation"),
+		FFlockLogSink::ScriptExceptionTypeToWire(EBlueprintExceptionType::AccessViolation), TEXT("access_violation"));
+	TestEqual(TEXT("infinite loop"),
+		FFlockLogSink::ScriptExceptionTypeToWire(EBlueprintExceptionType::InfiniteLoop), TEXT("infinite_loop"));
+	TestEqual(TEXT("non-fatal error"),
+		FFlockLogSink::ScriptExceptionTypeToWire(EBlueprintExceptionType::NonFatalError), TEXT("non_fatal_error"));
+	TestEqual(TEXT("fatal error"),
+		FFlockLogSink::ScriptExceptionTypeToWire(EBlueprintExceptionType::FatalError), TEXT("fatal_error"));
+	TestEqual(TEXT("abort execution"),
+		FFlockLogSink::ScriptExceptionTypeToWire(EBlueprintExceptionType::AbortExecution), TEXT("abort_execution"));
+	TestTrue(TEXT("a fault is reportable"), FFlockLogSink::IsReportableScriptException(EBlueprintExceptionType::AccessViolation));
+
+	// The debugger's own traffic rides the same delegate and is not a fault.
+	TestFalse(TEXT("breakpoint"), FFlockLogSink::IsReportableScriptException(EBlueprintExceptionType::Breakpoint));
+	TestFalse(TEXT("tracepoint"), FFlockLogSink::IsReportableScriptException(EBlueprintExceptionType::Tracepoint));
+	TestFalse(TEXT("wire tracepoint"), FFlockLogSink::IsReportableScriptException(EBlueprintExceptionType::WireTracepoint));
+	TestTrue(TEXT("and has no wire name"), FFlockLogSink::ScriptExceptionTypeToWire(EBlueprintExceptionType::Breakpoint).IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLogSinkScriptExceptionCaptureTest, "Flock.Analytics.LogSink.ScriptExceptionCapture",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockLogSinkScriptExceptionCaptureTest::RunTest(const FString& Parameters)
+{
+	// Never started, so the capture is under test on its own: a sink that never bound writes nothing back to the log.
+	FFlockLogSink Sink(/*MaxQueued*/ 2);
+	const FString ScriptStack = TEXT("Script call stack:\n\tBP_Player_C.ExecuteUbergraph_BP_Player\n\tBP_Player_C.ReceiveTick");
+
+	Sink.SimulateScriptExceptionForTesting(EBlueprintExceptionType::AccessViolation,
+		TEXT("Accessed None trying to read property Weapon"), ScriptStack);
+	TestEqual(TEXT("queued like an error"), Sink.PendingCount(), 1);
+
+	FFlockCapturedLog Captured;
+	TestTrue(TEXT("dequeues"), Sink.Dequeue(Captured));
+	TestEqual(TEXT("the engine's description"), Captured.Message, TEXT("Accessed None trying to read property Weapon"));
+	TestEqual(TEXT("under the engine's script category"), Captured.Category, FName(TEXT("LogScript")));
+	TestEqual(TEXT("marked as Blueprint"), Captured.Source, TEXT("blueprint"));
+	TestEqual(TEXT("with its kind"), Captured.ScriptExceptionType, TEXT("access_violation"));
+	TestEqual(TEXT("carrying the Blueprint call stack, which is what locates the node"), Captured.StackTrace, ScriptStack);
+	TestFalse(TEXT("not fatal: the engine carries on"), Captured.bFatal);
+	TestTrue(TEXT("stamped"), Captured.TimestampUtc != FDateTime::MinValue());
+
+	// A description-less exception still says what it is.
+	Sink.SimulateScriptExceptionForTesting(EBlueprintExceptionType::NonFatalError, FString(), ScriptStack);
+	TestTrue(TEXT("dequeues"), Sink.Dequeue(Captured));
+	TestEqual(TEXT("named when the engine gave nothing"), Captured.Message, TEXT("Blueprint script exception"));
+
+	// The debugger's traffic never becomes a report.
+	Sink.SimulateScriptExceptionForTesting(EBlueprintExceptionType::Breakpoint, TEXT("breakpoint hit"), ScriptStack);
+	Sink.SimulateScriptExceptionForTesting(EBlueprintExceptionType::Tracepoint, TEXT("tracepoint"), ScriptStack);
+	Sink.SimulateScriptExceptionForTesting(EBlueprintExceptionType::WireTracepoint, TEXT("wire tracepoint"), ScriptStack);
+	TestEqual(TEXT("debugger traffic ignored"), Sink.PendingCount(), 0);
+
+	// A Blueprint storm is bounded by the same cap as an error storm.
+	for (int32 Index = 0; Index < 3; ++Index)
+	{
+		Sink.SimulateScriptExceptionForTesting(EBlueprintExceptionType::AccessViolation, TEXT("storm"), ScriptStack);
+	}
+	TestEqual(TEXT("capped"), Sink.PendingCount(), 2);
+	TestEqual(TEXT("overflow counted"), Sink.GetDroppedCount(), 1);
+	while (Sink.Dequeue(Captured))
+	{
+	}
+
+	// A project silences Blueprint reports the way it silences any category.
+	Sink.AddExcludedCategory(FName(TEXT("LogScript")));
+	Sink.SimulateScriptExceptionForTesting(EBlueprintExceptionType::AccessViolation, TEXT("silenced"), ScriptStack);
+	TestEqual(TEXT("excluded by category"), Sink.PendingCount(), 0);
+
+	TestEqual(TEXT("nothing written back without having bound"), Sink.GetWrittenBackScriptWarningCountForTesting(), 0);
+	return true;
+}
+
+// Client context as well: the editor's Blueprint debugger already listens, so only a game process reaches the branch
+// where this sink is the first listener and owes the engine's line back.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLogSinkScriptExceptionBindingTest, "Flock.Analytics.LogSink.ScriptExceptionBinding",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockLogSinkScriptExceptionBindingTest::RunTest(const FString& Parameters)
+{
+	// Whether something already listens depends on where the suite runs — the editor's Blueprint debugger does — so
+	// the written-back line is asserted against that rather than assumed.
+	const bool bOthersListening = FBlueprintCoreDelegates::OnScriptException.IsBound();
+	const FString ScriptStack = TEXT("Script call stack:\n\tBP_Flock_SinkProbe_C.ReceiveTick");
+
+	FFlockLogSink Sink;
+	TestFalse(TEXT("not bound before start"), FBlueprintCoreDelegates::OnScriptException.IsBoundToObject(&Sink));
+	Sink.Start();
+	TestTrue(TEXT("bound after start"), FBlueprintCoreDelegates::OnScriptException.IsBoundToObject(&Sink));
+	TestTrue(TEXT("and says so"), Sink.IsListeningToScriptExceptions());
+
+	if (!bOthersListening)
+	{
+		// The engine logs this line only while nothing is bound, so binding would have taken it away.
+		AddExpectedMessagePlain(TEXT("BP_Flock_SinkProbe_C.ReceiveTick"), ELogVerbosity::Warning,
+			EAutomationExpectedMessageFlags::Contains, 1);
+	}
+	Sink.SimulateScriptExceptionForTesting(EBlueprintExceptionType::AccessViolation, TEXT("Accessed None"), ScriptStack);
+	TestEqual(TEXT("the engine's stack line is written back only when this sink took it away"),
+		Sink.GetWrittenBackScriptWarningCountForTesting(), bOthersListening ? 0 : 1);
+
+	// The debugger's traffic owes no line.
+	Sink.SimulateScriptExceptionForTesting(EBlueprintExceptionType::Breakpoint, TEXT("breakpoint hit"), ScriptStack);
+	TestEqual(TEXT("no line for a breakpoint"), Sink.GetWrittenBackScriptWarningCountForTesting(), bOthersListening ? 0 : 1);
+
+	// Both answers, forced, so the branch this process's listeners did not choose is exercised as well.
+	const int32 WrittenBefore = Sink.GetWrittenBackScriptWarningCountForTesting();
+	Sink.SetWriteBackScriptWarningForTesting(true);
+	AddExpectedMessagePlain(TEXT("BP_Flock_SinkProbe_C.WhenFirstListener"), ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains, 1);
+	Sink.SimulateScriptExceptionForTesting(EBlueprintExceptionType::AccessViolation, TEXT("Accessed None"),
+		TEXT("Script call stack:\n\tBP_Flock_SinkProbe_C.WhenFirstListener"));
+	TestEqual(TEXT("written back when this sink is the first listener"),
+		Sink.GetWrittenBackScriptWarningCountForTesting(), WrittenBefore + 1);
+	Sink.SetWriteBackScriptWarningForTesting(false);
+	Sink.SimulateScriptExceptionForTesting(EBlueprintExceptionType::AccessViolation, TEXT("Accessed None"),
+		TEXT("Script call stack:\n\tBP_Flock_SinkProbe_C.WhenAnotherListens"));
+	TestEqual(TEXT("not written back while another listener still gets the engine's line"),
+		Sink.GetWrittenBackScriptWarningCountForTesting(), WrittenBefore + 1);
+
+	Sink.Stop();
+	// A sink destroyed while still bound would be called through a dangling pointer on the next script fault.
+	TestFalse(TEXT("unbound on stop"), FBlueprintCoreDelegates::OnScriptException.IsBoundToObject(&Sink));
+	TestFalse(TEXT("and says so"), Sink.IsListeningToScriptExceptions());
 	return true;
 }
 

@@ -222,6 +222,23 @@ namespace
 						// stack-trace parameter invites.
 						Analytics->LogException(TEXT("self-test exception"));
 
+						// Gameplay events. Each local refusal is the counter-case to the event accepted after it: the
+						// reserved session name and a blank one never reach the spool, a real name does.
+						const bool bReservedRefused = !Analytics->TrackEvent(FFlockAnalyticsProvider::ReservedSessionStartedEvent);
+						const bool bBlankRefused = !Analytics->TrackEvent(TEXT("   "));
+						const int32 EventsBefore = Analytics->GetPendingAnalyticsEventCount();
+						const bool bTracked = Analytics->TrackEvent(TEXT("sdk_self_test_event"),
+							FFlockCommandData().Set(TEXT("source"), TEXT("Flock.SelfTest")).Set(TEXT("sweep"), 2).Set(TEXT("signed_in"), true),
+							TEXT("self_test"));
+						Logger->LogInfo(FString::Printf(
+							TEXT("Self-test: track event -> accepted=%s (pending %d -> %d); refused session_started=%s, blank=%s"),
+							bTracked ? TEXT("true") : TEXT("false"), EventsBefore, Analytics->GetPendingAnalyticsEventCount(),
+							bReservedRefused ? TEXT("true") : TEXT("false"), bBlankRefused ? TEXT("true") : TEXT("false")));
+
+						// The server-side counter-case: an event for a player the server does not know is refused with its own
+						// code. Spooled after the accepted event, so the flush below delivers that one first.
+						Analytics->TrackEventAsPlayerForTesting(TEXT("01SELFTESTUNKNOWNPLAYER000"), TEXT("sdk_self_test_refused"));
+
 						const FFlockSessionSnapshot Snapshot = Analytics->GetCurrentSnapshot();
 						Logger->LogInfo(FString::Printf(
 							TEXT("Self-test: analytics snapshot — screens=%d firstSession=%s pendingSpooled=%d"),
@@ -231,11 +248,16 @@ namespace
 
 						Analytics->Flush([Analytics, Logger, Teardown](TFlockResult<FFlockAnalyticsAck> FlushResult)
 						{
-							Logger->LogInfo(FlushResult.bSuccess
-								? FString::Printf(TEXT("Self-test: analytics flush -> spool drained (pending=%d)"),
-									Analytics->GetPendingEventCount())
-								: FString::Printf(TEXT("Self-test: analytics flush -> failed (%s); entries stay spooled."),
-									*FlushResult.Error.Message));
+							// Everything but the unknown player's event is delivered, and the flush reports that one refusal by
+							// the server's own code.
+							const bool bRefusedAsExpected = !FlushResult.bSuccess
+								&& FlushResult.Error.Code == TEXT("analytics.player_not_found")
+								&& Analytics->GetPendingEventCount() == 0 && Analytics->GetPendingAnalyticsEventCount() == 0;
+							Logger->LogInfo(bRefusedAsExpected
+								? FString(TEXT("Self-test: analytics flush -> spool drained; the unknown player's event was refused as expected (analytics.player_not_found)"))
+								: FString::Printf(TEXT("Self-test: analytics flush -> UNEXPECTED: success=%s code='%s' (%s), pending=%d, events pending=%d"),
+									FlushResult.bSuccess ? TEXT("true") : TEXT("false"), *FlushResult.Error.Code, *FlushResult.Error.Message,
+									Analytics->GetPendingEventCount(), Analytics->GetPendingAnalyticsEventCount()));
 
 							Analytics->EndSession(EFlockSessionEndReason::Manual,
 								[Analytics, Logger, Teardown](TFlockResult<FFlockAnalyticsAck> EndResult)

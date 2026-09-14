@@ -5,6 +5,50 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-09-14
+
+### Added
+
+- **Gameplay events for the Game Metrics dashboards: `Flock Track Event` (`TrackAnalyticsEvent`).** Records
+  what a player did — a name, an optional category, and properties whose keys and value types reach the
+  dashboard unchanged. Events are written to disk and delivered in batches while a player is signed in; an
+  event recorded before anyone signs in is credited to whoever signs in next. The name `session_started`
+  (the server records it itself) and empty names are refused on the spot. Each player's events travel in a
+  batch of their own, so a player the server does not know never takes anyone else's events down with it.
+- **Blueprint script exceptions are captured automatically** — Accessed None, a missing property, a runaway
+  loop — carrying the Blueprint call stack that locates the node, in every build configuration. Breakpoints
+  and tracepoints are ignored.
+- **Repeats of the same exception are counted, not sent again.** The first occurrence is reported at once;
+  repeats inside **Analytics Exception Repeat Window** (60 seconds by default) are counted and reported as one
+  more entry carrying `repeat_count`. Numbers and addresses in a message do not make a new fault.
+- **Exception capture has its own settings** under *Analytics | Exceptions*: **Analytics Capture
+  Exceptions**, **Analytics Exception Excluded Categories** (starting with the automation framework's, which
+  logs failing tests as errors) and **Analytics Exception Repeat Window**.
+- **`Flock Get Exception Capture Coverage`** says what the running build can see. A Shipping or Test build,
+  which compiles error log lines out, also sends one `exception_capture_limited` entry to Diagnostics → Events
+  — once per build, not on every launch.
+- Captured faults carry `exception_source` (`log`, `blueprint` or `crash`), and a Blueprint exception also
+  carries `blueprint_exception_type`.
+- A [Diagnostics](Documentation/diagnostics.md) guide for log entries and exception capture. The
+  [Analytics](Documentation/analytics.md) guide now covers only what players did, and both open with the same
+  table so the two are not confused.
+
+### Fixed
+
+- **A log entry the server refuses no longer holds up every entry behind it forever.** It is dropped and the
+  flush reports the refusal. When the server refuses a whole batch because of what is in it, the entries are
+  sent one at a time, so only the entry it refused is lost.
+- **With caching switched off, log entries are sent rather than silently lost.**
+- **A server outage no longer empties the queue.** Only sends the server answered count against an entry, an
+  entry is dropped after 50 of them, and after each one the interval flush waits twice as long, up to 15
+  minutes.
+- **Crash reports carry their category and source**, like every other captured fault.
+
+### Changed
+
+- `Flush` reports a failure when an entry was dropped because the server refused it, even though the rest of
+  the queue was delivered: success means nothing was lost.
+
 ## [1.9.0] - 2026-09-07
 
 ### Fixed

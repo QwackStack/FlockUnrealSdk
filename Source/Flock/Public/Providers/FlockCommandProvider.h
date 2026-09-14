@@ -192,29 +192,6 @@ private:
 	void EvictOptimisticRow(const FString& PlayerDataId);
 
 	/**
-	 * True only when the **backend** authoritatively rejected this write, so replaying it can never succeed.
-	 *
-	 * The rule is "who said no", not "what number came back". A queued write is a change the player already
-	 * made; discarding it needs an answer from the server, and everything else keeps it queued for the next
-	 * flush. Three cases carry the whole thing, and each of them exists because the naive reading loses data
-	 * or wedges the queue:
-	 *
-	 *  - **Serialization is not permanent.** The status on one of these is whatever the exchange carried —
-	 *    a captive portal answering a write with an HTML 200 produces `Serialization` with `StatusCode` 200,
-	 *    which is outside the 4xx range. Reading the status alone therefore calls it transient and stalls
-	 *    the queue forever; reading the *type* alone and calling it permanent throws the write away when the
-	 *    server never even saw it. It is genuinely ambiguous, so it stays queued and the attempt cap bounds
-	 *    the stall.
-	 *  - **Only a backend-coded 403 is authoritative.** A 401 clears on the next sign-in. A bare 403 with no
-	 *    coded body is a proxy, WAF or corporate gateway — not this backend refusing the write.
-	 *  - **Everything else is decided by status**, where a permanent 4xx really is the server's answer.
-	 *
-	 * FFlockPendingCommand::Attempts backstops all three: no verdict this function can get wrong is able to
-	 * hold the queue indefinitely.
-	 */
-	static bool IsPermanentFailure(const FFlockError& Error);
-
-	/**
 	 * True when the head of the queue is still the entry a completion was sent for — i.e. ClearPendingWrites()
 	 * did not empty it and nothing reloaded a different queue underneath.
 	 *

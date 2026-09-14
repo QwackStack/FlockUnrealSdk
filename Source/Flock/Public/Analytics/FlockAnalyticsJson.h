@@ -7,6 +7,19 @@
 #include "Models/FlockAnalyticsModels.h"
 
 /**
+ * One spooled gameplay event: the wire event plus what only the device knows about it.
+ *
+ * Not a wire model. LocalSessionId lets a session's server id, learned after the event was recorded, still be
+ * attached when it is sent. FailedSends counts answered failed sends, and is persisted so the limit spans relaunches.
+ */
+struct FFlockSpooledAnalyticsEvent
+{
+	FFlockAnalyticsEventRequest Event;
+	FString LocalSessionId;
+	int32 FailedSends = 0;
+};
+
+/**
  * Builds and reads the `log_event` wire bodies, and is also the on-disk format for the offline
  * spool — one shape for both so a spooled entry and a live one can never drift.
  *
@@ -34,6 +47,28 @@ public:
 	/** Condensed `{"events":[...]}` body for `POST log_event`. */
 	static FString SerializeEvents(const TArray<FFlockLogEventRequest>& Events);
 	static bool DeserializeEvent(const FString& Json, FFlockLogEventRequest& OutEvent);
+
+	/**
+	 * A spooled log entry's answered failed sends. Kept in the spool payload under a key the wire serializer
+	 * never writes, so the count survives relaunches without ever reaching the server. 0 when absent.
+	 */
+	static int32 ReadFailedSendCount(const FString& Payload);
+	/** The same payload with its attempt count set. Returns the payload unchanged when it is not a JSON object. */
+	static FString WithFailedSendCount(const FString& Payload, int32 FailedSends);
+
+	// ── Analytics events ──
+	// Same reasoning as the log format: properties are game-authored, so they are spliced in verbatim rather
+	// than passed through the snake_case exporter.
+
+	/** One wire event. `properties` is always an object; empty category, session and timestamp are omitted. */
+	static TSharedRef<FJsonObject> AnalyticsEventToJson(const FFlockAnalyticsEventRequest& Event);
+	/** Condensed `{"events":[...]}` body for `POST analytics/events`. Device-only fields never appear here. */
+	static FString SerializeAnalyticsEvents(const TArray<FFlockAnalyticsEventRequest>& Events);
+
+	/** The spool's on-disk format: the wire event plus the local session id and the attempt count. */
+	static FString SerializeSpooledAnalyticsEvent(const FFlockSpooledAnalyticsEvent& Entry);
+	/** False for anything that is not a spooled event with a name — an entry that can never be delivered. */
+	static bool DeserializeSpooledAnalyticsEvent(const FString& Json, FFlockSpooledAnalyticsEvent& OutEntry);
 
 	// ── Session snapshots ──
 	// The session-end spool's on-disk format, and the live-session record inside the session state

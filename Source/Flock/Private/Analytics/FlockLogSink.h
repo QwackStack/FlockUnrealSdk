@@ -3,17 +3,26 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Blueprint/BlueprintExceptionInfo.h"
 #include "Containers/Queue.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "Misc/OutputDevice.h"
 
-/** One captured log line, in the shape the provider turns into an `exception` log event. */
+struct FFrame;
+
+/** One captured fault, in the shape the provider turns into an `exception` log event. */
 struct FFlockCapturedLog
 {
 	FString Message;
 	FName Category;
 	bool bFatal = false;
 	FDateTime TimestampUtc = FDateTime::MinValue();
+
+	/** Where it came from: `log` (an Error or Fatal line), `blueprint` (a script exception) or `crash`. */
+	FString Source;
+
+	/** For a Blueprint exception, its kind in wire spelling (`access_violation`, `infinite_loop`, ...). */
+	FString ScriptExceptionType;
 
 	/**
 	 * Callstack walked at the moment of capture. Empty only when the platform could not produce one
@@ -45,6 +54,15 @@ struct FFlockCapturedLog
  * Fatals are the exception to that: there is no next tick when the process is dying, so they are
  * broadcast synchronously on the crashing thread. A handler for OnFatal must do nothing but write to
  * disk — no network, no allocation it can avoid.
+ *
+ * Blueprint script exceptions (Accessed None, a missing property, a runaway loop) arrive through
+ * FBlueprintCoreDelegates::OnScriptException, not the log: the engine logs their description as a Warning,
+ * which this sink deliberately ignores. They are queued like errors. Breakpoints and tracepoints travel the
+ * same delegate and are the debugger's business, so they are skipped.
+ *
+ * Listening has a side effect worth undoing. The engine writes a script exception's stack trace to the log
+ * only while nothing is bound to that delegate, so binding would quietly take that line away from the
+ * developer. When this sink is the first listener it writes the line back.
  */
 class FFlockLogSink : public FOutputDevice
 {
@@ -91,8 +109,32 @@ public:
 	/** Test seam: drive the crash path without crashing. */
 	void SimulateSystemErrorForTesting() { HandleSystemError(); }
 
+	/** Faults only. Breakpoints and tracepoints ride the same delegate for the debugger's sake. */
+	static bool IsReportableScriptException(EBlueprintExceptionType::Type Type);
+
+	/** The wire spelling recorded with a Blueprint exception. Empty for a type that is never reported. */
+	static FString ScriptExceptionTypeToWire(EBlueprintExceptionType::Type Type);
+
+	/** True while bound to Blueprint script exceptions. */
+	bool IsListeningToScriptExceptions() const { return ScriptExceptionHandle.IsValid(); }
+
+	/** Test seam: the Blueprint path without a script VM frame to raise it from. */
+	void SimulateScriptExceptionForTesting(EBlueprintExceptionType::Type Type, const FString& Description,
+		const FString& ScriptStack)
+	{
+		CaptureScriptException(Type, Description, ScriptStack);
+	}
+
+	/** Test seam: how many times the engine's own Blueprint stack-trace warning was written back. */
+	int32 GetWrittenBackScriptWarningCountForTesting() const { return WrittenBackScriptWarnings; }
+
+	/** Test seam: sets the first-listener decision Start() made, so both answers can be exercised in any process. */
+	void SetWriteBackScriptWarningForTesting(bool bWriteBack) { bWriteBackScriptWarning = bWriteBack; }
+
 private:
 	void HandleSystemError();
+	void HandleScriptException(const UObject* ActiveObject, const FFrame& StackFrame, const FBlueprintExceptionInfo& Info);
+	void CaptureScriptException(EBlueprintExceptionType::Type Type, const FString& Description, const FString& ScriptStack);
 
 	int32 MaxQueued = DefaultMaxQueued;
 	TQueue<FFlockCapturedLog, EQueueMode::Mpsc> Queue;
@@ -103,5 +145,11 @@ private:
 
 	FDelegateHandle SystemErrorHandle;
 	FDelegateHandle ShutdownAfterErrorHandle;
+	FDelegateHandle ScriptExceptionHandle;
+
+	/** Set at Start when nothing else was listening, which is exactly when the engine would have logged the stack. */
+	bool bWriteBackScriptWarning = false;
+	int32 WrittenBackScriptWarnings = 0;
+
 	bool bRunning = false;
 };

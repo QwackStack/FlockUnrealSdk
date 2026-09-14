@@ -27,26 +27,60 @@ class FLOCK_API UFlockLibrary : public UBlueprintFunctionLibrary
 public:
 	// ── Analytics (fire-and-forget + state) ──
 
-	/** Records a diagnostic message (spooled, delivered on the next flush). Ignored without consent. */
+	/**
+	 * Records a diagnostic message (spooled, delivered on the next flush). Ignored without consent. Not for
+	 * gameplay — use Flock Track Event.
+	 *
+	 * Surface: log_event — read on Diagnostics → Events.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
 		AutoCreateRefTerm = "ExtraData", DisplayName = "Flock Log Event"))
 	static void LogEvent(const UObject* WorldContextObject, const FString& Message, const TMap<FString, FString>& ExtraData);
 
-	/** Records a recoverable logic fault. Leave Details at its default if you have nothing to add. */
+	/**
+	 * Records a recoverable logic fault. Leave Details at its default if you have nothing to add.
+	 *
+	 * Surface: log_event — read on Diagnostics → Errors.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
 		AutoCreateRefTerm = "Details", DisplayName = "Flock Log Error"))
 	static void LogError(const UObject* WorldContextObject, const FString& Message, const FFlockLogDetails& Details);
 
-	/** Records an exception you report yourself. Leave Stack Trace empty to have the callstack captured for you. */
+	/**
+	 * Records an exception you report yourself. Leave Stack Trace empty to have the callstack captured for you.
+	 *
+	 * Surface: log_event — read on Diagnostics → Errors.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
 		AutoCreateRefTerm = "Details", DisplayName = "Flock Log Exception"))
 	static void LogException(const UObject* WorldContextObject, const FString& Message, const FString& StackTrace,
 		const FFlockLogDetails& Details);
 
-	/** Counts a screen/menu view against the current session. */
+	/**
+	 * Counts a screen/menu view against the current session.
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
 		DisplayName = "Flock Record Screen View"))
 	static void RecordScreenView(const UObject* WorldContextObject, const FString& ScreenName);
+
+	/**
+	 * Records a gameplay event for the Game Metrics dashboards — not Flock Log Event, which writes a diagnostic
+	 * entry. Build Properties with the Set Command nodes. Returns false when refused (analytics off, no consent,
+	 * an empty name, or the reserved session_started).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "Properties", DisplayName = "Flock Track Event"))
+	static bool TrackEvent(const UObject* WorldContextObject, const FString& EventName, const FFlockCommandData& Properties,
+		const FString& EventCategory);
+
+	/** What automatic exception capture can see in this build (Shipping and Test lose error log lines and ensures). */
+	UFUNCTION(BlueprintPure, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
+		DisplayName = "Flock Get Exception Capture Coverage"))
+	static FFlockExceptionCaptureCoverage GetExceptionCaptureCoverage(const UObject* WorldContextObject);
 
 	/** Grants or withdraws analytics consent, persisted across runs. */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",

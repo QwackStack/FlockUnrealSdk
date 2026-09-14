@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.9.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.10.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -207,6 +207,10 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		// Its own queue, so ends drain ahead of events and erasing one leaves the other alone.
 		Deps.SessionEndCache = MakeShared<FFlockFileEventCache>(TEXT("session_ends"),
 			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedSessionEnds : 0);
+		// Gameplay events get a third, so a log storm can never evict one. No game version in the path: a build
+		// shipping a new version must not delete the previous one's unsent events.
+		Deps.AnalyticsEventCache = MakeShared<FFlockFileEventCache>(TEXT("analytics_events"),
+			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedEvents : 0);
 		Deps.Session = MakeShared<FFlockSession>(AnalyticsConfig);
 		// Off in the editor: a PIE shutdown is not a real app death and would be reported as a crash.
 		Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(
@@ -214,6 +218,8 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		Deps.ConsentStore = MakeShared<FFlockConsentStore>();
 		Deps.Pump = MakeShared<FFlockLifecyclePump>();
 		Deps.bEnableLogSink = true;
+		Deps.CoverageNoticeMarkerPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Flock"), TEXT("analytics"),
+			TEXT("coverage_notice.txt"));
 
 		AnalyticsProvider = MakeShared<FFlockAnalyticsProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 			AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl(), AnalyticsConfig, Deps,
@@ -289,7 +295,13 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 
 void UFlockSubsystem::HandleAnalyticsAuthenticated(const FFlockAuthInfo& Info)
 {
-	if (AnalyticsProvider.IsValid() && GetDefault<UFlockConfig>()->bAnalyticsAutoStartSession)
+	if (!AnalyticsProvider.IsValid())
+	{
+		return;
+	}
+	// Whatever the auto-start setting: events recorded before sign-in belong to this player either way.
+	AnalyticsProvider->HandleAuthenticated(Info.PlayerId);
+	if (GetDefault<UFlockConfig>()->bAnalyticsAutoStartSession)
 	{
 		AnalyticsProvider->StartSession(Info.PlayerId);
 	}
@@ -342,6 +354,17 @@ void UFlockSubsystem::RecordAnalyticsScreenView(const FString& ScreenName)
 	{
 		AnalyticsProvider->RecordScreenView(ScreenName);
 	}
+}
+
+bool UFlockSubsystem::TrackAnalyticsEvent(const FString& EventName, const FFlockCommandData& Properties,
+	const FString& EventCategory)
+{
+	return AnalyticsProvider.IsValid() && AnalyticsProvider->TrackEvent(EventName, Properties, EventCategory);
+}
+
+FFlockExceptionCaptureCoverage UFlockSubsystem::GetExceptionCaptureCoverage() const
+{
+	return AnalyticsProvider.IsValid() ? AnalyticsProvider->GetExceptionCaptureCoverage() : FFlockExceptionCaptureCoverage();
 }
 
 void UFlockSubsystem::SetAnalyticsConsent(bool bGranted)

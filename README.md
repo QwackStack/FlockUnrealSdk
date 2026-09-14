@@ -411,10 +411,11 @@ so you can read only the half you work in.
 | [Notifications](Documentation/notifications.md) | The inbox, scheduled reminders, the template catalog, push device tokens and what push delivery needs |
 | [Android push setup](Documentation/push-setup-android.md) | Step-by-step: Firebase project, the two JSON files and where each goes, the plugin, the token hookup, dashboard credentials, and what to check when nothing arrives |
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
-| [Analytics](Documentation/analytics.md) | Sessions, logs and events, transactions, consent, crash detection |
+| [Analytics](Documentation/analytics.md) | Sessions, screen views, gameplay events, transactions, consent — what players did (Dashboards → Game Metrics) |
+| [Diagnostics](Documentation/diagnostics.md) | Log entries, automatic exception and Blueprint exception capture, crash reporting — what went wrong (Diagnostics → Errors / Events) |
 | [SDK events](Documentation/events.md) | The event hub — lifecycle, auth, and session events |
 | [Errors](Documentation/errors.md) | What an `FFlockError` carries, branching on codes, the hint that names the fix, field-error validation failures |
-| [Logging & debugging](Documentation/logging.md) | Debug logs, the network call trace, the self-test |
+| [Logging & debugging](Documentation/logging.md) | The SDK's own log output, the network call trace, the self-test |
 | [Architecture](Documentation/architecture.md) | How the SDK is layered and why, the module split, the folder map, and the rules that hold across every feature |
 
 ## Error handling
@@ -486,11 +487,6 @@ rank and around-me now address the board by name, which is the only form the API
 
 Deliberate omissions and known gaps:
 
-- **Custom gameplay event tracking is not exposed.** Analytics ships the diagnostic log API
-  (event/error/exception) and purchase/transaction reporting. For now, gameplay events go through
-  `Flock Log Event`: they are recorded under the `debug` log type, carrying whatever you put on the
-  Extra Data pin. A dedicated gameplay-event surface is held back pending backend work rather than
-  shipped half-built.
 - **No sound-wave asset download.** Unreal has no engine API for turning mp3/ogg bytes into a
   `USoundWave`, and a WAV-only helper would fail silently on most of what a CDN actually holds — so
   `Flock Download Asset File` is the documented path for audio.

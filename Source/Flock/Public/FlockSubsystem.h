@@ -150,25 +150,58 @@ public:
 	/**
 	 * Records a diagnostic message. Spooled to disk and delivered on the next flush, so it costs
 	 * nothing at the call site and survives a crash. Silently ignored without consent.
+	 *
+	 * Surface: log_event — read on Diagnostics → Events. Not for gameplay: a level completed or an item
+	 * bought is Track Analytics Event, which the Game Metrics dashboards read.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "ExtraData"))
 	void LogAnalyticsEvent(const FString& Message, const TMap<FString, FString>& ExtraData);
 
-	/** Records a recoverable logic fault. Leave Details at its default if you have nothing to add. */
+	/**
+	 * Records a recoverable logic fault. Leave Details at its default if you have nothing to add.
+	 *
+	 * Surface: log_event — read on Diagnostics → Errors.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "Details"))
 	void LogAnalyticsError(const FString& Message, const FFlockLogDetails& Details);
 
 	/**
 	 * Records an exception. Unhandled engine errors are captured automatically; this is for ones you
 	 * report yourself. Leave Stack Trace empty and the SDK captures the callstack for you.
+	 *
+	 * Surface: log_event — read on Diagnostics → Errors.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "Details"))
 	void LogAnalyticsException(const FString& Message, const FString& StackTrace,
 		const FFlockLogDetails& Details);
 
-	/** Counts a screen/menu view against the current session. */
+	/**
+	 * Counts a screen/menu view against the current session.
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics")
 	void RecordAnalyticsScreenView(const FString& ScreenName);
+
+	/**
+	 * Records a gameplay event (level_complete, purchase_view) for the Game Metrics dashboards — unlike Log
+	 * Analytics Event, which writes a diagnostic entry. Spooled and delivered on the next flush while a player
+	 * is signed in; recorded with nobody signed in, it is credited to whoever signs in next. Build Properties
+	 * with the Set Command nodes: keys stay verbatim and values keep their type. Returns false when refused —
+	 * analytics off, no consent, an empty name, or session_started, which the server records itself when a
+	 * session starts.
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "Properties"))
+	bool TrackAnalyticsEvent(const FString& EventName, const FFlockCommandData& Properties, const FString& EventCategory);
+
+	/**
+	 * What automatic exception capture can see in this build. The engine compiles error log lines and ensures out
+	 * of Shipping and Test, so those builds report crashes and Blueprint exceptions only.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock|Analytics")
+	FFlockExceptionCaptureCoverage GetExceptionCaptureCoverage() const;
 
 	/**
 	 * Grants or withdraws analytics consent, persisted across runs. Withdrawing ends the session and

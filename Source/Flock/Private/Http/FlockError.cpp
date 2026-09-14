@@ -98,3 +98,26 @@ bool FFlockError::IsNotProcessed(int32 InStatusCode)
 {
 	return InStatusCode == 408 || InStatusCode == 429;
 }
+
+bool FFlockError::IsPermanentFailure(const FFlockError& Error)
+{
+	// Ambiguous, not authoritative: the SDK could not read the response, which says nothing about whether
+	// the server applied the write. The status rides along from the exchange, so a captive portal's HTML
+	// 200 arrives here as Serialization/200 — decided by status it looks transient and stalls the queue,
+	// decided by type it looks permanent and throws away a change the server never saw. Keep it; an attempt
+	// cap is what stops it holding the queue forever.
+	if (Error.Type == EFlockErrorType::Serialization)
+	{
+		return false;
+	}
+
+	// 401 clears on the next sign-in. A 403 is only this backend's answer when it carries a coded body —
+	// a bare one is a proxy or WAF between us and the server, and dropping the write on that loses data to
+	// an intermediary that never consulted the backend at all.
+	if (Error.Type == EFlockErrorType::Auth)
+	{
+		return Error.StatusCode == 403 && !Error.Code.IsEmpty();
+	}
+
+	return IsPermanentStatus(Error.StatusCode);
+}
