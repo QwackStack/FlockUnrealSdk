@@ -2,33 +2,29 @@
 	"FileVersion": 3,
 	"Version": 29,
 	"VersionName": "1.11.0",
-	"FriendlyName": "Flock SDK",
-	"Description": "A game backend SDK for Unreal Engine with authentication, game configuration, player data, shop, and analytics.",
+	"FriendlyName": "Flock Playtest",
+	"Description": "Optional Protokite playtesting plugin for the Flock SDK, in beta. Installed separately, and off until you turn it on.",
 	"Category": "Online Platform",
 	"CreatedBy": "Qwacks",
 	"CreatedByURL": "https://flock.qwacks.com",
-	"DocsURL": "https://docs.qwacks.com/sdk/unreal",
+	"DocsURL": "",
 	"MarketplaceURL": "",
 	"SupportURL": "mailto:support@qwacks.com",
-	"CanContainContent": true,
-	"IsBetaVersion": false,
+	"EnabledByDefault": false,
+	"CanContainContent": false,
+	"IsBetaVersion": true,
 	"IsExperimentalVersion": false,
 	"Installed": false,
 	"Modules": [
 		{
-			"Name": "Flock",
+			"Name": "FlockPlaytest",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
-		},
-		{
-			"Name": "FlockEditor",
-			"Type": "Editor",
-			"LoadingPhase": "PostEngineInit"
 		}
 	],
 	"Plugins": [
 		{
-			"Name": "DataValidation",
+			"Name": "Flock",
 			"Enabled": true
 		}
 	]

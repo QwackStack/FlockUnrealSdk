@@ -9,6 +9,10 @@ name: Release
 # is what makes the zip drop straight into a project: it nests everything under FlockUnrealSdk/, so
 # extracting into `YourProject/Plugins/` lands the plugin where Unreal expects it.
 #
+# The optional playtest plugin ships from the same tag as a second zip, nested under FlockPlaytest/ so it
+# extracts beside Flock rather than inside it. Unreal stops looking for plugins below the first .uplugin it
+# finds, which is why it cannot ride along inside Flock's archive.
+#
 # The engine-claim checks gate the publish. They already run on pull requests and on main, but a tag can
 # be pushed at any commit — including one that never went through either — and the checks do not fire on
 # tag pushes of their own accord (`push: branches:` does not match a tag). Without this gate the one
@@ -27,8 +31,13 @@ jobs:
   engine-claim:
     uses: ./.github/workflows/engine-claim.yml
 
+  # Keeps the playtest plugin optional and holds its version equal to Flock's. The tag check below reads
+  # only Flock.uplugin, and relies on this job for the playtest plugin's manifest.
+  playtest-plugin:
+    uses: ./.github/workflows/playtest-plugin.yml
+
   release:
-    needs: engine-claim
+    needs: [engine-claim, playtest-plugin]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,8 +54,62 @@ jobs:
             exit 1
           fi
 
-      - name: Build the plugin archive
-        run: git archive --format=zip --prefix=FlockUnrealSdk/ -o "FlockUnrealSdk-${GITHUB_REF_NAME}.zip" HEAD
+      - name: Build the plugin archives
+        run: |
+          set -euo pipefail
+
+          git archive --format=zip --prefix=FlockUnrealSdk/ -o "FlockUnrealSdk-${GITHUB_REF_NAME}.zip" HEAD
+
+          # The playtest plugin is archived from its own folder, so its zip holds FlockPlaytest/ and nothing
+          # else. That leaves the repository's LICENSE.md behind, and every source file's header points at
+          # it, so it is added back at the plugin's root.
+          git archive --format=zip --prefix=FlockPlaytest/ --add-file=LICENSE.md \
+            -o "FlockPlaytest-${GITHUB_REF_NAME}.zip" HEAD:OptionalPlugins/FlockPlaytest
+
+      # Checked rather than assumed, in both directions. Flock's zip is built from the whole repository, so
+      # without the export-ignore in .gitattributes it would carry OptionalPlugins/: a second plugin nested
+      # where Unreal never looks, in every project that wanted only Flock. The playtest zip is built from a
+      # subtree, so a wrong path would archive the wrong tree or leave the licence out.
+      - name: Check what each archive contains
+        run: |
+          set -euo pipefail
+
+          FLOCK_ZIP="FlockUnrealSdk-${GITHUB_REF_NAME}.zip"
+          PLAYTEST_ZIP="FlockPlaytest-${GITHUB_REF_NAME}.zip"
+          unzip -Z1 "$FLOCK_ZIP" > flock-entries.txt
+          unzip -Z1 "$PLAYTEST_ZIP" > playtest-entries.txt
+
+          FAILED=0
+          require_entry() {
+            if ! grep -qxF "$2" "$1"; then
+              echo "::error::$1 has no entry $2."
+              FAILED=1
+            fi
+          }
+
+          require_entry flock-entries.txt FlockUnrealSdk/Flock.uplugin
+          if grep -E '(^|/)OptionalPlugins/|FlockPlaytest' flock-entries.txt; then
+            echo "::error::Flock's archive contains the playtest plugin (entries above). Keep OptionalPlugins/ export-ignored in .gitattributes."
+            FAILED=1
+          fi
+
+          require_entry playtest-entries.txt FlockPlaytest/FlockPlaytest.uplugin
+          require_entry playtest-entries.txt FlockPlaytest/LICENSE.md
+          require_entry playtest-entries.txt FlockPlaytest/Source/FlockPlaytest/FlockPlaytest.Build.cs
+          if grep -v '^FlockPlaytest/' playtest-entries.txt; then
+            echo "::error::The playtest archive has entries outside FlockPlaytest/ (above)."
+            FAILED=1
+          fi
+          MANIFESTS=$(grep -c '\.uplugin$' playtest-entries.txt || true)
+          if [ "$MANIFESTS" != "1" ]; then
+            echo "::error::The playtest archive holds $MANIFESTS .uplugin files; it must hold exactly one."
+            FAILED=1
+          fi
+
+          if [ "$FAILED" != "0" ]; then
+            exit 1
+          fi
+          echo "$FLOCK_ZIP: $(wc -l < flock-entries.txt) entries, no playtest plugin. $PLAYTEST_ZIP: $(wc -l < playtest-entries.txt) entries, one manifest, licence included."
 
       # Informational only. The notes are no longer affected by a release already existing — the step
       # below composes the whole body, so a re-run replaces it — but it is still worth knowing that this
@@ -114,6 +177,11 @@ jobs:
 
           {
             printf '%s\n\n' "$GENERATED"
+            # Two zips are attached, and the second one is easy to extract into the wrong place: inside Flock's
+            # folder, where Unreal never loads it.
+            printf '## Downloads\n\n'
+            printf -- '- `FlockUnrealSdk-%s.zip`: the Flock SDK. Extract it into the `Plugins/` folder of your project.\n' "$GITHUB_REF_NAME"
+            printf -- '- `FlockPlaytest-%s.zip`: the optional Protokite playtesting plugin, in beta. Extract it next to the Flock SDK, so that `Plugins/FlockPlaytest/` sits beside `Plugins/FlockUnrealSdk/`, then enable it in your project. It stays off until **Enable Playtesting** is turned on; leave it out of projects that are not running playtests.\n\n' "$GITHUB_REF_NAME"
             printf '## Supported Unreal Engine versions\n\n'
             printf '%s\n\n' "$SUPPORT"
             printf 'Below UE %s the plugin refuses to compile, so landing on an unsupported engine is one clear error rather than a cascade of unknown symbols. Above UE %s it still compiles and emits a notice — untested, and deliberately not blocked, so a newly released engine never breaks a project on day one.\n' "$FLOOR" "$CEILING"
@@ -125,7 +193,9 @@ jobs:
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
-          files: FlockUnrealSdk-*.zip
+          files: |
+            FlockUnrealSdk-*.zip
+            FlockPlaytest-*.zip
           body_path: release-notes.md
           # Off, deliberately: the body above is complete, and leaving this on is what duplicated the
           # notes. `append_body: false` keeps an existing body from being combined with ours, so a re-run

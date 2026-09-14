@@ -1,9 +1,9 @@
 name: Consistency
 
-# Runs the engine-claim checks on every pull request and on main.
+# Runs the engine-claim and playtest-plugin checks on every pull request and on main.
 #
-# The checks themselves live in engine-claim.yml, called from here and from release.yml, so a tagged
-# release is gated on exactly the rules a pull request was gated on — not on a second copy of them.
+# Those checks live in engine-claim.yml and playtest-plugin.yml, called from here and from release.yml, so a
+# tagged release is gated on exactly the rules a pull request was gated on — not on a second copy of them.
 
 on:
   pull_request:
@@ -13,6 +13,9 @@ on:
 jobs:
   engine-claim:
     uses: ./.github/workflows/engine-claim.yml
+
+  playtest-plugin:
+    uses: ./.github/workflows/playtest-plugin.yml
 
   error-codes:
     # EFlockErrorCode mirrors the backend's detail.code set, and the two have no mechanical link: the
@@ -255,12 +258,14 @@ jobs:
             exit 1
           fi
 
-          # Skipped, not failed, when nothing under Source/ moved. A docs, workflow or CHANGELOG-only
-          # pull request ships no code, and demanding a bump for one either trains people to bump for
-          # nothing or trains them to merge past a red check. Both are worse than not asking.
+          # Skipped, not failed, when no code moved: nothing under Flock's Source/ or an optional plugin's.
+          # A docs, workflow or CHANGELOG-only pull request ships no code, and demanding a bump for one either
+          # trains people to bump for nothing or trains them to merge past a red check. Both are worse than
+          # not asking. An optional plugin's code counts because it ships at Flock's version: a playtest fix
+          # released under a number main already shipped would be a second, different download of that version.
           CHANGED=$(git diff --name-only "$BASE_SHA" HEAD)
-          if ! printf '%s\n' "$CHANGED" | grep -q '^Source/'; then
-            echo "No files under Source/ changed — no version bump required. Changed:"
+          if ! printf '%s\n' "$CHANGED" | grep -qE '^(Source|OptionalPlugins/[^/]+/Source)/'; then
+            echo "No code under Source/ or OptionalPlugins/*/Source/ changed — no version bump required. Changed:"
             printf '%s\n' "$CHANGED" | sed 's/^/  /'
             exit 0
           fi
@@ -276,7 +281,7 @@ jobs:
           echo "this branch: $VERSION   main: $BASE_VERSION"
 
           if [ "$VERSION" = "$BASE_VERSION" ]; then
-            echo "::error file=$MANIFEST::This pull request changes code under Source/ but leaves VersionName at $BASE_VERSION, the version main already shipped. Bump it, and bump UFlockSubsystem::SdkVersion and CHANGELOG.md with it."
+            echo "::error file=$MANIFEST::This pull request changes code (under Source/ or OptionalPlugins/*/Source/) but leaves VersionName at $BASE_VERSION, the version main already shipped. Bump it, bump UFlockSubsystem::SdkVersion and CHANGELOG.md with it, and give OptionalPlugins/FlockPlaytest/FlockPlaytest.uplugin the same VersionName and Version."
             exit 1
           fi
 

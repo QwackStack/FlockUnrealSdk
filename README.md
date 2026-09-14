@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.6.1.** Everything documented below ships today. Requires Unreal Engine 5.5 to 5.8;
+> **1.11.0.** Everything documented below ships today. Requires Unreal Engine 5.5 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -121,6 +121,13 @@ Then, either way:
 
 Each release is built from the tagged source, so it contains no compiled binaries: you build it once with
 your project, against your engine version and toolchain.
+
+**Optional: Flock Playtest (beta).** Releases also carry `FlockPlaytest-<version>.zip`, a separate plugin for
+Protokite playtests. Extract it next to the Flock SDK, so that `Plugins/FlockPlaytest/` sits beside
+`Plugins/FlockUnrealSdk/`, then enable it under **Edit → Plugins**. It stays off until **Enable Playtesting** is
+turned on in *Project Settings > Plugins > Flock Playtest Settings*. If you cloned the repository, copy or link
+`Plugins/FlockUnrealSdk/OptionalPlugins/FlockPlaytest/` to `Plugins/FlockPlaytest/`: Unreal does not load it
+where it sits. Leave it out of projects that are not running playtests.
 
 ### Blueprint-only projects
 
@@ -483,7 +490,16 @@ registration. **1.4.0 adds account linking** — attaching and detaching credent
 event hub, and the pending-schedule list (`Get Pending Schedules`, `Cancel All Scheduled`) that lets a
 game see and clear the reminders it created. **1.6.1 is a correctness release** — leaderboard standings,
 rank and around-me now address the board by name, which is the only form the API serves; see the
-[CHANGELOG](CHANGELOG.md) for that and two data-durability fixes.
+[CHANGELOG](CHANGELOG.md) for that and two data-durability fixes. **1.7.0 adds shop rewards**: items that grant
+currency or other rewards when bought, a call to consume an owned item, and reading a player's scheduled
+notifications back from the server. A purchase now completes with the rewards granted and the updated wallet
+alongside the inventory row, which changes its result type. **1.8.0 makes failures name the fix**: every error
+carries the call that failed and a next step, and a request the server rejects for a bad field names that field.
+**1.9.0 keeps a player's queued offline writes** when a build ships with a new Game Version. **1.10.0 adds
+gameplay events** (`Flock Track Event`) and captures Blueprint script errors such as Accessed None
+automatically, counting repeats of the same error instead of sending each one. **1.11.0 adds Flock Playtest**,
+an optional plugin for Protokite playtests, in beta and shipped as its own download: its settings, and a status
+that says whether playtest work may run. It collects no playtest data yet.
 
 Deliberate omissions and known gaps:
 
