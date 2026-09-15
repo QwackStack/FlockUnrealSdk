@@ -503,6 +503,11 @@ bool FFlockPlaytestSubsystemFeaturesAreOnOnlyWhileReadyTest::RunTest(const FStri
 {
 	FScopedPlaytestSettings Settings(true, UsableUrl);
 	FPlaytestFixture Fixture;
+	// The config turns video recording on, so the switch followed here is one the config really turns on. No game viewport
+	// is ever found, so nothing is recorded.
+	Fixture.AnswerConfig(FFlockPlaytestFakeTransport::Status(200,
+		FlockPlaytestFixtures::ConfigBody(FlockPlaytestFixtures::GameVersionId, /*bHeavyAnalytics*/ false, /*bVideoRecording*/ true)));
+	Fixture.Playtest->SetVideoFrameSourceFactoryForTesting([](FIntPoint, FString&) -> TSharedPtr<IFlockPlaytestVideoFrameSource> { return nullptr; });
 	Fixture.Transport->bHoldReplies = true;
 
 	Fixture.Playtest->FollowFlockLifecycleForTesting(Fixture.Flock);

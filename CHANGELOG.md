@@ -5,6 +5,33 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.15.0] - 2026-09-15
+
+### Added
+
+- **Flock Playtest records the game's screen when the playtest turns video recording on.** Recording starts as soon as
+  the playtest config is loaded, and saves VP9 video to `Saved/FlockPlaytest/Recordings/` as an IVF file, which VLC
+  plays. It records what the player sees, the game's interface included. Uploading the file comes in a later version.
+- **Video Recording settings** in *Project Settings > Plugins > Flock Playtest Settings*: **Video Width** and **Video
+  Height** (1280 by 720; the video keeps the screen's shape and fits inside, and a smaller window is recorded at its own
+  size), **Video Frames Per Second** (30), **Video Bitrate** (2000 kbps, about 0.9 GB an hour), **Recording Length Limit**
+  (60 minutes) and **Recording Size Limit** (1536 MB).
+- **One recording per launch.** It stops for good at either limit, when the game calls `StopVideoRecording` or the
+  **Flock Stop Video Recording** node, when playtesting stops, or when the game instance shuts down, and the file is
+  finished before shutting down returns. Time the game spends in the background is not recorded. `IsRecordingVideo()`
+  and **Flock Is Recording Video** say whether it is running.
+- **Recording can be tried without a playtest.** Tick **Record Video In Play In Editor** in *Project Settings > Plugins >
+  Flock Playtest Local Settings* (saved for you only, never committed) and press Play, or type
+  `FlockPlaytest.RecordTestVideo <seconds>` in the console of any build that is not Shipping;
+  `FlockPlaytest.StopVideoRecording` stops it early. The log names the saved file. A test video is refused while the
+  playtest records video itself.
+- **Video is recorded on 64-bit Windows only.** Everywhere else, and in a run that draws nothing (a dedicated server, or
+  `-nullrhi`), one warning says so and the rest of the playtest carries on.
+- Each captured frame is read back from the GPU on the render thread, which adds about 7 ms of render-thread time to
+  that frame at 1280 by 720 (measured at 30 captured frames a second). In a game capped at 60 frames a second the
+  frames still met their 16.7 ms budget where it was measured; a game whose render thread is already near its budget
+  can miss it on captured frames.
+
 ## [1.14.0] - 2026-09-15
 
 ### Added

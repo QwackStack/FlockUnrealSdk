@@ -26,12 +26,27 @@ public class FlockPlaytest : ModuleRules
 		// a module that calls into another module's exports has to name it.
 		// OnlineSubsystem reads the Steam id from a Steam subsystem that is already running. The plugin never depends
 		// on the Steam plugin itself, so a build without Steam needs nothing more.
+		// MovieSceneCapture holds the engine's frame grabber, which reads the game viewport back from the GPU. RenderCore,
+		// Slate and SlateCore are what reaching that viewport and waiting on the render thread take.
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
 				"Json",
 				"OnlineSubsystem",
+				"MovieSceneCapture",
+				"RenderCore",
+				"Slate",
+				"SlateCore",
 			}
 			);
+
+		// Video is encoded with the engine's own libvpx, whose installed engines ship a library for 64-bit Windows only
+		// (UE 5.5 to 5.8). Every other platform builds without it and records no video; everything else still runs.
+		bool bBuildWithVideo = Target.Platform == UnrealTargetPlatform.Win64 && Target.Architecture == UnrealArch.X64;
+		if (bBuildWithVideo)
+		{
+			PrivateDependencyModuleNames.Add("LibVpx");
+		}
+		PrivateDefinitions.Add("WITH_FLOCK_PLAYTEST_VIDEO=" + (bBuildWithVideo ? "1" : "0"));
 	}
 }

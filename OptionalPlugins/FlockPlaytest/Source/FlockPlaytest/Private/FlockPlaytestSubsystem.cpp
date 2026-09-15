@@ -8,13 +8,18 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "FlockEvents.h"
+#include "FlockPlaytestLocalSettings.h"
 #include "FlockPlaytestLog.h"
 #include "FlockPlaytestLogger.h"
 #include "FlockPlaytestSettings.h"
+#include "FlockPlaytestVideoFrameSource.h"
+#include "FlockPlaytestVideoRecording.h"
 #include "FlockProtokiteClient.h"
 #include "FlockSubsystem.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
 #include "Http/FlockHttpClient.h"
+#include "Misc/Paths.h"
 #include "Providers/FlockAnalyticsProvider.h"
 #include "UObject/UObjectGlobals.h"
 
@@ -87,6 +92,9 @@ void UFlockPlaytestSubsystem::Deinitialize()
 	// Whatever the last status was, no playtest work may run on a subsystem that has shut down.
 	ApplyStatus(EFlockPlaytestStatus::Stopped, FString(), FString());
 	UpdatePerformanceTimeline();
+
+	// The file is finished before the subsystem goes, so what was recorded is kept.
+	FinishVideoRecordingNow(EFlockPlaytestVideoStopReason::GameInstanceShutDown);
 
 	Super::Deinitialize();
 }
@@ -179,8 +187,9 @@ void UFlockPlaytestSubsystem::RefreshStatus()
 	ApplyStatus(DecideCurrentStatus(), GetDefault<UFlockPlaytestSettings>()->ProtokiteApiUrl,
 		Flock.IsValid() ? Flock->GetGameVersionId() : FString());
 
-	// After the status is applied, because both need Ready.
+	// After the status is applied, because all three need Ready.
 	UpdatePerformanceTimeline();
+	UpdateVideoRecording();
 	StartPlaytestSessionWhenAllowed();
 }
 
@@ -647,3 +656,307 @@ uint64 UFlockPlaytestSubsystem::GetEngineFrameNumber() const
 {
 	return TestEngineFrameNumberReader ? TestEngineFrameNumberReader() : GFrameCounter;
 }
+
+bool UFlockPlaytestSubsystem::IsRecordingVideo() const
+{
+	return VideoRecording.IsValid() && VideoRecording->IsCapturing();
+}
+
+bool UFlockPlaytestSubsystem::StopVideoRecording()
+{
+	if (!IsRecordingVideo())
+	{
+		return false;
+	}
+	VideoRecording->StopCapturing(EFlockPlaytestVideoStopReason::StoppedByGame);
+	return true;
+}
+
+bool UFlockPlaytestSubsystem::StartTestVideoRecording(double Seconds)
+{
+#if UE_BUILD_SHIPPING
+	return false;
+#else
+	if (Seconds <= 0.0)
+	{
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("No test video is recorded: it needs a length above 0 seconds, and %.2f was asked for."), Seconds);
+		return false;
+	}
+	// The launch's one recording belongs to the playtest; a test video would take its place and cut it short.
+	if (IsPlaytestFeatureEnabled(FlockPlaytestFeatures::VideoRecording))
+	{
+		UE_LOG(LogFlockPlaytest, Log, TEXT("No test video is recorded: this launch records video for its playtest."));
+		return false;
+	}
+	if (VideoRecording.IsValid() || bVideoRecordingStartedThisLaunch)
+	{
+		UE_LOG(LogFlockPlaytest, Log, TEXT("No test video is recorded: %s, and a launch records one video."),
+			IsRecordingVideo() ? TEXT("a video is already being recorded") : TEXT("this launch has already recorded one"));
+		return false;
+	}
+	if (!VideoRecordingUnavailableReason.IsEmpty())
+	{
+		UE_LOG(LogFlockPlaytest, Log, TEXT("No test video is recorded: %s."), *VideoRecordingUnavailableReason);
+		return false;
+	}
+
+	bTestVideoRequested = true;
+	TestVideoSeconds = Seconds;
+	UpdateVideoRecording();
+	if (VideoRecording.IsValid())
+	{
+		return true;
+	}
+	if (IsWaitingToStartVideoRecording())
+	{
+		UE_LOG(LogFlockPlaytest, Log, TEXT("The test video starts once this game instance has a viewport to record."));
+		return true;
+	}
+	return false;
+#endif
+}
+
+void UFlockPlaytestSubsystem::WaitUntilVideoWrittenForTesting()
+{
+	if (VideoRecording.IsValid())
+	{
+		VideoRecording->WaitUntilWritten();
+	}
+}
+
+bool UFlockPlaytestSubsystem::IsVideoRecordingWanted() const
+{
+	// A subsystem that has shut down records nothing, whatever asked for it.
+	if (Status == EFlockPlaytestStatus::Stopped)
+	{
+		return false;
+	}
+	return IsPlaytestFeatureEnabled(FlockPlaytestFeatures::VideoRecording) || bTestVideoRequested || IsRecordVideoInPlayInEditorOn();
+}
+
+bool UFlockPlaytestSubsystem::IsRecordVideoInPlayInEditorOn() const
+{
+#if WITH_EDITOR
+	const UGameInstance* GameInstance = GetGameInstance();
+	if (!GIsEditor || GEngine == nullptr || GameInstance == nullptr || !GetDefault<UFlockPlaytestLocalSettings>()->bRecordVideoInPlayInEditor)
+	{
+		return false;
+	}
+	// Only this game instance's own world counts: a game run from the editor binary with -game is not playing in the editor.
+	for (const FWorldContext& Context : GEngine->GetWorldContexts())
+	{
+		if (Context.OwningGameInstance == GameInstance)
+		{
+			return Context.WorldType == EWorldType::PIE;
+		}
+	}
+#endif
+	return false;
+}
+
+bool UFlockPlaytestSubsystem::IsWaitingToStartVideoRecording() const
+{
+	return IsVideoRecordingWanted() && !bVideoRecordingStartedThisLaunch && VideoRecordingUnavailableReason.IsEmpty();
+}
+
+void UFlockPlaytestSubsystem::UpdateVideoRecording()
+{
+	if (VideoRecording.IsValid())
+	{
+		// A recording that has already stopped ignores this.
+		if (!IsVideoRecordingWanted())
+		{
+			VideoRecording->StopCapturing(EFlockPlaytestVideoStopReason::PlaytestStopped);
+		}
+	}
+	else if (IsWaitingToStartVideoRecording())
+	{
+		StartVideoRecordingWhenPossible();
+	}
+	UpdateVideoPump();
+}
+
+void UFlockPlaytestSubsystem::StartVideoRecordingWhenPossible()
+{
+	FFlockPlaytestVideoSettings Settings = FFlockPlaytestVideoSettings::FromProjectSettings(*GetDefault<UFlockPlaytestSettings>());
+	if (bTestVideoRequested)
+	{
+		Settings.MaxSeconds = FMath::Min(Settings.MaxSeconds, TestVideoSeconds);
+	}
+
+	FString WhyNot;
+	const TSharedPtr<IFlockPlaytestVideoFrameSource> Source = TestVideoFrameSourceFactory
+		? TestVideoFrameSourceFactory(Settings.MaxVideoSize, WhyNot)
+		: FFlockPlaytestGameViewportFrameSource::Create(GetGameInstance(), Settings.MaxVideoSize, WhyNot);
+	if (!Source.IsValid())
+	{
+		// No reason means the game viewport is not there yet, and the next frame asks again. A reason does not change
+		// during a launch, so it is logged once and never asked again.
+		if (!WhyNot.IsEmpty())
+		{
+			VideoRecordingUnavailableReason = WhyNot;
+			UE_LOG(LogFlockPlaytest, Warning, TEXT("No video is recorded this launch: %s. Everything else in the playtest carries on."), *WhyNot);
+		}
+		return;
+	}
+
+	const FString WhyRecording = IsPlaytestFeatureEnabled(FlockPlaytestFeatures::VideoRecording) ? TEXT("for the playtest")
+		: bTestVideoRequested ? TEXT("as a test video") : TEXT("because Record Video In Play In Editor is on");
+	const FString FilePath = MakeVideoRecordingPath();
+
+	// One attempt per launch, whether or not it starts: a second recording would replace the first when uploaded.
+	bVideoRecordingStartedThisLaunch = true;
+	FString StartError;
+	VideoRecording = FFlockPlaytestVideoRecording::Start(Source.ToSharedRef(), Settings, FilePath, StartError, TestBeforeEachVideoEncode);
+	if (!VideoRecording.IsValid())
+	{
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("No video is recorded this launch: the recording could not start, because %s."), *StartError);
+		return;
+	}
+
+	const FIntPoint FrameSize = Source->GetFrameSize();
+	UE_LOG(LogFlockPlaytest, Log, TEXT("Recording video %s to %s, at %dx%d and %d frames a second. It stops for good after %.0f seconds of play, before the file passes %lld MB, or when the game stops it."),
+		*WhyRecording, *FilePath, FrameSize.X, FrameSize.Y, Settings.FramesPerSecond, Settings.MaxSeconds, Settings.MaxBytes / (1024 * 1024));
+}
+
+FString UFlockPlaytestSubsystem::MakeVideoRecordingPath() const
+{
+	const FString Folder = TestVideoRecordingFolder.IsEmpty()
+		? FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("FlockPlaytest"), TEXT("Recordings"))
+		: TestVideoRecordingFolder;
+	const FString Prefix = IsPlaytestFeatureEnabled(FlockPlaytestFeatures::VideoRecording) ? TEXT("recording") : TEXT("test-recording");
+	const FString Name = FString::Printf(TEXT("%s-%s-%s.ivf"), *Prefix, *FDateTime::UtcNow().ToString(TEXT("%Y%m%d-%H%M%S")),
+		*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8).ToLower());
+	return FPaths::ConvertRelativePathToFull(FPaths::Combine(Folder, Name));
+}
+
+void UFlockPlaytestSubsystem::UpdateVideoPump()
+{
+	// Ticks while a recording captures or its file is being written, and while one waits for the game viewport.
+	const bool bShouldTick = VideoRecording.IsValid() || IsWaitingToStartVideoRecording();
+	if (bShouldTick == VideoPump.IsRunning())
+	{
+		return;
+	}
+	if (bShouldTick)
+	{
+		VideoFrameHandle = VideoPump.OnTick.AddUObject(this, &UFlockPlaytestSubsystem::HandleVideoFrame);
+		VideoBackgroundChangedHandle = VideoPump.OnBackgroundChanged.AddUObject(this, &UFlockPlaytestSubsystem::HandleVideoBackgroundChanged);
+		VideoPump.Start();
+		return;
+	}
+	VideoPump.Stop();
+	VideoPump.OnTick.Remove(VideoFrameHandle);
+	VideoPump.OnBackgroundChanged.Remove(VideoBackgroundChangedHandle);
+	VideoFrameHandle.Reset();
+	VideoBackgroundChangedHandle.Reset();
+}
+
+void UFlockPlaytestSubsystem::HandleVideoFrame(float FrameSeconds)
+{
+	if (!VideoRecording.IsValid())
+	{
+		UpdateVideoRecording();
+		return;
+	}
+	// A recording that has stopped capturing takes no frame; it is only waited on.
+	const TOptional<EFlockPlaytestVideoStopReason> StopReason = VideoRecording->AddFrame(FrameSeconds);
+	if (StopReason.IsSet())
+	{
+		VideoRecording->StopCapturing(StopReason.GetValue());
+	}
+	if (VideoRecording.IsValid() && VideoRecording->HasFinishedWriting())
+	{
+		ApplyFinishedVideoRecording();
+	}
+}
+
+void UFlockPlaytestSubsystem::HandleVideoBackgroundChanged(bool /*bBackgrounded*/)
+{
+	// The ticker passes on no frames while the game is away, so the first frame time after the return carries that time.
+	if (VideoRecording.IsValid())
+	{
+		VideoRecording->LeaveOutNextFrame();
+	}
+}
+
+void UFlockPlaytestSubsystem::ApplyFinishedVideoRecording()
+{
+	const FFlockPlaytestVideoRecordingSummary Summary = VideoRecording->GetSummary();
+	VideoRecording.Reset();
+
+	if (!Summary.Error.IsEmpty())
+	{
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("The video recording could not be written, so no file was kept: %s. It had stopped because %s."),
+			*Summary.Error, *DescribeVideoStopReason(Summary.StopReason));
+	}
+	else if (Summary.FilePath.IsEmpty())
+	{
+		UE_LOG(LogFlockPlaytest, Log, TEXT("The video recording stopped because %s before any frame was captured, so no file was kept."),
+			*DescribeVideoStopReason(Summary.StopReason));
+	}
+	else
+	{
+		FinishedVideoRecordingPath = Summary.FilePath;
+		UE_LOG(LogFlockPlaytest, Log, TEXT("Video saved to %s: %.1f seconds, %d frames, %.1f MB. It stopped because %s. Encoding took %.2f ms a frame on average and %.2f ms at most; a frame waited at most %.0f ms to be encoded, and one write took at most %.2f ms; %d frames were dropped because encoding fell behind, %d because writing the file fell behind, and %d capture times passed while earlier frames were still on their way. The file is VP9 video in the IVF format, which VLC plays."),
+			*Summary.FilePath, Summary.VideoSeconds, Summary.FramesWritten, Summary.BytesWritten / (1024.0 * 1024.0),
+			*DescribeVideoStopReason(Summary.StopReason), Summary.AverageEncodeMs, Summary.LongestEncodeMs,
+			Summary.LongestWaitToEncodeMs, Summary.LongestWriteMs, Summary.FramesDroppedBecauseEncodingFellBehind,
+			Summary.FramesDroppedBecauseWritingFellBehind, Summary.FramesNotReadyInTime);
+	}
+	UpdateVideoPump();
+}
+
+void UFlockPlaytestSubsystem::FinishVideoRecordingNow(EFlockPlaytestVideoStopReason Reason)
+{
+	if (VideoRecording.IsValid())
+	{
+		VideoRecording->StopCapturing(Reason);
+		VideoRecording->WaitUntilWritten();
+		ApplyFinishedVideoRecording();
+	}
+	UpdateVideoPump();
+}
+
+#if !UE_BUILD_SHIPPING
+namespace
+{
+	UFlockPlaytestSubsystem* FindPlaytestSubsystemOfWorld(const UWorld* World)
+	{
+		const UGameInstance* GameInstance = World != nullptr ? World->GetGameInstance() : nullptr;
+		return GameInstance != nullptr ? GameInstance->GetSubsystem<UFlockPlaytestSubsystem>() : nullptr;
+	}
+
+	FAutoConsoleCommandWithWorldArgsAndOutputDevice RecordTestVideoCommand(
+		TEXT("FlockPlaytest.RecordTestVideo"),
+		TEXT("Records this game instance's screen for the given number of seconds, with no playtest needed: FlockPlaytest.RecordTestVideo 60. The file goes to Saved/FlockPlaytest/Recordings and is never uploaded. One video per launch. Not in Shipping builds."),
+		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World, FOutputDevice& Output)
+		{
+			double Seconds = 0.0;
+			if (Args.Num() != 1 || !LexTryParseString(Seconds, *Args[0]) || Seconds <= 0.0)
+			{
+				Output.Log(TEXT("Usage: FlockPlaytest.RecordTestVideo <seconds>, with seconds above 0."));
+				return;
+			}
+			UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystemOfWorld(World);
+			if (Playtest == nullptr)
+			{
+				Output.Log(TEXT("No Flock Playtest subsystem runs in this world's game instance."));
+				return;
+			}
+			Playtest->StartTestVideoRecording(Seconds);
+		}));
+
+	FAutoConsoleCommandWithWorldArgsAndOutputDevice StopVideoRecordingCommand(
+		TEXT("FlockPlaytest.StopVideoRecording"),
+		TEXT("Stops this game instance's video recording for good, and saves the file."),
+		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World, FOutputDevice& Output)
+		{
+			UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystemOfWorld(World);
+			if (Playtest == nullptr || !Playtest->StopVideoRecording())
+			{
+				Output.Log(TEXT("No video is being recorded."));
+			}
+		}));
+}
+#endif
