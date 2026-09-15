@@ -21,5 +21,14 @@ public class FlockPlaytest : ModuleRules
 				"Flock",
 			}
 			);
+
+		// Json is linked here as well as through Flock: the playtest config reads Protokite's JSON itself, and
+		// a module that calls into another module's exports has to name it.
+		PrivateDependencyModuleNames.AddRange(
+			new string[]
+			{
+				"Json",
+			}
+			);
 	}
 }

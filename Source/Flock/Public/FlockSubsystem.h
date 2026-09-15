@@ -108,6 +108,13 @@ public:
 	FString GetVersionedApiUrl() const;
 
 	/**
+	 * The headers every SDK request carries (X-Flock-API-Key and X-Game-Version-ID), exactly as the SDK
+	 * initialized with them, for code that calls another Qwacks service on the game's behalf. Empty before
+	 * initialization and after shutdown. C++ only, so the API key is not handed to Blueprint.
+	 */
+	TMap<FString, FString> GetRequestHeaders() const;
+
+	/**
 	 * The SDK event hub (lifecycle/auth/session/consent). Bind its events or use its
 	 * CallOrRegister entry points; always valid.
 	 */

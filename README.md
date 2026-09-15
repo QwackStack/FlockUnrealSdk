@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.11.0.** Everything documented below ships today. Requires Unreal Engine 5.5 to 5.8;
+> **1.12.0.** Everything documented below ships today. Requires Unreal Engine 5.5 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -499,7 +499,8 @@ carries the call that failed and a next step, and a request the server rejects f
 gameplay events** (`Flock Track Event`) and captures Blueprint script errors such as Accessed None
 automatically, counting repeats of the same error instead of sending each one. **1.11.0 adds Flock Playtest**,
 an optional plugin for Protokite playtests, in beta and shipped as its own download: its settings, and a status
-that says whether playtest work may run. It collects no playtest data yet.
+that says whether playtest work may run. **1.12.0 has it fetch the build's playtest from Protokite**, with the
+playtest's feature switches and feedback form, and say why when it cannot. It collects no playtest data yet.
 
 Deliberate omissions and known gaps:
 
