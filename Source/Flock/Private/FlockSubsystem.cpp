@@ -12,7 +12,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.11.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.12.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -30,6 +30,13 @@ UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 	}
 
 	return nullptr;
+}
+
+TMap<FString, FString> UFlockSubsystem::GetRequestHeaders() const
+{
+	// Only what the SDK is actually using. Before initialization, or after shutdown, there is no active
+	// config, and handing out the project settings instead would send a key the game may have overridden.
+	return bInitialized ? ActiveConfig.GetBaseHeaders() : TMap<FString, FString>();
 }
 
 void UFlockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -90,10 +97,13 @@ void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 	// declared at Log, and UE filters anything below a category's verbosity — so every breadcrumb was
 	// built, formatted, and then dropped. Raised, never lowered, so a `Log LogFlock Verbose` typed at the
 	// console still wins when the setting is off.
+	// A Shipping build compiles logging out, and its log categories have no verbosity to raise.
+#if !NO_LOGGING
 	if (Config.bEnableDebugLogs && LogFlock.GetVerbosity() < ELogVerbosity::Verbose)
 	{
 		LogFlock.SetVerbosity(ELogVerbosity::Verbose);
 	}
+#endif
 
 	// Misuse guard for an already-initialized SDK. Don't broadcast a
 	// failure: the SDK is already initialized and working.

@@ -5,6 +5,43 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-09-14
+
+### Added
+
+- **Flock Playtest fetches this build's playtest from Protokite.** Once **Enable Playtesting** is on and the Flock
+  SDK has initialized, the plugin asks Protokite for the playtest linked to this build's Game Version ID, sending
+  the API key and Game Version ID the Flock SDK initialized with, once per Flock initialization.
+  `UFlockPlaytestSubsystem::GetPlaytestConfig()` returns it: the playtest id, its feature switches, and its
+  published feedback form when it has one.
+- **`UFlockPlaytestSubsystem::IsPlaytestFeatureEnabled`**, with the feature names in `FlockPlaytestFeatures`. A
+  feature the playtest does not mention is off, and every feature is off until the status is ready.
+- **The status says why a build is not ready yet:** fetching the playtest, no playtest linked to this Game Version
+  ID, Protokite refused the API key, the playtest could not be fetched, or Protokite answered for a different Game
+  Version ID. Each change is logged once, and the ones that keep playtesting off are warnings that say what to
+  check.
+- **`UFlockSubsystem::GetRequestHeaders()`** (C++ only) returns the API key and Game Version ID headers the SDK
+  initialized with, for code that calls another Qwacks service on the game's behalf. It is empty before
+  initialization and after shutdown.
+
+### Changed
+
+- **Flock Playtest is ready only once the playtest has been fetched**, not as soon as its settings are complete
+  and the Flock SDK is initialized.
+
+### Fixed
+
+- **Packaging a Development build of a project with the Flock SDK failed to compile** (since 1.7.0): a test read
+  Blueprint pin metadata, which a packaged build does not carry.
+- **Building a Shipping game with the Flock SDK failed to compile** (since 1.0.0): the SDK raised its log
+  category's verbosity for **Enable Debug Logs**, and a Shipping build compiles logging out.
+
+### Notes
+
+- **When Protokite cannot be reached, the game carries on with playtesting off, and the playtest is fetched again
+  when the next Flock session starts.** A refusal (no linked playtest, a refused key) is not asked again. The
+  retries within one attempt use the Flock SDK's own HTTP settings.
+
 ## [1.11.0] - 2026-09-14
 
 ### Added

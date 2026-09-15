@@ -16,11 +16,33 @@
     one always prints what it covered *and* what it did not, and fails when the floor engine is missing --
     an unverifiable claim is not a passing one.
 
+    Each engine is built twice over. The editor target is what the automation suite runs in, in the editor
+    and again with -game -- but both of those passes run the editor binary, where editor-only data such as
+    Blueprint metadata exists, so neither compiles the plugin the way a packaged game does. The game target
+    is therefore built as well, in every configuration in -GameConfigurations, and an engine counts as
+    verified only when those builds succeed too. Two defects shipped exactly that way, with every suite green
+    on every engine: a test that read Blueprint metadata without a guard broke every Development package, and
+    a log-category call that Shipping compiles out broke every Shipping build.
+
     It cannot run in GitHub-hosted CI: those runners have no engine. The no-engine half of the checks
     lives in .github/workflows/consistency.yml.
 
 .PARAMETER Project
     The .uproject used to drive the build. Defaults to the sibling UEBuildEnviroment project.
+
+.PARAMETER Target
+    The editor target the automation suite runs in. Defaults to UEBuildEnviromentEditor.
+
+.PARAMETER GameTarget
+    The project's game target, built without the editor. Defaults to the project's own name, which is the
+    name Unreal gives a project's game target. The sweep refuses to start when it cannot find it.
+
+.PARAMETER GameConfigurations
+    The configurations the game target is built in. Defaults to Development and Shipping.
+    Development is what a playtest or QA build uses, and it compiles the automation tests without editor-only
+    data. Shipping compiles logging out, along with everything under !UE_BUILD_SHIPPING, so it compiles code
+    no other build does. Test is not in the default because an installed engine refuses it ("Targets cannot be
+    built in the Test configuration with this engine distribution"); it needs an engine built from source.
 
 .PARAMETER SearchRoots
     Directories to sweep for UE_x.y installs. Defaults to 'Program Files\Epic Games' and 'Epic Games' on
@@ -46,6 +68,9 @@
 param(
     [string]   $Project,
     [string]   $Target = 'UEBuildEnviromentEditor',
+    [string]   $GameTarget,
+    [ValidateSet('DebugGame', 'Development', 'Shipping', 'Test')]
+    [string[]] $GameConfigurations = @('Development', 'Shipping'),
     [string[]] $SearchRoots
 )
 
@@ -64,6 +89,16 @@ if (-not (Test-Path $Project)) {
 $Project = (Resolve-Path $Project).Path
 $ProjectDir = Split-Path -Parent $Project
 
+# Refused up front rather than reported per engine: without a game target every engine would fail the same
+# way, after an hour of editor builds and test runs.
+if (-not $GameTarget) {
+    $GameTarget = [System.IO.Path]::GetFileNameWithoutExtension($Project)
+}
+$GameTargetFile = Join-Path $ProjectDir "Source\$GameTarget.Target.cs"
+if (-not (Test-Path $GameTargetFile)) {
+    throw "Cannot find the game target at $GameTargetFile -- pass -GameTarget explicitly. Without a game build the sweep cannot see a defect that only a packaged game compiles."
+}
+
 # Every engine in the sweep builds into this one project's Intermediate/Binaries, and UHT output does
 # NOT reliably regenerate when the engine underneath it changes. A later engine's .gen.cpp compiled
 # against an earlier engine's headers fails in generated code that names no SDK file at all -- which
@@ -77,6 +112,28 @@ function Remove-BuildArtifacts {
             Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
+}
+
+function Format-Duration {
+    param([int] $Seconds)
+    return ('{0}m {1:00}s' -f [int][math]::Floor($Seconds / 60), ($Seconds % 60))
+}
+
+# The build log goes to the console, not into the returned object: a native command's output inside a
+# function is part of what the function returns.
+function Invoke-TimedBuild {
+    param(
+        [string] $BuildBat,
+        [string] $TargetName,
+        [string] $Configuration,
+        [string] $Project
+    )
+
+    $Watch = [System.Diagnostics.Stopwatch]::StartNew()
+    & $BuildBat $TargetName Win64 $Configuration -project="$Project" -WaitMutex | Out-Host
+    $ExitCode = $LASTEXITCODE
+    $Watch.Stop()
+    return [PSCustomObject]@{ Succeeded = ($ExitCode -eq 0); Seconds = [int]$Watch.Elapsed.TotalSeconds }
 }
 
 # Compiling is not the claim. "It builds on 5.7" says nothing about whether it behaves the same there,
@@ -161,6 +218,7 @@ if ($Ceiling -lt $Floor) {
 }
 
 Write-Host "Declared range: UE $Floor to UE $Ceiling" -ForegroundColor Cyan
+Write-Host ("Game target:    $GameTarget Win64 " + ($GameConfigurations -join ', ')) -ForegroundColor Cyan
 
 # -- Discover installed engines --
 
@@ -208,12 +266,14 @@ foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
 
 # -- Build each engine at or above the floor --
 
-$Verified    = [System.Collections.Generic.List[string]]::new()   # built AND tests green
-$BuildFailed = [System.Collections.Generic.List[string]]::new()
-$TestFailed  = [System.Collections.Generic.List[string]]::new()
-$Skipped     = [System.Collections.Generic.List[string]]::new()
-$Unusable    = [System.Collections.Generic.List[string]]::new()
-$AboveCeiling = [System.Collections.Generic.List[string]]::new() # informational: outside the claim
+$Verified        = [System.Collections.Generic.List[string]]::new()   # both targets built AND tests green
+$GameBuilds      = [System.Collections.Generic.List[string]]::new()   # every game configuration built
+$BuildFailed     = [System.Collections.Generic.List[string]]::new()
+$GameBuildFailed = [System.Collections.Generic.List[string]]::new()
+$TestFailed      = [System.Collections.Generic.List[string]]::new()
+$Skipped         = [System.Collections.Generic.List[string]]::new()
+$Unusable        = [System.Collections.Generic.List[string]]::new()
+$AboveCeiling    = [System.Collections.Generic.List[string]]::new()   # informational: outside the claim
 
 foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
     if ([version]$Version -lt $Floor) {
@@ -243,14 +303,39 @@ foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
     # can never fail a release of a claim that does not include it.
     $InRange = ([version]$Version -le $Ceiling)
 
-    & $BuildBat $Target Win64 Development -project="$Project" -WaitMutex
-    if ($LASTEXITCODE -ne 0) {
+    $EditorBuild = Invoke-TimedBuild -BuildBat $BuildBat -TargetName $Target -Configuration 'Development' -Project $Project
+    if (-not $EditorBuild.Succeeded) {
         Write-Host "UE $Version : BUILD FAILED" -ForegroundColor Red
         if ($InRange) { $BuildFailed.Add($Version) } else { $AboveCeiling.Add("$Version (build failed)") }
         continue
     }
+    Write-Host "UE $Version : editor target built in $(Format-Duration $EditorBuild.Seconds)" -ForegroundColor DarkGray
 
-    Write-Host "UE $Version : built. Running the automation suite..." -ForegroundColor DarkGray
+    # The game target, without the editor -- see the description at the top for why the editor build and
+    # both test passes cannot stand in for it. The suite still runs when this fails, so the report says
+    # whether the engine has a second problem.
+    $FailedGameConfigurations = [System.Collections.Generic.List[string]]::new()
+    $GameBuildSeconds = 0
+    foreach ($Configuration in $GameConfigurations) {
+        $GameBuild = Invoke-TimedBuild -BuildBat $BuildBat -TargetName $GameTarget -Configuration $Configuration -Project $Project
+        $GameBuildSeconds += $GameBuild.Seconds
+        if ($GameBuild.Succeeded) {
+            Write-Host "UE $Version : game target built ($GameTarget Win64 $Configuration) in $(Format-Duration $GameBuild.Seconds)" -ForegroundColor Green
+        } else {
+            Write-Host "UE $Version : GAME BUILD FAILED ($GameTarget Win64 $Configuration)" -ForegroundColor Red
+            $FailedGameConfigurations.Add($Configuration)
+        }
+    }
+    $GameBuilt = ($FailedGameConfigurations.Count -eq 0)
+    if ($GameBuilt) {
+        $GameBuilds.Add("$Version ($(Format-Duration $GameBuildSeconds))")
+    } elseif ($InRange) {
+        $GameBuildFailed.Add("$Version (" + ($FailedGameConfigurations -join ', ') + ")")
+    } else {
+        $AboveCeiling.Add("$Version (game build failed: " + ($FailedGameConfigurations -join ', ') + ")")
+    }
+
+    Write-Host "UE $Version : running the automation suite..." -ForegroundColor DarkGray
     $Tests = Invoke-FlockTests -EngineDir $Engines[$Version] -Project $Project -ProjectDir $ProjectDir
 
     if (-not $Tests.Ran) {
@@ -272,7 +357,14 @@ foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
             if ($InRange) { $TestFailed.Add($Version) } else { $AboveCeiling.Add("$Version ($($GameTests.Failed) game-context failed)") }
         } else {
             Write-Host "UE $Version : $($GameTests.Total)/$($GameTests.Total) tests passed (game context)" -ForegroundColor Green
-            if ($InRange) { $Verified.Add($Version) } else { $AboveCeiling.Add("$Version (green)") }
+            # Green tests alone do not verify an engine whose game build failed; that failure is already listed.
+            if ($InRange) {
+                if ($GameBuilt) { $Verified.Add($Version) }
+            } elseif ($GameBuilt) {
+                $AboveCeiling.Add("$Version (green)")
+            } else {
+                $AboveCeiling.Add("$Version (tests green)")
+            }
         }
     }
 }
@@ -282,15 +374,21 @@ foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
 Write-Host ''
 Write-Host '-------- Coverage --------' -ForegroundColor Cyan
 if ($Verified.Count) {
-    Write-Host ("verified:      " + ($Verified -join '  ') + "   (built + tests green)")
+    Write-Host ("verified:      " + ($Verified -join '  ') + "   (editor and game targets built + tests green)")
 } else {
     Write-Host "verified:      (none)"
 }
-if ($BuildFailed.Count)  { Write-Host ("BUILD FAILED:  " + ($BuildFailed -join '  ')) -ForegroundColor Red }
-if ($TestFailed.Count)   { Write-Host ("TESTS FAILED:  " + ($TestFailed -join '  ')) -ForegroundColor Red }
-if ($Unusable.Count)     { Write-Host ("NOT COVERED:   " + ($Unusable -join '  ') + "  (no Build.bat)") -ForegroundColor Yellow }
-if ($AboveCeiling.Count) { Write-Host ("above ceiling: " + ($AboveCeiling -join '  ') + "  (informational)") -ForegroundColor DarkCyan }
-if ($Skipped.Count)      { Write-Host ("below floor:   " + ($Skipped -join '  ')) -ForegroundColor DarkGray }
+if ($GameBuilds.Count) {
+    Write-Host ("game builds:   " + ($GameBuilds -join '  ') + "   ($GameTarget Win64 " + ($GameConfigurations -join ', ') + ")")
+} else {
+    Write-Host ("game builds:   (none)   ($GameTarget Win64 " + ($GameConfigurations -join ', ') + ")")
+}
+if ($BuildFailed.Count)     { Write-Host ("BUILD FAILED:  " + ($BuildFailed -join '  ')) -ForegroundColor Red }
+if ($GameBuildFailed.Count) { Write-Host ("GAME BUILD FAILED: " + ($GameBuildFailed -join '  ')) -ForegroundColor Red }
+if ($TestFailed.Count)      { Write-Host ("TESTS FAILED:  " + ($TestFailed -join '  ')) -ForegroundColor Red }
+if ($Unusable.Count)        { Write-Host ("NOT COVERED:   " + ($Unusable -join '  ') + "  (no Build.bat)") -ForegroundColor Yellow }
+if ($AboveCeiling.Count)    { Write-Host ("above ceiling: " + ($AboveCeiling -join '  ') + "  (informational)") -ForegroundColor DarkCyan }
+if ($Skipped.Count)         { Write-Host ("below floor:   " + ($Skipped -join '  ')) -ForegroundColor DarkGray }
 Write-Host "claim:         UE $Floor to UE $Ceiling"
 
 # Both ends of the range are the claim, so both ends must be verified -- and so must everything between
@@ -308,7 +406,7 @@ if ($Unproven.Count) {
     Write-Host ("UE " + ($Unproven -join ' and UE ') + " bound the declared range and were not verified. The claim is unproven.") -ForegroundColor Red
     exit 1
 }
-if ($BuildFailed.Count -or $TestFailed.Count) {
+if ($BuildFailed.Count -or $GameBuildFailed.Count -or $TestFailed.Count) {
     Write-Host 'Engines inside the declared range failed. The claim is unproven.' -ForegroundColor Red
     exit 1
 }

@@ -286,4 +286,22 @@ bool FFlockLeaderboardSubsystemWiringTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemRequestHeadersTest, "Flock.Runtime.Subsystem.RequestHeadersFollowInitialization",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSubsystemRequestHeadersTest::RunTest(const FString& Parameters)
+{
+	UFlockSubsystem* Sdk = NewTransientSubsystem();
+	TestEqual(TEXT("No headers before initialization"), Sdk->GetRequestHeaders().Num(), 0);
+
+	Sdk->InitializeWithConfig(MakeValidConfig());
+	const TMap<FString, FString> Headers = Sdk->GetRequestHeaders();
+	TestEqual(TEXT("The API key the SDK initialized with"), Headers.FindRef(TEXT("X-Flock-API-Key")), FString(TEXT("secret")));
+	TestEqual(TEXT("The version id the SDK initialized with"), Headers.FindRef(TEXT("X-Game-Version-ID")), FString(TEXT("ver-abc")));
+
+	Sdk->ShutdownSdk();
+	TestEqual(TEXT("No headers after shutdown"), Sdk->GetRequestHeaders().Num(), 0);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

@@ -82,6 +82,8 @@ bool FFlockNotificationScheduleStatusParityTest::RunTest(const FString& Paramete
 
 	// UHT needs a literal for a BP pin default, so the constant cannot be used there. Nothing else stops
 	// the two drifting — a changed constant would leave the node silently defaulting to the old value.
+	// Pin defaults are metadata, which a packaged game build does not carry.
+#if WITH_EDITORONLY_DATA
 	if (const UFunction* Fn = UFlockGetScheduledNotificationsAction::StaticClass()
 			->FindFunctionByName(TEXT("GetScheduled")))
 	{
@@ -92,6 +94,7 @@ bool FFlockNotificationScheduleStatusParityTest::RunTest(const FString& Paramete
 	{
 		AddError(TEXT("Flock Get Scheduled Notifications has no GetScheduled UFunction to inspect."));
 	}
+#endif
 
 	return true;
 }
