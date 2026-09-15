@@ -2,7 +2,9 @@
 
 #include "FlockPlaytestSubsystem.h"
 
+#include "Async/Async.h"
 #include "Config/FlockConfig.h"
+#include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "FlockEvents.h"
@@ -11,7 +13,10 @@
 #include "FlockPlaytestSettings.h"
 #include "FlockProtokiteClient.h"
 #include "FlockSubsystem.h"
+#include "HAL/PlatformTime.h"
 #include "Http/FlockHttpClient.h"
+#include "Providers/FlockAnalyticsProvider.h"
+#include "UObject/UObjectGlobals.h"
 
 namespace
 {
@@ -32,6 +37,17 @@ namespace
 						*PlaytestSessionId, *Result.Error.ToDisplayText());
 				}
 			});
+	}
+
+	double RoundToHundredths(double Value)
+	{
+		return FMath::RoundToDouble(Value * 100.0) / 100.0;
+	}
+
+	/** A world's map name, without the prefix the editor adds while playing in the editor; empty without a world. */
+	FString MapNameOf(const UWorld* World)
+	{
+		return World != nullptr ? UWorld::RemovePIEPrefix(World->GetMapName()) : FString();
 	}
 }
 
@@ -70,6 +86,7 @@ void UFlockPlaytestSubsystem::Deinitialize()
 
 	// Whatever the last status was, no playtest work may run on a subsystem that has shut down.
 	ApplyStatus(EFlockPlaytestStatus::Stopped, FString(), FString());
+	UpdatePerformanceTimeline();
 
 	Super::Deinitialize();
 }
@@ -162,7 +179,8 @@ void UFlockPlaytestSubsystem::RefreshStatus()
 	ApplyStatus(DecideCurrentStatus(), GetDefault<UFlockPlaytestSettings>()->ProtokiteApiUrl,
 		Flock.IsValid() ? Flock->GetGameVersionId() : FString());
 
-	// After the status is applied, because a start needs Ready.
+	// After the status is applied, because both need Ready.
+	UpdatePerformanceTimeline();
 	StartPlaytestSessionWhenAllowed();
 }
 
@@ -290,8 +308,7 @@ void UFlockPlaytestSubsystem::StartPlaytestSessionWhenAllowed()
 			*FirstFlockServerSessionId, FlockPlaytestSessionLimits::FlockSessionIdLength);
 	}
 	const UGameInstance* GameInstance = GetGameInstance();
-	const UWorld* World = GameInstance != nullptr ? GameInstance->GetWorld() : nullptr;
-	Request.DebugInfo = MakePlaytestSessionDebugInfo(World != nullptr ? UWorld::RemovePIEPrefix(World->GetMapName()) : FString());
+	Request.DebugInfo = MakePlaytestSessionDebugInfo(MapNameOf(GameInstance != nullptr ? GameInstance->GetWorld() : nullptr));
 
 	// Kept for the end, which goes to the same place with the same headers even after the Flock SDK has shut down.
 	PlaytestSessionApiUrl = GetDefault<UFlockPlaytestSettings>()->ProtokiteApiUrl;
@@ -447,4 +464,186 @@ void UFlockPlaytestSubsystem::ApplyStatus(EFlockPlaytestStatus NewStatus, const 
 		break;
 	}
 	}
+}
+
+bool UFlockPlaytestSubsystem::RecordPlaytestEvent(const FString& EventName, const FFlockCommandData& Properties)
+{
+	// The status and the Flock SDK are game-thread state. A game recording from a worker thread has done nothing wrong,
+	// so the call is handed over rather than refused, which means it cannot be judged here.
+	if (!IsInGameThread())
+	{
+		const TWeakObjectPtr<UFlockPlaytestSubsystem> WeakThis(this);
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, EventName, Properties]()
+		{
+			if (UFlockPlaytestSubsystem* Self = WeakThis.Get())
+			{
+				Self->RecordPlaytestEvent(EventName, Properties);
+			}
+		});
+		return true;
+	}
+
+	// One sender per name, so a chart built on the plugin's own events never counts one of the game's.
+	if (EventName.Equals(FlockPlaytestEvents::PerformanceWindow, ESearchCase::CaseSensitive)
+		|| EventName.Equals(FlockPlaytestEvents::LevelLoaded, ESearchCase::CaseSensitive))
+	{
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("Playtest event '%s' refused: the plugin sends events with that name itself."), *EventName);
+		return false;
+	}
+	return SendPlaytestEvent(EventName, Properties);
+}
+
+void UFlockPlaytestSubsystem::UpdatePerformanceTimeline()
+{
+	const bool bHeavyAnalyticsOn = IsPlaytestFeatureEnabled(FlockPlaytestFeatures::HeavyAnalytics);
+	const bool bFlockAnalyticsOn = Flock.IsValid() && Flock->GetAnalyticsProvider() != nullptr;
+	if (bHeavyAnalyticsOn && !bFlockAnalyticsOn && !bLoggedHeavyAnalyticsWithoutFlockAnalytics)
+	{
+		bLoggedHeavyAnalyticsWithoutFlockAnalytics = true;
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("This playtest turns heavy analytics on, but the Flock SDK's analytics is off, so no performance or playtest event is recorded. Turn on Analytics Enabled: Project Settings > Plugins > Flock SDK Settings."));
+	}
+
+	const bool bShouldMeasure = bHeavyAnalyticsOn && bFlockAnalyticsOn;
+	if (bShouldMeasure == PerformancePump.IsRunning())
+	{
+		return;
+	}
+
+	if (bShouldMeasure)
+	{
+		// The timeline and the level-load start are already clear: every stop clears them, and nothing adds to them
+		// while stopped.
+		const UGameInstance* GameInstance = GetGameInstance();
+		CurrentMapName = MapNameOf(GameInstance != nullptr ? GameInstance->GetWorld() : nullptr);
+
+		PerformanceFrameHandle = PerformancePump.OnTick.AddUObject(this, &UFlockPlaytestSubsystem::HandlePerformanceFrame);
+		BackgroundChangedHandle = PerformancePump.OnBackgroundChanged.AddUObject(this, &UFlockPlaytestSubsystem::HandleBackgroundChanged);
+		PreLoadMapHandle = FCoreUObjectDelegates::PreLoadMapWithContext.AddUObject(this, &UFlockPlaytestSubsystem::HandlePreLoadMap);
+		PostLoadMapHandle = FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UFlockPlaytestSubsystem::HandlePostLoadMap);
+		PerformancePump.Start();
+
+		UE_LOG(LogFlockPlaytest, Log, TEXT("Heavy analytics is on: a performance window for every %.0f seconds of play, and every level load, go to the Flock SDK as '%s' events."),
+			FFlockPlaytestPerformanceTimeline::WindowSeconds, FlockPlaytestEvents::Category);
+		return;
+	}
+
+	PerformancePump.Stop();
+	PerformancePump.OnTick.Remove(PerformanceFrameHandle);
+	PerformancePump.OnBackgroundChanged.Remove(BackgroundChangedHandle);
+	FCoreUObjectDelegates::PreLoadMapWithContext.Remove(PreLoadMapHandle);
+	FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(PostLoadMapHandle);
+	PerformanceFrameHandle.Reset();
+	BackgroundChangedHandle.Reset();
+	PreLoadMapHandle.Reset();
+	PostLoadMapHandle.Reset();
+
+	// A window cut short would read as a short stretch of play, so it is dropped rather than sent.
+	PerformanceTimeline.Reset();
+	LevelLoadStartSeconds = -1.0;
+	UE_LOG(LogFlockPlaytest, Verbose, TEXT("Heavy analytics stopped, and the unfinished performance window was dropped."));
+}
+
+void UFlockPlaytestSubsystem::HandlePerformanceFrame(float FrameSeconds)
+{
+	FFlockPlaytestPerformanceWindow Window;
+	if (!PerformanceTimeline.AddFrame(FrameSeconds, GetEngineFrameNumber(), Window))
+	{
+		return;
+	}
+
+	// Frame times and memory only. The session's length, pauses and frame rate are the Flock SDK's, and are never sent twice.
+	FFlockCommandData Properties;
+	Properties.Set(TEXT("window_seconds"), RoundToHundredths(Window.Seconds))
+		.Set(TEXT("frames"), Window.Frames)
+		.Set(TEXT("median_frame_time_ms"), RoundToHundredths(Window.MedianFrameTimeMs))
+		.Set(TEXT("frame_time_95th_percentile_ms"), RoundToHundredths(Window.FrameTime95thPercentileMs))
+		.Set(TEXT("frame_time_99th_percentile_ms"), RoundToHundredths(Window.FrameTime99thPercentileMs))
+		.Set(TEXT("hitches"), Window.Hitches)
+		.Set(TEXT("hitch_threshold_ms"), RoundToHundredths(Window.HitchThresholdMs))
+		.Set(TEXT("memory_used_mb"), Window.MemoryUsedMb)
+		.Set(TEXT("memory_peak_mb"), Window.MemoryPeakMb);
+	if (!CurrentMapName.IsEmpty())
+	{
+		Properties.Set(TEXT("map"), CurrentMapName);
+	}
+	SendPlaytestEvent(FlockPlaytestEvents::PerformanceWindow, Properties);
+}
+
+void UFlockPlaytestSubsystem::HandleBackgroundChanged(bool /*bBackgrounded*/)
+{
+	// The ticker passes on no frames while the game is in the background, so the first frame time after the return is the
+	// one that can carry the time away. Marking it when the game leaves or when it comes back leaves out that same frame.
+	PerformanceTimeline.LeaveOutNextFrame();
+}
+
+void UFlockPlaytestSubsystem::HandlePreLoadMap(const FWorldContext& WorldContext, const FString& MapName)
+{
+	NoteLevelLoadStarted(WorldContext.OwningGameInstance);
+}
+
+void UFlockPlaytestSubsystem::HandlePostLoadMap(UWorld* LoadedWorld)
+{
+	if (LoadedWorld == nullptr)
+	{
+		// A load that failed names no world. The frame time it stretched is still not play.
+		if (LevelLoadStartSeconds >= 0.0)
+		{
+			LevelLoadStartSeconds = -1.0;
+			PerformanceTimeline.LeaveOutFirstFrameAfter(GetEngineFrameNumber());
+		}
+		return;
+	}
+	NoteLevelLoaded(LoadedWorld->GetGameInstance(), MapNameOf(LoadedWorld));
+}
+
+void UFlockPlaytestSubsystem::NoteLevelLoadStarted(const UGameInstance* LoadingGameInstance)
+{
+	// The engine announces every game instance's loads; while playing in the editor, several run side by side.
+	if (LoadingGameInstance == nullptr || LoadingGameInstance != GetGameInstance())
+	{
+		return;
+	}
+	LevelLoadStartSeconds = FPlatformTime::Seconds();
+}
+
+void UFlockPlaytestSubsystem::NoteLevelLoaded(const UGameInstance* LoadingGameInstance, const FString& MapName)
+{
+	if (LoadingGameInstance == nullptr || LoadingGameInstance != GetGameInstance())
+	{
+		return;
+	}
+
+	FFlockCommandData Properties;
+	Properties.Set(TEXT("map"), MapName);
+	if (!CurrentMapName.IsEmpty())
+	{
+		Properties.Set(TEXT("previous_map"), CurrentMapName);
+	}
+	// A load that held the game up reports how long it took, and the frame time that carries it is left out. The load
+	// runs inside the engine's update, before this engine frame hands over a frame time measured before the load began,
+	// so the next engine frame's time is the stretched one. A seamless travel keeps frames coming while it loads, so it
+	// has neither.
+	if (LevelLoadStartSeconds >= 0.0)
+	{
+		Properties.Set(TEXT("load_seconds"), RoundToHundredths(FPlatformTime::Seconds() - LevelLoadStartSeconds));
+		LevelLoadStartSeconds = -1.0;
+		PerformanceTimeline.LeaveOutFirstFrameAfter(GetEngineFrameNumber());
+	}
+	CurrentMapName = MapName;
+	SendPlaytestEvent(FlockPlaytestEvents::LevelLoaded, Properties);
+}
+
+bool UFlockPlaytestSubsystem::SendPlaytestEvent(const FString& EventName, const FFlockCommandData& Properties)
+{
+	if (!IsPlaytestFeatureEnabled(FlockPlaytestFeatures::HeavyAnalytics))
+	{
+		return false;
+	}
+	FFlockAnalyticsProvider* Analytics = Flock.IsValid() ? Flock->GetAnalyticsProvider() : nullptr;
+	return Analytics != nullptr && Analytics->TrackEvent(EventName, Properties, FlockPlaytestEvents::Category);
+}
+
+uint64 UFlockPlaytestSubsystem::GetEngineFrameNumber() const
+{
+	return TestEngineFrameNumberReader ? TestEngineFrameNumberReader() : GFrameCounter;
 }

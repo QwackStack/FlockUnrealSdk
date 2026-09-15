@@ -49,8 +49,9 @@ and properties.
 - **It never waits on the network.** The event is written to disk and delivered on the next flush, so it is
   safe to call often and while offline. It returns false only when it refuses the event outright.
 - **It is refused on the spot** when analytics is off, when consent is withheld, when the name is empty or
-  blank, and for the name `session_started` — the server records that one itself when a session starts, and
-  a copy from the game would count every session twice.
+  blank, when the name is longer than 200 characters or the category longer than 100 (the server cannot store
+  either, and would fail every event sent alongside), and for the name `session_started` — the server records
+  that one itself when a session starts, and a copy from the game would count every session twice.
 - **Every event belongs to a player.** An event recorded with nobody signed in is held, and credited to
   whoever signs in next. Events are delivered only while a player is signed in; one recorded earlier keeps
   the player it was recorded under.

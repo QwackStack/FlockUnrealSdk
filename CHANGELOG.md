@@ -5,6 +5,31 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] - 2026-09-15
+
+### Added
+
+- **Flock Playtest sends heavy analytics when the playtest turns it on.** While playtesting is ready and the Flock
+  SDK's **Analytics Enabled** is on, every ten seconds of play become one `performance_window` event: the frame count,
+  the median, 95th and 99th percentile frame times, the hitches (frames at or over the engine's
+  `t.HitchFrameTimeThreshold`), and the memory in use and at its peak. Each map the game instance loads from then on
+  becomes one `level_loaded` event, with the map before it and, when the load held the game up, how long it took. Both
+  go through the Flock SDK's analytics under the category `playtest`, so they follow its consent setting and wait for a
+  signed-in player the same way.
+- **Time away is not play.** The timeline pauses while the game is in the background, leaves out the frame time that a
+  level load or a return from the background stretched, and drops a window that playtesting stopping cut short. The
+  session's length, pauses and frame rate stay the Flock SDK's, and are never sent twice.
+- **`UFlockPlaytestSubsystem::RecordPlaytestEvent`** and the **Flock Record Playtest Event** Blueprint node record
+  the game's own events for the playtest, under the same category. Outside a heavy analytics playtest they record
+  nothing and return false, so the call is safe in every build. `IsMeasuringPerformance()` says whether the timeline is
+  running.
+
+### Changed
+
+- **Track Event refuses a name over 200 characters or a category over 100.** The server cannot store either, and
+  failed the whole request for it, so every event sent alongside was held back and sent again until its attempts ran
+  out. An event like that already waiting from an earlier build is dropped with a warning instead of being sent.
+
 ## [1.13.0] - 2026-09-15
 
 ### Added

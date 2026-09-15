@@ -465,6 +465,11 @@ void FFlockAnalyticsProvider::RecordScreenView(const FString& ScreenName)
 	Deps.Session->RecordScreenView(ScreenName);
 }
 
+bool FFlockAnalyticsProvider::IsEventTooLongToStore(const FString& EventName, const FString& EventCategory)
+{
+	return EventName.Len() > MaxEventNameLength || EventCategory.Len() > MaxEventCategoryLength;
+}
+
 bool FFlockAnalyticsProvider::TrackEvent(const FString& EventName, const FFlockCommandData& Properties,
 	const FString& EventCategory)
 {
@@ -491,6 +496,15 @@ bool FFlockAnalyticsProvider::TrackEvent(const FString& EventName, const FFlockC
 	if (EventName.TrimStartAndEnd().IsEmpty())
 	{
 		Logger->LogWarning(TEXT("Track event refused: an event needs a name."));
+		return false;
+	}
+	// The server cannot store a longer name or category, and fails the whole request for it: every event sent alongside
+	// would be held back and sent again until its attempts ran out.
+	if (IsEventTooLongToStore(EventName, EventCategory))
+	{
+		Logger->LogWarning(FString::Printf(
+			TEXT("Track event refused: its name has %d characters and its category %d, and the server stores at most %d and %d. Name: '%s'."),
+			EventName.Len(), EventCategory.Len(), MaxEventNameLength, MaxEventCategoryLength, *EventName.Left(MaxEventNameLength)));
 		return false;
 	}
 	// The server writes session_started itself when a session starts, and accepts the name from a client without
@@ -1496,6 +1510,15 @@ void FFlockAnalyticsProvider::SendNextEventBatch(const TSharedRef<FDeliveryPass>
 		if (!FFlockAnalyticsJson::DeserializeSpooledAnalyticsEvent(ScanPayloads[Index], Entry))
 		{
 			// Unreadable, or not an event: it can never become deliverable.
+			Deps.AnalyticsEventCache->Remove(ScanHandles[Index]);
+			continue;
+		}
+		if (IsEventTooLongToStore(Entry.Event.EventName, Entry.Event.EventCategory))
+		{
+			// Recorded by a build that did not check. The server would fail every batch carrying it, on every flush.
+			Logger->LogWarning(FString::Printf(
+				TEXT("Dropping analytics event '%s': its name or category is longer than the server can store."),
+				*Entry.Event.EventName.Left(MaxEventNameLength)));
 			Deps.AnalyticsEventCache->Remove(ScanHandles[Index]);
 			continue;
 		}

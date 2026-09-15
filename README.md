@@ -503,7 +503,9 @@ that says whether playtest work may run. **1.12.0 has it fetch the build's playt
 playtest's feature switches and feedback form, and say why when it cannot. **1.13.0 starts one Protokite session
 per launch**, named after the launch's first Flock session and sent with the player's Steam id or a device id, and
 ends it when the game shuts down; it also adds `OnSessionRegistered` and the **Session Platform** setting to the
-Flock SDK. It records no video, events or feedback yet.
+Flock SDK. **1.14.0 sends heavy analytics** when a playtest turns it on: a performance window for every ten seconds
+of play, each level load, and the game's own playtest events, all through the Flock SDK's analytics. It records no
+video or feedback yet.
 
 Deliberate omissions and known gaps:
 
