@@ -1240,13 +1240,21 @@ bool FFlockAnalyticsTrackEventRefusalTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("a blank name is refused"), Fix.Provider->TrackEvent(TEXT("  \t ")));
 	// The server writes session_started when a session starts, and would count a client's copy as a second session.
 	TestFalse(TEXT("session_started is refused"), Fix.Provider->TrackEvent(FFlockAnalyticsProvider::ReservedSessionStartedEvent));
+	// The server cannot store a longer name or category, and fails the whole request for one.
+	const FString LongestName = FString::ChrN(FFlockAnalyticsProvider::MaxEventNameLength, TEXT('n'));
+	const FString LongestCategory = FString::ChrN(FFlockAnalyticsProvider::MaxEventCategoryLength, TEXT('c'));
+	TestFalse(TEXT("a name one character over the limit is refused"), Fix.Provider->TrackEvent(LongestName + TEXT("n")));
+	TestFalse(TEXT("a category one character over the limit is refused"),
+		Fix.Provider->TrackEvent(TEXT("level_complete"), FFlockCommandData(), LongestCategory + TEXT("c")));
 	TestEqual(TEXT("nothing spooled"), Fix.Provider->GetPendingAnalyticsEventCount(), 0);
 
 	// Only that exact name is reserved.
 	TestTrue(TEXT("a longer name is fine"), Fix.Provider->TrackEvent(TEXT("session_started_tutorial")));
 	TestTrue(TEXT("a different case is a different name"), Fix.Provider->TrackEvent(TEXT("Session_Started")));
 	TestTrue(TEXT("session_end is not reserved"), Fix.Provider->TrackEvent(TEXT("session_end")));
-	TestEqual(TEXT("all three spooled"), Fix.Provider->GetPendingAnalyticsEventCount(), 3);
+	TestTrue(TEXT("the longest name and category the server stores are fine"),
+		Fix.Provider->TrackEvent(LongestName, FFlockCommandData(), LongestCategory));
+	TestEqual(TEXT("all four spooled"), Fix.Provider->GetPendingAnalyticsEventCount(), 4);
 
 	Fix.Provider->EraseLocalData();
 	TestEqual(TEXT("erasing local data takes them"), Fix.Provider->GetPendingAnalyticsEventCount(), 0);
@@ -1416,6 +1424,39 @@ bool FFlockAnalyticsTrackEventRefusedPlayerTest::RunTest(const FString& Paramete
 		const TArray<FFlockSpooledAnalyticsEvent> Spooled = Busy.SpooledEvents();
 		TestEqual(TEXT("the sent event counts a failed send"), FlockTestAt(Spooled, 0).FailedSends, 1);
 		TestEqual(TEXT("the unsent one is not"), FlockTestAt(Spooled, 1).FailedSends, 0);
+	}
+	return true;
+}
+
+/**
+ * A build that did not check lengths may have queued an event the server cannot store. It is dropped when found, never
+ * sent: the server fails the whole request for it, so every event beside it would be held back until its attempts ran out.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsTrackEventTooLongToStoreTest, "Flock.Analytics.Provider.TrackEvent.TooLongToStoreIsNotSent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsTrackEventTooLongToStoreTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	Fix.Provider->TrackEventAsPlayerForTesting(TEXT("p-fixture"), FString::ChrN(FFlockAnalyticsProvider::MaxEventNameLength + 1, TEXT('n')));
+	Fix.Provider->TrackEventAsPlayerForTesting(TEXT("p-fixture"), FString::ChrN(FFlockAnalyticsProvider::MaxEventNameLength, TEXT('n')));
+	TestTrue(TEXT("an ordinary event is accepted"), Fix.Provider->TrackEvent(TEXT("level_complete")));
+	TestEqual(TEXT("precondition: all three queued"), Fix.Provider->GetPendingAnalyticsEventCount(), 3);
+
+	Fix.Fake->On(TEXT("analytics/events"), FFlockFakeTransport::Ok(TEXT("{\"ok\":true}")));
+	bool bFlushed = false;
+	Fix.Provider->Flush([&bFlushed](TFlockResult<FFlockAnalyticsAck> Result) { bFlushed = Result.bSuccess; });
+	TestTrue(TEXT("the flush succeeded"), bFlushed);
+	TestEqual(TEXT("nothing is left queued"), Fix.Provider->GetPendingAnalyticsEventCount(), 0);
+
+	const TArray<TArray<TSharedPtr<FJsonObject>>> Batches = Fix.SentEventBatches();
+	TestEqual(TEXT("one request"), Batches.Num(), 1);
+	TestEqual(TEXT("carrying the two events the server can store"), FlockTestAt(Batches, 0).Num(), 2);
+	for (const TSharedPtr<FJsonObject>& Event : FlockTestAt(Batches, 0))
+	{
+		TestTrue(TEXT("no event name longer than the server stores"),
+			JsonString(Event, TEXT("event_name")).Len() <= FFlockAnalyticsProvider::MaxEventNameLength);
 	}
 	return true;
 }

@@ -6,22 +6,29 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Auth/FlockTokenStore.h"
 #include "Config/FlockConfig.h"
 #include "Dom/JsonObject.h"
+#include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "FlockEvents.h"
 #include "FlockInitConfig.h"
+#include "FlockPlaytestPerformanceTimeline.h"
 #include "FlockPlaytestSettings.h"
 #include "FlockPlaytestSubsystem.h"
 #include "FlockSubsystem.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/FileManager.h"
+#include "Misc/Base64.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
+#include "Providers/FlockAnalyticsProvider.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Tests/FlockPlaytestFakeTransport.h"
+#include "Tests/FlockPlaytestTestSupport.h"
 #include "UObject/Package.h"
 
 /** What the playtest subsystem's tests share: settings scopes, the two subsystems under one game instance, and a log capture. */
@@ -72,6 +79,99 @@ namespace FlockPlaytestSubsystemTesting
 		}
 	};
 
+	/**
+	 * Sets the Flock SDK's analytics settings the heavy analytics tests rely on for one test: analytics on or off, a
+	 * session started on sign-in, and no consent needed. Events are sent as they are recorded rather than queued on
+	 * disk, because that queue is one folder shared by every test and every run: an event one test left in it would be
+	 * sent, and counted, by the next. Puts the previous values back.
+	 */
+	struct FScopedFlockAnalyticsSettings
+	{
+		UFlockConfig* FlockSettings = GetMutableDefault<UFlockConfig>();
+		bool bSavedAnalyticsEnabled = FlockSettings->bAnalyticsEnabled;
+		bool bSavedAnalyticsAutoStartSession = FlockSettings->bAnalyticsAutoStartSession;
+		bool bSavedAnalyticsRequireExplicitConsent = FlockSettings->bAnalyticsRequireExplicitConsent;
+		bool bSavedAnalyticsCacheFailedEvents = FlockSettings->bAnalyticsCacheFailedEvents;
+
+		explicit FScopedFlockAnalyticsSettings(bool bAnalyticsEnabled)
+		{
+			FlockSettings->bAnalyticsEnabled = bAnalyticsEnabled;
+			FlockSettings->bAnalyticsAutoStartSession = true;
+			FlockSettings->bAnalyticsRequireExplicitConsent = false;
+			FlockSettings->bAnalyticsCacheFailedEvents = false;
+		}
+
+		~FScopedFlockAnalyticsSettings()
+		{
+			FlockSettings->bAnalyticsEnabled = bSavedAnalyticsEnabled;
+			FlockSettings->bAnalyticsAutoStartSession = bSavedAnalyticsAutoStartSession;
+			FlockSettings->bAnalyticsRequireExplicitConsent = bSavedAnalyticsRequireExplicitConsent;
+			FlockSettings->bAnalyticsCacheFailedEvents = bSavedAnalyticsCacheFailedEvents;
+		}
+	};
+
+	/** Holds a saved Flock sign-in in memory, the way a player who signed in on an earlier launch comes back. */
+	class FPlaytestTokenStore : public IFlockTokenStore
+	{
+	public:
+		FFlockStoredTokens Stored;
+		bool bHasTokens = false;
+
+		virtual void Save(const FFlockStoredTokens& Tokens) override
+		{
+			Stored = Tokens;
+			bHasTokens = true;
+		}
+
+		virtual bool Load(FFlockStoredTokens& OutTokens) override
+		{
+			OutTokens = Stored;
+			return bHasTokens;
+		}
+
+		virtual void Clear() override
+		{
+			Stored = FFlockStoredTokens();
+			bHasTokens = false;
+		}
+	};
+
+	/** An access token for PlayerId that stays valid for an hour. Only its player and expiry are read. */
+	inline FString MakeAccessToken(const FString& PlayerId)
+	{
+		const FString Payload = FString::Printf(TEXT("{\"sub\":\"%s\",\"exp\":%lld}"), *PlayerId,
+			FDateTime::UtcNow().ToUnixTimestamp() + 3600);
+		FString Encoded = FBase64::Encode(Payload);
+		Encoded.ReplaceInline(TEXT("+"), TEXT("-"));
+		Encoded.ReplaceInline(TEXT("/"), TEXT("_"));
+		Encoded.ReplaceInline(TEXT("="), TEXT(""));
+		return FString::Printf(TEXT("h.%s.s"), *Encoded);
+	}
+
+	/**
+	 * A game world whose map is called MapName, belonging to GameInstance, the way the engine hands a loaded world to its
+	 * map-load event. Not announced to the engine, and destroyed when this goes. Each lives in a package of its own, so
+	 * two tests can use the same map name.
+	 */
+	struct FScopedTestWorld
+	{
+		UWorld* World = nullptr;
+
+		FScopedTestWorld(const FString& MapName, UGameInstance* GameInstance)
+		{
+			UPackage* Package = CreatePackage(*FString::Printf(TEXT("/Temp/FlockPlaytestTests/%s/%s"),
+				*FGuid::NewGuid().ToString(EGuidFormats::Digits), *MapName));
+			World = UWorld::CreateWorld(EWorldType::Game, /*bInformEngineOfWorld*/ false, FName(*MapName), Package);
+			World->SetGameInstance(GameInstance);
+		}
+
+		~FScopedTestWorld()
+		{
+			World->DestroyWorld(/*bInformEngineOfWorld*/ false);
+			World->RemoveFromRoot();
+		}
+	};
+
 	inline FFlockInitConfig MakeFlockConfig(const FString& GameVersionId = FlockPlaytestFixtures::GameVersionId)
 	{
 		FFlockInitConfig Config;
@@ -108,6 +208,9 @@ namespace FlockPlaytestSubsystemTesting
 		TSharedRef<FFlockRunningSteamAccount> SteamAccount = MakeShared<FFlockRunningSteamAccount>();
 		TSharedRef<int32> SteamReads = MakeShared<int32>(0);
 
+		/** The engine frame number the playtest subsystem reads. Tests move it on the way the engine does, once per frame. */
+		TSharedRef<uint64> EngineFrameNumber = MakeShared<uint64>(0);
+
 		explicit FPlaytestFixture(bool bTurnRetriesOff = true, bool bUseTestIdentitySources = true)
 		{
 			AnswerConfig(FFlockPlaytestFakeTransport::Status(200, FlockPlaytestFixtures::ConfigBody()));
@@ -115,6 +218,8 @@ namespace FlockPlaytestSubsystemTesting
 				FFlockPlaytestFakeTransport::Status(200, FlockPlaytestFixtures::SessionStartBody()));
 			Transport->Answer(FlockPlaytestFixtures::PlaytestSessionEndRoute, FFlockPlaytestFakeTransport::NoContent());
 			Playtest->SetHttpAdapterForTesting(Transport);
+			const TSharedRef<uint64> Frame = EngineFrameNumber;
+			Playtest->SetEngineFrameNumberReaderForTesting([Frame]() { return *Frame; });
 			if (bTurnRetriesOff)
 			{
 				FFlockRetryPolicy NoRetries;
@@ -183,6 +288,67 @@ namespace FlockPlaytestSubsystemTesting
 				FJsonSerializer::Deserialize(Reader, Body);
 			}
 			return Body;
+		}
+
+		TSharedRef<FPlaytestTokenStore> TokenStore = MakeShared<FPlaytestTokenStore>();
+
+		/**
+		 * Brings a signed-in player back when the Flock SDK initializes, and answers the Flock SDK's requests on the same
+		 * fake transport, so the analytics events it is handed can be delivered and read. Call before StartFlock.
+		 */
+		void SignInToFlockOnStart(const FString& PlayerId = FlockPlaytestFixtures::FlockPlayerId)
+		{
+			TokenStore->Stored.AccessToken = MakeAccessToken(PlayerId);
+			TokenStore->Stored.RefreshToken = TEXT("refresh-token");
+			TokenStore->Stored.AuthMethod = EFlockAuthMethod::Device;
+			TokenStore->bHasTokens = true;
+			Flock->SetTokenStoreForTesting(TokenStore);
+			Flock->SetHttpAdapterForTesting(Transport);
+
+			// Shaped like the local Flock API's answers (2026-09-15).
+			Transport->Answer(TEXT("/analytics/sessions"), FFlockPlaytestFakeTransport::Status(200, FString::Printf(
+				TEXT("{\"session_id\":\"%s\",\"event_name\":\"session_started\"}"), FlockPlaytestFixtures::FirstFlockSessionId)));
+			Transport->Answer(TEXT("/analytics/events"), FFlockPlaytestFakeTransport::Status(200, TEXT("{\"ok\":true,\"count\":1}")));
+			Transport->Answer(TEXT("/log_event"), FFlockPlaytestFakeTransport::Status(200, TEXT("{\"ok\":true,\"count\":1}")));
+		}
+
+		/**
+		 * Every event in the playtest category the Flock SDK has sent so far, in order. A sign-in also sends whatever an
+		 * earlier run left in the Flock SDK's queue on disk, so only the playtest category is returned.
+		 */
+		TArray<TSharedPtr<FJsonObject>> SentPlaytestEvents() const
+		{
+			TArray<TSharedPtr<FJsonObject>> Events;
+			for (const FFlockHttpRequest& Request : Transport->Requests)
+			{
+				if (!Request.Url.EndsWith(TEXT("/analytics/events")))
+				{
+					continue;
+				}
+				TSharedPtr<FJsonObject> Body;
+				const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Request.JsonBody);
+				const TArray<TSharedPtr<FJsonValue>>* Sent = nullptr;
+				if (!FJsonSerializer::Deserialize(Reader, Body) || !Body.IsValid() || !Body->TryGetArrayField(TEXT("events"), Sent))
+				{
+					continue;
+				}
+				for (const TSharedPtr<FJsonValue>& Value : *Sent)
+				{
+					const TSharedPtr<FJsonObject>* Event = nullptr;
+					if (Value.IsValid() && Value->TryGetObject(Event)
+						&& StringMember(*Event, TEXT("event_category")).Equals(FlockPlaytestEvents::Category, ESearchCase::CaseSensitive))
+					{
+						Events.Add(*Event);
+					}
+				}
+			}
+			return Events;
+		}
+
+		/** How many requests the Flock SDK has sent to its analytics events route so far. */
+		int32 AnalyticsEventRequests() const
+		{
+			return Transport->CountRequestsEndingWith(TEXT("/analytics/events"));
 		}
 	};
 

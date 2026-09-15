@@ -3,17 +3,23 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Analytics/FlockLifecyclePump.h"
 #include "FlockPlaytestConfig.h"
 #include "FlockPlaytestIdentity.h"
+#include "FlockPlaytestPerformanceTimeline.h"
 #include "FlockPlaytestSession.h"
 #include "FlockPlaytestStatus.h"
 #include "Http/FlockHttpAdapter.h"
 #include "Http/FlockRetryPolicy.h"
+#include "Models/FlockCommandModels.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "FlockPlaytestSubsystem.generated.h"
 
 class FFlockProtokiteClient;
 class UFlockSubsystem;
+class UGameInstance;
+class UWorld;
+struct FWorldContext;
 
 /**
  * The playtest plugin's runtime home, one per game instance.
@@ -31,6 +37,11 @@ class UFlockSubsystem;
  * neither does the Flock SDK initializing again with another API key or Game Version ID: the session keeps the
  * address and headers it started with. It ends when the game instance shuts down, or when EndPlaytestSession is
  * called.
+ *
+ * When the playtest turns heavy analytics on, it also sends the Flock SDK a performance window for every ten seconds
+ * of play and an event for every level this game instance loads, under the playtest category, and takes the game's
+ * own playtest events (RecordPlaytestEvent). None of it runs unless the status is Ready and the Flock SDK's analytics
+ * is on, and it pauses while the game is in the background.
  *
  * Each change is logged once: a setting or a refusal that stops playtesting is a warning, waiting, fetching
  * and being ready are logged, and playtesting turned off stays quiet, because that is the chosen state of
@@ -76,6 +87,22 @@ public:
 	bool EndPlaytestSession();
 
 	/**
+	 * Records one of the game's own events for this playtest, sent through the Flock SDK's analytics under the playtest
+	 * category. Recorded only while GetStatus() is Ready and the playtest turns heavy analytics on; otherwise it returns
+	 * false and records nothing, so the call is safe in every build. Also false for a name the plugin sends itself
+	 * (FlockPlaytestEvents), and when the Flock SDK refuses the event: its analytics off (Analytics Enabled), consent
+	 * withheld, an empty name, session_started, or a name longer than 200 characters. It never waits on the network. A
+	 * call from another thread is handed to the game thread and answers true.
+	 */
+	bool RecordPlaytestEvent(const FString& EventName, const FFlockCommandData& Properties = FFlockCommandData());
+
+	/**
+	 * True while performance windows and level loads are being recorded: the status is Ready, the playtest turns heavy
+	 * analytics on, and the Flock SDK's analytics is on. Reading it changes nothing.
+	 */
+	bool IsMeasuringPerformance() const { return PerformancePump.IsRunning(); }
+
+	/**
 	 * Starts following a Flock subsystem exactly as Initialize does, for tests that build both subsystems by
 	 * hand. Call it once per subsystem.
 	 */
@@ -95,6 +122,24 @@ public:
 
 	/** Keeps the device id in the given file instead of the default one under Saved. Call before following. */
 	void SetDeviceIdFilePathForTesting(const FString& Path) { TestDeviceIdFilePath = Path; }
+
+	/** Hands the performance timeline one frame through the same ticker path the engine drives, background pause included. */
+	void TickPerformanceTimelineForTesting(float FrameSeconds) { PerformancePump.TickForTesting(FrameSeconds); }
+
+	/** Sends the game to the background, or brings it back, the way the engine announces it. */
+	void SetBackgroundedForTesting(bool bBackgrounded) { PerformancePump.SetBackgroundedForTesting(bBackgrounded); }
+
+	/** Hands over the engine's announcement that a map load started, as it passes it: the loading world's context. */
+	void HandlePreLoadMapForTesting(const FWorldContext& WorldContext, const FString& MapName) { HandlePreLoadMap(WorldContext, MapName); }
+
+	/** Hands over the engine's announcement that a map load finished: the loaded world, or none when the load failed. */
+	void HandlePostLoadMapForTesting(UWorld* LoadedWorld) { HandlePostLoadMap(LoadedWorld); }
+
+	/** Reads the engine frame number through Reader instead of the engine's frame counter. Call before following. */
+	void SetEngineFrameNumberReaderForTesting(TFunction<uint64()> Reader) { TestEngineFrameNumberReader = MoveTemp(Reader); }
+
+	/** The engine frame number the performance timeline is handed: the engine's frame counter, unless a test gave a reader. */
+	uint64 GetEngineFrameNumberForTesting() const { return GetEngineFrameNumber(); }
 
 private:
 	/**
@@ -117,6 +162,32 @@ private:
 	/** Remembers the current Flock initialization's first session to reach the server, and starts the Protokite session when it can. */
 	UFUNCTION()
 	void HandleFlockSessionRegistered(const FString& SessionId, const FString& ServerSessionId);
+
+	/**
+	 * Starts recording performance windows and level loads when they should run, and stops when they should not,
+	 * dropping the window in progress. The one place they start or stop.
+	 */
+	void UpdatePerformanceTimeline();
+
+	void HandlePerformanceFrame(float FrameSeconds);
+	void HandleBackgroundChanged(bool bBackgrounded);
+	void HandlePreLoadMap(const FWorldContext& WorldContext, const FString& MapName);
+	void HandlePostLoadMap(UWorld* LoadedWorld);
+
+	/** Notes when this game instance started loading a map, for the load time and to leave out the frame the load stretched. */
+	void NoteLevelLoadStarted(const UGameInstance* LoadingGameInstance);
+
+	/** Sends level_loaded for a map this game instance finished loading. Another game instance's load is ignored. */
+	void NoteLevelLoaded(const UGameInstance* LoadingGameInstance, const FString& MapName);
+
+	/**
+	 * Sends one playtest event through the Flock SDK's analytics, under the playtest category, while heavy analytics is
+	 * on. The one place playtest events are sent, and the one place heavy analytics is checked before sending.
+	 */
+	bool SendPlaytestEvent(const FString& EventName, const FFlockCommandData& Properties);
+
+	/** The engine's frame counter, or the testing reader's answer. */
+	uint64 GetEngineFrameNumber() const;
 
 	/**
 	 * Forgets a config that belongs to a Flock initialization which has ended, starts a fetch when the status
@@ -190,9 +261,27 @@ private:
 	/** Whether waiting for a Flock session has been logged this launch. */
 	bool bLoggedWaitingForFlockSession = false;
 
+	/** Frames for the performance timeline. Its own ticker, which stops while the game is in the background. */
+	FFlockLifecyclePump PerformancePump;
+	FFlockPlaytestPerformanceTimeline PerformanceTimeline;
+	FDelegateHandle PerformanceFrameHandle;
+	FDelegateHandle BackgroundChangedHandle;
+	FDelegateHandle PreLoadMapHandle;
+	FDelegateHandle PostLoadMapHandle;
+
+	/** The map this game instance is on, as the last level load, or the start of recording, found it. */
+	FString CurrentMapName;
+
+	/** When this game instance's level load started, in platform seconds; negative when none is under way. */
+	double LevelLoadStartSeconds = -1.0;
+
+	/** Whether heavy analytics being on while the Flock SDK's analytics is off has been logged this launch. */
+	bool bLoggedHeavyAnalyticsWithoutFlockAnalytics = false;
+
 	TSharedPtr<FFlockProtokiteClient> ProtokiteClient;
 	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
 	TOptional<FFlockRetryPolicy> TestRetryPolicy;
 	TFunction<FFlockRunningSteamAccount()> TestSteamAccountReader;
 	FString TestDeviceIdFilePath;
+	TFunction<uint64()> TestEngineFrameNumberReader;
 };
