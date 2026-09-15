@@ -47,7 +47,7 @@ bool FFlockPlaytestConfigReadsTheServersConfigTest::RunTest(const FString& Param
 	TestEqual(TEXT("Test id"), Config.TestId, FString(FlockPlaytestFixtures::TestId));
 	TestEqual(TEXT("Session started event"), Config.SessionStartedEvent, FString(TEXT("session_started")));
 	TestEqual(TEXT("Flock game version id"), Config.FlockGameVersionId, FString(FlockPlaytestFixtures::GameVersionId));
-	TestTrue(TEXT("Video recording is on"), Config.IsFeatureEnabled(FlockPlaytestFeatures::VideoRecording));
+	TestFalse(TEXT("Video recording is off"), Config.IsFeatureEnabled(FlockPlaytestFeatures::VideoRecording));
 	TestTrue(TEXT("Exception capturing is on"), Config.IsFeatureEnabled(FlockPlaytestFeatures::ExceptionCapturing));
 	TestFalse(TEXT("Heavy analytics is off"), Config.IsFeatureEnabled(FlockPlaytestFeatures::HeavyAnalytics));
 

@@ -241,6 +241,8 @@ namespace FlockPlaytestSubsystemTesting
 
 		~FPlaytestFixture()
 		{
+			// Shut down the way the game instance does, so nothing a test started (a recording, a ticker) outlives it.
+			Playtest->Deinitialize();
 			Flock->ShutdownSdk();
 			IFileManager::Get().DeleteDirectory(*Folder, /*bRequireExists*/ false, /*bTree*/ true);
 		}

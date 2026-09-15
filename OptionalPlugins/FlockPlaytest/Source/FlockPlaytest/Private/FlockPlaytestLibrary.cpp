@@ -27,3 +27,15 @@ bool UFlockPlaytestLibrary::RecordPlaytestEvent(const UObject* WorldContextObjec
 	UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);
 	return Playtest != nullptr && Playtest->RecordPlaytestEvent(EventName, Properties);
 }
+
+bool UFlockPlaytestLibrary::StopVideoRecording(const UObject* WorldContextObject)
+{
+	UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);
+	return Playtest != nullptr && Playtest->StopVideoRecording();
+}
+
+bool UFlockPlaytestLibrary::IsRecordingVideo(const UObject* WorldContextObject)
+{
+	const UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);
+	return Playtest != nullptr && Playtest->IsRecordingVideo();
+}

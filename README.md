@@ -129,6 +129,12 @@ turned on in *Project Settings > Plugins > Flock Playtest Settings*. If you clon
 `Plugins/FlockUnrealSdk/OptionalPlugins/FlockPlaytest/` to `Plugins/FlockPlaytest/`: Unreal does not load it
 where it sits. Leave it out of projects that are not running playtests.
 
+To see what a playtest recording looks like before any playtest exists, tick **Record Video In Play In Editor** in
+*Project Settings > Plugins > Flock Playtest Local Settings* and press Play, or type `FlockPlaytest.RecordTestVideo 30`
+in the console of a Development build. The video is saved under `Saved/FlockPlaytest/Recordings/`, and the log names
+the file; open it in VLC. Video is recorded on 64-bit Windows, with the **Video Recording** settings in *Flock Playtest
+Settings*.
+
 ### Blueprint-only projects
 
 Flock is a **code plugin**: it ships C++ source and no binaries, so something has to compile it. A
@@ -504,8 +510,10 @@ playtest's feature switches and feedback form, and say why when it cannot. **1.1
 per launch**, named after the launch's first Flock session and sent with the player's Steam id or a device id, and
 ends it when the game shuts down; it also adds `OnSessionRegistered` and the **Session Platform** setting to the
 Flock SDK. **1.14.0 sends heavy analytics** when a playtest turns it on: a performance window for every ten seconds
-of play, each level load, and the game's own playtest events, all through the Flock SDK's analytics. It records no
-video or feedback yet.
+of play, each level load, and the game's own playtest events, all through the Flock SDK's analytics. **1.15.0 records
+the game's screen** when a playtest turns video recording on, saving VP9 video on disk on 64-bit Windows, and lets a
+developer try it in Play In Editor or with the `FlockPlaytest.RecordTestVideo` console command. It uploads no video and
+collects no feedback yet.
 
 Deliberate omissions and known gaps:
 

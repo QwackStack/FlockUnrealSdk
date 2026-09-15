@@ -23,4 +23,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Flock|Playtest", meta = (WorldContext = "WorldContextObject",
 		AutoCreateRefTerm = "Properties", DisplayName = "Flock Record Playtest Event"))
 	static bool RecordPlaytestEvent(const UObject* WorldContextObject, const FString& EventName, const FFlockCommandData& Properties);
+
+	/**
+	 * Stops this launch's video recording for good and saves the file, for a game that quits on its own schedule. No
+	 * other recording starts this launch. Returns false when no recording is capturing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Flock Stop Video Recording"))
+	static bool StopVideoRecording(const UObject* WorldContextObject);
+
+	/** True while a video recording is capturing the screen. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Flock Is Recording Video"))
+	static bool IsRecordingVideo(const UObject* WorldContextObject);
 };

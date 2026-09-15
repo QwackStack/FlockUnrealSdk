@@ -15,8 +15,11 @@
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "FlockPlaytestSubsystem.generated.h"
 
+class FFlockPlaytestVideoRecording;
 class FFlockProtokiteClient;
+class IFlockPlaytestVideoFrameSource;
 class UFlockSubsystem;
+enum class EFlockPlaytestVideoStopReason : uint8;
 class UGameInstance;
 class UWorld;
 struct FWorldContext;
@@ -42,6 +45,14 @@ struct FWorldContext;
  * of play and an event for every level this game instance loads, under the playtest category, and takes the game's
  * own playtest events (RecordPlaytestEvent). None of it runs unless the status is Ready and the Flock SDK's analytics
  * is on, and it pauses while the game is in the background.
+ *
+ * When the playtest turns video recording on, it records the game's screen from the moment the config is loaded, to a
+ * VP9 file under Saved/FlockPlaytest/Recordings, with the Video Recording settings. One recording is made per launch:
+ * once it stops, at its length or size limit, when the game calls StopVideoRecording, when playtesting stops or when the
+ * game instance shuts down, no other starts. Background time is not recorded. Only 64-bit Windows builds that draw
+ * something record video; elsewhere one warning says so and the rest of the playtest carries on. The same recording can
+ * be tried without a playtest: Record Video In Play In Editor (Flock Playtest Local Settings), or the console command
+ * FlockPlaytest.RecordTestVideo <seconds> in builds that are not Shipping.
  *
  * Each change is logged once: a setting or a refusal that stops playtesting is a warning, waiting, fetching
  * and being ready are logged, and playtesting turned off stays quiet, because that is the chosen state of
@@ -102,6 +113,27 @@ public:
 	 */
 	bool IsMeasuringPerformance() const { return PerformancePump.IsRunning(); }
 
+	/** True while a video recording is capturing the screen. Reading it changes nothing. */
+	bool IsRecordingVideo() const;
+
+	/**
+	 * Stops this launch's video recording for good, for a game that quits on its own schedule. The file is finished on a
+	 * worker thread, and no other recording starts this launch. Returns false, and changes nothing, when no recording is
+	 * capturing.
+	 */
+	bool StopVideoRecording();
+
+	/** The finished file of this launch's video recording. Empty until one has been saved. */
+	const FString& GetFinishedVideoRecordingPath() const { return FinishedVideoRecordingPath; }
+
+	/**
+	 * Records the screen for Seconds with no playtest needed, to try video recording out. Saved like any recording, and
+	 * never uploaded. Returns false, and logs why, when a video is already recording or was already recorded this launch,
+	 * when the playtest records video itself, or when video cannot be recorded here. A Shipping build always returns false
+	 * and logs nothing. It starts as soon as the game instance has a viewport to record.
+	 */
+	bool StartTestVideoRecording(double Seconds);
+
 	/**
 	 * Starts following a Flock subsystem exactly as Initialize does, for tests that build both subsystems by
 	 * hand. Call it once per subsystem.
@@ -126,8 +158,12 @@ public:
 	/** Hands the performance timeline one frame through the same ticker path the engine drives, background pause included. */
 	void TickPerformanceTimelineForTesting(float FrameSeconds) { PerformancePump.TickForTesting(FrameSeconds); }
 
-	/** Sends the game to the background, or brings it back, the way the engine announces it. */
-	void SetBackgroundedForTesting(bool bBackgrounded) { PerformancePump.SetBackgroundedForTesting(bBackgrounded); }
+	/** Sends the game to the background, or brings it back, the way the engine announces it: to every ticker it follows. */
+	void SetBackgroundedForTesting(bool bBackgrounded)
+	{
+		PerformancePump.SetBackgroundedForTesting(bBackgrounded);
+		VideoPump.SetBackgroundedForTesting(bBackgrounded);
+	}
 
 	/** Hands over the engine's announcement that a map load started, as it passes it: the loading world's context. */
 	void HandlePreLoadMapForTesting(const FWorldContext& WorldContext, const FString& MapName) { HandlePreLoadMap(WorldContext, MapName); }
@@ -140,6 +176,31 @@ public:
 
 	/** The engine frame number the performance timeline is handed: the engine's frame counter, unless a test gave a reader. */
 	uint64 GetEngineFrameNumberForTesting() const { return GetEngineFrameNumber(); }
+
+	/**
+	 * Takes video frames from Factory instead of the game viewport. Factory is handed the largest video size and returns
+	 * a source, or none: with OutWhyNot empty to be asked again on the next frame, or saying why video can never be
+	 * recorded. Call before following.
+	 */
+	void SetVideoFrameSourceFactoryForTesting(TFunction<TSharedPtr<IFlockPlaytestVideoFrameSource>(FIntPoint MaxVideoSize, FString& OutWhyNot)> Factory)
+	{
+		TestVideoFrameSourceFactory = MoveTemp(Factory);
+	}
+
+	/** Saves video recordings in Folder instead of Saved/FlockPlaytest/Recordings. Call before following. */
+	void SetVideoRecordingFolderForTesting(const FString& Folder) { TestVideoRecordingFolder = Folder; }
+
+	/** Runs Hook on the worker thread before each video frame is encoded, so a test can hold the worker. Call before following. */
+	void SetBeforeEachVideoEncodeForTesting(TFunction<void()> Hook) { TestBeforeEachVideoEncode = MoveTemp(Hook); }
+
+	/** Hands the video recording one frame through the same ticker path the engine drives, background pause included. */
+	void TickVideoRecordingForTesting(float FrameSeconds) { VideoPump.TickForTesting(FrameSeconds); }
+
+	/** Waits until the worker has finished what it was handed. The next video tick then applies a finished file. */
+	void WaitUntilVideoWrittenForTesting();
+
+	/** Whether the video recording's ticker is running. */
+	bool IsVideoTickerRunningForTesting() const { return VideoPump.IsRunning(); }
 
 private:
 	/**
@@ -188,6 +249,39 @@ private:
 
 	/** The engine's frame counter, or the testing reader's answer. */
 	uint64 GetEngineFrameNumber() const;
+
+	/** Whether anything asks for a video recording now: the playtest, a test video, or Record Video In Play In Editor. */
+	bool IsVideoRecordingWanted() const;
+
+	/** Whether Record Video In Play In Editor is on and this game instance is playing in the editor. */
+	bool IsRecordVideoInPlayInEditorOn() const;
+
+	/** Whether a recording is wanted and may still start this launch: none has started, and nothing rules video out. */
+	bool IsWaitingToStartVideoRecording() const;
+
+	/**
+	 * Starts the launch's video recording when it is wanted and none has started, and stops a capturing one that nothing
+	 * wants any more. The one place a recording starts or stops, apart from its own limits and the calls that stop it.
+	 */
+	void UpdateVideoRecording();
+
+	/** Starts the recording, or waits for the game viewport, or logs once why video cannot be recorded. */
+	void StartVideoRecordingWhenPossible();
+
+	/** Where the next recording is saved: a new file name under the recordings folder. */
+	FString MakeVideoRecordingPath() const;
+
+	/** Runs the video ticker while a recording captures or finishes, or waits for a viewport; stops it otherwise. */
+	void UpdateVideoPump();
+
+	void HandleVideoFrame(float FrameSeconds);
+	void HandleVideoBackgroundChanged(bool bBackgrounded);
+
+	/** Logs what became of the finished recording and forgets it. The one writer of FinishedVideoRecordingPath. */
+	void ApplyFinishedVideoRecording();
+
+	/** Stops a recording and waits for its file, for a subsystem shutting down. */
+	void FinishVideoRecordingNow(EFlockPlaytestVideoStopReason Reason);
 
 	/**
 	 * Forgets a config that belongs to a Flock initialization which has ended, starts a fetch when the status
@@ -284,4 +378,28 @@ private:
 	TFunction<FFlockRunningSteamAccount()> TestSteamAccountReader;
 	FString TestDeviceIdFilePath;
 	TFunction<uint64()> TestEngineFrameNumberReader;
+
+	/** Frames for the video recording. Its own ticker, so video runs whether or not heavy analytics does. */
+	FFlockLifecyclePump VideoPump;
+	FDelegateHandle VideoFrameHandle;
+	FDelegateHandle VideoBackgroundChangedHandle;
+
+	/** The recording capturing, or finishing its file. Null otherwise. */
+	TSharedPtr<FFlockPlaytestVideoRecording> VideoRecording;
+
+	/** Set once a recording has been started this launch, whatever became of it. */
+	bool bVideoRecordingStartedThisLaunch = false;
+
+	/** Why video can never be recorded in this process, once found; empty otherwise. */
+	FString VideoRecordingUnavailableReason;
+
+	FString FinishedVideoRecordingPath;
+
+	/** Set once StartTestVideoRecording has asked for a test video this launch, and how long it may be. Only it writes these. */
+	bool bTestVideoRequested = false;
+	double TestVideoSeconds = 0.0;
+
+	TFunction<TSharedPtr<IFlockPlaytestVideoFrameSource>(FIntPoint, FString&)> TestVideoFrameSourceFactory;
+	FString TestVideoRecordingFolder;
+	TFunction<void()> TestBeforeEachVideoEncode;
 };
