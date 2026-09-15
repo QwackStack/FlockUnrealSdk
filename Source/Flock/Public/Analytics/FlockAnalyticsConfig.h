@@ -73,6 +73,19 @@ struct FLOCK_API FFlockAnalyticsConfig
 	 */
 	float ExceptionRepeatWindowSeconds = 60.f;
 
+	/**
+	 * The platform name a session start sends, for example steam for a Steam build. Empty sends the engine's
+	 * platform name. A value that starts or ends with a space or line break is not used: it would file sessions
+	 * under a platform nobody meant to type.
+	 */
+	FString SessionPlatform;
+
+	/** True when SessionPlatform is set and can be sent exactly as it is. */
+	bool HasUsableSessionPlatform() const;
+
+	/** What a session start sends as its platform: SessionPlatform when usable, otherwise EnginePlatformName. */
+	FString GetSessionPlatform(const FString& EnginePlatformName) const;
+
 	/** Builds the runtime config from the project's UFlockConfig settings. */
 	static FFlockAnalyticsConfig FromSettings(const UFlockConfig& Settings);
 };

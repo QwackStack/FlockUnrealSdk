@@ -193,4 +193,33 @@ bool FFlockPlaytestStatusAnswerForAnotherVersionIsNotLoadedTest::RunTest(const F
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestStatusClosedPlaytestOutranksFlockAndConfigTest,
+	"Flock.Playtest.Status.ClosedPlaytestOutranksFlockAndConfig",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestStatusClosedPlaytestOutranksFlockAndConfigTest::RunTest(const FString& Parameters)
+{
+	const auto Closed = [](bool bPlaytestingEnabled, const FString& ProtokiteApiUrl, bool bFlockInitialized,
+		EFlockPlaytestConfigState ConfigState)
+	{
+		FFlockPlaytestStatusInputs Inputs = MakeInputs(bPlaytestingEnabled, ProtokiteApiUrl, bFlockInitialized, ConfigState);
+		Inputs.bPlaytestNoLongerCollecting = true;
+		return DecidePlaytestStatus(Inputs);
+	};
+	const FString Url = TEXT("http://localhost:8020");
+
+	ExpectPlaytestStatus(*this, TEXT("Closed, with the config loaded"), Closed(true, Url, true, EFlockPlaytestConfigState::Loaded),
+		EFlockPlaytestStatus::PlaytestNoLongerCollecting);
+	ExpectPlaytestStatus(*this, TEXT("Closed, with the Flock SDK shut down"), Closed(true, Url, false, EFlockPlaytestConfigState::NotFetched),
+		EFlockPlaytestStatus::PlaytestNoLongerCollecting);
+	ExpectPlaytestStatus(*this, TEXT("Closed, with the config unavailable"), Closed(true, Url, true, EFlockPlaytestConfigState::Unavailable),
+		EFlockPlaytestStatus::PlaytestNoLongerCollecting);
+	ExpectPlaytestStatus(*this, TEXT("Turned off still says turned off"), Closed(false, Url, true, EFlockPlaytestConfigState::Loaded),
+		EFlockPlaytestStatus::TurnedOff);
+	ExpectPlaytestStatus(*this, TEXT("A missing URL is still reported first"), Closed(true, TEXT(""), true, EFlockPlaytestConfigState::Loaded),
+		EFlockPlaytestStatus::ProtokiteApiUrlMissing);
+	TestFalse(TEXT("It has a description"), DescribePlaytestStatus(EFlockPlaytestStatus::PlaytestNoLongerCollecting).IsEmpty());
+	return true;
+}
+
 #endif

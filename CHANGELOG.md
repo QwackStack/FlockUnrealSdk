@@ -5,6 +5,34 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-09-15
+
+### Added
+
+- **Flock Playtest starts one Protokite session per launch.** Once this build's playtest is loaded and the first
+  Flock session of the launch has reached the server, the plugin starts a Protokite session that names that Flock
+  session. It sends the player's Steam id when a Steam subsystem is already running, and otherwise a device id kept
+  in `Saved/FlockPlaytest/device_id.txt`, which stays the same from one launch to the next. Steam is never required
+  and never started.
+- **The session lasts the launch.** A later Flock session, a sign-out or the Flock SDK shutting down neither ends nor
+  restarts it. It ends when the game instance shuts down, or when `UFlockPlaytestSubsystem::EndPlaytestSession()` is
+  called. `GetPlaytestSessionState()`, `GetPlaytestSessionId()` and `GetPlaytestIdentity()` report where it is.
+- **A start is sent once.** Every start creates a session, so a start that failed, or whose answer never arrived, is
+  not tried again that launch. With neither a Steam id nor a device id, nothing is sent and a warning says why.
+- **A new status: the playtest has closed.** When Protokite refuses the session because the playtest takes no more
+  sessions (HTTP 400), playtesting stays off until the game is launched again.
+- **`UFlockEvents::OnSessionRegistered`**, raised once a session reaches the server, with its local id and the id the
+  server gave it. `OnSessionStarted` carries only the local id.
+- **Session Platform** (Project Settings > Plugins > Flock SDK Settings > Analytics) replaces the engine's platform
+  name when a session starts, for example `steam` for a Steam build. A value that starts or ends with a space is not
+  used, and a warning says so.
+
+### Changed
+
+- **Flock Playtest depends on the engine's OnlineSubsystem plugin**, which is on by default, to read the Steam id of a
+  Steam subsystem that is already running. It does not depend on the Steam plugin.
+- **The Flock panel's live view shows a session reaching the server.**
+
 ## [1.12.0] - 2026-09-14
 
 ### Added

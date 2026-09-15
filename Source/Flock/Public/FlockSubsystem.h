@@ -223,7 +223,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Flock|Analytics")
 	bool HasActiveAnalyticsSession() const;
 
-	/** The backend's id for the running session; empty until the session start call returns. */
+	/** The backend's id for the running session; empty until the session start call returns, which OnSessionRegistered announces. */
 	UFUNCTION(BlueprintPure, Category = "Flock|Analytics")
 	FString GetAnalyticsSessionId() const;
 

@@ -157,6 +157,14 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Analytics")
 	bool bAnalyticsRequireExplicitConsent = false;
 
+	/**
+	 * The platform name sent when a session starts. Leave empty to send the engine's platform name (Windows,
+	 * Android and so on). Set it when the store matters more than the operating system, for example steam for a
+	 * Steam build. A value that starts or ends with a space is not used, and the engine's platform name is sent.
+	 */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Analytics", meta = (DisplayName = "Session Platform"))
+	FString AnalyticsSessionPlatform;
+
 	// ───────────────────────── Analytics | Exceptions ─────────────────────────
 
 	/**

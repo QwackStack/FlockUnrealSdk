@@ -3,7 +3,7 @@
 `GetEvents()` returns the SDK event hub (`UFlockEvents`): lifecycle (`OnInitialized`,
 `OnInitializationFailed`, `OnShutdown`), auth (`OnAuthenticated`, `OnTokenRefreshed`, `OnAuthExpired`,
 `OnLoggedOut`, `OnSessionRestored`, `OnAccountLinked`, `OnAccountUnlinked`), session
-(`OnSessionStarted`, `OnSessionEnded`, `OnSessionPaused`, `OnSessionResumed`), notifications
+(`OnSessionStarted`, `OnSessionRegistered`, `OnSessionEnded`, `OnSessionPaused`, `OnSessionResumed`), notifications
 (`OnUnreadCountChanged`, `OnNotificationReceived`), and consent (`OnConsentChanged`). All are
 Blueprint-assignable and raised on the game thread.
 
@@ -31,6 +31,12 @@ if (UFlockSubsystem* Sdk = UFlockSubsystem::Get(this))
   next init. One-shot.
 - **Subscriptions survive `ShutdownSdk()`.** They stay bound across re-initialization and are released
   with the GameInstance (dynamic delegates hold weak references, so destroyed subscribers are skipped).
+- **A session has two ids.** `OnSessionStarted` carries the local id, the moment the session begins.
+  `OnSessionRegistered` follows once the server has answered, with the local id and the server's id, which is
+  the one every other record of the session is filed under. It fires once per session, never for a session
+  that ended before the server answered, and it is not replayed: if you bind after a session registered, read
+  `GetAnalyticsSessionId()` instead. With **Analytics Heartbeat Interval** at 0, a start call that failed is not
+  retried while the session runs, so it does not fire for that session.
 - **The notification events are fetch-derived, not pushed.** There is no realtime channel and the SDK
   never polls, so `OnNotificationReceived` means *first seen by a read* — it rides the inbox and summary
   calls your game already makes and adds no traffic of its own. The first read for a player is silent, so

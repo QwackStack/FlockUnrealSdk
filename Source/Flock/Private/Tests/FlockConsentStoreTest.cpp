@@ -165,6 +165,7 @@ bool FFlockAnalyticsConfigFromSettingsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("max cached"), Config.MaxCachedEvents, 1000);
 		TestEqual(TEXT("batch size"), Config.CacheFlushBatchSize, 50);
 		TestEqual(TEXT("buffer flush"), Config.EventBufferFlushIntervalSeconds, 10.f);
+		TestTrue(TEXT("no session platform, so the engine's name is sent"), Config.SessionPlatform.IsEmpty());
 	}
 
 	// Every knob is carried across, so a settings change can't silently stop reaching the core.
@@ -184,6 +185,7 @@ bool FFlockAnalyticsConfigFromSettingsTest::RunTest(const FString& Parameters)
 		Settings->AnalyticsMaxCachedEvents = 15;
 		Settings->AnalyticsCacheFlushBatchSize = 16;
 		Settings->AnalyticsEventBufferFlushInterval = 17.f;
+		Settings->AnalyticsSessionPlatform = TEXT("steam");
 
 		const FFlockAnalyticsConfig Config = FFlockAnalyticsConfig::FromSettings(*Settings);
 		TestFalse(TEXT("enabled"), Config.bEnabled);
@@ -200,6 +202,35 @@ bool FFlockAnalyticsConfigFromSettingsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("max cached"), Config.MaxCachedEvents, 15);
 		TestEqual(TEXT("batch size"), Config.CacheFlushBatchSize, 16);
 		TestEqual(TEXT("buffer flush"), Config.EventBufferFlushIntervalSeconds, 17.f);
+		TestEqual(TEXT("session platform"), Config.SessionPlatform, FString(TEXT("steam")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsConfigSessionPlatformTest, "Flock.Analytics.Config.SessionPlatform",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsConfigSessionPlatformTest::RunTest(const FString& Parameters)
+{
+	FFlockAnalyticsConfig Config;
+	TestFalse(TEXT("Empty is not a usable platform"), Config.HasUsableSessionPlatform());
+	TestEqual(TEXT("Empty sends the engine's platform name"), Config.GetSessionPlatform(TEXT("Windows")), FString(TEXT("Windows")));
+
+	Config.SessionPlatform = TEXT("steam");
+	TestEqual(TEXT("A set value is sent"), Config.GetSessionPlatform(TEXT("Windows")), FString(TEXT("steam")));
+
+	Config.SessionPlatform = TEXT("Steam Deck");
+	TestEqual(TEXT("A space inside the name is kept, letter case included"), Config.GetSessionPlatform(TEXT("Windows")),
+		FString(TEXT("Steam Deck")));
+
+	// Refused, never trimmed: a trimmed value would hide the mistake, and a verbatim one files sessions under a
+	// platform nobody meant.
+	for (const TCHAR* Unusable : { TEXT(" steam"), TEXT("steam "), TEXT("steam\n"), TEXT("\tsteam") })
+	{
+		Config.SessionPlatform = Unusable;
+		TestFalse(FString::Printf(TEXT("'%s' is not usable"), Unusable), Config.HasUsableSessionPlatform());
+		TestEqual(FString::Printf(TEXT("'%s' sends the engine's platform name"), Unusable),
+			Config.GetSessionPlatform(TEXT("Windows")), FString(TEXT("Windows")));
 	}
 	return true;
 }

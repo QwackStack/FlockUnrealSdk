@@ -24,10 +24,13 @@ public class FlockPlaytest : ModuleRules
 
 		// Json is linked here as well as through Flock: the playtest config reads Protokite's JSON itself, and
 		// a module that calls into another module's exports has to name it.
+		// OnlineSubsystem reads the Steam id from a Steam subsystem that is already running. The plugin never depends
+		// on the Steam plugin itself, so a build without Steam needs nothing more.
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
 				"Json",
+				"OnlineSubsystem",
 			}
 			);
 	}

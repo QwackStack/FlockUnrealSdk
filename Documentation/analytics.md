@@ -65,8 +65,13 @@ and properties.
 **Sessions** open when a player signs in and close on logout or quit, tracking duration, screen views,
 pauses, and FPS. Backgrounding pauses the session; returning after **Analytics Session Timeout** starts a
 fresh one. Starting a session while one is open replaces it, closing the old one first. Bind
-`OnSessionStarted` / `OnSessionEnded` / `OnSessionPaused` / `OnSessionResumed` on `GetEvents()`, or read
-`GetAnalyticsSnapshot()` for live metrics.
+`OnSessionStarted` / `OnSessionRegistered` / `OnSessionEnded` / `OnSessionPaused` / `OnSessionResumed` on
+`GetEvents()`, or read `GetAnalyticsSnapshot()` for live metrics. `OnSessionRegistered` carries the id the server
+gave the session, which `GetAnalyticsSessionId()` also returns once it has arrived.
+
+A session reports the engine's platform name (Windows, Android and so on). Set **Session Platform** when the store
+matters more than the operating system, for example `steam` for a Steam build. A value that starts or ends with a
+space is not used: the engine's platform name is sent instead, and a warning says so.
 
 **A session end is never lost.** Every close is written to disk before it is sent, so quitting, signing
 out, losing the network, or crashing outright all cost delivery time rather than the record — whatever did
