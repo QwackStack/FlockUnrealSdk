@@ -177,6 +177,13 @@ void FFlockAnalyticsProvider::Initialize()
 	}
 	bInitialized = true;
 
+	if (!Config.SessionPlatform.IsEmpty() && !Config.HasUsableSessionPlatform())
+	{
+		// Quoted, so the stray space shows.
+		Logger->LogWarning(FString::Printf(TEXT("Session Platform '%s' starts or ends with a space or line break, so sessions send the engine's platform name instead. Fix it in Project Settings > Plugins > Flock SDK Settings."),
+			*Config.SessionPlatform));
+	}
+
 	// Before anything else writes a marker of its own.
 	ReportSurvivingTermination();
 
@@ -785,7 +792,7 @@ FFlockSessionStartRequest FFlockAnalyticsProvider::MakeStartRequest(const FFlock
 	FFlockSessionStartRequest Request;
 	Request.PlayerId = Snapshot.PlayerId;
 	const FFlockDeviceInfo Device = CollectDeviceInfo(SdkVersion);
-	Request.Platform = Device.Platform;
+	Request.Platform = Config.GetSessionPlatform(Device.Platform);
 	Request.DeviceType = Device.DeviceType;
 	Request.GameVersionId = GameVersion;
 	// The snapshot's own start time, so a session registered late — from the spool, days after the
@@ -856,6 +863,12 @@ void FFlockAnalyticsProvider::RegisterActiveSession(TFunction<void(TFlockResult<
 				if (Self->Deps.TerminationTracker.IsValid())
 				{
 					Self->Deps.TerminationTracker->SetServerSessionId(Result.Value.SessionId);
+				}
+				// Only here, for the session still running. A session that ended first is registered from the spool,
+				// possibly by a later launch, and announcing that one would hand listeners an id from another run.
+				if (UFlockEvents* EventsPtr = Self->Events.Get())
+				{
+					EventsPtr->InvokeSessionRegistered(LocalId, Result.Value.SessionId);
 				}
 			}
 			else if (bRegistered)

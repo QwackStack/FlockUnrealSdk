@@ -32,7 +32,7 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnLiveEvent, const FString& /*Line*/);
 	FOnLiveEvent OnLiveEvent;
 
-	/** Binds all thirteen hub delegates. Safe to call repeatedly; rebinds cleanly. */
+	/** Binds all fourteen hub delegates the panel shows. Safe to call repeatedly; rebinds cleanly. */
 	void Bind(UFlockEvents* Events);
 
 	/** Mandatory on EndPIE — the panel outlives the session that raised these events. */
@@ -48,6 +48,7 @@ private:
 	UFUNCTION() void HandleLoggedOut();
 	UFUNCTION() void HandleSessionRestored(bool bRestored);
 	UFUNCTION() void HandleSessionStarted(const FString& SessionId);
+	UFUNCTION() void HandleSessionRegistered(const FString& SessionId, const FString& ServerSessionId);
 	UFUNCTION() void HandleSessionEnded(const FFlockSessionEndedArgs& Args);
 	UFUNCTION() void HandleSessionPaused();
 	UFUNCTION() void HandleSessionResumed();

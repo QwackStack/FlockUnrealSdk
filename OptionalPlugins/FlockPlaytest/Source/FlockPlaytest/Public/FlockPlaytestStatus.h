@@ -41,6 +41,12 @@ enum class EFlockPlaytestStatus : uint8
 	PlaytestConfigForAnotherVersion,
 
 	/**
+	 * Protokite refused this launch's session because the playtest has closed and takes no more sessions (HTTP 400).
+	 * Playtest work stays off until the game is launched again, even when the Flock SDK initializes again.
+	 */
+	PlaytestNoLongerCollecting,
+
+	/**
 	 * Playtest work may run: the settings are complete, the Flock SDK is initialized and this build's playtest
 	 * config is loaded. It does not mean a player is signed in or a Flock session exists: the Flock SDK
 	 * announces that it is initialized before it restores a session.
@@ -70,14 +76,17 @@ struct FFlockPlaytestStatusInputs
 	FString ProtokiteApiUrl;
 	bool bFlockInitialized = false;
 	EFlockPlaytestConfigState ConfigState = EFlockPlaytestConfigState::NotFetched;
+
+	/** Protokite refused this launch's session because the playtest has closed. */
+	bool bPlaytestNoLongerCollecting = false;
 };
 
 /**
  * Decides the playtest status from its inputs.
  *
- * The order is the switch, then the URL, then the Flock SDK, then the playtest config. A build with
- * playtesting turned off says nothing about its URL, and a URL mistake is reported straight away rather than
- * hidden until the Flock SDK initializes.
+ * The order is the switch, then the URL, then a closed playtest, then the Flock SDK, then the playtest config. A
+ * build with playtesting turned off says nothing about its URL, a URL mistake is reported straight away rather than
+ * hidden until the Flock SDK initializes, and a closed playtest stays closed whatever the Flock SDK does next.
  */
 FLOCKPLAYTEST_API EFlockPlaytestStatus DecidePlaytestStatus(const FFlockPlaytestStatusInputs& Inputs);
 

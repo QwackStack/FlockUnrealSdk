@@ -500,7 +500,10 @@ gameplay events** (`Flock Track Event`) and captures Blueprint script errors suc
 automatically, counting repeats of the same error instead of sending each one. **1.11.0 adds Flock Playtest**,
 an optional plugin for Protokite playtests, in beta and shipped as its own download: its settings, and a status
 that says whether playtest work may run. **1.12.0 has it fetch the build's playtest from Protokite**, with the
-playtest's feature switches and feedback form, and say why when it cannot. It collects no playtest data yet.
+playtest's feature switches and feedback form, and say why when it cannot. **1.13.0 starts one Protokite session
+per launch**, named after the launch's first Flock session and sent with the player's Steam id or a device id, and
+ends it when the game shuts down; it also adds `OnSessionRegistered` and the **Session Platform** setting to the
+Flock SDK. It records no video, events or feedback yet.
 
 Deliberate omissions and known gaps:
 

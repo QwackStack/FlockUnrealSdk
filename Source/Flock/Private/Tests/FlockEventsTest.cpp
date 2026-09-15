@@ -124,6 +124,7 @@ bool FFlockEventsFeatureRaisesTest::RunTest(const FString& Parameters)
 	Events->OnAuthenticated.AddDynamic(Listener, &UFlockEventTestListener::HandleAuthenticated);
 	Events->OnConsentChanged.AddDynamic(Listener, &UFlockEventTestListener::HandleConsentChanged);
 	Events->OnSessionEnded.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionEnded);
+	Events->OnSessionRegistered.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionRegistered);
 
 	FFlockAuthInfo Info;
 	Info.PlayerId = TEXT("player-1");
@@ -146,6 +147,11 @@ bool FFlockEventsFeatureRaisesTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("reason carried"), static_cast<int32>(Listener->LastSessionEnded.Reason),
 		static_cast<int32>(EFlockSessionEndReason::Timeout));
 	TestEqual(TEXT("snapshot carried"), Listener->LastSessionEnded.Snapshot.SessionId, FString(TEXT("session-1")));
+
+	Events->InvokeSessionRegistered(TEXT("session-1"), TEXT("server-session-1"));
+	TestEqual(TEXT("session registered delivered"), Listener->SessionRegisteredCount, 1);
+	TestEqual(TEXT("local id carried"), Listener->LastRegisteredSessionId, FString(TEXT("session-1")));
+	TestEqual(TEXT("server id carried"), Listener->LastRegisteredServerSessionId, FString(TEXT("server-session-1")));
 
 	return true;
 }

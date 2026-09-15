@@ -30,6 +30,9 @@ public:
 	bool bLastConsent = false;
 	int32 SessionEndedCount = 0;
 	FFlockSessionEndedArgs LastSessionEnded;
+	int32 SessionRegisteredCount = 0;
+	FString LastRegisteredSessionId;
+	FString LastRegisteredServerSessionId;
 	int32 TokenRefreshedCount = 0;
 	int32 AuthExpiredCount = 0;
 	int32 LoggedOutCount = 0;
@@ -61,6 +64,14 @@ public:
 
 	UFUNCTION()
 	void HandleSessionEnded(const FFlockSessionEndedArgs& Args) { ++SessionEndedCount; LastSessionEnded = Args; }
+
+	UFUNCTION()
+	void HandleSessionRegistered(const FString& SessionId, const FString& ServerSessionId)
+	{
+		++SessionRegisteredCount;
+		LastRegisteredSessionId = SessionId;
+		LastRegisteredServerSessionId = ServerSessionId;
+	}
 
 	UFUNCTION()
 	void HandleTokenRefreshed() { ++TokenRefreshedCount; }

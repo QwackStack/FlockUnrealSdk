@@ -23,7 +23,9 @@
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryEventCache.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
+#include "Tests/Support/FlockRecordingLogger.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
+#include "HAL/PlatformProperties.h"
 
 namespace FlockAnalyticsProviderTestHelpers
 {
@@ -2189,6 +2191,187 @@ bool FFlockAnalyticsFatalCaptureDetailsTest::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("the crash was spooled"), bFound);
 	Fix.Provider->Shutdown();
+	return true;
+}
+
+/**
+ * OnSessionRegistered hands listeners the id a session's records are filed under, once per session, from that
+ * session's own registration. A heartbeat on a session that already has its id raises nothing more.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionRegisteredOncePerSessionTest,
+	"Flock.Analytics.Provider.SessionRegistered.OncePerSession",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionRegisteredOncePerSessionTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	UFlockEventTestListener* Listener = NewObject<UFlockEventTestListener>();
+	Fix.Events->OnSessionRegistered.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionRegistered);
+
+	Fix.Provider->StartSession(TEXT("p-1"));
+	const FString FirstLocalId = Fix.Provider->GetCurrentSnapshot().SessionId;
+	TestEqual(TEXT("Raised once the server answered"), Listener->SessionRegisteredCount, 1);
+	TestEqual(TEXT("With the local id OnSessionStarted carried"), Listener->LastRegisteredSessionId, FirstLocalId);
+	TestEqual(TEXT("And the server's id"), Listener->LastRegisteredServerSessionId, FString(TEXT("srv-1")));
+
+	Fix.Provider->TickForTesting(120.f);
+	TestEqual(TEXT("A heartbeat on a registered session raises nothing more"), Listener->SessionRegisteredCount, 1);
+
+	Fix.OnRegistration(FFlockFakeTransport::Ok(TEXT("{\"session_id\":\"srv-2\"}")));
+	Fix.Provider->StartSession(TEXT("p-1"));
+	TestEqual(TEXT("The next session raises for itself"), Listener->SessionRegisteredCount, 2);
+	TestEqual(TEXT("With its own server id"), Listener->LastRegisteredServerSessionId, FString(TEXT("srv-2")));
+	TestNotEqual(TEXT("And its own local id"), Listener->LastRegisteredSessionId, FirstLocalId);
+	return true;
+}
+
+/** Nothing is raised until the server has handed over an id; the heartbeat retry that gets one raises it. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionRegisteredOnlyWithAServerIdTest,
+	"Flock.Analytics.Provider.SessionRegistered.OnlyWithAServerId",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionRegisteredOnlyWithAServerIdTest::RunTest(const FString& Parameters)
+{
+	FFlockAnalyticsConfig Config;
+	Config.HeartbeatIntervalSeconds = 60.f;
+	Config.EventBufferFlushIntervalSeconds = 0.f; // isolate the heartbeat
+	Config.bTrackFps = false;
+	FFixture Fix(Config);
+	Fix.Provider->Initialize();
+	UFlockEventTestListener* Listener = NewObject<UFlockEventTestListener>();
+	Fix.Events->OnSessionRegistered.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionRegistered);
+
+	Fix.OnRegistration(FFlockFakeTransport::Offline());
+	Fix.Provider->StartSession(TEXT("p-1"));
+	TestEqual(TEXT("A registration that never reached the server raises nothing"), Listener->SessionRegisteredCount, 0);
+
+	Fix.OnRegistration(FFlockFakeTransport::Ok(TEXT("{}")));
+	Fix.Provider->TickForTesting(61.f);
+	TestEqual(TEXT("The heartbeat retried"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")), 2);
+	TestEqual(TEXT("A 2xx with no id raises nothing"), Listener->SessionRegisteredCount, 0);
+
+	Fix.OnRegistration(FFlockFakeTransport::Ok(TEXT("{\"session_id\":\"srv-healed\"}")));
+	Fix.Provider->TickForTesting(61.f);
+	TestEqual(TEXT("The retry that got an id raises it"), Listener->SessionRegisteredCount, 1);
+	TestEqual(TEXT("With that id"), Listener->LastRegisteredServerSessionId, FString(TEXT("srv-healed")));
+	return true;
+}
+
+/**
+ * A session that ends before its registration reply lands is closed from the spool, and its id reaches the spooled
+ * record, not the listeners: the session they would be told about is already over.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionRegisteredNotForAnEndedSessionTest,
+	"Flock.Analytics.Provider.SessionRegistered.NotForASessionThatEndedFirst",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionRegisteredNotForAnEndedSessionTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	UFlockEventTestListener* Listener = NewObject<UFlockEventTestListener>();
+	Fix.Events->OnSessionRegistered.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionRegistered);
+
+	Fix.Fake->bDeferred = true;
+	Fix.Provider->StartSession(TEXT("p-1"));
+	Fix.Provider->EndSession(EFlockSessionEndReason::Logout);
+	// The registration reply for the ended session, then whatever the spool drain sends after it.
+	for (int32 Round = 0; Round < 4; ++Round)
+	{
+		Fix.Fake->FlushPending();
+	}
+
+	TestTrue(TEXT("The session did register"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")) >= 1);
+	TestEqual(TEXT("A reply for a session that already ended raises nothing"), Listener->SessionRegisteredCount, 0);
+	return true;
+}
+
+/** An end spooled by an earlier run registers itself on the next flush, and that is not this run's session. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionRegisteredNotForASpooledEndTest,
+	"Flock.Analytics.Provider.SessionRegistered.NotForASpooledEnd",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionRegisteredNotForASpooledEndTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	UFlockEventTestListener* Listener = NewObject<UFlockEventTestListener>();
+	Fix.Events->OnSessionRegistered.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionRegistered);
+
+	FFlockSessionSnapshot Unregistered;
+	Unregistered.SessionId = TEXT("local-earlier-run");
+	Unregistered.PlayerId = TEXT("p-1");
+	Unregistered.StartTimeUtc = TEXT("2026-07-22T08:00:00Z");
+	Fix.EndCache->Enqueue(FFlockAnalyticsJson::SerializeSnapshot(Unregistered));
+	Fix.OnRegistration(FFlockFakeTransport::Ok(TEXT("{\"session_id\":\"srv-earlier-run\"}")));
+	Fix.OnClose(TEXT("srv-earlier-run"), FFlockFakeTransport::Ok(TEXT("{}")));
+
+	Fix.Provider->Flush();
+
+	TestEqual(TEXT("The spooled end registered itself"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")), 1);
+	TestEqual(TEXT("An earlier run's session raises nothing"), Listener->SessionRegisteredCount, 0);
+	return true;
+}
+
+namespace FlockAnalyticsProviderTestHelpers
+{
+	/** The platform the latest session registration sent, or "<absent>". */
+	inline FString RegisteredPlatform(const FFixture& Fix)
+	{
+		for (int32 Index = Fix.Fake->Requests.Num() - 1; Index >= 0; --Index)
+		{
+			const FFlockHttpRequest& Request = Fix.Fake->Requests[Index];
+			if (Request.Method == TEXT("POST") && Request.Url.EndsWith(TEXT("analytics/sessions")))
+			{
+				TSharedPtr<FJsonObject> Body;
+				const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Request.JsonBody);
+				return FJsonSerializer::Deserialize(Reader, Body) ? JsonString(Body, TEXT("platform")) : FString(TEXT("<unreadable>"));
+			}
+		}
+		return TEXT("<absent>");
+	}
+}
+
+/** Session Platform replaces the engine's platform name on a session start, and a stray space is refused with a warning. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionPlatformIsSentTest, "Flock.Analytics.Provider.SessionPlatformIsSent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionPlatformIsSentTest::RunTest(const FString& Parameters)
+{
+	const FString EnginePlatformName = FPlatformProperties::IniPlatformName();
+	{
+		FFixture Fix;
+		Fix.Provider->Initialize();
+		Fix.Provider->StartSession(TEXT("p-1"));
+		TestEqual(TEXT("Unset sends the engine's platform name"), RegisteredPlatform(Fix), EnginePlatformName);
+	}
+
+	struct FCase
+	{
+		const TCHAR* Setting;
+		FString Expected;
+		bool bWarns;
+	};
+	const FCase Cases[] = {
+		{ TEXT("steam"), TEXT("steam"), false },
+		{ TEXT("steam "), EnginePlatformName, true },
+	};
+	for (const FCase& Case : Cases)
+	{
+		FFlockAnalyticsConfig Config;
+		Config.SessionPlatform = Case.Setting;
+		FFixture Fix(Config);
+		const TSharedRef<FFlockRecordingLogger> Logger = MakeShared<FFlockRecordingLogger>();
+		Fix.Provider = MakeShared<FFlockAnalyticsProvider>(Fix.Client, NoRetryPolicy(), Logger, Fix.Session, Fix.Events,
+			TEXT("http://x/v1"), Config, Fix.Deps, TEXT("gv-1"), TEXT("0.7.0"));
+		Fix.Provider->Initialize();
+		Fix.Provider->StartSession(TEXT("p-1"));
+
+		TestEqual(FString::Printf(TEXT("'%s' sends the expected platform"), Case.Setting), RegisteredPlatform(Fix), Case.Expected);
+		TestEqual(FString::Printf(TEXT("'%s' warns only when it is not used"), Case.Setting),
+			FFlockRecordingLogger::AnyContains(Logger->Warnings, FString::Printf(TEXT("'%s'"), Case.Setting)), Case.bWarns);
+	}
 	return true;
 }
 

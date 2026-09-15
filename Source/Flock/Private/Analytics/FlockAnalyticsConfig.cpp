@@ -24,5 +24,18 @@ FFlockAnalyticsConfig FFlockAnalyticsConfig::FromSettings(const UFlockConfig& Se
 	Config.bCaptureExceptions = Settings.bAnalyticsCaptureExceptions;
 	Config.ExcludedExceptionCategories = Settings.AnalyticsExceptionExcludedCategories;
 	Config.ExceptionRepeatWindowSeconds = Settings.AnalyticsExceptionRepeatWindow;
+	Config.SessionPlatform = Settings.AnalyticsSessionPlatform;
 	return Config;
+}
+
+bool FFlockAnalyticsConfig::HasUsableSessionPlatform() const
+{
+	// Refused rather than trimmed, so the stray space is fixed in the setting where it was typed.
+	return !SessionPlatform.IsEmpty() && !FChar::IsWhitespace(SessionPlatform[0])
+		&& !FChar::IsWhitespace(SessionPlatform[SessionPlatform.Len() - 1]);
+}
+
+FString FFlockAnalyticsConfig::GetSessionPlatform(const FString& EnginePlatformName) const
+{
+	return HasUsableSessionPlatform() ? SessionPlatform : EnginePlatformName;
 }

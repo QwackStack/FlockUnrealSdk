@@ -7,8 +7,16 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Containers/Ticker.h"
+#include "Dom/JsonObject.h"
 #include "FlockPlaytestStatus.h"
 #include "Misc/AutomationTest.h"
+
+/** A string member of a JSON object, or "<absent>" so a missing member never passes for an empty one. */
+inline FString StringMember(const TSharedPtr<FJsonObject>& Object, const TCHAR* Name)
+{
+	FString Value;
+	return Object.IsValid() && Object->TryGetStringField(Name, Value) ? Value : FString(TEXT("<absent>"));
+}
 
 /** Fails the test with both statuses spelled out when Actual is not Expected. */
 inline void ExpectPlaytestStatus(FAutomationTestBase& Test, const FString& What, EFlockPlaytestStatus Actual,

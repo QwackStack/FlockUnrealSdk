@@ -109,6 +109,12 @@ void UFlockEvents::InvokeSessionStarted(const FString& SessionId)
 	OnSessionStarted.Broadcast(SessionId);
 }
 
+void UFlockEvents::InvokeSessionRegistered(const FString& SessionId, const FString& ServerSessionId)
+{
+	LogRaise(TEXT("OnSessionRegistered"), OnSessionRegistered.GetAllObjects().Num());
+	OnSessionRegistered.Broadcast(SessionId, ServerSessionId);
+}
+
 void UFlockEvents::InvokeSessionEnded(const FFlockSessionEndedArgs& Args)
 {
 	LogRaise(TEXT("OnSessionEnded"), OnSessionEnded.GetAllObjects().Num());

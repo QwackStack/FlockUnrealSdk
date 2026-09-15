@@ -2,6 +2,8 @@
 
 #include "FlockPlaytestStatus.h"
 
+#include "FlockPlaytestText.h"
+
 EFlockPlaytestStatus DecidePlaytestStatus(const FFlockPlaytestStatusInputs& Inputs)
 {
 	if (!Inputs.bPlaytestingEnabled)
@@ -15,6 +17,10 @@ EFlockPlaytestStatus DecidePlaytestStatus(const FFlockPlaytestStatusInputs& Inpu
 	if (!IsUsableProtokiteApiUrl(Inputs.ProtokiteApiUrl))
 	{
 		return EFlockPlaytestStatus::ProtokiteApiUrlUnusable;
+	}
+	if (Inputs.bPlaytestNoLongerCollecting)
+	{
+		return EFlockPlaytestStatus::PlaytestNoLongerCollecting;
 	}
 	if (!Inputs.bFlockInitialized)
 	{
@@ -67,12 +73,9 @@ EFlockPlaytestConfigState DecidePlaytestConfigState(const TFlockResult<FFlockPla
 
 bool IsUsableProtokiteApiUrl(const FString& Url)
 {
-	for (const TCHAR Character : Url)
+	if (FlockPlaytestText::ContainsWhitespace(Url))
 	{
-		if (FChar::IsWhitespace(Character))
-		{
-			return false;
-		}
+		return false;
 	}
 
 	static const TCHAR* const Schemes[] = { TEXT("https://"), TEXT("http://") };
@@ -119,6 +122,8 @@ FString DescribePlaytestStatus(EFlockPlaytestStatus Status)
 		return TEXT("Could not fetch this build's playtest from Protokite, so playtesting is off for now. The game carries on, and the playtest is fetched again when the next Flock session starts.");
 	case EFlockPlaytestStatus::PlaytestConfigForAnotherVersion:
 		return TEXT("Protokite answered with the playtest of a different Game Version ID than this build sent, so playtesting stays off. A proxy that drops the X-Game-Version-ID header causes this.");
+	case EFlockPlaytestStatus::PlaytestNoLongerCollecting:
+		return TEXT("This playtest has closed and takes no more sessions (Protokite answered HTTP 400), so playtesting is off until the game is launched again. Reopen the playtest in Protokite, or point Game Version at a playtest that is still running.");
 	case EFlockPlaytestStatus::Ready:
 		return TEXT("Playtesting is ready: this build's playtest is loaded.");
 	case EFlockPlaytestStatus::Stopped:
