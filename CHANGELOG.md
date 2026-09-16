@@ -28,10 +28,23 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- **Playtest recordings are saved as WebM files, which a browser plays with nothing installed** — 1.15.0 wrote IVF
+  files, which needed a desktop player. The video inside is the same VP9, so nothing is re-encoded: a recording costs
+  no more time and no more disk than before, and is ready to watch the moment it is saved. A recording whose game
+  ended part-way through is still finished by the next launch, and plays up to the point where it stopped.
 - Test videos, from `FlockPlaytest.RecordTestVideo` or **Record Video In Play In Editor**, are saved under
   `Saved/FlockPlaytest/Recordings/TestVideos/` and kept until Recordings Disk Budget needs their room.
 
 ### Fixed
+
+- **A session that ends as the game closes is no longer abandoned part-way.** Both the analytics session end and the
+  playtest session end were sent from shutdown and then torn down around, so the requests were dropped while still in
+  flight: the engine reported unbinding them, nothing failed, nothing was logged, and the playtest dashboard showed
+  those sessions as still in progress with no duration. Requests already on their way now get a bounded chance to
+  finish while the SDK is still alive, so their outcome is known. The wait is limited by the engine and cannot hold up
+  a game's exit, and anything that does not make it is cancelled exactly as it would have been a moment later. This
+  matters most for the playtest session, which has no second chance -- an analytics session end is saved to disk and
+  re-sent on a later launch, so it was only ever delayed.
 
 - **Two games started from one project folder no longer lose each other's saved files** (two game clients on one
   machine, or Play In Editor beside a standalone game). When Flock started, it deleted every temporary file in its

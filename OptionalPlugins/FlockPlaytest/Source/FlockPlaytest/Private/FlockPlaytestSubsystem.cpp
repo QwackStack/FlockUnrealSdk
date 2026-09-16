@@ -21,6 +21,7 @@
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
 #include "Http/FlockHttpClient.h"
+#include "Http/FlockHttpShutdown.h"
 #include "Misc/Paths.h"
 #include "Providers/FlockAnalyticsProvider.h"
 #include "UObject/UObjectGlobals.h"
@@ -74,6 +75,11 @@ void UFlockPlaytestSubsystem::Deinitialize()
 	if (SessionState == EFlockPlaytestSessionState::Started)
 	{
 		EndPlaytestSession();
+		// Sending the end is not the same as it arriving. The game tears down around the request, and the engine's
+		// HTTP module then unbinds it part-way -- measured 2026-09-16, which left sessions showing in Protokite as
+		// still in progress with no duration and nothing logged, because the completion that would have logged it was
+		// the thing being unbound. Protokite takes no end time after the fact (BN-9), so this is the only chance it gets.
+		FlockFinishRequestsBeforeShutdown();
 	}
 
 	// The Flock subsystem can outlive this one during teardown, and its shut-down event would otherwise
@@ -1011,7 +1017,7 @@ void UFlockPlaytestSubsystem::ApplyFinishedVideoRecording()
 	else
 	{
 		FinishedVideoRecordingPath = Summary.FilePath;
-		UE_LOG(LogFlockPlaytest, Log, TEXT("Video saved to %s: %.1f seconds, %d frames, %.1f MB. It stopped because %s. Encoding took %.2f ms a frame on average and %.2f ms at most; a frame waited at most %.0f ms to be encoded, and one write took at most %.2f ms; %d frames were dropped because encoding fell behind, %d because writing the file fell behind, and %d capture times passed while earlier frames were still on their way. The file is VP9 video in the IVF format, which VLC plays."),
+		UE_LOG(LogFlockPlaytest, Log, TEXT("Video saved to %s: %.1f seconds, %d frames, %.1f MB. It stopped because %s. Encoding took %.2f ms a frame on average and %.2f ms at most; a frame waited at most %.0f ms to be encoded, and one write took at most %.2f ms; %d frames were dropped because encoding fell behind, %d because writing the file fell behind, and %d capture times passed while earlier frames were still on their way. The file is VP9 video in a WebM file, which a browser plays with nothing installed."),
 			*Summary.FilePath, Summary.VideoSeconds, Summary.FramesWritten, Summary.BytesWritten / (1024.0 * 1024.0),
 			*DescribeVideoStopReason(Summary.StopReason), Summary.AverageEncodeMs, Summary.LongestEncodeMs,
 			Summary.LongestWaitToEncodeMs, Summary.LongestWriteMs, Summary.FramesDroppedBecauseEncodingFellBehind,

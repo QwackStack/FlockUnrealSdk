@@ -27,69 +27,215 @@ namespace FlockPlaytestVideoTesting
 	struct FVideoFileFrame
 	{
 		int64 TimestampMs = 0;
+		bool bKeyFrame = false;
 		TArray<uint8> Bytes;
 	};
 
-	/** A video file read back byte by byte, the way a player reads it. */
+	/** A video file read back the way a player reads it. */
 	struct FVideoFileRead
 	{
-		FString Signature;
+		FString DocType;
 		FString Codec;
 		int32 Width = 0;
 		int32 Height = 0;
-		uint32 TimeBaseDenominator = 0;
-		uint32 TimeBaseNumerator = 0;
-		int32 FrameCountInHeader = -1;
+		uint64 TimecodeScaleNanoseconds = 0;
+		double DurationMs = -1.0;
+		/** False while a recording is still being written, or was cut off: its segment keeps the "size unknown" marker. */
+		bool bSegmentSizeWritten = false;
 		int64 FileBytes = 0;
 		TArray<FVideoFileFrame> Frames;
 	};
 
-	inline uint64 ReadLittleEndian(const TArray<uint8>& Bytes, int64 Offset, int32 ByteCount)
+	/**
+	 * Reads one EBML number: an element's id when bKeepMarker, or a size when not. Its width is stated by how many
+	 * leading zero bits the first byte has, so nothing here assumes the widths the writer happened to choose -- a reader
+	 * built from the writer's own layout would agree with it about a mistake.
+	 */
+	inline bool ReadEbmlNumber(const TArray<uint8>& Bytes, int64 Offset, bool bKeepMarker,
+		uint64& OutValue, int32& OutWidth, bool& bOutUnknown)
+	{
+		bOutUnknown = false;
+		if (Offset < 0 || Offset >= Bytes.Num() || Bytes[Offset] == 0)
+		{
+			return false;
+		}
+		const uint8 First = Bytes[Offset];
+		int32 Width = 1;
+		uint8 Marker = 0x80;
+		while (Width <= 8 && (First & Marker) == 0)
+		{
+			Marker >>= 1;
+			++Width;
+		}
+		if (Width > 8 || Offset + Width > Bytes.Num())
+		{
+			return false;
+		}
+		uint64 Value = bKeepMarker ? First : static_cast<uint64>(First & (Marker - 1));
+		uint64 AllValueBits = bKeepMarker ? 0 : static_cast<uint64>(Marker - 1);
+		for (int32 Index = 1; Index < Width; ++Index)
+		{
+			Value = (Value << 8) | Bytes[Offset + Index];
+			AllValueBits = (AllValueBits << 8) | 0xFF;
+		}
+		bOutUnknown = !bKeepMarker && Value == AllValueBits;
+		OutValue = Value;
+		OutWidth = Width;
+		return true;
+	}
+
+	inline uint64 ReadBigEndian(const TArray<uint8>& Bytes, int64 Offset, int32 ByteCount)
 	{
 		uint64 Value = 0;
 		for (int32 Index = 0; Index < ByteCount; ++Index)
 		{
-			Value |= static_cast<uint64>(Bytes[Offset + Index]) << (8 * Index);
+			Value = (Value << 8) | Bytes[Offset + Index];
 		}
 		return Value;
 	}
 
-	/** Reads the file at Path. False when it is missing, shorter than its header, or a frame runs past its end. */
+	/** Walks the children of one element, handing each id, content start and content end to Visit. */
+	template <typename VisitType>
+	inline bool VisitEbmlChildren(const TArray<uint8>& Bytes, int64 Start, int64 End, VisitType&& Visit)
+	{
+		int64 Offset = Start;
+		while (Offset < End)
+		{
+			uint64 Id = 0;
+			int32 IdWidth = 0;
+			bool bUnknown = false;
+			if (!ReadEbmlNumber(Bytes, Offset, /*bKeepMarker*/ true, Id, IdWidth, bUnknown))
+			{
+				return false;
+			}
+			uint64 Size = 0;
+			int32 SizeWidth = 0;
+			bool bUnknownSize = false;
+			if (!ReadEbmlNumber(Bytes, Offset + IdWidth, /*bKeepMarker*/ false, Size, SizeWidth, bUnknownSize))
+			{
+				return false;
+			}
+			const int64 ContentStart = Offset + IdWidth + SizeWidth;
+			const int64 ContentEnd = bUnknownSize ? End : ContentStart + static_cast<int64>(Size);
+			if (ContentEnd > End)
+			{
+				return false;
+			}
+			Visit(Id, ContentStart, ContentEnd, bUnknownSize);
+			Offset = ContentEnd;
+		}
+		return true;
+	}
+
+	/** Reads the WebM file at Path. False when it is missing, or an element runs past the end of what it sits in. */
 	inline bool ReadVideoFile(const FString& Path, FVideoFileRead& Out)
 	{
 		TArray<uint8> Bytes;
-		if (!FFileHelper::LoadFileToArray(Bytes, *Path) || Bytes.Num() < 32)
+		if (!FFileHelper::LoadFileToArray(Bytes, *Path) || Bytes.Num() < 4)
 		{
 			return false;
 		}
 		Out.FileBytes = Bytes.Num();
-		Out.Signature = FString::Printf(TEXT("%c%c%c%c"), Bytes[0], Bytes[1], Bytes[2], Bytes[3]);
-		Out.Codec = FString::Printf(TEXT("%c%c%c%c"), Bytes[8], Bytes[9], Bytes[10], Bytes[11]);
-		Out.Width = static_cast<int32>(ReadLittleEndian(Bytes, 12, 2));
-		Out.Height = static_cast<int32>(ReadLittleEndian(Bytes, 14, 2));
-		Out.TimeBaseDenominator = static_cast<uint32>(ReadLittleEndian(Bytes, 16, 4));
-		Out.TimeBaseNumerator = static_cast<uint32>(ReadLittleEndian(Bytes, 20, 4));
-		Out.FrameCountInHeader = static_cast<int32>(ReadLittleEndian(Bytes, 24, 4));
 
-		int64 Offset = 32;
-		while (Offset < Bytes.Num())
+		bool bWellFormed = true;
+		const bool bWalked = VisitEbmlChildren(Bytes, 0, Bytes.Num(),
+			[&Bytes, &Out, &bWellFormed](uint64 Id, int64 Start, int64 End, bool bUnknownSize)
 		{
-			if (Offset + 12 > Bytes.Num())
+			if (Id == 0x1A45DFA3)
 			{
-				return false;
+				bWellFormed &= VisitEbmlChildren(Bytes, Start, End, [&Bytes, &Out](uint64 ChildId, int64 ChildStart, int64 ChildEnd, bool)
+				{
+					if (ChildId == 0x4282)
+					{
+						Out.DocType = FString(static_cast<int32>(ChildEnd - ChildStart), reinterpret_cast<const ANSICHAR*>(Bytes.GetData() + ChildStart));
+					}
+				});
+				return;
 			}
-			const int64 Size = static_cast<int64>(ReadLittleEndian(Bytes, Offset, 4));
-			FVideoFileFrame& Frame = Out.Frames.AddDefaulted_GetRef();
-			Frame.TimestampMs = static_cast<int64>(ReadLittleEndian(Bytes, Offset + 4, 8));
-			Offset += 12;
-			if (Offset + Size > Bytes.Num())
+			if (Id != 0x18538067)
 			{
-				return false;
+				return;
 			}
-			Frame.Bytes.Append(Bytes.GetData() + Offset, static_cast<int32>(Size));
-			Offset += Size;
-		}
-		return true;
+			Out.bSegmentSizeWritten = !bUnknownSize;
+			bWellFormed &= VisitEbmlChildren(Bytes, Start, End, [&Bytes, &Out, &bWellFormed](uint64 SegmentId, int64 SegmentStart, int64 SegmentEnd, bool)
+			{
+				if (SegmentId == 0x1549A966)
+				{
+					bWellFormed &= VisitEbmlChildren(Bytes, SegmentStart, SegmentEnd, [&Bytes, &Out](uint64 InfoId, int64 InfoStart, int64 InfoEnd, bool)
+					{
+						if (InfoId == 0x2AD7B1)
+						{
+							Out.TimecodeScaleNanoseconds = ReadBigEndian(Bytes, InfoStart, static_cast<int32>(InfoEnd - InfoStart));
+						}
+						else if (InfoId == 0x4489 && InfoEnd - InfoStart == 8)
+						{
+							const uint64 Raw = ReadBigEndian(Bytes, InfoStart, 8);
+							double Value = 0.0;
+							FMemory::Memcpy(&Value, &Raw, sizeof(Value));
+							Out.DurationMs = Value;
+						}
+					});
+				}
+				else if (SegmentId == 0x1654AE6B)
+				{
+					bWellFormed &= VisitEbmlChildren(Bytes, SegmentStart, SegmentEnd, [&Bytes, &Out, &bWellFormed](uint64, int64 EntryStart, int64 EntryEnd, bool)
+					{
+						bWellFormed &= VisitEbmlChildren(Bytes, EntryStart, EntryEnd, [&Bytes, &Out](uint64 TrackId, int64 TrackStart, int64 TrackEnd, bool)
+						{
+							if (TrackId == 0x86)
+							{
+								Out.Codec = FString(static_cast<int32>(TrackEnd - TrackStart), reinterpret_cast<const ANSICHAR*>(Bytes.GetData() + TrackStart));
+							}
+							else if (TrackId == 0xE0)
+							{
+								VisitEbmlChildren(Bytes, TrackStart, TrackEnd, [&Bytes, &Out](uint64 VideoId, int64 VideoStart, int64 VideoEnd, bool)
+								{
+									if (VideoId == 0xB0)
+									{
+										Out.Width = static_cast<int32>(ReadBigEndian(Bytes, VideoStart, static_cast<int32>(VideoEnd - VideoStart)));
+									}
+									else if (VideoId == 0xBA)
+									{
+										Out.Height = static_cast<int32>(ReadBigEndian(Bytes, VideoStart, static_cast<int32>(VideoEnd - VideoStart)));
+									}
+								});
+							}
+						});
+					});
+				}
+				else if (SegmentId == 0x1F43B675)
+				{
+					int64 ClusterTimecodeMs = 0;
+					bWellFormed &= VisitEbmlChildren(Bytes, SegmentStart, SegmentEnd, [&Bytes, &Out, &ClusterTimecodeMs](uint64 ClusterId, int64 BlockStart, int64 BlockEnd, bool)
+					{
+						if (ClusterId == 0xE7)
+						{
+							ClusterTimecodeMs = static_cast<int64>(ReadBigEndian(Bytes, BlockStart, static_cast<int32>(BlockEnd - BlockStart)));
+						}
+						else if (ClusterId == 0xA3 && BlockEnd - BlockStart > 4)
+						{
+							// A block holds the track it belongs to, then how far it sits from its cluster's time, then
+							// its flags, and the frame after that.
+							uint64 Track = 0;
+							int32 TrackWidth = 0;
+							bool bUnknownTrack = false;
+							if (!ReadEbmlNumber(Bytes, BlockStart, /*bKeepMarker*/ false, Track, TrackWidth, bUnknownTrack))
+							{
+								return;
+							}
+							const int64 Relative = static_cast<int16>(ReadBigEndian(Bytes, BlockStart + TrackWidth, 2));
+							const uint8 Flags = Bytes[BlockStart + TrackWidth + 2];
+							const int64 FrameStart = BlockStart + TrackWidth + 3;
+							FVideoFileFrame& Frame = Out.Frames.AddDefaulted_GetRef();
+							Frame.TimestampMs = ClusterTimecodeMs + Relative;
+							Frame.bKeyFrame = (Flags & 0x80) != 0;
+							Frame.Bytes.Append(Bytes.GetData() + FrameStart, static_cast<int32>(BlockEnd - FrameStart));
+						}
+					});
+				}
+			});
+		});
+		return bWalked && bWellFormed;
 	}
 
 	/** A picture that changes with Seed: a gradient that slides along, so consecutive frames differ. */
