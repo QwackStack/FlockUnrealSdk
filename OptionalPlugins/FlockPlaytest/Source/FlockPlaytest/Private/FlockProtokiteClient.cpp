@@ -64,6 +64,36 @@ FFlockRequestHandle FFlockProtokiteClient::FetchPlaytestConfig(const FString& Pr
 		/*bAllowAuthRetry*/ false, &LeaveReportingToTheCaller);
 }
 
+FString FFlockProtokiteClient::MakeRecordingUploadUrl(const FString& ProtokiteApiUrl, const FString& PlaytestSessionId)
+{
+	return JoinProtokiteUrl(ProtokiteApiUrl,
+		FString::Printf(TEXT("/game/sdk/playtest-session/%s/recording-upload"), *FlockEndpoints::Encode(PlaytestSessionId)));
+}
+
+FFlockRequestHandle FFlockProtokiteClient::RequestRecordingUploadLink(const FString& ProtokiteApiUrl,
+	const TMap<FString, FString>& RequestHeaders, const FString& PlaytestSessionId, const FString& ContentType,
+	TFunction<void(TFlockResult<FFlockPlaytestRecordingUploadLink>)> OnComplete)
+{
+	const TSharedRef<FFlockHttpClient> HttpClient = Client;
+	const FString Url = MakeRecordingUploadUrl(ProtokiteApiUrl, PlaytestSessionId);
+
+	// The route's other two members, has_webcam and has_voice, are left out: nothing here records either, and the
+	// server's own defaults say so. content_type is sent even though it matches the default, because the link is
+	// signed for whatever is sent and the PUT has to carry the same one.
+	const FString Body = FString::Printf(TEXT("{\"content_type\":\"%s\"}"), *ContentType);
+
+	return Execute<FFlockPlaytestRecordingUploadLink>(
+		[HttpClient, Url, RequestHeaders, Body](TFunction<void(TFlockResult<FFlockPlaytestRecordingUploadLink>)> Done)
+		{
+			// Enveloped: the route answers GenericResponse_PlaytestRecordingUploadResponse_, so the link is under
+			// result. Read at the root it would parse into an empty link against a real server while every
+			// enveloped-looking fixture passed.
+			return HttpClient->PostJson<FFlockPlaytestRecordingUploadLink>(Url, RequestHeaders, Body, MoveTemp(Done));
+		},
+		MoveTemp(OnComplete), TEXT("Playtest recording upload link"), /*bIdempotent*/ true, /*MaxRetriesOverride*/ -1,
+		/*bAllowAuthRetry*/ false, &LeaveReportingToTheCaller);
+}
+
 FFlockRequestHandle FFlockProtokiteClient::StartPlaytestSession(const FString& ProtokiteApiUrl,
 	const TMap<FString, FString>& RequestHeaders, const FFlockPlaytestSessionStartRequest& Request,
 	TFunction<void(TFlockResult<FFlockPlaytestSessionStartResult>)> OnComplete)

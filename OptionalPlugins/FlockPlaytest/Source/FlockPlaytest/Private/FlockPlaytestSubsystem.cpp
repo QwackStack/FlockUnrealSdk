@@ -16,7 +16,9 @@
 #include "FlockPlaytestRecordingsFolder.h"
 #include "FlockPlaytestVideoFrameSource.h"
 #include "FlockPlaytestVideoRecording.h"
+#include "FlockPlaytestRecordingUploads.h"
 #include "FlockProtokiteClient.h"
+#include "Http/FlockFileUploader.h"
 #include "FlockSubsystem.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
@@ -94,6 +96,15 @@ void UFlockPlaytestSubsystem::Deinitialize()
 	}
 	Flock.Reset();
 
+	// Read by the upload paths: from here on a finished recording is a later launch's to push, never this one's to start
+	// sending into a shutdown.
+	bDeinitializing = true;
+	if (WaitingToUploadEarlierRecordings.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(WaitingToUploadEarlierRecordings);
+		WaitingToUploadEarlierRecordings.Reset();
+	}
+
 	// A reply still on its way must not reach a subsystem that has finished.
 	ForgetPlaytestConfig();
 
@@ -154,6 +165,9 @@ void UFlockPlaytestSubsystem::FollowFlockLifecycle(UFlockSubsystem* InFlock)
 		Events->OnSessionRegistered.AddUniqueDynamic(this, &UFlockPlaytestSubsystem::HandleFlockSessionRegistered);
 	}
 	RefreshStatus();
+
+	// Whether or not playtesting is on this launch: what an earlier launch could not send is still sent.
+	StartUploadingWhatEarlierLaunchesLeft();
 }
 
 void UFlockPlaytestSubsystem::HandleFlockLifecycleChanged()
@@ -695,6 +709,18 @@ bool UFlockPlaytestSubsystem::StopVideoRecording()
 	return true;
 }
 
+bool UFlockPlaytestSubsystem::StopVideoRecordingAndUploadIt()
+{
+	if (!IsRecordingVideo())
+	{
+		return false;
+	}
+	// Finished here and now rather than left to the writer thread, because the upload needs the whole file: a link is
+	// asked for only once there is a finished recording to send.
+	FinishVideoRecordingNow(EFlockPlaytestVideoStopReason::StoppedByGame);
+	return true;
+}
+
 bool UFlockPlaytestSubsystem::StartTestVideoRecording(double Seconds)
 {
 #if UE_BUILD_SHIPPING
@@ -1023,7 +1049,114 @@ void UFlockPlaytestSubsystem::ApplyFinishedVideoRecording()
 			Summary.LongestWaitToEncodeMs, Summary.LongestWriteMs, Summary.FramesDroppedBecauseEncodingFellBehind,
 			Summary.FramesDroppedBecauseWritingFellBehind, Summary.FramesNotReadyInTime);
 	}
+	UploadThisLaunchsRecording();
 	UpdateVideoPump();
+}
+
+TSharedRef<FFlockPlaytestRecordingUploads> UFlockPlaytestSubsystem::GetOrCreateRecordingUploads()
+{
+	if (!RecordingUploads.IsValid())
+	{
+		const TSharedRef<IFlockLogger> Logger = MakeShared<FFlockPlaytestLogger>();
+		const TSharedRef<IFlockFileUploader> Uploader = TestFileUploader.IsValid()
+			? TestFileUploader.ToSharedRef()
+			: FlockCreateHttpFileUploader(Logger);
+		RecordingUploads = MakeShared<FFlockPlaytestRecordingUploads>(GetOrCreateProtokiteClient(), Uploader, Logger);
+		// A whole recording is up to a gigabyte and a half, so it gets no request timeout: the ordinary thirty seconds
+		// would end every upload that matters.
+		RecordingUploads->UploadTimeoutSeconds = 0.f;
+	}
+	return RecordingUploads.ToSharedRef();
+}
+
+void UFlockPlaytestSubsystem::UploadThisLaunchsRecording()
+{
+	// Never while the game instance is going away: a whole recording cannot be sent inside a shutdown, and the run is
+	// about to be let go of. It stays on disk and a later launch pushes it, which is what D10 is for.
+	if (bDeinitializing)
+	{
+		return;
+	}
+	if (!VideoRecordingRun.IsValid() || VideoRecordingRun->GetKind() != EFlockPlaytestRecordingKind::Playtest)
+	{
+		// A test video is never uploaded.
+		return;
+	}
+	if (FinishedVideoRecordingPath.IsEmpty())
+	{
+		return;
+	}
+
+	const FFlockPlaytestRecordingSession Session = VideoRecordingRun->LoadSession();
+	if (Session.IsEmpty())
+	{
+		// No Protokite session started for it, so there is nowhere to send it. The next launch deletes it.
+		return;
+	}
+	if (!Flock.IsValid() || !Flock->IsInitialized())
+	{
+		return;
+	}
+
+	UE_LOG(LogFlockPlaytest, Log, TEXT("Uploading this launch's recording to Protokite session %s."), *Session.ProtokiteSessionId);
+	GetOrCreateRecordingUploads()->UploadOne(VideoRecordingRun.ToSharedRef(), Session, Flock->GetRequestHeaders(),
+		[](FFlockPlaytestRecordingUploadOutcome Outcome)
+		{
+			if (Outcome.bUploaded)
+			{
+				UE_LOG(LogFlockPlaytest, Log, TEXT("The recording was uploaded and is no longer kept on disk."));
+			}
+			else
+			{
+				UE_LOG(LogFlockPlaytest, Warning, TEXT("The recording was not uploaded, so it is kept for a later launch to push: %s"),
+					*Outcome.Error);
+			}
+		});
+}
+
+void UFlockPlaytestSubsystem::StartUploadingWhatEarlierLaunchesLeft()
+{
+	if (bStartedUploadingWhatEarlierLaunchesLeft || WaitingToUploadEarlierRecordings.IsValid())
+	{
+		return;
+	}
+
+	// Two things have to be true first, and they finish in no fixed order: Flock has to have initialized, because the
+	// API key comes from this launch and never from the saved session, and the launch pass has to have finished with
+	// the folder, because it is what turns a cut-off recording into one worth sending.
+	TWeakObjectPtr<UFlockPlaytestSubsystem> WeakThis(this);
+	WaitingToUploadEarlierRecordings = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+		[WeakThis](float) -> bool
+		{
+			UFlockPlaytestSubsystem* Self = WeakThis.Get();
+			if (Self == nullptr || Self->bDeinitializing)
+			{
+				return false;
+			}
+			if (!Self->Flock.IsValid() || !Self->Flock->IsInitialized())
+			{
+				return true;
+			}
+			if (Self->RecordingsFolderFinished.IsValid() && !Self->RecordingsFolderFinished.IsReady())
+			{
+				return true;
+			}
+
+			Self->bStartedUploadingWhatEarlierLaunchesLeft = true;
+			Self->WaitingToUploadEarlierRecordings.Reset();
+
+			const FString RecordingsFolder = Self->GetVideoRecordingsFolder();
+			Self->GetOrCreateRecordingUploads()->UploadEveryOneWaiting(RecordingsFolder, Self->Flock->GetRequestHeaders(),
+				[](int32 UploadedCount, int32 LeftCount)
+				{
+					if (UploadedCount > 0 || LeftCount > 0)
+					{
+						UE_LOG(LogFlockPlaytest, Log, TEXT("Recordings earlier launches left: %d uploaded, %d kept for a later launch."),
+							UploadedCount, LeftCount);
+					}
+				});
+			return false;
+		}), 0.5f);
 }
 
 void UFlockPlaytestSubsystem::FinishVideoRecordingNow(EFlockPlaytestVideoStopReason Reason)
@@ -1076,6 +1209,45 @@ namespace
 			{
 				Output.Log(TEXT("No video is being recorded."));
 			}
+		}));
+
+	FAutoConsoleCommandWithWorldArgsAndOutputDevice StopVideoRecordingAndUploadItCommand(
+		TEXT("FlockPlaytest.StopVideoRecordingAndUploadIt"),
+		TEXT("Stops this game instance's video recording and uploads it to its playtest session, the way a feedback form's "
+			"upload button does: FlockPlaytest.StopVideoRecordingAndUploadIt, or ... 20 to let it record for 20 seconds "
+			"first. Uploading is not waited for; what does not make it is kept for a later launch to push."),
+		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World, FOutputDevice& Output)
+		{
+			// The wait is what makes this drivable from a harness at all: every -ExecCmds command runs on the first
+			// frame, which is before anything has been recorded, so with no wait there would be nothing to upload.
+			double Seconds = 0.0;
+			if (Args.Num() > 0 && (!LexTryParseString(Seconds, *Args[0]) || Seconds < 0.0))
+			{
+				Output.Log(TEXT("Usage: FlockPlaytest.StopVideoRecordingAndUploadIt [seconds to record first]."));
+				return;
+			}
+
+			if (Seconds <= 0.0)
+			{
+				UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystemOfWorld(World);
+				if (Playtest == nullptr || !Playtest->StopVideoRecordingAndUploadIt())
+				{
+					Output.Log(TEXT("No video is being recorded."));
+				}
+				return;
+			}
+
+			// The world is held weakly: the game may be gone by the time this comes round.
+			TWeakObjectPtr<UWorld> WeakWorld(World);
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakWorld](float) -> bool
+			{
+				UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystemOfWorld(WeakWorld.Get());
+				if (Playtest != nullptr)
+				{
+					Playtest->StopVideoRecordingAndUploadIt();
+				}
+				return false;
+			}), static_cast<float>(Seconds));
 		}));
 }
 #endif

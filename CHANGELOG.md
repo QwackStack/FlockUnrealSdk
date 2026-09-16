@@ -5,6 +5,22 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-09-16
+
+### Added
+
+- **Playtest recordings are uploaded.** A finished recording is sent to the playtest session it belongs to: when a
+  length or size limit ends it, when the game asks for it to be stopped and uploaded, and — for anything an earlier
+  launch could not send — at the start of a later one. A recording is deleted once it has been uploaded, and kept
+  otherwise, so nothing is lost by a failed upload, a crash or the game closing.
+- **Stop the recording and upload it**, for a game that offers the player a way to hand in what they recorded. Opening
+  a feedback form does not stop recording on its own.
+- Recordings an earlier launch left are uploaded **even when playtesting is switched off** in the launch that finds
+  them, and nothing else playtest-related happens in that launch. Otherwise turning playtesting off would strand every
+  recording still waiting to be sent.
+- A recording is sent straight from disk and is never held in memory, so uploading one costs the same whether it is a
+  few megabytes or the size limit.
+
 ## [1.16.0] - 2026-09-15
 
 ### Added

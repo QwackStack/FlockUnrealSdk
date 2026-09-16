@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "FlockPlaytestConfig.h"
+#include "FlockPlaytestRecordingUpload.h"
 #include "FlockPlaytestSession.h"
 #include "Http/FlockProviderBase.h"
 
@@ -50,6 +51,23 @@ public:
 	 */
 	FFlockRequestHandle EndPlaytestSession(const FString& ProtokiteApiUrl, const TMap<FString, FString>& RequestHeaders,
 		const FString& PlaytestSessionId, TFunction<void(TFlockResult<FFlockPlaytestSessionEndResult>)> OnComplete);
+
+	/** The address a session's recording upload link is asked for. */
+	static FString MakeRecordingUploadUrl(const FString& ProtokiteApiUrl, const FString& PlaytestSessionId);
+
+	/**
+	 * Asks Protokite where to put a session's recording. The answer is a short-lived presigned link, so this is asked
+	 * only once the recording is finished and the upload can start at once.
+	 *
+	 * **A successful answer here does not mean the recording was uploaded**: Protokite counts the session as having a
+	 * recording from the moment it issues a link, and only the PUT that follows says the bytes arrived.
+	 *
+	 * Retried like a read. Issuing a link creates nothing a second request would duplicate -- unlike a session start --
+	 * and the caller asks for a fresh link for every attempt anyway. Outcomes are not logged here.
+	 */
+	FFlockRequestHandle RequestRecordingUploadLink(const FString& ProtokiteApiUrl, const TMap<FString, FString>& RequestHeaders,
+		const FString& PlaytestSessionId, const FString& ContentType,
+		TFunction<void(TFlockResult<FFlockPlaytestRecordingUploadLink>)> OnComplete);
 
 private:
 	/** Joins a route onto the base URL. Only trailing slashes are removed, because a URL with whitespace is refused before this. */
