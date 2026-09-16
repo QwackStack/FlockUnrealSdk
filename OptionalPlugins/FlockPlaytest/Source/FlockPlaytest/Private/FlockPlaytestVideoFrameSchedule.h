@@ -14,9 +14,17 @@ struct FFlockPlaytestVideoSettings
 	int32 BitrateKbps = 2000;
 	double MaxSeconds = 3600.0;
 	int64 MaxBytes = 1536LL * 1024 * 1024;
+	/** What every recording kept on disk may take together: Recordings Disk Budget. */
+	int64 DiskBudgetBytes = 4096LL * 1024 * 1024;
 
 	/** The project's settings, with every value moved into the range the recording can use. */
 	static FFlockPlaytestVideoSettings FromProjectSettings(const UFlockPlaytestSettings& Settings);
+
+	/**
+	 * The most disk the recording is expected to need: what its bitrate fills in its length limit, a quarter more for the
+	 * encoder going over it, and each frame's header, never more than MaxBytes. Room is made for this much before it starts.
+	 */
+	int64 BytesToMakeRoomFor() const;
 
 	/** How long each captured frame is shown, in milliseconds. */
 	int64 FrameDurationMs() const { return FMath::Max<int64>(1, FMath::RoundToInt64(1000.0 / FramesPerSecond)); }

@@ -5,6 +5,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/AES.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
 #include "Misc/SecureHash.h"
 #include "Serialization/JsonReader.h"
@@ -33,12 +34,91 @@ namespace
 		FMemory::Memcpy(Key.Key + 20, Second, 12);
 		return Key;
 	}
+
+	/** Decrypts and parses a token file's bytes. False for a corrupt or foreign-keyed file. */
+	bool DecodeStoredTokens(TArray<uint8> Bytes, const FString& KeyContext, FFlockStoredTokens& OutTokens)
+	{
+		if (Bytes.Num() == 0 || Bytes.Num() % AesBlockSize != 0)
+		{
+			return false;
+		}
+
+		FAES::DecryptData(Bytes.GetData(), Bytes.Num(), DeriveKey(KeyContext));
+
+		const uint8 Pad = Bytes.Last();
+		if (Pad == 0 || Pad > AesBlockSize || Pad > Bytes.Num())
+		{
+			return false;
+		}
+		for (int32 Index = Bytes.Num() - Pad; Index < Bytes.Num(); ++Index)
+		{
+			if (Bytes[Index] != Pad)
+			{
+				return false;
+			}
+		}
+		Bytes.SetNum(Bytes.Num() - Pad);
+
+		const FUTF8ToTCHAR Converted(reinterpret_cast<const ANSICHAR*>(Bytes.GetData()), Bytes.Num());
+		const FString Json(Converted.Length(), Converted.Get());
+
+		TSharedPtr<FJsonObject> Obj;
+		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
+		if (!FJsonSerializer::Deserialize(Reader, Obj) || !Obj.IsValid())
+		{
+			return false;
+		}
+
+		FFlockStoredTokens Loaded;
+		Obj->TryGetStringField(TEXT("access_token"), Loaded.AccessToken);
+		Obj->TryGetStringField(TEXT("refresh_token"), Loaded.RefreshToken);
+		FString MethodName;
+		if (Obj->TryGetStringField(TEXT("auth_method"), MethodName))
+		{
+			const int64 Value = StaticEnum<EFlockAuthMethod>()->GetValueByNameString(MethodName);
+			if (Value != INDEX_NONE)
+			{
+				Loaded.AuthMethod = static_cast<EFlockAuthMethod>(Value);
+			}
+		}
+
+		if (Loaded.AccessToken.IsEmpty())
+		{
+			return false;
+		}
+
+		OutTokens = MoveTemp(Loaded);
+		return true;
+	}
 }
 
 FFlockFileTokenStore::FFlockFileTokenStore(const FString& InFilePath, const FString& InKeyContext)
 	: FilePath(InFilePath.IsEmpty() ? DefaultPath() : InFilePath)
 	, KeyContext(InKeyContext)
 {
+	bool bSignInLivesInItsTemporaryFile = false;
+	if (!IFileManager::Get().FileExists(*FilePath))
+	{
+		// A save cut off between the old file's delete and the new one's move leaves the new tokens whole in their temporary
+		// file. The newest one that reads back whole is moved into place, so the next restore still finds the sign-in.
+		for (const FString& TemporaryFile : FFlockTemporaryFiles::FindTemporaryFilesOf(FilePath))
+		{
+			TArray<uint8> Bytes;
+			FFlockStoredTokens Tokens;
+			if (!FFileHelper::LoadFileToArray(Bytes, *TemporaryFile, FILEREAD_Silent) || !DecodeStoredTokens(Bytes, KeyContext, Tokens))
+			{
+				continue;
+			}
+			// One that cannot be moved into place stays where it is: it holds the only copy of the sign-in, and the sweep below
+			// would take it.
+			bSignInLivesInItsTemporaryFile = !FFlockTemporaryFiles::MoveIntoPlace(TemporaryFile, FilePath);
+			break;
+		}
+	}
+	if (!bSignInLivesInItsTemporaryFile)
+	{
+		FFlockTemporaryFiles::DeleteLeftOverFilesOf(FilePath);
+	}
 }
 
 FString FFlockFileTokenStore::DefaultPath()
@@ -81,7 +161,8 @@ void FFlockFileTokenStore::Save(const FFlockStoredTokens& Tokens)
 	}
 
 	FAES::EncryptData(Bytes.GetData(), Bytes.Num(), DeriveKey(KeyContext));
-	FFileHelper::SaveArrayToFile(Bytes, *FilePath);
+	// Through a temporary file, so a crash mid-write never leaves a torn file that fails to decrypt and loses the sign-in.
+	FFlockTemporaryFiles::SaveThenMove(Bytes, FilePath);
 }
 
 bool FFlockFileTokenStore::Load(FFlockStoredTokens& OutTokens)
@@ -93,68 +174,19 @@ bool FFlockFileTokenStore::Load(FFlockStoredTokens& OutTokens)
 		return false;
 	}
 
-	// Anything that fails from here on is a corrupt or foreign-keyed file — remove it so the next
-	// launch doesn't retry a dead payload.
-	auto Corrupt = [this]()
+	// A corrupt or foreign-keyed file is removed so the next launch doesn't retry a dead payload.
+	if (!DecodeStoredTokens(MoveTemp(Bytes), KeyContext, OutTokens))
 	{
 		IFileManager::Get().Delete(*FilePath);
 		return false;
-	};
-
-	if (Bytes.Num() == 0 || Bytes.Num() % AesBlockSize != 0)
-	{
-		return Corrupt();
 	}
-
-	FAES::DecryptData(Bytes.GetData(), Bytes.Num(), DeriveKey(KeyContext));
-
-	const uint8 Pad = Bytes.Last();
-	if (Pad == 0 || Pad > AesBlockSize || Pad > Bytes.Num())
-	{
-		return Corrupt();
-	}
-	for (int32 Index = Bytes.Num() - Pad; Index < Bytes.Num(); ++Index)
-	{
-		if (Bytes[Index] != Pad)
-		{
-			return Corrupt();
-		}
-	}
-	Bytes.SetNum(Bytes.Num() - Pad);
-
-	const FUTF8ToTCHAR Converted(reinterpret_cast<const ANSICHAR*>(Bytes.GetData()), Bytes.Num());
-	const FString Json(Converted.Length(), Converted.Get());
-
-	TSharedPtr<FJsonObject> Obj;
-	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
-	if (!FJsonSerializer::Deserialize(Reader, Obj) || !Obj.IsValid())
-	{
-		return Corrupt();
-	}
-
-	FFlockStoredTokens Loaded;
-	Obj->TryGetStringField(TEXT("access_token"), Loaded.AccessToken);
-	Obj->TryGetStringField(TEXT("refresh_token"), Loaded.RefreshToken);
-	FString MethodName;
-	if (Obj->TryGetStringField(TEXT("auth_method"), MethodName))
-	{
-		const int64 Value = StaticEnum<EFlockAuthMethod>()->GetValueByNameString(MethodName);
-		if (Value != INDEX_NONE)
-		{
-			Loaded.AuthMethod = static_cast<EFlockAuthMethod>(Value);
-		}
-	}
-
-	if (Loaded.AccessToken.IsEmpty())
-	{
-		return Corrupt();
-	}
-
-	OutTokens = MoveTemp(Loaded);
 	return true;
 }
 
 void FFlockFileTokenStore::Clear()
 {
 	IFileManager::Get().Delete(*FilePath);
+	// Every temporary file goes with it, however fresh: tokens saved moments ago must not sign the player back in after a
+	// sign-out.
+	FFlockTemporaryFiles::DeleteTemporaryFilesOf(FilePath);
 }

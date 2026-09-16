@@ -12,6 +12,8 @@
 #include "FlockPlaytestLog.h"
 #include "FlockPlaytestLogger.h"
 #include "FlockPlaytestSettings.h"
+#include "Async/Async.h"
+#include "FlockPlaytestRecordingsFolder.h"
 #include "FlockPlaytestVideoFrameSource.h"
 #include "FlockPlaytestVideoRecording.h"
 #include "FlockProtokiteClient.h"
@@ -96,6 +98,17 @@ void UFlockPlaytestSubsystem::Deinitialize()
 	// The file is finished before the subsystem goes, so what was recorded is kept.
 	FinishVideoRecordingNow(EFlockPlaytestVideoStopReason::GameInstanceShutDown);
 
+	// The folder is let go of only now, not when the recording finished: until the game instance shuts down, a finished
+	// recording is still this launch's. From here on it belongs to a later launch.
+	VideoRecordingRun.Reset();
+
+	// Nothing this subsystem started outlives it, going through earlier launches' recordings included. It holds up shutting
+	// down only when the game quits while that is still going.
+	if (RecordingsFolderFinished.IsValid())
+	{
+		RecordingsFolderFinished.Wait();
+	}
+
 	Super::Deinitialize();
 }
 
@@ -122,6 +135,9 @@ UFlockSubsystem* UFlockPlaytestSubsystem::GetFollowedFlockForTesting() const
 
 void UFlockPlaytestSubsystem::FollowFlockLifecycle(UFlockSubsystem* InFlock)
 {
+	// Before anything can record.
+	FinishWhatEndedRunsLeftInRecordingsFolder();
+
 	Flock = InFlock;
 	if (InFlock)
 	{
@@ -357,6 +373,7 @@ void UFlockPlaytestSubsystem::StartPlaytestSessionWhenAllowed()
 				UE_LOG(LogFlockPlaytest, Log, TEXT("Protokite session %s started for this launch, with the player's %s and Flock session %s."),
 					*Result.Value.SessionId, bSentSteamId ? TEXT("Steam id") : TEXT("device id"),
 					SentFlockSessionId.IsEmpty() ? TEXT("(none)") : *SentFlockSessionId);
+				Self->SaveVideoRecordingSession();
 				return;
 			}
 
@@ -800,14 +817,45 @@ void UFlockPlaytestSubsystem::StartVideoRecordingWhenPossible()
 		return;
 	}
 
-	const FString WhyRecording = IsPlaytestFeatureEnabled(FlockPlaytestFeatures::VideoRecording) ? TEXT("for the playtest")
+	const bool bForThePlaytest = IsPlaytestFeatureEnabled(FlockPlaytestFeatures::VideoRecording);
+	const FString WhyRecording = bForThePlaytest ? TEXT("for the playtest")
 		: bTestVideoRequested ? TEXT("as a test video") : TEXT("because Record Video In Play In Editor is on");
-	const FString FilePath = MakeVideoRecordingPath();
+	const FString RecordingsFolder = GetVideoRecordingsFolder();
 
 	// One attempt per launch, whether or not it starts: a second recording would replace the first when uploaded.
 	bVideoRecordingStartedThisLaunch = true;
+
+	const FFlockPlaytestRecordingsRoom Room = FFlockPlaytestRecordingsFolder::MakeRoom(RecordingsFolder, Settings.DiskBudgetBytes, Settings.BytesToMakeRoomFor());
+	const int64 BudgetMb = Settings.DiskBudgetBytes / (1024 * 1024);
+	for (const FString& Deleted : Room.PlaytestRecordingsDeleted)
+	{
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("Deleted %s, the oldest playtest recording not yet uploaded, to make room for this launch's recording inside Recordings Disk Budget (MB), %lld MB."),
+			*Deleted, BudgetMb);
+	}
+	for (const FString& Deleted : Room.TestVideosDeleted)
+	{
+		UE_LOG(LogFlockPlaytest, Log, TEXT("Deleted the test video %s, the oldest kept, to make room for this launch's recording inside Recordings Disk Budget (MB), %lld MB."),
+			*Deleted, BudgetMb);
+	}
+	if (Room.BytesLeftInBudget < FFlockPlaytestRecordingsFolder::SmallestRoomForARecording)
+	{
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("No video is recorded this launch: the recordings in %s take %.1f MB of Recordings Disk Budget (MB), %lld MB, and none of them can be deleted now, because their games are still running or another program is using them. The budget is in Project Settings > Plugins > Flock Playtest Settings."),
+			*RecordingsFolder, Room.BytesUsed / (1024.0 * 1024.0), BudgetMb);
+		return;
+	}
+
+	// The recording may grow as far as the budget has left, up to its size limit, and its folder says how far, so a launch
+	// making room meanwhile counts it at that size.
+	const int64 SizeLimitBytes = Settings.MaxBytes;
+	Settings.MaxBytes = FMath::Min(Settings.MaxBytes, Room.BytesLeftInBudget);
 	FString StartError;
-	VideoRecording = FFlockPlaytestVideoRecording::Start(Source.ToSharedRef(), Settings, FilePath, StartError, TestBeforeEachVideoEncode);
+	VideoRecordingRun = FFlockPlaytestRecordingRun::Create(RecordingsFolder,
+		bForThePlaytest ? EFlockPlaytestRecordingKind::Playtest : EFlockPlaytestRecordingKind::TestVideo, Settings.MaxBytes, StartError);
+	if (VideoRecordingRun.IsValid())
+	{
+		VideoRecording = FFlockPlaytestVideoRecording::Start(Source.ToSharedRef(), Settings, VideoRecordingRun->GetVideoFilePath(), StartError,
+			TestBeforeEachVideoEncode, TestBeforeEachVideoWrite);
+	}
 	if (!VideoRecording.IsValid())
 	{
 		UE_LOG(LogFlockPlaytest, Warning, TEXT("No video is recorded this launch: the recording could not start, because %s."), *StartError);
@@ -815,19 +863,78 @@ void UFlockPlaytestSubsystem::StartVideoRecordingWhenPossible()
 	}
 
 	const FIntPoint FrameSize = Source->GetFrameSize();
-	UE_LOG(LogFlockPlaytest, Log, TEXT("Recording video %s to %s, at %dx%d and %d frames a second. It stops for good after %.0f seconds of play, before the file passes %lld MB, or when the game stops it."),
-		*WhyRecording, *FilePath, FrameSize.X, FrameSize.Y, Settings.FramesPerSecond, Settings.MaxSeconds, Settings.MaxBytes / (1024 * 1024));
+	const FString CutShorter = Settings.MaxBytes < SizeLimitBytes
+		? FString::Printf(TEXT(" (Recording Size Limit (MB) is %lld MB, but Recordings Disk Budget (MB) has only this much left)"), SizeLimitBytes / (1024 * 1024))
+		: FString();
+	UE_LOG(LogFlockPlaytest, Log, TEXT("Recording video %s to %s, at %dx%d and %d frames a second. It stops for good after %.0f seconds of play, before the file passes %.1f MB%s, or when the game stops it."),
+		*WhyRecording, *VideoRecordingRun->GetVideoFilePath(), FrameSize.X, FrameSize.Y, Settings.FramesPerSecond, Settings.MaxSeconds,
+		Settings.MaxBytes / (1024.0 * 1024.0), *CutShorter);
+
+	// The Protokite session may have started while the recording waited for the game viewport.
+	SaveVideoRecordingSession();
 }
 
-FString UFlockPlaytestSubsystem::MakeVideoRecordingPath() const
+FString UFlockPlaytestSubsystem::GetVideoRecordingsFolder() const
 {
-	const FString Folder = TestVideoRecordingFolder.IsEmpty()
-		? FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("FlockPlaytest"), TEXT("Recordings"))
-		: TestVideoRecordingFolder;
-	const FString Prefix = IsPlaytestFeatureEnabled(FlockPlaytestFeatures::VideoRecording) ? TEXT("recording") : TEXT("test-recording");
-	const FString Name = FString::Printf(TEXT("%s-%s-%s.ivf"), *Prefix, *FDateTime::UtcNow().ToString(TEXT("%Y%m%d-%H%M%S")),
-		*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8).ToLower());
-	return FPaths::ConvertRelativePathToFull(FPaths::Combine(Folder, Name));
+	return TestVideoRecordingFolder.IsEmpty() ? FFlockPlaytestRecordingsFolder::GetDefaultPath() : TestVideoRecordingFolder;
+}
+
+void UFlockPlaytestSubsystem::FinishWhatEndedRunsLeftInRecordingsFolder()
+{
+	// Finishing a recording a crash cut off reads every frame's header: measured, 0.4 to 2.1 s for an hour's recording. So
+	// it runs on a thread of its own and never holds up the game's start. A run it works on is held by it meanwhile, so a
+	// recording that starts before it is done counts that run and never deletes it.
+	const FString RecordingsFolder = GetVideoRecordingsFolder();
+	RecordingsFolderFinished = Async(EAsyncExecution::Thread, [RecordingsFolder, BeforeFinishing = TestBeforeFinishingWhatEndedRunsLeft]()
+	{
+		if (BeforeFinishing)
+		{
+			BeforeFinishing();
+		}
+		const FFlockPlaytestWhatEndedRunsLeft Result = FFlockPlaytestRecordingsFolder::FinishWhatEndedRunsLeft(RecordingsFolder);
+		if (Result.RecordingsWaitingToUpload > 0 || Result.InterruptedRecordingsFinished > 0 || Result.RecordingsWithoutASessionDeleted > 0)
+		{
+			UE_LOG(LogFlockPlaytest, Log, TEXT("Earlier launches left recordings in %s: %d playtest recordings not yet uploaded are kept, waiting to be uploaded; %d recordings cut off when their game ended were finished with every whole frame they held; and %d playtest recordings were deleted, because no Protokite session started for them to be uploaded to."),
+				*RecordingsFolder, Result.RecordingsWaitingToUpload, Result.InterruptedRecordingsFinished, Result.RecordingsWithoutASessionDeleted);
+		}
+		if (Result.FilesLeftForTheNextLaunch.Num() > 0)
+		{
+			UE_LOG(LogFlockPlaytest, Warning, TEXT("%d recording files that earlier launches left could not be finished or deleted, and the next launch tries again (is another program using them?): %s."),
+				Result.FilesLeftForTheNextLaunch.Num(), *FString::Join(Result.FilesLeftForTheNextLaunch, TEXT(", ")));
+		}
+	});
+}
+
+void UFlockPlaytestSubsystem::WaitUntilRecordingsFolderFinishedForTesting()
+{
+	if (RecordingsFolderFinished.IsValid())
+	{
+		RecordingsFolderFinished.Wait();
+	}
+}
+
+void UFlockPlaytestSubsystem::SaveVideoRecordingSession()
+{
+	// Only a playtest recording is uploaded, and only to a session that was started; one the game has ended since still counts.
+	const bool bSessionWasStarted = SessionState == EFlockPlaytestSessionState::Started || SessionState == EFlockPlaytestSessionState::Ended;
+	if (!VideoRecordingRun.IsValid() || VideoRecordingRun->GetKind() != EFlockPlaytestRecordingKind::Playtest || !bSessionWasStarted
+		|| PlaytestSessionId.IsEmpty())
+	{
+		return;
+	}
+
+	// The address and Game Version ID the session started with, whatever the Flock SDK was initialized with since: Protokite
+	// finds the session's playtest from that version. The API key is never saved; a later launch sends its own.
+	FFlockPlaytestRecordingSession Session;
+	Session.ProtokiteSessionId = PlaytestSessionId;
+	Session.ProtokiteApiUrl = PlaytestSessionApiUrl;
+	Session.FlockGameVersionId = PlaytestSessionHeaders.FindRef(TEXT("X-Game-Version-ID"));
+	FString Error;
+	if (!VideoRecordingRun->SaveSession(Session, Error))
+	{
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("The Protokite session this launch's recording belongs to could not be saved beside it, so a later launch cannot upload the recording: %s."),
+			*Error);
+	}
 }
 
 void UFlockPlaytestSubsystem::UpdateVideoPump()
@@ -885,10 +992,16 @@ void UFlockPlaytestSubsystem::ApplyFinishedVideoRecording()
 	const FFlockPlaytestVideoRecordingSummary Summary = VideoRecording->GetSummary();
 	VideoRecording.Reset();
 
-	if (!Summary.Error.IsEmpty())
+	if (!Summary.Error.IsEmpty() && Summary.FilePath.IsEmpty())
 	{
-		UE_LOG(LogFlockPlaytest, Warning, TEXT("The video recording could not be written, so no file was kept: %s. It had stopped because %s."),
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("The video recording could not be written, so no finished file was kept: %s. It had stopped because %s."),
 			*Summary.Error, *DescribeVideoStopReason(Summary.StopReason));
+	}
+	else if (!Summary.Error.IsEmpty())
+	{
+		FinishedVideoRecordingPath = Summary.FilePath;
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("The video recording could not be written to the end: %s. The %d frames written before, %.1f seconds, are kept in %s."),
+			*Summary.Error, Summary.FramesWritten, Summary.VideoSeconds, *Summary.FilePath);
 	}
 	else if (Summary.FilePath.IsEmpty())
 	{
@@ -929,7 +1042,7 @@ namespace
 
 	FAutoConsoleCommandWithWorldArgsAndOutputDevice RecordTestVideoCommand(
 		TEXT("FlockPlaytest.RecordTestVideo"),
-		TEXT("Records this game instance's screen for the given number of seconds, with no playtest needed: FlockPlaytest.RecordTestVideo 60. The file goes to Saved/FlockPlaytest/Recordings and is never uploaded. One video per launch. Not in Shipping builds."),
+		TEXT("Records this game instance's screen for the given number of seconds, with no playtest needed: FlockPlaytest.RecordTestVideo 60. The file goes to Saved/FlockPlaytest/Recordings/TestVideos, is never uploaded, and is kept until Recordings Disk Budget (MB) needs its room. One video per launch. Not in Shipping builds."),
 		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World, FOutputDevice& Output)
 		{
 			double Seconds = 0.0;

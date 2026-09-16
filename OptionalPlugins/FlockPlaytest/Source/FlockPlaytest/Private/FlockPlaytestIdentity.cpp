@@ -6,6 +6,7 @@
 #include "HAL/FileManager.h"
 #include "Interfaces/OnlineIdentityInterface.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
 #include "OnlineSubsystem.h"
 #include "OnlineSubsystemNames.h"
@@ -88,16 +89,10 @@ EFlockDeviceIdFileResult FFlockPlaytestDeviceIdFile::ReadOrCreate(FString& OutDe
 bool FFlockPlaytestDeviceIdFile::SaveNewDeviceId(FString& OutDeviceId) const
 {
 	// Written next to the file and moved over it, so a crash part-way through never leaves half an id behind. The move
-	// gives up at once when it fails: the file manager would otherwise retry for seconds on the game thread and log an
-	// error, and a failure here already has its own answer.
-	const FString TemporaryPath = FString::Printf(TEXT("%s.%s.tmp"), *Path, *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	// gives up at once when it fails, and a failure here already has its own answer.
 	const FString NewDeviceId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
-	const bool bSaved = FFileHelper::SaveStringToFile(NewDeviceId, *TemporaryPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)
-		&& IFileManager::Get().Move(*Path, *TemporaryPath, /*bReplace*/ true, /*bEvenIfReadOnly*/ false, /*bAttributes*/ false,
-			/*bDoNotRetryOrError*/ true);
-	if (!bSaved)
+	if (!FFlockTemporaryFiles::SaveThenMove(NewDeviceId, Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 	{
-		IFileManager::Get().Delete(*TemporaryPath, /*bRequireExists*/ false, /*bEvenReadOnly*/ false, /*bQuiet*/ true);
 		return false;
 	}
 
@@ -115,17 +110,6 @@ bool FFlockPlaytestDeviceIdFile::SaveNewDeviceId(FString& OutDeviceId) const
 void FFlockPlaytestDeviceIdFile::SweepStrayTemporaryFiles() const
 {
 	// A launch that crashed between writing a new id and moving it into place leaves its temporary file behind. A fresh
-	// one may belong to a launch saving right now, so only files older than a minute go.
-	TArray<FString> Found;
-	IFileManager::Get().FindFiles(Found, *(Path + TEXT(".*.tmp")), /*bFiles*/ true, /*bDirectories*/ false);
-	const FString Folder = FPaths::GetPath(Path);
-	const FDateTime OldestKept = FDateTime::UtcNow() - FTimespan::FromMinutes(1.0);
-	for (const FString& Name : Found)
-	{
-		const FString Stray = FPaths::Combine(Folder, Name);
-		if (IFileManager::Get().GetTimeStamp(*Stray) < OldestKept)
-		{
-			IFileManager::Get().Delete(*Stray, /*bRequireExists*/ false, /*bEvenReadOnly*/ false, /*bQuiet*/ true);
-		}
-	}
+	// one may belong to a launch saving right now, so only old ones go.
+	FFlockTemporaryFiles::DeleteLeftOverFilesOf(Path);
 }

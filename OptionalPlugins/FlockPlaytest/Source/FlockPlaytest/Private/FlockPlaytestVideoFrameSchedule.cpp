@@ -3,6 +3,7 @@
 #include "FlockPlaytestVideoFrameSchedule.h"
 
 #include "FlockPlaytestSettings.h"
+#include "FlockPlaytestVideoFile.h"
 
 FFlockPlaytestVideoSettings FFlockPlaytestVideoSettings::FromProjectSettings(const UFlockPlaytestSettings& Settings)
 {
@@ -13,7 +14,17 @@ FFlockPlaytestVideoSettings FFlockPlaytestVideoSettings::FromProjectSettings(con
 	Video.BitrateKbps = FMath::Clamp(Settings.VideoBitrateKbps, 100, 50000);
 	Video.MaxSeconds = FMath::Max(0.1, static_cast<double>(Settings.MaxRecordingMinutes)) * 60.0;
 	Video.MaxBytes = static_cast<int64>(FMath::Max(1, Settings.MaxRecordingSizeMb)) * 1024 * 1024;
+	Video.DiskBudgetBytes = static_cast<int64>(FMath::Max(1, Settings.RecordingsDiskBudgetMb)) * 1024 * 1024;
 	return Video;
+}
+
+int64 FFlockPlaytestVideoSettings::BytesToMakeRoomFor() const
+{
+	// Measured, the encoder went about 5% over its bitrate, so a quarter more leaves room to spare.
+	const double Seconds = FMath::Max(0.0, MaxSeconds);
+	const double VideoBytes = BitrateKbps * 1000.0 / 8.0 * Seconds * 1.25;
+	const double HeaderBytes = FFlockPlaytestVideoFile::FileHeaderBytes + FMath::CeilToDouble(Seconds * FramesPerSecond) * FFlockPlaytestVideoFile::FrameHeaderBytes;
+	return FMath::Min(MaxBytes, static_cast<int64>(FMath::CeilToDouble(VideoBytes + HeaderBytes)));
 }
 
 FIntPoint FitVideoSizeInside(FIntPoint ScreenSize, FIntPoint MaxVideoSize)

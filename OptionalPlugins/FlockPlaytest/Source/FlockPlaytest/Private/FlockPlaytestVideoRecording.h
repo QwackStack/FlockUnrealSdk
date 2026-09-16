@@ -26,7 +26,7 @@ FString DescribeVideoStopReason(EFlockPlaytestVideoStopReason Reason);
 /** What became of a recording, once its file is written. */
 struct FFlockPlaytestVideoRecordingSummary
 {
-	/** The finished file. Empty when none was kept: nothing was captured, or the file could not be written. */
+	/** The finished file. Empty when none was kept: no whole frame was written, or the file could not even be finished. */
 	FString FilePath;
 	EFlockPlaytestVideoStopReason StopReason = EFlockPlaytestVideoStopReason::StoppedByGame;
 	int32 FramesWritten = 0;
@@ -45,7 +45,7 @@ struct FFlockPlaytestVideoRecordingSummary
 	double LongestWaitToEncodeMs = 0.0;
 	/** The longest one frame took to write to the file. */
 	double LongestWriteMs = 0.0;
-	/** Why the file could not be written; empty when it could. */
+	/** Why the recording could not be written to the end; empty when it could. The frames written before can still be kept in FilePath. */
 	FString Error;
 };
 
@@ -53,7 +53,9 @@ struct FFlockPlaytestVideoRecordingSummary
  * One video recording: frames from a source, captured on the schedule, encoded to VP9 and written to a file.
  *
  * The file is written as FilePath plus ".part" and renamed to FilePath once finished, so a file under its final name is
- * always complete; one that could not be written, or holds no frame, is deleted. The game thread only captures and hands
+ * always complete, and one that holds no frame is deleted. A write or an encode that fails does not lose what came before
+ * it: the file is finished with every whole frame written, and one that cannot even be finished stays under ".part" for
+ * the next launch to finish. The game thread only captures and hands
  * frames over. A thread of the recording's own encodes them one at a time, in order, and another writes the encoded frames
  * to the file: measured in live runs, a single write sometimes held the disk for over two seconds, and encoding must not
  * wait for it. At most MaxFramesWaitingToEncode frames wait to be encoded and MaxFramesWaitingToWrite encoded frames wait
@@ -72,11 +74,11 @@ public:
 	/**
 	 * Sets up the encoder and the file and starts capturing. Null, with OutError, when either cannot be set up. A test
 	 * can hand BeforeEachEncodeForTesting or BeforeEachWriteForTesting to hold the encoding or the writing thread before
-	 * each frame.
+	 * each frame; BeforeEachWriteForTesting returning false makes that frame's write fail, the way a full disk does.
 	 */
 	static TSharedPtr<FFlockPlaytestVideoRecording> Start(const TSharedRef<IFlockPlaytestVideoFrameSource>& Source,
 		const FFlockPlaytestVideoSettings& Settings, const FString& FilePath, FString& OutError,
-		TFunction<void()> BeforeEachEncodeForTesting = nullptr, TFunction<void()> BeforeEachWriteForTesting = nullptr);
+		TFunction<void()> BeforeEachEncodeForTesting = nullptr, TFunction<bool()> BeforeEachWriteForTesting = nullptr);
 
 	/** Stops capturing if that has not happened, and waits for the file. */
 	~FFlockPlaytestVideoRecording();

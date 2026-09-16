@@ -19,6 +19,10 @@
  * corrupt file reads as a miss and deletes the file — a bad cache must degrade to a cache miss, never to a
  * failed fetch. There is no TTL: entries live until overwritten by a fresh success, dropped by a scope
  * delete, or pruned by a version change.
+ *
+ * Writes go through a temporary file of their own and a move (FFlockTemporaryFiles), and temporary files
+ * older than a minute are deleted anywhere under the root when a store is built; a fresh one may be another
+ * launch's write. The root is the SDK's own: PruneOtherVersions deletes every other folder in it.
  */
 class FLOCK_API FFlockSnapshotStore
 {

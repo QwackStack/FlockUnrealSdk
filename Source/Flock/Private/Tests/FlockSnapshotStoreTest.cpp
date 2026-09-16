@@ -7,8 +7,12 @@
 #include "Http/FlockSnapshotStore.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformTime.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
+#include "Tests/Support/FlockTemporaryFilesTestSupport.h"
 #include "Tests/Support/FlockRecordingLogger.h"
 
 namespace
@@ -284,6 +288,153 @@ bool FFlockSnapshotLegacyStateMigrationTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("and it is the newer one"), Value.Contains(TEXT("\"op\":1")));
 		TestFalse(TEXT("the legacy copy is not left behind"),
 			Store.TryRead(TEXT("ver-older/command/p-1"), TEXT("pending_writes"), Value));
+	}
+	DeleteTempRoot(Root);
+	return true;
+}
+
+/**
+ * A crash between writing a snapshot and moving it into place leaves its temporary file behind, in whichever scope it was
+ * written. An old one is deleted when a store is built over the folder; a fresh one may be another launch's write.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSnapshotSweepsLeftOverTemporaryFilesTest, "Flock.Http.SnapshotStore.SweepsLeftOverTemporaryFiles",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSnapshotSweepsLeftOverTemporaryFilesTest::RunTest(const FString& Parameters)
+{
+	const FString Root = MakeTempRoot();
+	const FString LeftOver = FFlockTemporaryFiles::MakePath(FPaths::Combine(Root, TEXT("ver-1"), TEXT("config"), TEXT("a_00000000.json")));
+	const FString LeftOverFixedName = FPaths::Combine(Root, TEXT("_state"), TEXT("command"), TEXT("p-1"), TEXT("pending_writes_00000000.json.tmp"));
+	const FString BeingWritten = FFlockTemporaryFiles::MakePath(FPaths::Combine(Root, TEXT("ver-1"), TEXT("config"), TEXT("b_00000000.json")));
+	for (const FString& Path : { LeftOver, LeftOverFixedName, BeingWritten })
+	{
+		TestTrue(TEXT("Precondition: a temporary file is saved"), FFileHelper::SaveStringToFile(TEXT("{\"v\":"), *Path));
+	}
+	FlockMoveTestFileTimeBack(LeftOver);
+	FlockMoveTestFileTimeBack(LeftOverFixedName);
+
+	{
+		const FFlockSnapshotStore Store(Root, MakeLogger(), TEXT("9.9.9"));
+		TestFalse(TEXT("A left-over temporary file in a nested scope is deleted"), IFileManager::Get().FileExists(*LeftOver));
+		TestFalse(TEXT("So is one in the fixed-name form earlier builds wrote"), IFileManager::Get().FileExists(*LeftOverFixedName));
+		TestTrue(TEXT("A fresh one is left for the launch that may be writing it"), IFileManager::Get().FileExists(*BeingWritten));
+	}
+	DeleteTempRoot(Root);
+	return true;
+}
+
+/** Another launch of the game building its store between this launch's write and its move leaves the write alone. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSnapshotKeepsASnapshotAnotherLaunchIsWritingTest, "Flock.Http.SnapshotStore.KeepsASnapshotAnotherLaunchIsWriting",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSnapshotKeepsASnapshotAnotherLaunchIsWritingTest::RunTest(const FString& Parameters)
+{
+	const FString Root = MakeTempRoot();
+	{
+		const TSharedRef<FFlockRecordingLogger> Logger = MakeShared<FFlockRecordingLogger>();
+		FFlockSnapshotStore Store(Root, Logger, TEXT("9.9.9"));
+		TUniquePtr<FFlockSnapshotStore> AnotherLaunch;
+		ON_SCOPE_EXIT { FFlockTemporaryFiles::SetBeforeNextMoveForTesting(nullptr); };
+		FFlockTemporaryFiles::SetBeforeNextMoveForTesting([&AnotherLaunch, &Root](const FString&)
+		{
+			AnotherLaunch = MakeUnique<FFlockSnapshotStore>(Root, MakeLogger(), TEXT("9.9.9"));
+		});
+
+		int32 Complaints = 0;
+		{
+			FFlockFileManagerComplaintCounter Counter;
+			Store.Write(TEXT("ver-1/config"), TEXT("game_config_x"), TEXT("{\"id\":\"cfg-1\"}"));
+			Complaints = Counter.Count();
+		}
+
+		TestTrue(TEXT("Precondition: another launch built its store between the write and the move"), AnotherLaunch.IsValid());
+		FString Payload;
+		TestTrue(TEXT("The snapshot is written"), Store.TryRead(TEXT("ver-1/config"), TEXT("game_config_x"), Payload));
+		TestTrue(TEXT("With its payload"), Payload.Contains(TEXT("\"id\":\"cfg-1\"")));
+		TestEqual(TEXT("Nothing is warned about"), Logger->Warnings.Num(), 0);
+		TestEqual(TEXT("The file manager logs no warning or error"), Complaints, 0);
+	}
+	DeleteTempRoot(Root);
+	return true;
+}
+
+/** Two launches writing the same snapshot at once each write a file of their own, and both writes land. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSnapshotTwoLaunchesOneKeyTest, "Flock.Http.SnapshotStore.TwoLaunchesWritingOneKeyBothLand",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSnapshotTwoLaunchesOneKeyTest::RunTest(const FString& Parameters)
+{
+	const FString Root = MakeTempRoot();
+	{
+		const TSharedRef<FFlockRecordingLogger> ThisLogger = MakeShared<FFlockRecordingLogger>();
+		const TSharedRef<FFlockRecordingLogger> AnotherLogger = MakeShared<FFlockRecordingLogger>();
+		FFlockSnapshotStore ThisLaunch(Root, ThisLogger, TEXT("9.9.9"));
+		FFlockSnapshotStore AnotherLaunch(Root, AnotherLogger, TEXT("9.9.9"));
+		ON_SCOPE_EXIT { FFlockTemporaryFiles::SetBeforeNextMoveForTesting(nullptr); };
+		// The other launch writes the same key after this launch has written its file and before this launch moves it.
+		FFlockTemporaryFiles::SetBeforeNextMoveForTesting([&AnotherLaunch](const FString&)
+		{
+			AnotherLaunch.Write(TEXT("ver-1/config"), TEXT("game_config_x"), TEXT("{\"id\":\"from-another-launch\"}"));
+		});
+
+		int32 Complaints = 0;
+		{
+			FFlockFileManagerComplaintCounter Counter;
+			ThisLaunch.Write(TEXT("ver-1/config"), TEXT("game_config_x"), TEXT("{\"id\":\"from-this-launch\"}"));
+			Complaints = Counter.Count();
+		}
+
+		FString Payload;
+		TestTrue(TEXT("The snapshot reads back"), ThisLaunch.TryRead(TEXT("ver-1/config"), TEXT("game_config_x"), Payload));
+		TestTrue(TEXT("Holding the write that moved into place last"), Payload.Contains(TEXT("from-this-launch")));
+		TestEqual(TEXT("This launch warns about nothing"), ThisLogger->Warnings.Num(), 0);
+		TestEqual(TEXT("Nor does the other launch"), AnotherLogger->Warnings.Num(), 0);
+		TestEqual(TEXT("The file manager logs no warning or error"), Complaints, 0);
+		TArray<FString> Temps;
+		IFileManager::Get().FindFilesRecursive(Temps, *Root, TEXT("*.tmp"), /*Files*/ true, /*Directories*/ false);
+		TestEqual(TEXT("No temporary file is left"), Temps.Num(), 0);
+	}
+	DeleteTempRoot(Root);
+	return true;
+}
+
+/** A write that cannot be moved into place gives up at once, says so, and leaves no temporary file behind. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSnapshotWriteGivesUpAtOnceTest, "Flock.Http.SnapshotStore.AWriteThatCannotMoveGivesUpAtOnce",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSnapshotWriteGivesUpAtOnceTest::RunTest(const FString& Parameters)
+{
+	const FString Root = MakeTempRoot();
+	{
+		const TSharedRef<FFlockRecordingLogger> Logger = MakeShared<FFlockRecordingLogger>();
+		FFlockSnapshotStore Store(Root, Logger, TEXT("9.9.9"));
+		Store.Write(TEXT("ver-1/config"), TEXT("game_config_x"), TEXT("{\"id\":\"cfg-1\"}"));
+		TArray<FString> Written;
+		IFileManager::Get().FindFilesRecursive(Written, *Root, TEXT("*.json"), /*Files*/ true, /*Directories*/ false);
+		TestEqual(TEXT("Precondition: one snapshot is written"), Written.Num(), 1);
+		if (Written.Num() == 1)
+		{
+			// A folder takes the snapshot's place, so a new one can be written beside it but never moved over it.
+			IFileManager::Get().Delete(*Written[0]);
+			IFileManager::Get().MakeDirectory(*Written[0], /*Tree*/ true);
+
+			int32 Complaints = 0;
+			const double StartedAt = FPlatformTime::Seconds();
+			{
+				FFlockFileManagerComplaintCounter Counter;
+				Store.Write(TEXT("ver-1/config"), TEXT("game_config_x"), TEXT("{\"id\":\"cfg-2\"}"));
+				Complaints = Counter.Count();
+			}
+			const double Seconds = FPlatformTime::Seconds() - StartedAt;
+
+			TestTrue(FString::Printf(TEXT("It gives up at once instead of retrying on the game thread (took %.2f s)"), Seconds), Seconds < FlockTestSecondsWithoutARetry);
+			TestEqual(TEXT("The file manager logs no warning or error"), Complaints, 0);
+			TestTrue(TEXT("It warns that the snapshot was not saved"),
+				FFlockRecordingLogger::AnyContains(Logger->Warnings, TEXT("could not save the file")));
+			TArray<FString> Temps;
+			IFileManager::Get().FindFilesRecursive(Temps, *Root, TEXT("*.tmp"), /*Files*/ true, /*Directories*/ false);
+			TestEqual(TEXT("The temporary file written beside it is deleted"), Temps.Num(), 0);
+		}
 	}
 	DeleteTempRoot(Root);
 	return true;

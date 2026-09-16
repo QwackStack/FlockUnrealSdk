@@ -5,6 +5,7 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Analytics/FlockAnalyticsJson.h"
+#include "Analytics/FlockAnalyticsLaunches.h"
 #include "Analytics/FlockLogSink.h"
 #include "Auth/FlockAuthSession.h"
 #include "FlockEvents.h"
@@ -14,6 +15,7 @@
 #include "Misc/App.h"
 #include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockLaunchFolder.h"
 #include "Misc/Paths.h"
 #include "Providers/FlockAnalyticsProvider.h"
 #include "Serialization/JsonReader.h"
@@ -58,6 +60,8 @@ namespace FlockAnalyticsProviderTestHelpers
 	{
 		/** Shared with a second fixture to model a relaunch over the same on-disk state. */
 		FString Dir;
+		/** Only the fixture that made Dir deletes it, so a second launch over the same files never wipes the first's. */
+		bool bOwnsDir = false;
 		TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
 		TSharedRef<FFlockHttpClient> Client;
 		TSharedRef<FFlockMemoryTokenStore> Store = MakeShared<FFlockMemoryTokenStore>();
@@ -73,6 +77,7 @@ namespace FlockAnalyticsProviderTestHelpers
 		explicit FFixture(FFlockAnalyticsConfig Config = FFlockAnalyticsConfig(),
 			const FString& ExistingDir = FString())
 			: Dir(ExistingDir.IsEmpty() ? TempDir() : ExistingDir)
+			, bOwnsDir(ExistingDir.IsEmpty())
 			, Client(MakeShared<FFlockHttpClient>(Fake, MakeShared<FFlockNullLogger>()))
 			, Session(MakeShared<FFlockAuthSession>(Client, Store, MakeShared<FFlockNullLogger>(),
 				TEXT("http://x/v1"), TMap<FString, FString>{ { TEXT("X-Flock-API-Key"), TEXT("k") } }))
@@ -91,8 +96,10 @@ namespace FlockAnalyticsProviderTestHelpers
 			Deps.SessionEndCache = EndCache;
 			EventCache = MakeShared<FFlockMemoryEventCache>(Config.MaxCachedEvents);
 			Deps.AnalyticsEventCache = EventCache;
-			Deps.Session = MakeShared<FFlockSession>(Config, FPaths::Combine(Dir, TEXT("session.json")));
-			Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(true, MarkerPath());
+			// Each fixture is one launch of the game, with an analytics folder of its own under Dir.
+			Deps.Launches = FFlockAnalyticsLaunches::Start(Dir);
+			Deps.Session = MakeShared<FFlockSession>(Config, Deps.Launches->GetSessionStatePath());
+			Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(true, Deps.Launches->GetTerminationMarkerPath());
 			Deps.ConsentStore = MakeShared<FFlockConsentStore>(FPaths::Combine(Dir, TEXT("consent.json")));
 			Deps.Pump = MakeShared<FFlockLifecyclePump>();
 			Deps.bEnableLogSink = false; // a GLog tap inside the runner captures the runner's own errors
@@ -104,7 +111,22 @@ namespace FlockAnalyticsProviderTestHelpers
 				Session, Events, TEXT("http://x/v1"), Config, Deps, TEXT("gv-1"), TEXT("0.7.0"));
 		}
 
-		FString MarkerPath() const { return FPaths::Combine(Dir, TEXT("marker.json")); }
+		/** Lets go of this launch's lock while its files stay, the way a game that crashed looks to the next launch. */
+		void EndLaunchWithoutShuttingDown() const
+		{
+			Deps.Launches->StopHoldingItsFolderForTesting();
+		}
+
+		/** Saves Contents as FileName in a launch folder under ParentDir whose launch has already ended. */
+		static void SaveInAnEndedLaunch(const FString& ParentDir, const FString& FileName, const FString& Contents)
+		{
+			const TSharedPtr<FFlockLaunchFolder> Ended =
+				FFlockLaunchFolder::Create(FPaths::Combine(ParentDir, FFlockAnalyticsLaunches::LaunchesFolderName));
+			if (Ended.IsValid())
+			{
+				FFileHelper::SaveStringToFile(Contents, *FPaths::Combine(Ended->GetPath(), FileName));
+			}
+		}
 
 		// ── routing ──
 		// The fake matches by URL fragment in insertion order, and "analytics/sessions" is a prefix of
@@ -142,7 +164,11 @@ namespace FlockAnalyticsProviderTestHelpers
 		~FFixture()
 		{
 			Provider.Reset();
-			IFileManager::Get().DeleteDirectory(*Dir, false, true);
+			Deps.Launches.Reset();
+			if (bOwnsDir)
+			{
+				IFileManager::Get().DeleteDirectory(*Dir, false, true);
+			}
 		}
 
 		/** The single spooled payload, parsed. */
@@ -884,7 +910,8 @@ bool FFlockAnalyticsSessionRecoveryTest::RunTest(const FString& Parameters)
 	Fix.Provider->Initialize();
 	Fix.Provider->StartSession(TEXT("p-1"));
 	Fix.Provider->TickForTesting(120.f);
-	// The run dies here: no EndSession, no Shutdown.
+	// The run dies here: no EndSession, no Shutdown, and its lock goes with the process.
+	Fix.EndLaunchWithoutShuttingDown();
 
 	{
 		// Same files, new process. A fresh directory would pass even if nothing were persisted at all.
@@ -907,12 +934,120 @@ bool FFlockAnalyticsSessionRecoveryTest::RunTest(const FString& Parameters)
 		// This run exits cleanly, so the launch after it has nothing to recover — the same orphan is
 		// never reported twice.
 		NextLaunch.Provider->EndSession(EFlockSessionEndReason::Quit);
+		NextLaunch.EndLaunchWithoutShuttingDown();
 		{
 			FFixture ThirdLaunch(FFlockAnalyticsConfig(), Fix.Dir);
 			ThirdLaunch.Provider->Initialize();
 			TestEqual(TEXT("a clean exit leaves nothing to recover"), ThirdLaunch.EndCache->PendingCount(), 0);
 		}
 	}
+	return true;
+}
+
+/**
+ * A second game started from the same project folder (two game clients on one machine, Play In Editor beside a standalone
+ * game) while the first still runs neither reports the first as crashed nor ends its session. Once the first dies, the next
+ * launch does both.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSecondLaunchLeavesARunningLaunchAloneTest, "Flock.Analytics.Provider.ASecondLaunchLeavesARunningLaunchAlone",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSecondLaunchLeavesARunningLaunchAloneTest::RunTest(const FString& Parameters)
+{
+	FFixture First;
+	First.Provider->Initialize();
+	First.Provider->StartSession(TEXT("p-1"));
+	First.Provider->TickForTesting(30.f);
+	const FString FirstMarker = First.Deps.Launches->GetTerminationMarkerPath();
+	const FString FirstRecord = First.Deps.Launches->GetSessionStatePath();
+	TestTrue(TEXT("Precondition: the first game leaves a crash marker while it runs"), IFileManager::Get().FileExists(*FirstMarker));
+	TestTrue(TEXT("Precondition: and a live-session record"), IFileManager::Get().FileExists(*FirstRecord));
+
+	{
+		FFixture Second(FFlockAnalyticsConfig(), First.Dir);
+		Second.Provider->Initialize();
+		TestEqual(TEXT("A game started while the first still runs does not report it as crashed"), Second.Provider->GetPendingEventCount(), 0);
+		TestEqual(TEXT("Nor end its session"), Second.EndCache->PendingCount(), 0);
+		TestTrue(TEXT("The first game's marker is still on disk"), IFileManager::Get().FileExists(*FirstMarker));
+		TestTrue(TEXT("So is its live-session record"), IFileManager::Get().FileExists(*FirstRecord));
+	}
+
+	// Control: the first game dies, and the next launch finds what it left.
+	First.EndLaunchWithoutShuttingDown();
+	{
+		FFixture Next(FFlockAnalyticsConfig(), First.Dir);
+		Next.Provider->Initialize();
+		TestEqual(TEXT("Control: once it has died, it is reported as crashed"), Next.Provider->GetPendingEventCount(), 1);
+		TestEqual(TEXT("Control: and its session end is spooled"), Next.EndCache->PendingCount(), 1);
+		TestFalse(TEXT("Control: and its folder is deleted"), IFileManager::Get().FileExists(*FirstRecord));
+	}
+	return true;
+}
+
+/** A launch whose session end could not be spooled is kept, so a later launch still ends that session. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsKeepsLaunchWhoseEndCouldNotBeSpooledTest, "Flock.Analytics.Provider.KeepsALaunchWhoseSessionEndCouldNotBeSpooled",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsKeepsLaunchWhoseEndCouldNotBeSpooledTest::RunTest(const FString& Parameters)
+{
+	FFixture First;
+	First.Provider->Initialize();
+	First.Provider->StartSession(TEXT("p-1"));
+	const FString FirstRecord = First.Deps.Launches->GetSessionStatePath();
+	First.EndLaunchWithoutShuttingDown();
+
+	{
+		// The spool takes nothing, the way a full disk refuses the write.
+		FFlockAnalyticsConfig NothingSpooled;
+		NothingSpooled.MaxCachedEvents = 0;
+		FFixture Full(NothingSpooled, First.Dir);
+		Full.Provider->Initialize();
+		TestEqual(TEXT("Precondition: the session end could not be spooled"), Full.EndCache->PendingCount(), 0);
+		TestEqual(TEXT("Precondition: the crash is reported, sent straight away as nothing is spooled"),
+			Full.CountMethod(TEXT("POST"), TEXT("log_event")), 1);
+		TestTrue(TEXT("The ended launch's record is kept for a later launch"), IFileManager::Get().FileExists(*FirstRecord));
+	}
+	{
+		FFixture Later(FFlockAnalyticsConfig(), First.Dir);
+		Later.Provider->Initialize();
+		TestEqual(TEXT("Its crash was reported once, not again"), Later.Provider->GetPendingEventCount(), 0);
+		TestEqual(TEXT("A later launch spools the session end"), Later.EndCache->PendingCount(), 1);
+		TestFalse(TEXT("And then deletes the ended launch"), IFileManager::Get().FileExists(*FirstRecord));
+	}
+	return true;
+}
+
+/** Session numbers carry on from the launches before: a launch's first session is numbered after the last one's. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionNumbersCarryOnTest, "Flock.Analytics.Provider.SessionNumbersCarryOnAcrossLaunches",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionNumbersCarryOnTest::RunTest(const FString& Parameters)
+{
+	FFixture First;
+	First.Provider->Initialize();
+	First.Provider->StartSession(TEXT("p-1"));
+	First.Provider->EndSession(EFlockSessionEndReason::Quit);
+	First.Provider->StartSession(TEXT("p-1"));
+	TestEqual(TEXT("Precondition: the first launch counted two sessions"), First.Deps.Session->GetSessionNumber(), 2);
+	First.EndLaunchWithoutShuttingDown();
+
+	FFixture Next(FFlockAnalyticsConfig(), First.Dir);
+	Next.Provider->Initialize();
+	Next.Provider->StartSession(TEXT("p-1"));
+	TestEqual(TEXT("The next launch's first session is numbered after them"), Next.Deps.Session->GetSessionNumber(), 3);
+
+	// A launch that starts no session of its own still carries the count on for the launch after it.
+	Next.Provider->EndSession(EFlockSessionEndReason::Quit);
+	Next.EndLaunchWithoutShuttingDown();
+	{
+		FFixture NoSessions(FFlockAnalyticsConfig(), First.Dir);
+		NoSessions.Provider->Initialize();
+		NoSessions.EndLaunchWithoutShuttingDown();
+	}
+	FFixture Later(FFlockAnalyticsConfig(), First.Dir);
+	Later.Provider->Initialize();
+	Later.Provider->StartSession(TEXT("p-1"));
+	TestEqual(TEXT("A launch that started none still carried the count on"), Later.Deps.Session->GetSessionNumber(), 4);
 	return true;
 }
 
@@ -1068,15 +1203,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsTerminationReportTest, "Flock.An
 
 bool FFlockAnalyticsTerminationReportTest::RunTest(const FString& Parameters)
 {
-	FFixture Fix;
+	// Owns the temporary folder; its own launch still runs and has nothing to report.
+	FFixture Owner;
 
-	// Leave behind a tombstone as if the previous run died backgrounded.
+	// Leave behind a tombstone as if an earlier launch died backgrounded.
 	const FString Marker =
 		TEXT("{\"last_state\":\"background\",\"session_id\":\"old-1\",\"server_session_id\":\"srv-old\",")
 		TEXT("\"player_id\":\"p-1\",\"last_alive_utc\":\"2026-07-20T10:00:00Z\",\"exception_count\":2,")
 		TEXT("\"app_version\":\"1.2.3\",\"sdk_version\":\"0.6.0\"}");
-	FFileHelper::SaveStringToFile(Marker, *Fix.MarkerPath());
+	FFixture::SaveInAnEndedLaunch(Owner.Dir, FFlockAnalyticsLaunches::TerminationMarkerFileName, Marker);
 
+	FFixture Fix(FFlockAnalyticsConfig(), Owner.Dir);
 	Fix.Provider->Initialize();
 
 	TestEqual(TEXT("one termination event queued"), Fix.Provider->GetPendingEventCount(), 1);
@@ -1109,8 +1246,9 @@ bool FFlockAnalyticsTerminationReportTest::RunTest(const FString& Parameters)
 	// Reported once only. This must relaunch over the SAME files — a fresh directory would pass even
 	// if the marker were never cleared, which is exactly the bug this guards against.
 	Fix.Cache->Clear();
+	Fix.EndLaunchWithoutShuttingDown();
 	{
-		FFixture NextLaunch(FFlockAnalyticsConfig(), Fix.Dir);
+		FFixture NextLaunch(FFlockAnalyticsConfig(), Owner.Dir);
 		NextLaunch.Provider->Initialize();
 		TestEqual(TEXT("the same death is not reported twice"), NextLaunch.Provider->GetPendingEventCount(), 0);
 	}

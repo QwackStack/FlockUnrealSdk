@@ -5,6 +5,7 @@
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
 #include "Misc/SecureHash.h"
 #include "Dom/JsonObject.h"
@@ -27,6 +28,9 @@ FFlockSnapshotStore::FFlockSnapshotStore(const FString& InRootDirectory, const T
 	, Logger(InLogger)
 	, SdkVersion(InSdkVersion)
 {
+	// A crash between writing a snapshot and moving it into place leaves its temporary file behind, in whichever scope it
+	// was written. Only old ones go: another launch of the game shares this folder, and a fresh one may be its write.
+	FFlockTemporaryFiles::DeleteLeftOverFiles(Root, TEXT("*.tmp"), /*bIncludeSubfolders*/ true);
 }
 
 FString FFlockSnapshotStore::DefaultRoot()
@@ -64,18 +68,12 @@ void FFlockSnapshotStore::Write(const FString& Scope, const FString& Key, const 
 	const FString Path = BuildPath(Scope, Key);
 	FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*FPaths::GetPath(Path));
 
-	// Write to a temp then atomically replace, so a crash mid-write can't leave the prior snapshot deleted
-	// and the new one unwritten (the delete-then-move window).
-	const FString TmpPath = Path + TEXT(".tmp");
-	if (!FFileHelper::SaveStringToFile(Serialized, *TmpPath))
+	// Write to a temporary file of its own then move it over, so a crash mid-write never leaves a truncated snapshot and
+	// another launch writing the same key never touches this write's file. The move deletes the previous snapshot a moment
+	// before the new one lands, so a crash in that moment costs a cache miss.
+	if (!FFlockTemporaryFiles::SaveThenMove(Serialized, Path))
 	{
-		Logger->LogWarning(FString::Printf(TEXT("Snapshot write failed for %s/%s: could not write temp file"), *Scope, *Key));
-		return;
-	}
-	if (!IFileManager::Get().Move(*Path, *TmpPath, /*bReplace*/ true))
-	{
-		Logger->LogWarning(FString::Printf(TEXT("Snapshot write failed for %s/%s: could not replace target"), *Scope, *Key));
-		TryDelete(TmpPath);
+		Logger->LogWarning(FString::Printf(TEXT("Snapshot write failed for %s/%s: could not save the file"), *Scope, *Key));
 	}
 }
 

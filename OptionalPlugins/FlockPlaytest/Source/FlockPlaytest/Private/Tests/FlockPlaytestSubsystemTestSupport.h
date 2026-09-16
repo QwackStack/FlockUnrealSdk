@@ -218,6 +218,8 @@ namespace FlockPlaytestSubsystemTesting
 				FFlockPlaytestFakeTransport::Status(200, FlockPlaytestFixtures::SessionStartBody()));
 			Transport->Answer(FlockPlaytestFixtures::PlaytestSessionEndRoute, FFlockPlaytestFakeTransport::NoContent());
 			Playtest->SetHttpAdapterForTesting(Transport);
+			// Recordings are kept in this fixture's folder too, so what a launch finds there is only what the test put there.
+			Playtest->SetVideoRecordingFolderForTesting(FPaths::Combine(Folder, TEXT("Recordings")));
 			const TSharedRef<uint64> Frame = EngineFrameNumber;
 			Playtest->SetEngineFrameNumberReaderForTesting([Frame]() { return *Frame; });
 			if (bTurnRetriesOff)
@@ -251,6 +253,8 @@ namespace FlockPlaytestSubsystemTesting
 		void StartFlock()
 		{
 			Playtest->FollowFlockLifecycleForTesting(Flock);
+			// What earlier launches left is gone through on a worker thread; a test starts recording once that is done.
+			Playtest->WaitUntilRecordingsFolderFinishedForTesting();
 			Flock->InitializeWithConfig(MakeFlockConfig());
 		}
 

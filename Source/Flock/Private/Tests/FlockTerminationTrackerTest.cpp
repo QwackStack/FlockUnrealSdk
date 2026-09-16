@@ -8,7 +8,9 @@
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 
 namespace
 {
@@ -37,6 +39,37 @@ namespace
 		Seed.SdkVersion = TEXT("0.7.0");
 		return Seed;
 	}
+}
+
+/** The marker is written beside the old one and moved over it, so a kill part-way through never leaves one the next launch drops unread. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockTerminationSavesThroughATemporaryFileTest, "Flock.Analytics.Termination.SavesThroughATemporaryFile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockTerminationSavesThroughATemporaryFileTest::RunTest(const FString& Parameters)
+{
+	const FString Path = MakeTempMarkerPath();
+	FFlockTerminationTracker Tracker(/*bEnabled*/ true, Path);
+	Tracker.BeginTracking(MakeSeed());
+
+	bool bWrittenAside = false;
+	bool bMarkerReadsBack = false;
+	ON_SCOPE_EXIT { FFlockTemporaryFiles::SetBeforeNextMoveForTesting(nullptr); };
+	FFlockTemporaryFiles::SetBeforeNextMoveForTesting([&bWrittenAside, &bMarkerReadsBack, &Path](const FString&)
+	{
+		// The game is killed at this moment: does the next launch still find how it died?
+		bWrittenAside = true;
+		const FFlockTerminationTracker NextLaunch(/*bEnabled*/ false, Path);
+		FFlockTerminationMarker Survivor;
+		bMarkerReadsBack = NextLaunch.ReadSurvivingMarker(Survivor) && Survivor.SessionId == TEXT("sess-1");
+	});
+	Tracker.HandleHeartbeat();
+
+	TestTrue(TEXT("The marker is written to a temporary file of its own first"), bWrittenAside);
+	TestTrue(TEXT("Until it is moved into place, the previous marker still reads back whole"), bMarkerReadsBack);
+	TestEqual(TEXT("No temporary file is left"), FFlockTemporaryFiles::FindTemporaryFilesOf(Path).Num(), 0);
+	Tracker.StopTracking();
+	DeleteTempFile(Path);
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockTerminationClassifyTest, "Flock.Analytics.Termination.Classify",

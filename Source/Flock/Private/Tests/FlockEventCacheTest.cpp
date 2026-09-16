@@ -7,8 +7,12 @@
 #include "Analytics/FlockAnalyticsJson.h"
 #include "Analytics/FlockFileEventCache.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformTime.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
+#include "Tests/Support/FlockTemporaryFilesTestSupport.h"
 #include "Tests/Support/FlockMemoryEventCache.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
 
@@ -295,9 +299,16 @@ bool FFlockEventCacheAtomicWriteTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("a finished write leaves no temp behind"), Temps.Num(), 0);
 	}
 
-	// Stand in for the crash: a temp file that never got moved into place.
-	FFileHelper::SaveStringToFile(FString(TEXT("{\"n\":2")),
-		*FPaths::Combine(Directory, TEXT("0000000000001_deadbeef.json.tmp")));
+	// Stand in for the crash, ten minutes ago: temporary files that never got moved into place, one in the form this build
+	// writes and one in the fixed-name form earlier builds wrote. A fresh one could be another launch's write in progress.
+	const FString LeftOvers[] = {
+		FFlockTemporaryFiles::MakePath(FPaths::Combine(Directory, TEXT("0000000000002_deadbeef.json"))),
+		FPaths::Combine(Directory, TEXT("0000000000001_deadbeef.json.tmp")) };
+	for (const FString& LeftOver : LeftOvers)
+	{
+		FFileHelper::SaveStringToFile(FString(TEXT("{\"n\":2")), *LeftOver);
+		FlockMoveTestFileTimeBack(LeftOver);
+	}
 
 	{
 		FFlockFileEventCache Reloaded(TEXT("log_events"), 100, Root);
@@ -316,6 +327,88 @@ bool FFlockEventCacheAtomicWriteTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("the stray temp is swept at construction"), Temps.Num(), 0);
 	}
 
+	DeleteTempRoot(Root);
+	return true;
+}
+
+/**
+ * Another launch of the game starting between this launch's write and its move (two game clients on one machine, Play In
+ * Editor beside a standalone game) builds its own cache over the same folder. The entry this launch is writing survives it.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockEventCacheKeepsAnEntryAnotherLaunchIsWritingTest, "Flock.Analytics.Cache.KeepsAnEntryAnotherLaunchIsWriting",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockEventCacheKeepsAnEntryAnotherLaunchIsWritingTest::RunTest(const FString& Parameters)
+{
+	const FString Root = MakeTempRoot();
+	{
+		FFlockFileEventCache Cache(TEXT("log_events"), 100, Root);
+		TUniquePtr<FFlockFileEventCache> AnotherLaunch;
+		ON_SCOPE_EXIT { FFlockTemporaryFiles::SetBeforeNextMoveForTesting(nullptr); };
+		FFlockTemporaryFiles::SetBeforeNextMoveForTesting([&AnotherLaunch, &Root](const FString&)
+		{
+			AnotherLaunch = MakeUnique<FFlockFileEventCache>(TEXT("log_events"), 100, Root);
+		});
+
+		FString Handle;
+		int32 Complaints = 0;
+		const double StartedAt = FPlatformTime::Seconds();
+		{
+			FFlockFileManagerComplaintCounter Counter;
+			Handle = Cache.Enqueue(TEXT("{\"n\":1}"));
+			Complaints = Counter.Count();
+		}
+		const double Seconds = FPlatformTime::Seconds() - StartedAt;
+
+		TestTrue(TEXT("Precondition: another launch started between the write and the move"), AnotherLaunch.IsValid());
+		if (AnotherLaunch.IsValid())
+		{
+			TestEqual(TEXT("Another launch does not take the write in progress for an entry"), AnotherLaunch->PendingCount(), 0);
+		}
+		TestFalse(TEXT("The entry is queued"), Handle.IsEmpty());
+		FString Payload;
+		TestTrue(TEXT("And reads back"), Cache.Read(Handle, Payload));
+		TestEqual(TEXT("Intact"), Payload, FString(TEXT("{\"n\":1}")));
+		TestTrue(FString::Printf(TEXT("Without a wait (took %.2f s)"), Seconds), Seconds < FlockTestSecondsWithoutARetry);
+		TestEqual(TEXT("The file manager logs no warning or error"), Complaints, 0);
+	}
+	DeleteTempRoot(Root);
+	return true;
+}
+
+/** A rewrite that cannot be moved into place gives up at once and leaves no temporary file behind. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockEventCacheWriteGivesUpAtOnceTest, "Flock.Analytics.Cache.AWriteThatCannotMoveGivesUpAtOnce",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockEventCacheWriteGivesUpAtOnceTest::RunTest(const FString& Parameters)
+{
+	const FString Root = MakeTempRoot();
+	const FString Directory = FPaths::Combine(Root, TEXT("log_events"));
+	{
+		FFlockFileEventCache Cache(TEXT("log_events"), 100, Root);
+		const FString Handle = Cache.Enqueue(TEXT("{\"n\":1}"));
+		TestFalse(TEXT("Precondition: an entry is queued"), Handle.IsEmpty());
+
+		// A folder takes the entry's place, so a rewrite can be written beside it but never moved over it.
+		const FString EntryPath = FPaths::Combine(Directory, Handle + TEXT(".json"));
+		IFileManager::Get().Delete(*EntryPath);
+		IFileManager::Get().MakeDirectory(*EntryPath, /*Tree*/ true);
+
+		int32 Complaints = 0;
+		const double StartedAt = FPlatformTime::Seconds();
+		{
+			FFlockFileManagerComplaintCounter Counter;
+			Cache.Replace(Handle, TEXT("{\"n\":2}"));
+			Complaints = Counter.Count();
+		}
+		const double Seconds = FPlatformTime::Seconds() - StartedAt;
+
+		TestTrue(FString::Printf(TEXT("It gives up at once instead of retrying on the game thread (took %.2f s)"), Seconds), Seconds < FlockTestSecondsWithoutARetry);
+		TestEqual(TEXT("The file manager logs no warning or error"), Complaints, 0);
+		TArray<FString> Temps;
+		IFileManager::Get().FindFiles(Temps, *FPaths::Combine(Directory, TEXT("*.tmp")), /*Files*/ true, /*Directories*/ false);
+		TestEqual(TEXT("The temporary file written beside it is deleted"), Temps.Num(), 0);
+	}
 	DeleteTempRoot(Root);
 	return true;
 }

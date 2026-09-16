@@ -130,7 +130,7 @@ struct FFlockPlaytestVideoRecording::FWriter : public TSharedFromThis<FFlockPlay
 	FString FinishedPath;
 	FString PartPath;
 	TFunction<void()> BeforeEachEncodeForTesting;
-	TFunction<void()> BeforeEachWriteForTesting;
+	TFunction<bool()> BeforeEachWriteForTesting;
 
 	/** Where encoded frames go to be written. Owned by the recording, which waits for all work before it goes. */
 	FWorkerThread* FileThread = nullptr;
@@ -150,6 +150,8 @@ struct FFlockPlaytestVideoRecording::FWriter : public TSharedFromThis<FFlockPlay
 	double LongestWaitToEncodeSeconds = 0.0;
 	FString EncodeError;
 	FString KeptPath;
+	int32 FramesInKeptFile = 0;
+	int64 BytesInKeptFile = 0;
 
 	// The file thread's.
 	double LongestWriteSeconds = 0.0;
@@ -214,13 +216,10 @@ struct FFlockPlaytestVideoRecording::FWriter : public TSharedFromThis<FFlockPlay
 	{
 		if (!bCouldNotWrite)
 		{
-			// A test's hold stands in for a disk that holds the write, so it is timed as part of the write.
+			// A test's hook stands in for a disk that holds the write, or refuses it, so it is timed as part of the write.
 			const double WriteStartSeconds = FPlatformTime::Seconds();
-			if (BeforeEachWriteForTesting)
-			{
-				BeforeEachWriteForTesting();
-			}
-			const bool bFrameWritten = File.WriteFrame(Bytes, TimestampMs);
+			const bool bDiskTakesTheWrite = !BeforeEachWriteForTesting || BeforeEachWriteForTesting();
+			const bool bFrameWritten = bDiskTakesTheWrite && File.WriteFrame(Bytes, TimestampMs);
 			LongestWriteSeconds = FMath::Max(LongestWriteSeconds, FPlatformTime::Seconds() - WriteStartSeconds);
 			if (!bFrameWritten)
 			{
@@ -257,13 +256,18 @@ struct FFlockPlaytestVideoRecording::FWriter : public TSharedFromThis<FFlockPlay
 			bCouldNotWrite = true;
 		}
 
-		IFileManager& FileManager = IFileManager::Get();
-		if (!bCouldNotWrite && File.GetFramesWritten() > 0)
+		if (!bCouldNotWrite)
 		{
-			if (FileManager.Move(*FinishedPath, *PartPath, /*Replace*/ true, /*EvenIfReadOnly*/ true, /*Attributes*/ false,
+			if (File.GetFramesWritten() == 0)
+			{
+				IFileManager::Get().Delete(*PartPath, /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
+			}
+			else if (IFileManager::Get().Move(*FinishedPath, *PartPath, /*Replace*/ true, /*EvenIfReadOnly*/ true, /*Attributes*/ false,
 				/*bDoNotRetryOrError*/ true))
 			{
 				KeptPath = FinishedPath;
+				FramesInKeptFile = File.GetFramesWritten();
+				BytesInKeptFile = File.GetBytesWritten();
 			}
 			else
 			{
@@ -271,9 +275,25 @@ struct FFlockPlaytestVideoRecording::FWriter : public TSharedFromThis<FFlockPlay
 				bCouldNotWrite = true;
 			}
 		}
-		if (KeptPath.IsEmpty())
+		if (bCouldNotWrite)
 		{
-			FileManager.Delete(*PartPath, /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
+			// What was recorded before the failure is not lost: the file is finished with every whole frame it holds. One that
+			// cannot even be finished now stays as it is, for the next launch to finish.
+			int32 FramesKept = 0;
+			FString FinishError;
+			switch (FFlockPlaytestVideoFile::FinishInterruptedFile(PartPath, FinishedPath, FramesKept, FinishError))
+			{
+			case EFlockPlaytestInterruptedVideoResult::Finished:
+				KeptPath = FinishedPath;
+				FramesInKeptFile = FramesKept;
+				BytesInKeptFile = IFileManager::Get().FileSize(*FinishedPath);
+				break;
+			case EFlockPlaytestInterruptedVideoResult::HeldNoFrame:
+				break;
+			case EFlockPlaytestInterruptedVideoResult::CouldNotFinish:
+				WriteError = WriteError.IsEmpty() ? FinishError : WriteError + TEXT("; ") + FinishError;
+				break;
+			}
 		}
 		bWritten = true;
 	}
@@ -281,7 +301,7 @@ struct FFlockPlaytestVideoRecording::FWriter : public TSharedFromThis<FFlockPlay
 
 TSharedPtr<FFlockPlaytestVideoRecording> FFlockPlaytestVideoRecording::Start(const TSharedRef<IFlockPlaytestVideoFrameSource>& Source,
 	const FFlockPlaytestVideoSettings& Settings, const FString& FilePath, FString& OutError, TFunction<void()> BeforeEachEncodeForTesting,
-	TFunction<void()> BeforeEachWriteForTesting)
+	TFunction<bool()> BeforeEachWriteForTesting)
 {
 	const TSharedRef<FWriter> Writer = MakeShared<FWriter>();
 	Writer->Settings = Settings;
@@ -402,8 +422,9 @@ FFlockPlaytestVideoRecordingSummary FFlockPlaytestVideoRecording::GetSummary() c
 	Summary.FilePath = Writer->KeptPath;
 	Summary.Error = Writer->EncodeError.IsEmpty() ? Writer->WriteError
 		: Writer->WriteError.IsEmpty() ? Writer->EncodeError : Writer->EncodeError + TEXT("; ") + Writer->WriteError;
-	Summary.FramesWritten = Writer->File.GetFramesWritten();
-	Summary.BytesWritten = Writer->File.GetBytesWritten();
+	// A file finished after a failed write keeps the whole frames found in it, which is what it plays.
+	Summary.FramesWritten = Summary.FilePath.IsEmpty() ? Writer->File.GetFramesWritten() : Writer->FramesInKeptFile;
+	Summary.BytesWritten = Summary.FilePath.IsEmpty() ? Writer->File.GetBytesWritten() : Writer->BytesInKeptFile;
 	Summary.FramesDroppedBecauseWritingFellBehind = Writer->FramesDroppedBecauseWritingFellBehind;
 	if (Summary.FramesWritten > 0)
 	{

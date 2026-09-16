@@ -67,6 +67,9 @@ namespace
 				Test->TestEqual(TEXT("Every frame decodes"), DecodeVideoFile(File, PictureSize, Brightness), File.Frames.Num());
 				Test->TestTrue(FString::Printf(TEXT("The picture is not blank (average brightness %.1f)"), Brightness), Brightness > 17.0);
 			}
+			Test->TestTrue(FString::Printf(TEXT("Saved as a test video under the project's recordings folder (%s)"), *Path),
+				FPaths::IsUnderDirectory(Path, FFlockPlaytestRecordingsFolder::GetKindFolder(FFlockPlaytestRecordingsFolder::GetDefaultPath(),
+					EFlockPlaytestRecordingKind::TestVideo)));
 			IFileManager::Get().Delete(*Path, /*RequireExists*/ false, /*EvenReadOnly*/ false, /*Quiet*/ true);
 			return true;
 		}
@@ -106,13 +109,20 @@ namespace
 		virtual bool Update() override
 		{
 			const double ElapsedSeconds = FPlatformTime::Seconds() - StartSeconds;
-			Recording->AddFrame(FApp::GetDeltaTime());
+			// For ten frames before the latency changes no frame is asked for, so each one asked for earlier has reached the
+			// grabber. When the latency changes while a frame is on its way, the engine's grabber flushes rendering commands from
+			// the render thread, which stops the engine on a check: measured in this test, three runs out of three.
+			const bool bLettingFramesArrive = !bLatencySet && ElapsedSeconds > 2.0;
+			if (!bLettingFramesArrive)
+			{
+				Recording->AddFrame(FApp::GetDeltaTime());
+			}
 			if (!bResized && ElapsedSeconds > 1.0)
 			{
 				bResized = true;
 				GEngine->Exec(World.Get(), TEXT("r.SetRes 960x540w"));
 			}
-			if (!bLatencySet && ElapsedSeconds > 2.0)
+			if (bLettingFramesArrive && ++FramesLetArrive >= 10)
 			{
 				bLatencySet = true;
 				NotReadyBeforeLatency = Recording->GetSummary().FramesNotReadyInTime;
@@ -167,6 +177,7 @@ namespace
 		double StartSeconds;
 		bool bResized = false;
 		bool bLatencySet = false;
+		int32 FramesLetArrive = 0;
 		int32 NotReadyBeforeLatency = 0;
 	};
 }

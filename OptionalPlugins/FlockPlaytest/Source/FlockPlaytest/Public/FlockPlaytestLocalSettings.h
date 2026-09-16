@@ -23,7 +23,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/**
 	 * Record a video every time you play in the editor, with no playtest needed. The file is saved under
-	 * Saved/FlockPlaytest/Recordings, never uploaded, and its path is logged when it is saved. It uses the Video
+	 * Saved/FlockPlaytest/Recordings/TestVideos, never uploaded, and its path is logged when it is saved. It uses the Video
 	 * Recording settings in Flock Playtest Settings, and takes effect the next time you press Play.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Video Recording", meta = (DisplayName = "Record Video In Play In Editor"))

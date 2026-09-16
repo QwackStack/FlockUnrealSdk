@@ -4,12 +4,12 @@
 
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
 
 namespace
 {
 	const TCHAR* const CacheExtension = TEXT(".cache");
-	const TCHAR* const TempExtension = TEXT(".tmp");
 	const TCHAR* const DefaultFolder = TEXT("Flock/assets");
 }
 
@@ -20,7 +20,9 @@ FFlockAssetCache::FFlockAssetCache(const FString& InDirectory, int32 InMaxSizeMB
 	, MaxSizeBytes(InMaxSizeMB > 0 ? static_cast<int64>(InMaxSizeMB) * 1024 * 1024 : 0)
 	, Logger(InLogger)
 {
-	SweepTempFiles();
+	// A download that died part-way leaves its temporary file behind. Only old ones go: another launch of the game shares
+	// this folder, and a fresh one may be a download it is still writing or about to commit.
+	FFlockTemporaryFiles::DeleteLeftOverFiles(Directory, TEXT("*.tmp"), /*bIncludeSubfolders*/ false);
 }
 
 FString FFlockAssetCache::GetFinalPath(const FString& AssetId, const FString& VersionToken) const
@@ -52,7 +54,8 @@ bool FFlockAssetCache::Contains(const FString& AssetId, const FString& VersionTo
 FString FFlockAssetCache::BeginWrite(const FString& AssetId, const FString& VersionToken)
 {
 	IFileManager::Get().MakeDirectory(*Directory, /*Tree*/ true);
-	return GetFinalPath(AssetId, VersionToken) + TempExtension;
+	// A file of its own for every download: another launch of the game downloading the same version writes beside it.
+	return FFlockTemporaryFiles::MakePath(GetFinalPath(AssetId, VersionToken));
 }
 
 FString FFlockAssetCache::Commit(const FString& AssetId, const FString& VersionToken, const FString& TempPath)
@@ -61,7 +64,7 @@ FString FFlockAssetCache::Commit(const FString& AssetId, const FString& VersionT
 
 	// Move first, prune second: losing the old copy before the new one is in place would turn a failed
 	// move into "no cached asset at all" instead of "still the previous version".
-	if (!IFileManager::Get().Move(*FinalPath, *TempPath, /*bReplace*/ true))
+	if (!FFlockTemporaryFiles::MoveIntoPlace(TempPath, FinalPath))
 	{
 		Logger->LogWarning(FString::Printf(TEXT("Asset cache: couldn't commit '%s' into place"), *AssetId));
 		return FString();
@@ -168,17 +171,6 @@ void FFlockAssetCache::EnforceMaxSize()
 			Logger->LogDebug(FString::Printf(TEXT("Asset cache: evicted '%s' to stay under budget"),
 				*FPaths::GetCleanFilename(Entry.Path)));
 		}
-	}
-}
-
-void FFlockAssetCache::SweepTempFiles() const
-{
-	TArray<FString> Files;
-	IFileManager::Get().FindFiles(Files, *FPaths::Combine(Directory, FString::Printf(TEXT("*%s"), TempExtension)), true, false);
-
-	for (const FString& File : Files)
-	{
-		IFileManager::Get().Delete(*FPaths::Combine(Directory, File), /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
 	}
 }
 

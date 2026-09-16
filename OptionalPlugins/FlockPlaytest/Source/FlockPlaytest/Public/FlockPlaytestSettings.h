@@ -66,4 +66,13 @@ public:
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Video Recording", meta = (DisplayName = "Recording Size Limit (MB)", ClampMin = "1"))
 	int32 MaxRecordingSizeMb = 1536;
+
+	/**
+	 * How many megabytes the recordings in Saved/FlockPlaytest/Recordings may take together. A playtest recording that has
+	 * not been uploaded is kept there, and so is a test video. Before a recording starts, the oldest recordings of games
+	 * that are no longer running are deleted until it fits. When even that leaves less room than Recording Size Limit, the
+	 * recording is cut shorter; with less than 1 MB left, none starts.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Video Recording", meta = (DisplayName = "Recordings Disk Budget (MB)", ClampMin = "1"))
+	int32 RecordingsDiskBudgetMb = 4096;
 };

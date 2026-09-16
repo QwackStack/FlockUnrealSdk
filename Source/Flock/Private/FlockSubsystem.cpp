@@ -2,6 +2,7 @@
 
 #include "FlockSubsystem.h"
 
+#include "Analytics/FlockAnalyticsLaunches.h"
 #include "Analytics/FlockFileEventCache.h"
 #include "Flock.h"
 #include "FlockEvents.h"
@@ -12,7 +13,7 @@
 #include "Engine/World.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.15.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.16.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -211,25 +212,35 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	if (AnalyticsConfig.bEnabled)
 	{
 		FFlockAnalyticsDependencies Deps;
+		// Every launch keeps its queues, crash marker and live-session record in a folder of its own, locked while it runs, and
+		// takes over the files of launches that have ended. Another game started from the same project folder is never
+		// reported as crashed, has its session ended, or has its queued entries sent a second time.
+		const TSharedRef<FFlockAnalyticsLaunches> Launches = FFlockAnalyticsLaunches::Start(FFlockAnalyticsLaunches::DefaultFolder());
+		if (!Launches->IsHoldingItsFolder())
+		{
+			LoggerRef->LogWarning(FString::Printf(TEXT("Could not lock a folder for this launch's analytics files under %s, so ")
+				TEXT("launches that ended before this one are not reported this time."), *FFlockAnalyticsLaunches::DefaultFolder()));
+		}
+		Deps.Launches = Launches;
 		// A cap of zero is how "don't spool" is expressed, so the caching switch maps onto it.
-		Deps.LogEventCache = MakeShared<FFlockFileEventCache>(TEXT("log_events"),
-			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedEvents : 0);
+		Deps.LogEventCache = MakeShared<FFlockFileEventCache>(FFlockAnalyticsLaunches::LogEventsQueueName,
+			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedEvents : 0, Launches->GetFolder());
 		// Its own queue, so ends drain ahead of events and erasing one leaves the other alone.
-		Deps.SessionEndCache = MakeShared<FFlockFileEventCache>(TEXT("session_ends"),
-			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedSessionEnds : 0);
+		Deps.SessionEndCache = MakeShared<FFlockFileEventCache>(FFlockAnalyticsLaunches::SessionEndsQueueName,
+			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedSessionEnds : 0, Launches->GetFolder());
 		// Gameplay events get a third, so a log storm can never evict one. No game version in the path: a build
 		// shipping a new version must not delete the previous one's unsent events.
-		Deps.AnalyticsEventCache = MakeShared<FFlockFileEventCache>(TEXT("analytics_events"),
-			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedEvents : 0);
-		Deps.Session = MakeShared<FFlockSession>(AnalyticsConfig);
+		Deps.AnalyticsEventCache = MakeShared<FFlockFileEventCache>(FFlockAnalyticsLaunches::AnalyticsEventsQueueName,
+			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedEvents : 0, Launches->GetFolder());
+		Deps.Session = MakeShared<FFlockSession>(AnalyticsConfig, Launches->GetSessionStatePath());
 		// Off in the editor: a PIE shutdown is not a real app death and would be reported as a crash.
 		Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(
-			AnalyticsConfig.bPersistSessionOnDisk && !GIsEditor);
+			AnalyticsConfig.bPersistSessionOnDisk && !GIsEditor, Launches->GetTerminationMarkerPath());
+		// The consent decision and the coverage notice belong to the install, so every launch shares them.
 		Deps.ConsentStore = MakeShared<FFlockConsentStore>();
 		Deps.Pump = MakeShared<FFlockLifecyclePump>();
 		Deps.bEnableLogSink = true;
-		Deps.CoverageNoticeMarkerPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Flock"), TEXT("analytics"),
-			TEXT("coverage_notice.txt"));
+		Deps.CoverageNoticeMarkerPath = FPaths::Combine(FFlockAnalyticsLaunches::DefaultFolder(), TEXT("coverage_notice.txt"));
 
 		AnalyticsProvider = MakeShared<FFlockAnalyticsProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 			AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl(), AnalyticsConfig, Deps,

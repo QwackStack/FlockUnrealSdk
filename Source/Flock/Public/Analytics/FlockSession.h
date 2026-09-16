@@ -28,15 +28,17 @@ public:
 	/** Screen names kept per session; the view *count* is uncapped. */
 	static constexpr int32 MaxTrackedScreenNames = 100;
 
-	/** An empty InStateFilePath uses DefaultStatePath(). */
-	explicit FFlockSession(const FFlockAnalyticsConfig& InConfig, const FString& InStateFilePath = FString(),
-		FClock InClock = FClock());
+	/**
+	 * InStateFilePath carries the session counter and the live session while one is open. It belongs to one launch of the game
+	 * (FFlockAnalyticsLaunches::GetSessionStatePath): two games running at once must never share it.
+	 */
+	explicit FFlockSession(const FFlockAnalyticsConfig& InConfig, const FString& InStateFilePath, FClock InClock = FClock());
 
 	/**
-	 * `<ProjectSavedDir>/Flock/analytics/session_state.json` — carries the session counter across
-	 * runs, and the live session while one is open.
+	 * Session numbers carry on across launches: this launch's next session is numbered after EarlierSessionNumber, and the
+	 * new count is written to this launch's record at once, because the launch it came from is about to be deleted.
 	 */
-	static FString DefaultStatePath();
+	void ContinueSessionNumbersFrom(int32 EarlierSessionNumber);
 
 	// ── Lifecycle ──
 
