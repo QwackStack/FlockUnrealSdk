@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 34,
-	"VersionName": "1.16.0",
+	"Version": 35,
+	"VersionName": "1.17.0",
 	"FriendlyName": "Flock Playtest",
 	"Description": "Optional Protokite playtesting plugin for the Flock SDK, in beta. Installed separately, and off until you turn it on.",
 	"Category": "Online Platform",

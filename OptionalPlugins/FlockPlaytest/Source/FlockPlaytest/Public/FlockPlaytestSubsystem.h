@@ -18,7 +18,9 @@
 
 class FFlockPlaytestRecordingRun;
 class FFlockPlaytestVideoRecording;
+class FFlockPlaytestRecordingUploads;
 class FFlockProtokiteClient;
+class IFlockFileUploader;
 class IFlockPlaytestVideoFrameSource;
 class UFlockSubsystem;
 enum class EFlockPlaytestVideoStopReason : uint8;
@@ -132,6 +134,18 @@ public:
 	 */
 	bool StopVideoRecording();
 
+	/**
+	 * Stops this launch's recording and uploads it straight away, while the player is still in the game -- what the
+	 * feedback form's "upload what I recorded" button calls.
+	 *
+	 * **Opening the form does not do this on its own** (owner, 2026-09-16): capture runs until the player asks for it to
+	 * stop, or a length or size limit ends it. Returns false, and changes nothing, when no recording is capturing.
+	 *
+	 * Uploading is not waited for. A recording that does not make it stays on disk and a later launch pushes it, so
+	 * nothing is lost by the game closing meanwhile.
+	 */
+	bool StopVideoRecordingAndUploadIt();
+
 	/** The finished file of this launch's video recording. Empty until one has been saved. */
 	const FString& GetFinishedVideoRecordingPath() const { return FinishedVideoRecordingPath; }
 
@@ -217,6 +231,9 @@ public:
 	/** Waits until what earlier launches left in the recordings folder has been gone through. */
 	void WaitUntilRecordingsFolderFinishedForTesting();
 
+	/** Sends recordings through this instead of the network. Set before a recording finishes. */
+	void SetFileUploaderForTesting(const TSharedPtr<IFlockFileUploader>& InUploader) { TestFileUploader = InUploader; }
+
 	/** Hands the video recording one frame through the same ticker path the engine drives, background pause included. */
 	void TickVideoRecordingForTesting(float FrameSeconds) { VideoPump.TickForTesting(FrameSeconds); }
 
@@ -300,6 +317,21 @@ private:
 	 * worker thread, which logs what it did. Called when following starts.
 	 */
 	void FinishWhatEndedRunsLeftInRecordingsFolder();
+
+	/** The uploader, built on first use so a launch that never records never makes one. */
+	TSharedRef<FFlockPlaytestRecordingUploads> GetOrCreateRecordingUploads();
+
+	/** Sends this launch's own finished recording, which this launch still holds the run of. */
+	void UploadThisLaunchsRecording();
+
+	/**
+	 * Pushes recordings earlier launches left, once Flock has initialized and the launch pass has finished with them.
+	 *
+	 * **This runs whether or not playtesting is on** (owner, 2026-09-16): a launch with playtesting switched off still
+	 * pushes what is waiting, and does nothing else -- it records nothing and starts no session. Otherwise turning
+	 * playtesting off would strand every recording an earlier launch could not send.
+	 */
+	void StartUploadingWhatEarlierLaunchesLeft();
 
 	/**
 	 * Saves this launch's Protokite session beside its playtest recording once both exist, so a later launch can upload the
@@ -434,6 +466,24 @@ private:
 
 	/** Set once a recording has been started this launch, whatever became of it. */
 	bool bVideoRecordingStartedThisLaunch = false;
+
+	/** Sends finished recordings to Protokite. Built when the first one is ready to go. */
+	TSharedPtr<FFlockPlaytestRecordingUploads> RecordingUploads;
+
+	/** Stands in for the network in tests. */
+	TSharedPtr<IFlockFileUploader> TestFileUploader;
+
+	/**
+	 * Set as teardown starts, before anything is stopped. Uploading reads it: a whole recording cannot be sent inside a
+	 * shutdown, so one finished by teardown is left for a later launch instead of started and abandoned.
+	 */
+	bool bDeinitializing = false;
+
+	/** Set once this launch has begun pushing what earlier launches left, so it is begun exactly once. */
+	bool bStartedUploadingWhatEarlierLaunchesLeft = false;
+
+	/** Waits for Flock to initialize and the launch pass to finish before pushing what earlier launches left. */
+	FTSTicker::FDelegateHandle WaitingToUploadEarlierRecordings;
 
 	/** Why video can never be recorded in this process, once found; empty otherwise. */
 	FString VideoRecordingUnavailableReason;
