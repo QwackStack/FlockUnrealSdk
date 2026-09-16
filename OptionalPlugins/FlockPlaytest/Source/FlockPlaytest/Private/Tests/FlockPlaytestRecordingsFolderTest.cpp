@@ -31,11 +31,25 @@ namespace
 		}
 	};
 
-	void AppendRecordingsTestLittleEndian(TArray<uint8>& Bytes, uint64 Value, int32 ByteCount)
+	/** An EBML size: big-endian, behind a leading 1 bit saying how many bytes it takes. */
+	void AppendRecordingsTestVint(TArray<uint8>& Bytes, uint64 Value, int32 Width)
 	{
-		for (int32 Index = 0; Index < ByteCount; ++Index)
+		for (int32 Index = 0; Index < Width; ++Index)
 		{
-			Bytes.Add(static_cast<uint8>((Value >> (8 * Index)) & 0xFF));
+			uint8 Byte = static_cast<uint8>((Value >> (8 * (Width - 1 - Index))) & 0xFF);
+			if (Index == 0)
+			{
+				Byte |= static_cast<uint8>(1 << (8 - Width));
+			}
+			Bytes.Add(Byte);
+		}
+	}
+
+	void AppendRecordingsTestBigEndian(TArray<uint8>& Bytes, uint64 Value, int32 Width)
+	{
+		for (int32 Index = 0; Index < Width; ++Index)
+		{
+			Bytes.Add(static_cast<uint8>((Value >> (8 * (Width - 1 - Index))) & 0xFF));
 		}
 	}
 
@@ -50,31 +64,52 @@ namespace
 		return Bytes;
 	}
 
+	/** A cluster header claiming a frame whose bytes never arrived: what a recording cut off mid-frame leaves behind. */
 	void AppendRecordingsTestFrameHeader(TArray<uint8>& Bytes, int32 FrameIndex, int32 FrameBytes)
 	{
-		AppendRecordingsTestLittleEndian(Bytes, static_cast<uint64>(FrameBytes), 4);
-		AppendRecordingsTestLittleEndian(Bytes, static_cast<uint64>(FrameIndex * 33), 8);
+		Bytes.Append({ 0x1F, 0x43, 0xB6, 0x75 });
+		AppendRecordingsTestVint(Bytes, static_cast<uint64>(15 + FrameBytes), 4);
+		Bytes.Add(0xE7);
+		Bytes.Add(0x84);
+		AppendRecordingsTestBigEndian(Bytes, static_cast<uint64>(FrameIndex * 33), 4);
+		Bytes.Add(0xA3);
+		AppendRecordingsTestVint(Bytes, static_cast<uint64>(4 + FrameBytes), 4);
+		Bytes.Append({ 0x81, 0x00, 0x00, 0x00 });
 	}
 
-	/** A video file laid out the way the recording writes one: its header, counting FrameCountInHeader, then Frames frames. */
-	TArray<uint8> MakeRecordingsTestVideoBytes(int32 Frames, int32 FrameBytes, int32 FrameCountInHeader)
+	/**
+	 * Video bytes laid out the way a recording writes them, produced by the writer itself so this fixture cannot drift
+	 * from the format it stands in for. bWrittenToTheEnd nonzero is a file that was closed properly; zero is one whose
+	 * process died part-way through, which keeps the segment's "size unknown" marker exactly as the real thing does.
+	 */
+	TArray<uint8> MakeRecordingsTestVideoBytes(int32 Frames, int32 FrameBytes, int32 bWrittenToTheEnd)
 	{
-		TArray<uint8> Bytes;
-		Bytes.Append({ 'D', 'K', 'I', 'F' });
-		AppendRecordingsTestLittleEndian(Bytes, 0, 2);
-		AppendRecordingsTestLittleEndian(Bytes, 32, 2);
-		Bytes.Append({ 'V', 'P', '9', '0' });
-		AppendRecordingsTestLittleEndian(Bytes, 64, 2);
-		AppendRecordingsTestLittleEndian(Bytes, 36, 2);
-		AppendRecordingsTestLittleEndian(Bytes, 1000, 4);
-		AppendRecordingsTestLittleEndian(Bytes, 1, 4);
-		AppendRecordingsTestLittleEndian(Bytes, static_cast<uint64>(FrameCountInHeader), 4);
-		AppendRecordingsTestLittleEndian(Bytes, 0, 4);
-		for (int32 Index = 0; Index < Frames; ++Index)
+		const FString Scratch = FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("FlockTests"),
+			FString::Printf(TEXT("recordings-fixture-%s.webm"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+		IFileManager::Get().MakeDirectory(*FPaths::GetPath(Scratch), /*Tree*/ true);
 		{
-			AppendRecordingsTestFrameHeader(Bytes, Index, FrameBytes);
-			Bytes.Append(MakeRecordingsTestFrame(Index, FrameBytes));
+			FFlockPlaytestVideoFile File;
+			FString Error;
+			if (!File.Open(Scratch, FIntPoint(64, 36), Error))
+			{
+				return TArray<uint8>();
+			}
+			for (int32 Index = 0; Index < Frames; ++Index)
+			{
+				File.WriteFrame(MakeRecordingsTestFrame(Index, FrameBytes), Index * 33, /*bKeyFrame*/ Index == 0);
+			}
+			if (bWrittenToTheEnd != 0)
+			{
+				File.Close();
+			}
+			else
+			{
+				File.AbandonForTesting();
+			}
 		}
+		TArray<uint8> Bytes;
+		FFileHelper::LoadFileToArray(Bytes, *Scratch);
+		IFileManager::Get().Delete(*Scratch, /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
 		return Bytes;
 	}
 
@@ -168,9 +203,9 @@ bool FFlockPlaytestRecordingsRunHasAFolderOfItsOwnTest::RunTest(const FString& P
 	const FString Name = First->GetName();
 	TestTrue(FString::Printf(TEXT("Named by the UTC time it was made, then eight hex digits (%s)"), *Name),
 		Name.Len() == 24 && Name[8] == TEXT('-') && Name[15] == TEXT('-') && Name.Left(8).IsNumeric() && Name.Mid(9, 6).IsNumeric());
-	TestEqual(TEXT("A playtest recording's file"), FPaths::GetCleanFilename(First->GetVideoFilePath()), FString::Printf(TEXT("recording-%s.ivf"), *Name));
+	TestEqual(TEXT("A playtest recording's file"), FPaths::GetCleanFilename(First->GetVideoFilePath()), FString::Printf(TEXT("recording-%s.webm"), *Name));
 	TestEqual(TEXT("A test video's file"), FPaths::GetCleanFilename(TestVideoRun->GetVideoFilePath()),
-		FString::Printf(TEXT("test-recording-%s.ivf"), *TestVideoRun->GetName()));
+		FString::Printf(TEXT("test-recording-%s.webm"), *TestVideoRun->GetName()));
 	TestEqual(TEXT("Unfinished, it has .part added"), First->GetUnfinishedVideoFilePath(), First->GetVideoFilePath() + TEXT(".part"));
 	FString Reserved;
 	FFileHelper::LoadFileToString(Reserved, *FPaths::Combine(First->GetFolder(), FFlockPlaytestRecordingsFolder::ReservedBytesFileName));
@@ -261,7 +296,7 @@ bool FFlockPlaytestRecordingsKeepsARecordingWaitingToUploadTest::RunTest(const F
 	if (TestEqual(TEXT("One recording waits to be uploaded"), Waiting.Num(), 1))
 	{
 		TestTrue(TEXT("In its run's folder"), FPaths::IsSamePath(Waiting[0].RunFolder, RunFolder));
-		TestEqual(TEXT("Named by its run"), FPaths::GetCleanFilename(Waiting[0].VideoFilePath), FString(TEXT("recording-20260915-100000-aaaaaaaa.ivf")));
+		TestEqual(TEXT("Named by its run"), FPaths::GetCleanFilename(Waiting[0].VideoFilePath), FString(TEXT("recording-20260915-100000-aaaaaaaa.webm")));
 		TestEqual(TEXT("Unchanged"), Waiting[0].VideoBytes, static_cast<int64>(Video.Num()));
 		TestEqual(TEXT("To the session it belongs to"), Waiting[0].Session.ProtokiteSessionId, Session.ProtokiteSessionId);
 		TestEqual(TEXT("At the address that session started at"), Waiting[0].Session.ProtokiteApiUrl, Session.ProtokiteApiUrl);
@@ -341,14 +376,15 @@ bool FFlockPlaytestRecordingsFinishesAnInterruptedRecordingTest::RunTest(const F
 	TestEqual(TEXT("Nothing is deleted for want of a session"), Result.RecordingsWithoutASessionDeleted, 0);
 	TestEqual(TEXT("Nothing left for the next launch"), Result.FilesLeftForTheNextLaunch.Num(), 0);
 
-	const FString PlaytestVideo = FPaths::Combine(PlaytestRun, TEXT("recording-20260101-000000-aaaaaaaa.ivf"));
+	const FString PlaytestVideo = FPaths::Combine(PlaytestRun, TEXT("recording-20260101-000000-aaaaaaaa.webm"));
 	TestFalse(TEXT("No unfinished playtest file is left"), IFileManager::Get().FileExists(*(PlaytestVideo + TEXT(".part"))));
 	FVideoFileRead PlaytestFile;
 	if (TestTrue(TEXT("The finished playtest recording reads back"), ReadVideoFile(PlaytestVideo, PlaytestFile)))
 	{
 		TestEqual(TEXT("With its five whole frames"), PlaytestFile.Frames.Num(), 5);
-		TestEqual(TEXT("Counted in its header"), PlaytestFile.FrameCountInHeader, 5);
-		TestEqual(TEXT("And the frame cut off removed"), PlaytestFile.FileBytes, 32LL + 5 * (12 + 100));
+		TestTrue(TEXT("With its segment's size stamped in"), PlaytestFile.bSegmentSizeWritten);
+		TestEqual(TEXT("And the frame cut off removed"), PlaytestFile.FileBytes,
+			FFlockPlaytestVideoFile::FileHeaderBytes + 5 * (FFlockPlaytestVideoFile::FrameHeaderBytes + 100));
 		if (PlaytestFile.Frames.Num() == 5)
 		{
 			TestTrue(TEXT("The last whole frame is unchanged"), PlaytestFile.Frames[4].Bytes == MakeRecordingsTestFrame(4, 100));
@@ -358,10 +394,10 @@ bool FFlockPlaytestRecordingsFinishesAnInterruptedRecordingTest::RunTest(const F
 
 	FVideoFileRead TestVideoFile;
 	if (TestTrue(TEXT("The finished test video reads back"),
-		ReadVideoFile(FPaths::Combine(TestVideoRun, TEXT("test-recording-20260101-000001-bbbbbbbb.ivf")), TestVideoFile)))
+		ReadVideoFile(FPaths::Combine(TestVideoRun, TEXT("test-recording-20260101-000001-bbbbbbbb.webm")), TestVideoFile)))
 	{
 		TestEqual(TEXT("With its three whole frames"), TestVideoFile.Frames.Num(), 3);
-		TestEqual(TEXT("Counted in its header"), TestVideoFile.FrameCountInHeader, 3);
+		TestTrue(TEXT("With its segment's size stamped in"), TestVideoFile.bSegmentSizeWritten);
 	}
 	TestFalse(TEXT("A video holding no frame is removed with its run"), RecordingsTestFolderExists(HeaderOnlyRun));
 	TestFalse(TEXT("So is a file that is no video"), RecordingsTestFolderExists(NotAVideoRun));
@@ -442,8 +478,8 @@ bool FFlockPlaytestRecordingsLeavesAFileInUseForTheNextLaunchTest::RunTest(const
 		&Finished, nullptr, nullptr);
 	const FString CutOffRun = MakeEndedRecordingRun(*this, Test.Recordings, EFlockPlaytestRecordingKind::TestVideo, TEXT("20260101-000001-bbbbbbbb"),
 		nullptr, &Unfinished, nullptr);
-	const FString NoSessionVideo = FPaths::Combine(NoSessionRun, TEXT("recording-20260101-000000-aaaaaaaa.ivf"));
-	const FString CutOffVideo = FPaths::Combine(CutOffRun, TEXT("test-recording-20260101-000001-bbbbbbbb.ivf.part"));
+	const FString NoSessionVideo = FPaths::Combine(NoSessionRun, TEXT("recording-20260101-000000-aaaaaaaa.webm"));
+	const FString CutOffVideo = FPaths::Combine(CutOffRun, TEXT("test-recording-20260101-000001-bbbbbbbb.webm.part"));
 	{
 		// A video player has both open.
 		const TUniquePtr<FArchive> Player(IFileManager::Get().CreateFileReader(*NoSessionVideo));
@@ -483,9 +519,9 @@ bool FFlockPlaytestRecordingsNeverTouchesAnythingElseTest::RunTest(const FString
 		FPaths::Combine(Test.Folder, TEXT("Flock"), TEXT("analytics"), TEXT("analytics_events"), TEXT("0001.json")),
 		// Inside it, but no run's: a note, a video copied in by hand, and a run-shaped folder outside Playtest and TestVideos.
 		FPaths::Combine(Test.Recordings, TEXT("notes.txt")),
-		FPaths::Combine(Test.Recordings, TEXT("Playtest"), TEXT("copied-by-hand"), TEXT("recording-copied.ivf")),
+		FPaths::Combine(Test.Recordings, TEXT("Playtest"), TEXT("copied-by-hand"), TEXT("recording-copied.webm")),
 		FPaths::Combine(Test.Recordings, TEXT("Elsewhere"), TEXT("20200101-000000-aaaaaaaa"), FFlockPlaytestRecordingsFolder::LockFileName),
-		FPaths::Combine(Test.Recordings, TEXT("Elsewhere"), TEXT("20200101-000000-aaaaaaaa"), TEXT("recording-20200101-000000-aaaaaaaa.ivf")),
+		FPaths::Combine(Test.Recordings, TEXT("Elsewhere"), TEXT("20200101-000000-aaaaaaaa"), TEXT("recording-20200101-000000-aaaaaaaa.webm")),
 	};
 	for (const FString& Path : Others)
 	{
@@ -665,8 +701,8 @@ bool FFlockPlaytestVideoFileFinishesAnInterruptedFileTest::RunTest(const FString
 	for (int32 Index = 0; Index < Cases.Num(); ++Index)
 	{
 		const FCutOffCase& Case = Cases[Index];
-		const FString Unfinished = FPaths::Combine(Test.Folder, FString::Printf(TEXT("case-%d.ivf.part"), Index));
-		const FString Finished = FPaths::Combine(Test.Folder, FString::Printf(TEXT("case-%d.ivf"), Index));
+		const FString Unfinished = FPaths::Combine(Test.Folder, FString::Printf(TEXT("case-%d.webm.part"), Index));
+		const FString Finished = FPaths::Combine(Test.Folder, FString::Printf(TEXT("case-%d.webm"), Index));
 		if (!TestTrue(FString::Printf(TEXT("%s: precondition, the file is saved"), Case.What), SaveRecordingsTestFile(Unfinished, Case.Bytes)))
 		{
 			continue;
@@ -686,13 +722,14 @@ bool FFlockPlaytestVideoFileFinishesAnInterruptedFileTest::RunTest(const FString
 		if (TestTrue(FString::Printf(TEXT("%s: the finished file reads back"), Case.What), ReadVideoFile(Finished, File)))
 		{
 			TestEqual(FString::Printf(TEXT("%s: every whole frame"), Case.What), File.Frames.Num(), Case.WholeFrames);
-			TestEqual(FString::Printf(TEXT("%s: counted in the header"), Case.What), File.FrameCountInHeader, Case.WholeFrames);
-			TestEqual(FString::Printf(TEXT("%s: and nothing after them"), Case.What), File.FileBytes, 32LL + Case.WholeFrames * (12 + 100));
+			TestTrue(FString::Printf(TEXT("%s: with its segment's size stamped in"), Case.What), File.bSegmentSizeWritten);
+			TestEqual(FString::Printf(TEXT("%s: and nothing after them"), Case.What), File.FileBytes,
+				FFlockPlaytestVideoFile::FileHeaderBytes + Case.WholeFrames * (FFlockPlaytestVideoFile::FrameHeaderBytes + 100));
 		}
 	}
 
 	// A file another program has open is left as it was.
-	const FString Held = FPaths::Combine(Test.Folder, TEXT("held.ivf.part"));
+	const FString Held = FPaths::Combine(Test.Folder, TEXT("held.webm.part"));
 	const TArray<uint8> HeldBytes = MakeRecordingsTestVideoBytes(4, 100, 0);
 	SaveRecordingsTestFile(Held, HeldBytes);
 	{
@@ -702,7 +739,7 @@ bool FFlockPlaytestVideoFileFinishesAnInterruptedFileTest::RunTest(const FString
 			int32 FramesKept = -1;
 			FString Error;
 			const EFlockPlaytestInterruptedVideoResult Result = FFlockPlaytestVideoFile::FinishInterruptedFile(Held,
-				FPaths::Combine(Test.Folder, TEXT("held.ivf")), FramesKept, Error);
+				FPaths::Combine(Test.Folder, TEXT("held.webm")), FramesKept, Error);
 			TestEqual(TEXT("A file another program has open is not finished"), static_cast<int32>(Result),
 				static_cast<int32>(EFlockPlaytestInterruptedVideoResult::CouldNotFinish));
 			TestFalse(TEXT("And the reason is given"), Error.IsEmpty());

@@ -101,7 +101,7 @@ public:
 	const FString& GetName() const { return Name; }
 	EFlockPlaytestRecordingKind GetKind() const { return Kind; }
 
-	/** Where the run's video is saved once finished: recording-<run name>.ivf or test-recording-<run name>.ivf. */
+	/** Where the run's video is saved once finished: recording-<run name>.webm or test-recording-<run name>.webm. */
 	FString GetVideoFilePath() const;
 
 	/** The same path with .part added, which the video has while it is being written. */

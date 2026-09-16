@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- **Playtest recordings are saved as WebM files, which a browser plays with nothing installed** — 1.15.0 wrote IVF
+  files, which needed a desktop player. The video inside is the same VP9, so nothing is re-encoded: a recording costs
+  no more time and no more disk than before, and is ready to watch the moment it is saved. A recording whose game
+  ended part-way through is still finished by the next launch, and plays up to the point where it stopped.
 - Test videos, from `FlockPlaytest.RecordTestVideo` or **Record Video In Play In Editor**, are saved under
   `Saved/FlockPlaytest/Recordings/TestVideos/` and kept until Recordings Disk Budget needs their room.
 

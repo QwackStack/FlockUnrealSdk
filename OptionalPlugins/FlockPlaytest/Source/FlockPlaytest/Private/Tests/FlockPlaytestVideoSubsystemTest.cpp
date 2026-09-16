@@ -171,13 +171,13 @@ bool FFlockPlaytestVideoSubsystemRecordsWhenThePlaytestTurnsVideoOnTest::RunTest
 	const TArray<FString> WhileRecording = RecordingFilesIn(RecordingsFolder(Fixture));
 	if (TestEqual(TEXT("One file while recording"), WhileRecording.Num(), 1))
 	{
-		TestTrue(TEXT("Named as unfinished"), WhileRecording[0].EndsWith(TEXT(".ivf.part")));
+		TestTrue(TEXT("Named as unfinished"), WhileRecording[0].EndsWith(TEXT(".webm.part")));
 	}
 
 	TestTrue(TEXT("The game stops it"), Fixture.Playtest->StopVideoRecording());
 	TestFalse(TEXT("A second stop changes nothing"), Fixture.Playtest->StopVideoRecording());
 	const FString Path = WaitForTheFile(Fixture);
-	TestTrue(TEXT("The file is saved under its final name"), Path.EndsWith(TEXT(".ivf")));
+	TestTrue(TEXT("The file is saved under its final name"), Path.EndsWith(TEXT(".webm")));
 	TestTrue(TEXT("Named as the playtest's recording"), FPaths::GetCleanFilename(Path).StartsWith(TEXT("recording-")));
 	TestEqual(TEXT("In a run's folder under Playtest"), FPaths::GetCleanFilename(FPaths::GetPath(FPaths::GetPath(Path))),
 		FString(FFlockPlaytestRecordingsFolder::PlaytestFolderName));
@@ -193,7 +193,7 @@ bool FFlockPlaytestVideoSubsystemRecordsWhenThePlaytestTurnsVideoOnTest::RunTest
 		TestEqual(TEXT("Width"), File.Width, 64);
 		TestEqual(TEXT("Height"), File.Height, 36);
 		TestEqual(TEXT("A second of play at 30 frames a second"), File.Frames.Num(), 30);
-		TestEqual(TEXT("The header counts them"), File.FrameCountInHeader, 30);
+		TestTrue(TEXT("The finished file states its segment's size"), File.bSegmentSizeWritten);
 		if (File.Frames.Num() > 0)
 		{
 			TestEqual(TEXT("The last is shown 967 ms in"), File.Frames.Last().TimestampMs, 967LL);
@@ -358,12 +358,12 @@ bool FFlockPlaytestVideoSubsystemGameInstanceShutDownFinishesTheFileTest::RunTes
 	const TArray<FString> Files = RecordingFilesIn(RecordingsFolder(Fixture));
 	if (TestEqual(TEXT("One file"), Files.Num(), 1))
 	{
-		TestTrue(TEXT("Under its final name"), Files[0].EndsWith(TEXT(".ivf")));
+		TestTrue(TEXT("Under its final name"), Files[0].EndsWith(TEXT(".webm")));
 	}
 	FVideoFileRead File;
 	if (TestTrue(TEXT("The file reads back"), ReadVideoFile(Path, File)))
 	{
-		TestEqual(TEXT("The header counts every frame"), File.FrameCountInHeader, File.Frames.Num());
+		TestTrue(TEXT("The finished file states its segment's size"), File.bSegmentSizeWritten);
 		TestEqual(TEXT("A second of frames"), File.Frames.Num(), 30);
 	}
 	return true;
@@ -382,7 +382,7 @@ bool FFlockPlaytestVideoRecordingDropsFramesWhenEncodingFallsBehindTest::RunTest
 	{
 		const TSharedRef<FTestVideoFrameSource> Source = MakeShared<FTestVideoFrameSource>(FIntPoint(64, 36));
 		const TSharedPtr<FFlockPlaytestVideoRecording> Recording = FFlockPlaytestVideoRecording::Start(Source, VideoSettings,
-			FPaths::Combine(Folder, TEXT("held.ivf")), Error, [Gate]() { Gate->Wait(); });
+			FPaths::Combine(Folder, TEXT("held.webm")), Error, [Gate]() { Gate->Wait(); });
 		if (!TestTrue(TEXT("The recording starts"), Recording.IsValid()))
 		{
 			AddError(Error);
@@ -498,7 +498,7 @@ bool FFlockPlaytestVideoRecordingWritesNothingAfterTheSizeLimitTest::RunTest(con
 	FFlockPlaytestVideoRecordingSummary Unlimited;
 	FString Error;
 	FVideoFileRead Control;
-	if (!TestTrue(TEXT("The control recording is made"), RecordElevenFrames(TEXT("control.ivf"), 1LL << 40, Unlimited, Error))
+	if (!TestTrue(TEXT("The control recording is made"), RecordElevenFrames(TEXT("control.webm"), 1LL << 40, Unlimited, Error))
 		|| !TestTrue(TEXT("And reads back"), ReadVideoFile(Unlimited.FilePath, Control))
 		|| !TestEqual(TEXT("With eleven frames"), Control.Frames.Num(), 11))
 	{
@@ -520,7 +520,7 @@ bool FFlockPlaytestVideoRecordingWritesNothingAfterTheSizeLimitTest::RunTest(con
 	MaxBytes += FFlockPlaytestVideoFile::FrameHeaderBytes + SmoothBytes + (NoiseBytes - SmoothBytes) / 2;
 
 	FFlockPlaytestVideoRecordingSummary Limited;
-	if (TestTrue(TEXT("The limited recording is made"), RecordElevenFrames(TEXT("limited.ivf"), MaxBytes, Limited, Error)))
+	if (TestTrue(TEXT("The limited recording is made"), RecordElevenFrames(TEXT("limited.webm"), MaxBytes, Limited, Error)))
 	{
 		TestEqual(TEXT("The five frames before the refused one are written, and none after it"), Limited.FramesWritten, 5);
 		TestTrue(TEXT("Within the limit"), Limited.BytesWritten <= MaxBytes);
@@ -542,7 +542,7 @@ bool FFlockPlaytestVideoRecordingAsksForNoFrameWhileEarlierOnesAreOnTheirWayTest
 	FString Error;
 	{
 		const TSharedPtr<FFlockPlaytestVideoRecording> Recording = FFlockPlaytestVideoRecording::Start(Source, VideoSettings,
-			FPaths::Combine(Folder, TEXT("waiting.ivf")), Error);
+			FPaths::Combine(Folder, TEXT("waiting.webm")), Error);
 		if (!TestTrue(TEXT("The recording starts"), Recording.IsValid()))
 		{
 			AddError(Error);
@@ -589,7 +589,7 @@ bool FFlockPlaytestVideoRecordingAStalledWriteDoesNotHoldEncodingUpTest::RunTest
 	{
 		const TSharedRef<FTestVideoFrameSource> Source = MakeShared<FTestVideoFrameSource>(FIntPoint(64, 36));
 		const TSharedPtr<FFlockPlaytestVideoRecording> Recording = FFlockPlaytestVideoRecording::Start(Source, FFlockPlaytestVideoSettings(),
-			FPaths::Combine(Folder, TEXT("stalled.ivf")), Error, nullptr, [WriteGate]() { WriteGate->Wait(); return true; });
+			FPaths::Combine(Folder, TEXT("stalled.webm")), Error, nullptr, [WriteGate]() { WriteGate->Wait(); return true; });
 		if (!TestTrue(TEXT("The recording starts"), Recording.IsValid()))
 		{
 			AddError(Error);
@@ -632,7 +632,7 @@ bool FFlockPlaytestVideoRecordingDropsFramesWhenWritingFallsBehindTest::RunTest(
 	{
 		const TSharedRef<FTestVideoFrameSource> Source = MakeShared<FTestVideoFrameSource>(FIntPoint(64, 36));
 		const TSharedPtr<FFlockPlaytestVideoRecording> Recording = FFlockPlaytestVideoRecording::Start(Source, FFlockPlaytestVideoSettings(),
-			FPaths::Combine(Folder, TEXT("behind.ivf")), Error, nullptr, [WriteGate]() { WriteGate->Wait(); return true; });
+			FPaths::Combine(Folder, TEXT("behind.webm")), Error, nullptr, [WriteGate]() { WriteGate->Wait(); return true; });
 		if (!TestTrue(TEXT("The recording starts"), Recording.IsValid()))
 		{
 			AddError(Error);
@@ -1171,7 +1171,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestVideoRecordingKeepsWhatWasWritten
 bool FFlockPlaytestVideoRecordingKeepsWhatWasWrittenWhenAWriteFailsTest::RunTest(const FString& Parameters)
 {
 	const FString Folder = FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("FlockPlaytestTests"), FGuid::NewGuid().ToString(EGuidFormats::Digits));
-	const FString Path = FPaths::ConvertRelativePathToFull(FPaths::Combine(Folder, TEXT("disk-full.ivf")));
+	const FString Path = FPaths::ConvertRelativePathToFull(FPaths::Combine(Folder, TEXT("disk-full.webm")));
 	FString Error;
 	{
 		const TSharedRef<FTestVideoFrameSource> Source = MakeShared<FTestVideoFrameSource>(FIntPoint(64, 36));
@@ -1205,7 +1205,7 @@ bool FFlockPlaytestVideoRecordingKeepsWhatWasWrittenWhenAWriteFailsTest::RunTest
 		if (TestTrue(TEXT("It reads back"), ReadVideoFile(Path, File)))
 		{
 			TestEqual(TEXT("Ten frames"), File.Frames.Num(), 10);
-			TestEqual(TEXT("Counted in its header"), File.FrameCountInHeader, 10);
+			TestTrue(TEXT("The finished file states its segment's size"), File.bSegmentSizeWritten);
 			TestEqual(TEXT("The summary counts its bytes"), Summary.BytesWritten, File.FileBytes);
 			FIntPoint PictureSize;
 			double Brightness = -1.0;

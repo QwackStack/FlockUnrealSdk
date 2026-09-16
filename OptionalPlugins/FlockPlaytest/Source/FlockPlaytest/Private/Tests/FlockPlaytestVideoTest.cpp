@@ -223,10 +223,13 @@ bool FFlockPlaytestVideoSettingsKeptInRangeTest::RunTest(const FString& Paramete
 	TestEqual(TEXT("1.5 GB"), FromDefaults.MaxBytes, 1536LL * 1024 * 1024);
 	TestEqual(TEXT("4 GB of recordings together"), FromDefaults.DiskBudgetBytes, 4096LL * 1024 * 1024);
 	TestEqual(TEXT("Room is made for an hour at 2000 kbps, a quarter more, and each frame's header"), FromDefaults.BytesToMakeRoomFor(),
-		static_cast<int64>(2000 * 125.0 * 3600 * 1.25) + 32 + 108000 * 12);
+		static_cast<int64>(2000 * 125.0 * 3600 * 1.25)
+			+ FFlockPlaytestVideoFile::FileHeaderBytes + 108000 * FFlockPlaytestVideoFile::FrameHeaderBytes);
 	FFlockPlaytestVideoSettings FiveSeconds = FromDefaults;
 	FiveSeconds.MaxSeconds = 5.0;
-	TestEqual(TEXT("A five-second recording needs far less"), FiveSeconds.BytesToMakeRoomFor(), static_cast<int64>(2000 * 125.0 * 5 * 1.25) + 32 + 150 * 12);
+	TestEqual(TEXT("A five-second recording needs far less"), FiveSeconds.BytesToMakeRoomFor(),
+		static_cast<int64>(2000 * 125.0 * 5 * 1.25)
+			+ FFlockPlaytestVideoFile::FileHeaderBytes + 150 * FFlockPlaytestVideoFile::FrameHeaderBytes);
 	FFlockPlaytestVideoSettings HighBitrate = FromDefaults;
 	HighBitrate.BitrateKbps = 50000;
 	TestEqual(TEXT("And never more than the size limit"), HighBitrate.BytesToMakeRoomFor(), HighBitrate.MaxBytes);
@@ -250,12 +253,16 @@ bool FFlockPlaytestVideoSettingsKeptInRangeTest::RunTest(const FString& Paramete
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestVideoFileWritesHeaderAndFramesTest,
-	"Flock.Playtest.Video.File.WritesTheFrameCountOnClose",
+	"Flock.Playtest.Video.File.WritesAWebMFileAPlayerCanRead",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockPlaytestVideoFileWritesHeaderAndFramesTest::RunTest(const FString& Parameters)
 {
-	const FString Path = UniqueTestFilePath(TEXT("frames.ivf"));
+	const int64 FrameBytesWritten = 5 + 6 + 7;
+	const int64 ExpectedFileBytes = FFlockPlaytestVideoFile::FileHeaderBytes
+		+ 3 * FFlockPlaytestVideoFile::FrameHeaderBytes + FrameBytesWritten;
+
+	const FString Path = UniqueTestFilePath(TEXT("frames.webm"));
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
 	{
 		FFlockPlaytestVideoFile File;
@@ -266,28 +273,31 @@ bool FFlockPlaytestVideoFileWritesHeaderAndFramesTest::RunTest(const FString& Pa
 		}
 		TestEqual(TEXT("The header is written"), File.GetBytesWritten(), FFlockPlaytestVideoFile::FileHeaderBytes);
 
-		TestTrue(TEXT("Frame 1"), File.WriteFrame({ 1, 2, 3, 4, 5 }, 0));
-		TestTrue(TEXT("Frame 2"), File.WriteFrame({ 6, 7, 8, 9, 10, 11 }, 33));
-		TestTrue(TEXT("Frame 3"), File.WriteFrame({ 12, 13, 14, 15, 16, 17, 18 }, 67));
-		TestEqual(TEXT("Bytes counted"), File.GetBytesWritten(), 32LL + 3 * 12 + 18);
+		// Every frame starts with the bits a VP9 frame starts with, because finishing a cut-off file leans on that.
+		TestTrue(TEXT("Frame 1"), File.WriteFrame({ 0x82, 2, 3, 4, 5 }, 0, /*bKeyFrame*/ true));
+		TestTrue(TEXT("Frame 2"), File.WriteFrame({ 0x82, 7, 8, 9, 10, 11 }, 33, /*bKeyFrame*/ false));
+		TestTrue(TEXT("Frame 3"), File.WriteFrame({ 0x82, 13, 14, 15, 16, 17, 18 }, 67, /*bKeyFrame*/ false));
+		TestEqual(TEXT("Bytes counted"), File.GetBytesWritten(), ExpectedFileBytes);
 		TestTrue(TEXT("It closes"), File.Close());
 	}
 
 	FVideoFileRead Read;
 	if (TestTrue(TEXT("It reads back"), ReadVideoFile(Path, Read)))
 	{
-		TestEqual(TEXT("Signature"), Read.Signature, FString(TEXT("DKIF")));
-		TestEqual(TEXT("Codec"), Read.Codec, FString(TEXT("VP90")));
+		TestEqual(TEXT("It says it is WebM"), Read.DocType, FString(TEXT("webm")));
+		TestEqual(TEXT("Codec"), Read.Codec, FString(TEXT("V_VP9")));
 		TestEqual(TEXT("Width"), Read.Width, 64);
 		TestEqual(TEXT("Height"), Read.Height, 36);
-		TestEqual(TEXT("Times are in milliseconds"), Read.TimeBaseDenominator, 1000u);
-		TestEqual(TEXT("Time base numerator"), Read.TimeBaseNumerator, 1u);
-		TestEqual(TEXT("The header holds the frame count"), Read.FrameCountInHeader, 3);
-		TestEqual(TEXT("The file is the size counted"), Read.FileBytes, 32LL + 3 * 12 + 18);
+		TestEqual(TEXT("Times are in milliseconds"), Read.TimecodeScaleNanoseconds, static_cast<uint64>(1000000));
+		TestTrue(TEXT("A closed file states how long its segment is"), Read.bSegmentSizeWritten);
+		TestEqual(TEXT("The duration is the last frame's time"), Read.DurationMs, 67.0, 1e-6);
+		TestEqual(TEXT("The file is the size counted"), Read.FileBytes, ExpectedFileBytes);
 		if (TestEqual(TEXT("Three frames"), Read.Frames.Num(), 3))
 		{
 			TestEqual(TEXT("Frame 3's time"), Read.Frames[2].TimestampMs, 67LL);
-			TestEqual(TEXT("Frame 2's bytes"), Read.Frames[1].Bytes, TArray<uint8>({ 6, 7, 8, 9, 10, 11 }));
+			TestEqual(TEXT("Frame 2's bytes"), Read.Frames[1].Bytes, TArray<uint8>({ 0x82, 7, 8, 9, 10, 11 }));
+			TestTrue(TEXT("The first frame is one a player may start decoding at"), Read.Frames[0].bKeyFrame);
+			TestFalse(TEXT("The second is not"), Read.Frames[1].bKeyFrame);
 		}
 	}
 	IFileManager::Get().DeleteDirectory(*FPaths::GetPath(Path), false, true);
@@ -379,7 +389,7 @@ bool FFlockPlaytestVideoEncoderEncodesVideoThatDecodesTest::RunTest(const FStrin
 
 	for (const FFlockPlaytestEncodedFrame& Frame : Encoded)
 	{
-		File.Frames.Add({ Frame.TimestampMs, Frame.Bytes });
+		File.Frames.Add({ Frame.TimestampMs, Frame.bKeyFrame, Frame.Bytes });
 	}
 	FIntPoint PictureSize;
 	double LastBrightness = -1.0;

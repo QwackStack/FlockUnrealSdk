@@ -132,7 +132,7 @@ where it sits. Leave it out of projects that are not running playtests.
 To see what a playtest recording looks like before any playtest exists, tick **Record Video In Play In Editor** in
 *Project Settings > Plugins > Flock Playtest Local Settings* and press Play, or type `FlockPlaytest.RecordTestVideo 30`
 in the console of a Development build. The video is saved under `Saved/FlockPlaytest/Recordings/TestVideos/`, and the
-log names the file; open it in VLC. Video is recorded on 64-bit Windows, with the **Video Recording** settings in *Flock
+log names the file, which is a WebM video a browser plays. Video is recorded on 64-bit Windows, with the **Video Recording** settings in *Flock
 Playtest Settings*. Recordings are kept inside **Recordings Disk Budget**, and the oldest test videos make room first.
 
 ### Blueprint-only projects

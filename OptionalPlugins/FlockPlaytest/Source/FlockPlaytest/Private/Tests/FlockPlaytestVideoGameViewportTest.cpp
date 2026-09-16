@@ -204,7 +204,7 @@ bool FFlockPlaytestVideoKeepsRecordingThroughAWindowResizeTest::RunTest(const FS
 	const FString Folder = FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("FlockPlaytestTests"), FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	FString Error;
 	const TSharedPtr<FFlockPlaytestVideoRecording> Recording = FFlockPlaytestVideoRecording::Start(Source.ToSharedRef(), FFlockPlaytestVideoSettings(),
-		FPaths::Combine(Folder, TEXT("resize.ivf")), Error);
+		FPaths::Combine(Folder, TEXT("resize.webm")), Error);
 	if (!TestTrue(FString::Printf(TEXT("The recording starts ('%s')"), *Error), Recording.IsValid()))
 	{
 		return true;

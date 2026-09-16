@@ -170,7 +170,7 @@ TSharedPtr<FFlockPlaytestRecordingRun> FFlockPlaytestRecordingRun::ClaimEnded(co
 
 FString FFlockPlaytestRecordingRun::GetVideoFilePath() const
 {
-	return FPaths::Combine(Folder, FString::Printf(TEXT("%s-%s.ivf"), RecordingVideoFilePrefix(Kind), *Name));
+	return FPaths::Combine(Folder, FString::Printf(TEXT("%s-%s.webm"), RecordingVideoFilePrefix(Kind), *Name));
 }
 
 FString FFlockPlaytestRecordingRun::GetUnfinishedVideoFilePath() const

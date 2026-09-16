@@ -1011,7 +1011,7 @@ void UFlockPlaytestSubsystem::ApplyFinishedVideoRecording()
 	else
 	{
 		FinishedVideoRecordingPath = Summary.FilePath;
-		UE_LOG(LogFlockPlaytest, Log, TEXT("Video saved to %s: %.1f seconds, %d frames, %.1f MB. It stopped because %s. Encoding took %.2f ms a frame on average and %.2f ms at most; a frame waited at most %.0f ms to be encoded, and one write took at most %.2f ms; %d frames were dropped because encoding fell behind, %d because writing the file fell behind, and %d capture times passed while earlier frames were still on their way. The file is VP9 video in the IVF format, which VLC plays."),
+		UE_LOG(LogFlockPlaytest, Log, TEXT("Video saved to %s: %.1f seconds, %d frames, %.1f MB. It stopped because %s. Encoding took %.2f ms a frame on average and %.2f ms at most; a frame waited at most %.0f ms to be encoded, and one write took at most %.2f ms; %d frames were dropped because encoding fell behind, %d because writing the file fell behind, and %d capture times passed while earlier frames were still on their way. The file is VP9 video in a WebM file, which a browser plays with nothing installed."),
 			*Summary.FilePath, Summary.VideoSeconds, Summary.FramesWritten, Summary.BytesWritten / (1024.0 * 1024.0),
 			*DescribeVideoStopReason(Summary.StopReason), Summary.AverageEncodeMs, Summary.LongestEncodeMs,
 			Summary.LongestWaitToEncodeMs, Summary.LongestWriteMs, Summary.FramesDroppedBecauseEncodingFellBehind,

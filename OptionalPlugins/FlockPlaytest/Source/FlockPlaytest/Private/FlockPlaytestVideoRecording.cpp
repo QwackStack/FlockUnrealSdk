@@ -204,22 +204,23 @@ struct FFlockPlaytestVideoRecording::FWriter : public TSharedFromThis<FFlockPlay
 			}
 			BytesHandedToFile += FFlockPlaytestVideoFile::FrameHeaderBytes + Frame.Bytes.Num();
 			++FramesWaitingToWrite;
-			FileThread->Add([Self = AsShared(), Bytes = MoveTemp(Frame.Bytes), TimestampMs = Frame.TimestampMs]()
+			FileThread->Add([Self = AsShared(), Bytes = MoveTemp(Frame.Bytes), TimestampMs = Frame.TimestampMs,
+				bKeyFrame = Frame.bKeyFrame]()
 			{
-				Self->WriteFrame(Bytes, TimestampMs);
+				Self->WriteFrame(Bytes, TimestampMs, bKeyFrame);
 			});
 		}
 	}
 
 	/** On the file thread. */
-	void WriteFrame(const TArray<uint8>& Bytes, int64 TimestampMs)
+	void WriteFrame(const TArray<uint8>& Bytes, int64 TimestampMs, bool bKeyFrame)
 	{
 		if (!bCouldNotWrite)
 		{
 			// A test's hook stands in for a disk that holds the write, or refuses it, so it is timed as part of the write.
 			const double WriteStartSeconds = FPlatformTime::Seconds();
 			const bool bDiskTakesTheWrite = !BeforeEachWriteForTesting || BeforeEachWriteForTesting();
-			const bool bFrameWritten = bDiskTakesTheWrite && File.WriteFrame(Bytes, TimestampMs);
+			const bool bFrameWritten = bDiskTakesTheWrite && File.WriteFrame(Bytes, TimestampMs, bKeyFrame);
 			LongestWriteSeconds = FMath::Max(LongestWriteSeconds, FPlatformTime::Seconds() - WriteStartSeconds);
 			if (!bFrameWritten)
 			{
