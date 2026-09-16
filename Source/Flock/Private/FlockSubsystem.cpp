@@ -11,6 +11,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "Http/FlockHttpShutdown.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
 const FString UFlockSubsystem::SdkVersion = TEXT("1.16.0");
@@ -436,6 +437,11 @@ void UFlockSubsystem::ShutdownSdk()
 	if (AnalyticsProvider.IsValid())
 	{
 		AnalyticsProvider->Shutdown();
+		// The session end it just sent is the last thing this SDK does and has no second chance: a saved end is not
+		// re-sent on a later launch, so one abandoned here leaves the session open for good. Waited for while the
+		// provider is still alive, so its completion runs and says what became of it, and before the HTTP client is
+		// let go below.
+		FlockFinishRequestsBeforeShutdown();
 		AnalyticsProvider.Reset();
 	}
 	// Same reason: stop the pump while the provider is alive rather than leaving it to the destructor.
