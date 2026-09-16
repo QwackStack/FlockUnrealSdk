@@ -221,6 +221,15 @@ bool FFlockPlaytestVideoSettingsKeptInRangeTest::RunTest(const FString& Paramete
 	TestEqual(TEXT("2000 kbps"), FromDefaults.BitrateKbps, 2000);
 	TestEqual(TEXT("60 minutes"), FromDefaults.MaxSeconds, 3600.0, 1e-6);
 	TestEqual(TEXT("1.5 GB"), FromDefaults.MaxBytes, 1536LL * 1024 * 1024);
+	TestEqual(TEXT("4 GB of recordings together"), FromDefaults.DiskBudgetBytes, 4096LL * 1024 * 1024);
+	TestEqual(TEXT("Room is made for an hour at 2000 kbps, a quarter more, and each frame's header"), FromDefaults.BytesToMakeRoomFor(),
+		static_cast<int64>(2000 * 125.0 * 3600 * 1.25) + 32 + 108000 * 12);
+	FFlockPlaytestVideoSettings FiveSeconds = FromDefaults;
+	FiveSeconds.MaxSeconds = 5.0;
+	TestEqual(TEXT("A five-second recording needs far less"), FiveSeconds.BytesToMakeRoomFor(), static_cast<int64>(2000 * 125.0 * 5 * 1.25) + 32 + 150 * 12);
+	FFlockPlaytestVideoSettings HighBitrate = FromDefaults;
+	HighBitrate.BitrateKbps = 50000;
+	TestEqual(TEXT("And never more than the size limit"), HighBitrate.BytesToMakeRoomFor(), HighBitrate.MaxBytes);
 
 	UFlockPlaytestSettings* OutOfRange = NewObject<UFlockPlaytestSettings>(GetTransientPackage());
 	OutOfRange->VideoWidth = 99999;
@@ -229,12 +238,14 @@ bool FFlockPlaytestVideoSettingsKeptInRangeTest::RunTest(const FString& Paramete
 	OutOfRange->VideoBitrateKbps = 1;
 	OutOfRange->MaxRecordingMinutes = 0.f;
 	OutOfRange->MaxRecordingSizeMb = -5;
+	OutOfRange->RecordingsDiskBudgetMb = 0;
 	const FFlockPlaytestVideoSettings Kept = FFlockPlaytestVideoSettings::FromProjectSettings(*OutOfRange);
 	TestEqual(TEXT("Width held at 3840, height at 16"), Kept.MaxVideoSize, FIntPoint(3840, 16));
 	TestEqual(TEXT("At least one frame a second"), Kept.FramesPerSecond, 1);
 	TestEqual(TEXT("At least 100 kbps"), Kept.BitrateKbps, 100);
 	TestEqual(TEXT("At least six seconds"), Kept.MaxSeconds, 6.0, 1e-6);
 	TestEqual(TEXT("At least one megabyte"), Kept.MaxBytes, 1024LL * 1024);
+	TestEqual(TEXT("A budget of at least one megabyte"), Kept.DiskBudgetBytes, 1024LL * 1024);
 	return true;
 }
 

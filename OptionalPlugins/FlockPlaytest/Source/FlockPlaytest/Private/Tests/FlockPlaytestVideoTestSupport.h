@@ -6,6 +6,7 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "FlockPlaytestRecordingsFolder.h"
 #include "FlockPlaytestVideoFrameSchedule.h"
 #include "FlockPlaytestVideoFrameSource.h"
 #include "HAL/FileManager.h"
@@ -107,18 +108,20 @@ namespace FlockPlaytestVideoTesting
 		return Pixels;
 	}
 
-	/** The files directly in Folder, full paths, sorted. */
-	inline TArray<FString> FilesIn(const FString& Folder)
+	/** The video files anywhere under Folder, unfinished ones included but no run's lock or session file, full paths, sorted. */
+	inline TArray<FString> RecordingFilesIn(const FString& Folder)
 	{
-		TArray<FString> Names;
-		IFileManager::Get().FindFiles(Names, *FPaths::Combine(Folder, TEXT("*")), /*Files*/ true, /*Directories*/ false);
-		Names.Sort();
-		TArray<FString> Paths;
-		for (const FString& Name : Names)
+		TArray<FString> Found;
+		IFileManager::Get().FindFilesRecursive(Found, *Folder, TEXT("*"), /*Files*/ true, /*Directories*/ false);
+		Found = Found.FilterByPredicate([](const FString& Path)
 		{
-			Paths.Add(FPaths::Combine(Folder, Name));
-		}
-		return Paths;
+			const FString Name = FPaths::GetCleanFilename(Path);
+			return !Name.Equals(FFlockPlaytestRecordingsFolder::LockFileName, ESearchCase::IgnoreCase)
+				&& !Name.Equals(FFlockPlaytestRecordingsFolder::SessionFileName, ESearchCase::IgnoreCase)
+				&& !Name.Equals(FFlockPlaytestRecordingsFolder::ReservedBytesFileName, ESearchCase::IgnoreCase);
+		});
+		Found.Sort();
+		return Found;
 	}
 
 	/**

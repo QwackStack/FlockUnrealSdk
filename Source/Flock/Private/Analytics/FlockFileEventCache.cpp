@@ -5,43 +5,33 @@
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
 
 namespace
 {
 	const TCHAR* EntryExtension = TEXT(".json");
-	const TCHAR* TempExtension = TEXT(".json.tmp");
 }
 
 FFlockFileEventCache::FFlockFileEventCache(const FString& Subfolder, int32 InMaxEntries, const FString& InRootDirectory)
-	: Directory(FPaths::Combine(InRootDirectory.IsEmpty() ? DefaultRoot() : InRootDirectory, Subfolder))
+	: Directory(FPaths::Combine(InRootDirectory, Subfolder))
 	, MaxEntries(InMaxEntries)
 {
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	PlatformFile.CreateDirectoryTree(*Directory);
 
-	// Temps first: a crash between write and move leaves one behind, and it is not an entry — it is the
-	// half of a write that never committed.
-	TArray<FString> Temps;
-	IFileManager::Get().FindFiles(Temps, *FPaths::Combine(Directory, FString(TEXT("*")) + TempExtension), true, false);
-	for (const FString& Temp : Temps)
-	{
-		PlatformFile.DeleteFile(*FPaths::Combine(Directory, Temp));
-	}
+	// Temporary files first: a crash between write and move leaves one behind, and it is not an entry, it is the half of a
+	// write that never committed. Only old ones go. Another launch of the game shares this folder, and a fresh one may be
+	// its write, about to be moved into place.
+	FFlockTemporaryFiles::DeleteLeftOverFiles(Directory, TEXT("*.tmp"), /*bIncludeSubfolders*/ false);
 
 	// Rebuild the queue from whatever survived the last run. Sorting the stems restores age order
-	// because handles are minted to sort that way.
+	// because handles are minted to sort that way. The file manager matches each whole name against the
+	// wildcard, so a temporary file (`<entry>.json.<32 hex>.tmp`) is never listed as an entry.
 	TArray<FString> Files;
 	IFileManager::Get().FindFiles(Files, *FPaths::Combine(Directory, FString(TEXT("*")) + EntryExtension), true, false);
 	for (const FString& File : Files)
 	{
-		// Don't lean on the platform's wildcard semantics to have excluded the temps: GetBaseFilename
-		// would strip only the trailing ".tmp" and mint a handle of "<stem>.json", whose PathForHandle
-		// then names a file that does not exist.
-		if (File.EndsWith(TempExtension, ESearchCase::IgnoreCase))
-		{
-			continue;
-		}
 		Handles.Add(FPaths::GetBaseFilename(File));
 	}
 	Handles.Sort();
@@ -50,34 +40,14 @@ FFlockFileEventCache::FFlockFileEventCache(const FString& Subfolder, int32 InMax
 	EvictToCap();
 }
 
-FString FFlockFileEventCache::DefaultRoot()
-{
-	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Flock"), TEXT("analytics"));
-}
-
 FString FFlockFileEventCache::PathForHandle(const FString& Handle) const
 {
 	return FPaths::Combine(Directory, Handle + EntryExtension);
 }
 
-FString FFlockFileEventCache::TempPathForHandle(const FString& Handle) const
-{
-	return FPaths::Combine(Directory, Handle + TempExtension);
-}
-
 bool FFlockFileEventCache::WriteAtomic(const FString& Handle, const FString& Payload) const
 {
-	const FString TempPath = TempPathForHandle(Handle);
-	if (!FFileHelper::SaveStringToFile(Payload, *TempPath))
-	{
-		return false;
-	}
-	if (!IFileManager::Get().Move(*PathForHandle(Handle), *TempPath, /*bReplace*/ true))
-	{
-		FPlatformFileManager::Get().GetPlatformFile().DeleteFile(*TempPath);
-		return false;
-	}
-	return true;
+	return FFlockTemporaryFiles::SaveThenMove(Payload, PathForHandle(Handle));
 }
 
 FString FFlockFileEventCache::MakeHandle()

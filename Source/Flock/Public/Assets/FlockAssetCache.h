@@ -15,9 +15,10 @@
  * only location reliably writable on console and mobile targets. Saved/ is not somewhere to put a
  * multi-hundred-megabyte cache on a packaged build.
  *
- * Writes are temp-then-move, and a stray temp is swept at construction — the same convention the
- * snapshot store and the file event cache use, for the same reason: a crash mid-write must not leave a
- * truncated file that later reads as a valid cache hit.
+ * Writes are temp-then-move through FFlockTemporaryFiles, the same convention the snapshot store and the
+ * file event cache use, for the same reason: a crash mid-write must not leave a truncated file that later
+ * reads as a valid cache hit. Each download streams into a temporary file of its own, and temporary files
+ * older than a minute are deleted at construction; a fresh one may be another launch's download.
  *
  * Keyed by asset id + version token, so a re-uploaded asset lands beside its predecessor rather than
  * over it, and the old copy is dropped only once the new one has committed.
@@ -49,7 +50,7 @@ public:
 	/** Where this version lives once committed. Does not touch the filesystem. */
 	FString GetFinalPath(const FString& AssetId, const FString& VersionToken) const;
 
-	/** The temp file a download streams into. Creates the cache directory as a side effect. */
+	/** A temporary file of its own for one download to stream into. Creates the cache directory as a side effect. */
 	FString BeginWrite(const FString& AssetId, const FString& VersionToken);
 
 	/**
@@ -72,9 +73,6 @@ private:
 
 	/** Evicts least-recently-used files until the total fits the budget. No-op when unbudgeted. */
 	void EnforceMaxSize();
-
-	/** Clears temps left by a process that died mid-write. */
-	void SweepTempFiles() const;
 
 	/** Whitelists filename-safe characters so an asset id can never escape the cache directory. */
 	static FString Sanitize(const FString& In);

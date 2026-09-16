@@ -3,6 +3,7 @@
 #include "Providers/FlockAnalyticsProvider.h"
 
 #include "Analytics/FlockAnalyticsJson.h"
+#include "Analytics/FlockAnalyticsLaunches.h"
 #include "Analytics/FlockLogSink.h"
 #include "Analytics/FlockStackTrace.h"
 #include "Async/Async.h"
@@ -184,12 +185,8 @@ void FFlockAnalyticsProvider::Initialize()
 			*Config.SessionPlatform));
 	}
 
-	// Before anything else writes a marker of its own.
-	ReportSurvivingTermination();
-
-	// Reads a different file than the tombstone and writes neither of the other's, so the order
-	// between them is free.
-	RecoverOrphanedSession();
+	// Before this launch writes a marker or a live-session record of its own: what launches that have ended left behind.
+	ReportWhatEndedLaunchesLeft();
 
 	// Two switches with two owners: Deps.bEnableLogSink says whether this process may tap GLog at all (off inside
 	// the automation runner), Config.bCaptureExceptions is the project's own choice.
@@ -283,22 +280,38 @@ void FFlockAnalyticsProvider::Shutdown()
 	}
 }
 
-void FFlockAnalyticsProvider::ReportSurvivingTermination()
+void FFlockAnalyticsProvider::ReportWhatEndedLaunchesLeft()
 {
-	if (!Deps.TerminationTracker.IsValid())
+	if (!Deps.Launches.IsValid())
 	{
 		return;
 	}
+	const TArray<FFlockEndedLaunchRecords>& EndedLaunches = Deps.Launches->GetEndedLaunchRecords();
+	for (int32 Index = 0; Index < EndedLaunches.Num(); ++Index)
+	{
+		ReportSurvivingTermination(EndedLaunches[Index].TerminationMarkerPath);
+		// A launch whose session end could not be spooled keeps its record, so a later launch tries again.
+		if (RecoverOrphanedSession(EndedLaunches[Index].SessionStatePath))
+		{
+			Deps.Launches->DeleteEndedLaunch(Index);
+		}
+	}
+	Deps.Launches->LetGoOfEndedLaunches();
+}
 
+void FFlockAnalyticsProvider::ReportSurvivingTermination(const FString& MarkerPath)
+{
+	// Reading and deleting a marker an ended launch left is allowed whatever this launch's own tracking switch says.
+	const FFlockTerminationTracker EndedLaunchTracker(/*bInEnabled*/ false, MarkerPath);
 	FFlockTerminationMarker Survivor;
-	if (!Deps.TerminationTracker->ReadSurvivingMarker(Survivor))
+	if (!EndedLaunchTracker.ReadSurvivingMarker(Survivor))
 	{
 		return;
 	}
 
 	// Always drop the marker, even when we cannot report it — otherwise a dirty exit found while
 	// consent is off would be re-reported on every single launch from now on.
-	Deps.TerminationTracker->ClearMarker();
+	EndedLaunchTracker.ClearMarker();
 
 	if (!IsCollecting())
 	{
@@ -1030,39 +1043,42 @@ void FFlockAnalyticsProvider::HandleLoggedOut()
 	KnownPlayerId.Reset();
 }
 
-void FFlockAnalyticsProvider::RecoverOrphanedSession()
+bool FFlockAnalyticsProvider::RecoverOrphanedSession(const FString& SessionStatePath)
 {
 	if (!Deps.Session.IsValid())
 	{
-		return;
+		return true;
 	}
 
+	const FFlockSession EndedLaunchSession(Config, SessionStatePath);
+	// Session numbers carry on from the launches before this one.
+	Deps.Session->ContinueSessionNumbersFrom(EndedLaunchSession.GetSessionNumber());
+
 	FFlockSessionSnapshot Orphan;
-	if (!Deps.Session->RecoverOrphanedSession(Orphan))
+	if (!EndedLaunchSession.RecoverOrphanedSession(Orphan))
 	{
-		return;
+		return true;
 	}
 
 	// Same rule as the termination marker: with collection off the record is dropped rather than
 	// left to be re-read on every launch from now on.
 	if (!IsCollecting() || !Deps.SessionEndCache.IsValid())
 	{
-		Deps.Session->ClearPersistedSession();
-		return;
+		return true;
 	}
 
-	// Spool first, clear second — clearing first loses the session if the write fails.
+	// Spooled before the ended launch is deleted — deleting first loses the session if the write fails.
 	if (Deps.SessionEndCache->Enqueue(FFlockAnalyticsJson::SerializeSnapshot(Orphan)).IsEmpty())
 	{
 		Logger->LogWarning(FString::Printf(
 			TEXT("Could not spool the end of orphaned session '%s'; keeping it for the next launch"),
 			*Orphan.SessionId));
-		return;
+		return false;
 	}
-	Deps.Session->ClearPersistedSession();
 	Logger->LogInfo(FString::Printf(
-		TEXT("Recovered a session the previous run left open: %s (ended at %s)"),
+		TEXT("Recovered a session a launch that ended left open: %s (ended at %s)"),
 		*Orphan.SessionId, *Orphan.EndTimeUtc));
+	return true;
 }
 
 void FFlockAnalyticsProvider::PatchSessionEnd(const FString& ServerSessionId,

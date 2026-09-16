@@ -17,6 +17,7 @@
 #include "Models/FlockAnalyticsModels.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 
+class FFlockAnalyticsLaunches;
 class FFlockLogSink;
 struct FFlockSpooledAnalyticsEvent;
 
@@ -26,6 +27,13 @@ struct FFlockSpooledAnalyticsEvent;
  */
 struct FLOCK_API FFlockAnalyticsDependencies
 {
+	/**
+	 * This launch's analytics folder, held for the provider's life, and the launches that had ended when it started. Their crash
+	 * markers and live-session records are reported once at Initialize, and then those launches are deleted. Null reports
+	 * nothing from earlier launches.
+	 */
+	TSharedPtr<FFlockAnalyticsLaunches> Launches;
+
 	TSharedPtr<IFlockEventCache> LogEventCache;
 
 	/**
@@ -351,7 +359,12 @@ private:
 	void HandleQuit();
 
 	void DrainLogSink();
-	void ReportSurvivingTermination();
+
+	/** Reports the crash marker and spools the live session of every launch that had ended, then deletes those launches. */
+	void ReportWhatEndedLaunchesLeft();
+
+	/** Reports the marker at MarkerPath, if an ended launch left one, and deletes it. */
+	void ReportSurvivingTermination(const FString& MarkerPath);
 
 	/** Builds and spools an exception entry from a trace already in hand. LogException adds the walk and the tally. */
 	void SpoolException(const FString& Message, const FString& StackTrace, const FFlockLogDetails& Details);
@@ -415,8 +428,11 @@ private:
 	/** Consent-revoke path: stops the session locally with no spool, no send, and no OnSessionEnded. */
 	void DiscardSession();
 
-	/** Spools the end of a session the previous run left open. */
-	void RecoverOrphanedSession();
+	/**
+	 * Spools the end of the session an ended launch left open in the record at SessionStatePath, and carries its session number
+	 * on. False only when there was an end to keep and it could not be spooled, so that launch is kept for a later one.
+	 */
+	bool RecoverOrphanedSession(const FString& SessionStatePath);
 
 	/**
 	 * IsExpectedFailure is supplied by the spool drain, where a signed-out failure is a wait rather

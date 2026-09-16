@@ -131,9 +131,9 @@ where it sits. Leave it out of projects that are not running playtests.
 
 To see what a playtest recording looks like before any playtest exists, tick **Record Video In Play In Editor** in
 *Project Settings > Plugins > Flock Playtest Local Settings* and press Play, or type `FlockPlaytest.RecordTestVideo 30`
-in the console of a Development build. The video is saved under `Saved/FlockPlaytest/Recordings/`, and the log names
-the file; open it in VLC. Video is recorded on 64-bit Windows, with the **Video Recording** settings in *Flock Playtest
-Settings*.
+in the console of a Development build. The video is saved under `Saved/FlockPlaytest/Recordings/TestVideos/`, and the
+log names the file; open it in VLC. Video is recorded on 64-bit Windows, with the **Video Recording** settings in *Flock
+Playtest Settings*. Recordings are kept inside **Recordings Disk Budget**, and the oldest test videos make room first.
 
 ### Blueprint-only projects
 
@@ -512,8 +512,9 @@ ends it when the game shuts down; it also adds `OnSessionRegistered` and the **S
 Flock SDK. **1.14.0 sends heavy analytics** when a playtest turns it on: a performance window for every ten seconds
 of play, each level load, and the game's own playtest events, all through the Flock SDK's analytics. **1.15.0 records
 the game's screen** when a playtest turns video recording on, saving VP9 video on disk on 64-bit Windows, and lets a
-developer try it in Play In Editor or with the `FlockPlaytest.RecordTestVideo` console command. It uploads no video and
-collects no feedback yet.
+developer try it in Play In Editor or with the `FlockPlaytest.RecordTestVideo` console command. **1.16.0 keeps a
+playtest recording that was not uploaded** for a later launch, with the session it belongs to, finishes a recording cut
+off when its game ended, and keeps recordings inside a disk budget. It uploads no video and collects no feedback yet.
 
 Deliberate omissions and known gaps:
 
@@ -525,6 +526,10 @@ Deliberate omissions and known gaps:
   which is what most graphs want. Provider cache clearing is also C++-only.
 - **Asset uploads are not included.** The SDK reads and downloads assets; publishing them is a dashboard
   operation.
+- **Leave `framegrabber.framelatency` at 0 while Flock Playtest records video.** Changing that engine console
+  variable while a frame is on its way to be captured stops a Development build: the engine's frame grabber then
+  flushes rendering commands from the render thread. The plugin asks for no frame while it is not 0, but cannot
+  stop the change itself.
 
 See [CHANGELOG.md](CHANGELOG.md) for the version history.
 

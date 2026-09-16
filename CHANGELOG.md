@@ -5,6 +5,54 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] - 2026-09-15
+
+### Added
+
+- **A playtest recording that was not uploaded is kept for a later launch.** Each launch's recording now has a folder
+  of its own under `Saved/FlockPlaytest/Recordings/Playtest/`, and the Protokite session it belongs to is saved beside
+  it: the session id, the Protokite API URL and the Game Version ID the session started with, never the API key.
+  Uploading comes in a later version.
+- **A recording cut off when its game ended** (closed from the task manager, crashed, or the power went) is finished by
+  the next launch with every whole frame it holds, so it plays. A recording whose file could not be written to the end,
+  on a full disk for example, keeps the frames written before.
+- **A playtest recording that no Protokite session started for is deleted by the next launch.** The player never
+  signed in, or the game ended first, so it has nowhere to be uploaded. The log says how many were deleted.
+- **Recordings Disk Budget** in *Project Settings > Plugins > Flock Playtest Settings* (4096 MB): how much the
+  recordings may take together. Before a recording starts, recordings of games that are no longer running are deleted
+  until it fits: test videos first, oldest first, and a playtest recording waiting to be uploaded only when that is not
+  enough. A recording only makes room for what its length limit can record at its bitrate. It is cut shorter when the
+  budget has less left than **Recording Size Limit**, and with less than 1 MB left none starts.
+- Nothing touches a recording while the game that made it is still running, so two games started from one project, or
+  several Play In Editor clients, never delete each other's recordings. A Game Version ID changing deletes nothing.
+
+### Changed
+
+- Test videos, from `FlockPlaytest.RecordTestVideo` or **Record Video In Play In Editor**, are saved under
+  `Saved/FlockPlaytest/Recordings/TestVideos/` and kept until Recordings Disk Budget needs their room.
+
+### Fixed
+
+- **Two games started from one project folder no longer lose each other's saved files** (two game clients on one
+  machine, or Play In Editor beside a standalone game). When Flock started, it deleted every temporary file in its
+  analytics queue and asset cache folders, including one another running game had just written and was about to move
+  into place. That game's queued event or downloaded asset was lost, and its game thread waited five seconds while the
+  engine retried the move and logged an error. A temporary file is now deleted only once it is a minute old, and each of
+  these saves uses a temporary file of its own, so two games saving the same offline cache entry or downloading the same
+  asset no longer share one.
+- The offline cache now deletes the temporary files a crash left behind. It never did.
+- A save that cannot be moved into place gives up at once instead of holding the game thread for five seconds.
+- **A second game started from the same project folder no longer reports the first as crashed, ends its session, or sends
+  its queued analytics a second time.** Each launch now keeps its crash marker, its live-session record and its event
+  queues in a folder of its own under `Saved/Flock/analytics/launches/`, locked for as long as the game runs, and takes over
+  only the folders of launches that have ended, however they ended: their queued entries join its own queues, and a crash
+  or an unfinished session is reported once. The files an earlier build kept straight in `Saved/Flock/analytics/` are
+  taken over the same way, once. Session numbers carry on across launches.
+- **A game killed while it saves the consent choice or the sign-in no longer loses it.** Both are written beside the old
+  file and moved over it, and a save cut off in between is read back from the file it was written to. Before, a kill could
+  leave an empty consent file, which reads as no decision, so a project that does not require explicit consent collected
+  again from a player who had opted out.
+
 ## [1.15.0] - 2026-09-15
 
 ### Added

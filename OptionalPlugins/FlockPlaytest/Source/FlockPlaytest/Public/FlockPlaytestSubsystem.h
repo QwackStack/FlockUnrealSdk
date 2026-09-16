@@ -12,9 +12,11 @@
 #include "Http/FlockHttpAdapter.h"
 #include "Http/FlockRetryPolicy.h"
 #include "Models/FlockCommandModels.h"
+#include "Async/Future.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "FlockPlaytestSubsystem.generated.h"
 
+class FFlockPlaytestRecordingRun;
 class FFlockPlaytestVideoRecording;
 class FFlockProtokiteClient;
 class IFlockPlaytestVideoFrameSource;
@@ -47,12 +49,19 @@ struct FWorldContext;
  * is on, and it pauses while the game is in the background.
  *
  * When the playtest turns video recording on, it records the game's screen from the moment the config is loaded, to a
- * VP9 file under Saved/FlockPlaytest/Recordings, with the Video Recording settings. One recording is made per launch:
- * once it stops, at its length or size limit, when the game calls StopVideoRecording, when playtesting stops or when the
- * game instance shuts down, no other starts. Background time is not recorded. Only 64-bit Windows builds that draw
- * something record video; elsewhere one warning says so and the rest of the playtest carries on. The same recording can
- * be tried without a playtest: Record Video In Play In Editor (Flock Playtest Local Settings), or the console command
- * FlockPlaytest.RecordTestVideo <seconds> in builds that are not Shipping.
+ * VP9 file under Saved/FlockPlaytest/Recordings/Playtest, with the Video Recording settings. One recording is made per
+ * launch: once it stops, at its length or size limit, when the game calls StopVideoRecording, when playtesting stops or
+ * when the game instance shuts down, no other starts. Background time is not recorded. Only 64-bit Windows builds that
+ * draw something record video; elsewhere one warning says so and the rest of the playtest carries on. The same recording
+ * can be tried without a playtest, saved under Recordings/TestVideos: Record Video In Play In Editor (Flock Playtest Local
+ * Settings), or the console command FlockPlaytest.RecordTestVideo <seconds> in builds that are not Shipping.
+ *
+ * A recording belongs to its game instance until it shuts down, and nothing else touches it meanwhile. A playtest
+ * recording is saved with the Protokite session it belongs to and is kept after its launch ends, waiting to be uploaded.
+ * When a launch starts, a recording an earlier one was still writing (the game was closed or crashed) is finished with
+ * every whole frame it holds, and a playtest recording that no Protokite session started for is deleted, since it can
+ * never be uploaded. Before a recording starts, the oldest recordings of launches that have ended are deleted until it
+ * fits inside Recordings Disk Budget.
  *
  * Each change is logged once: a setting or a refusal that stops playtesting is a warning, waiting, fetching
  * and being ready are logged, and playtesting turned off stays quiet, because that is the chosen state of
@@ -187,11 +196,26 @@ public:
 		TestVideoFrameSourceFactory = MoveTemp(Factory);
 	}
 
-	/** Saves video recordings in Folder instead of Saved/FlockPlaytest/Recordings. Call before following. */
+	/**
+	 * Keeps video recordings in Folder instead of Saved/FlockPlaytest/Recordings, and finishes what ended runs left there
+	 * when following starts. Call before following.
+	 */
 	void SetVideoRecordingFolderForTesting(const FString& Folder) { TestVideoRecordingFolder = Folder; }
 
 	/** Runs Hook on the worker thread before each video frame is encoded, so a test can hold the worker. Call before following. */
 	void SetBeforeEachVideoEncodeForTesting(TFunction<void()> Hook) { TestBeforeEachVideoEncode = MoveTemp(Hook); }
+
+	/**
+	 * Runs Hook on the writing thread before each video frame is written. Returning false makes that write fail, the way a
+	 * full disk does. Call before following.
+	 */
+	void SetBeforeEachVideoWriteForTesting(TFunction<bool()> Hook) { TestBeforeEachVideoWrite = MoveTemp(Hook); }
+
+	/** Runs Hook on the worker thread before it goes through what earlier launches left in the recordings folder. Call before following. */
+	void SetBeforeFinishingWhatEndedRunsLeftForTesting(TFunction<void()> Hook) { TestBeforeFinishingWhatEndedRunsLeft = MoveTemp(Hook); }
+
+	/** Waits until what earlier launches left in the recordings folder has been gone through. */
+	void WaitUntilRecordingsFolderFinishedForTesting();
 
 	/** Hands the video recording one frame through the same ticker path the engine drives, background pause included. */
 	void TickVideoRecordingForTesting(float FrameSeconds) { VideoPump.TickForTesting(FrameSeconds); }
@@ -268,8 +292,20 @@ private:
 	/** Starts the recording, or waits for the game viewport, or logs once why video cannot be recorded. */
 	void StartVideoRecordingWhenPossible();
 
-	/** Where the next recording is saved: a new file name under the recordings folder. */
-	FString MakeVideoRecordingPath() const;
+	/** The folder recordings are kept in: Saved/FlockPlaytest/Recordings, or the testing folder. */
+	FString GetVideoRecordingsFolder() const;
+
+	/**
+	 * Starts finishing, keeping or deleting what the runs that ended before this one left in the recordings folder, on a
+	 * worker thread, which logs what it did. Called when following starts.
+	 */
+	void FinishWhatEndedRunsLeftInRecordingsFolder();
+
+	/**
+	 * Saves this launch's Protokite session beside its playtest recording once both exist, so a later launch can upload the
+	 * recording to it. Does nothing for a test video or before the session has started.
+	 */
+	void SaveVideoRecordingSession();
 
 	/** Runs the video ticker while a recording captures or finishes, or waits for a viewport; stops it otherwise. */
 	void UpdateVideoPump();
@@ -387,6 +423,15 @@ private:
 	/** The recording capturing, or finishing its file. Null otherwise. */
 	TSharedPtr<FFlockPlaytestVideoRecording> VideoRecording;
 
+	/**
+	 * This launch's hold on the folder its recording is in, from the moment the recording starts until the game instance
+	 * shuts down: a finished recording stays this launch's until then, so no other launch touches it.
+	 */
+	TSharedPtr<FFlockPlaytestRecordingRun> VideoRecordingRun;
+
+	/** Going through what earlier launches left in the recordings folder, on its worker thread. */
+	TFuture<void> RecordingsFolderFinished;
+
 	/** Set once a recording has been started this launch, whatever became of it. */
 	bool bVideoRecordingStartedThisLaunch = false;
 
@@ -402,4 +447,6 @@ private:
 	TFunction<TSharedPtr<IFlockPlaytestVideoFrameSource>(FIntPoint, FString&)> TestVideoFrameSourceFactory;
 	FString TestVideoRecordingFolder;
 	TFunction<void()> TestBeforeEachVideoEncode;
+	TFunction<bool()> TestBeforeEachVideoWrite;
+	TFunction<void()> TestBeforeFinishingWhatEndedRunsLeft;
 };

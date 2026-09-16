@@ -57,11 +57,11 @@ public:
 	static const TCHAR* ClassBackgroundKill;
 	static const TCHAR* ClassAbnormal;
 
-	explicit FFlockTerminationTracker(bool bInEnabled, const FString& InMarkerPath = FString(),
-		FClock InClock = FClock());
-
-	/** `<ProjectSavedDir>/Flock/analytics/termination_marker.json`. */
-	static FString DefaultMarkerPath();
+	/**
+	 * InMarkerPath belongs to one launch of the game (FFlockAnalyticsLaunches::GetTerminationMarkerPath): a second game running
+	 * at once must never read a running game's marker as a death.
+	 */
+	explicit FFlockTerminationTracker(bool bInEnabled, const FString& InMarkerPath, FClock InClock = FClock());
 
 	/** `background_kill` when it died backgrounded, `abnormal` otherwise. Empty for an invalid marker. */
 	static FString Classify(const FFlockTerminationMarker& Marker);

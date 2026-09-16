@@ -7,6 +7,7 @@
 #include "Dom/JsonObject.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
@@ -25,15 +26,29 @@ namespace
 
 FFlockSession::FFlockSession(const FFlockAnalyticsConfig& InConfig, const FString& InStateFilePath, FClock InClock)
 	: Config(InConfig)
-	, StateFilePath(InStateFilePath.IsEmpty() ? DefaultStatePath() : InStateFilePath)
+	, StateFilePath(InStateFilePath)
 	, Clock(InClock ? MoveTemp(InClock) : FClock([]() { return FDateTime::UtcNow(); }))
 {
 	LoadSessionNumber();
 }
 
-FString FFlockSession::DefaultStatePath()
+void FFlockSession::ContinueSessionNumbersFrom(int32 EarlierSessionNumber)
 {
-	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Flock"), TEXT("analytics"), TEXT("session_state.json"));
+	if (EarlierSessionNumber <= SessionNumber)
+	{
+		return;
+	}
+	SessionNumber = EarlierSessionNumber;
+
+	// Written at once: the launch this count came from is about to be deleted, and this launch may never start a session of
+	// its own to write it later.
+	if (!bActive)
+	{
+		WriteState(nullptr);
+		return;
+	}
+	const FFlockSessionSnapshot Snapshot = TakeSnapshot();
+	WriteState(&Snapshot);
 }
 
 void FFlockSession::LoadSessionNumber()
@@ -88,7 +103,8 @@ void FFlockSession::WriteState(const FFlockSessionSnapshot* ActiveSnapshot) cons
 	FJsonSerializer::Serialize(Root, Writer);
 
 	EnsureStateDirectory();
-	FFileHelper::SaveStringToFile(Json, *StateFilePath);
+	// Through a temporary file, so a crash mid-write never leaves a torn record the next launch cannot recover.
+	FFlockTemporaryFiles::SaveThenMove(Json, StateFilePath);
 }
 
 void FFlockSession::PersistState() const
