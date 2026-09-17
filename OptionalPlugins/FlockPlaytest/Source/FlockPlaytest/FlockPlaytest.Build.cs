@@ -19,6 +19,8 @@ public class FlockPlaytest : ModuleRules
 				"Engine",
 				"DeveloperSettings",
 				"Flock",
+				// FKey and EKeys live here, and the feedback form's key is a setting, so a public header names them.
+				"InputCore",
 			}
 			);
 

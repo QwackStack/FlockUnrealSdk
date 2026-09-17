@@ -17,6 +17,12 @@
 #include "FlockPlaytestVideoFrameSource.h"
 #include "FlockPlaytestVideoRecording.h"
 #include "FlockPlaytestRecordingUploads.h"
+#include "FlockPlaytestFormSpool.h"
+#include "SFlockPlaytestFormWidget.h"
+#include "Framework/Application/IInputProcessor.h"
+#include "Framework/Application/SlateApplication.h"
+#include "GameFramework/PlayerController.h"
+#include "Kismet/GameplayStatics.h"
 #include "FlockProtokiteClient.h"
 #include "Http/FlockFileUploader.h"
 #include "FlockSubsystem.h"
@@ -99,6 +105,9 @@ void UFlockPlaytestSubsystem::Deinitialize()
 	// Read by the upload paths: from here on a finished recording is a later launch's to push, never this one's to start
 	// sending into a shutdown.
 	bDeinitializing = true;
+
+	// Nothing this subsystem put on screen, or had listening to the keyboard, outlives it.
+	CloseFeedbackForm();
 	if (WaitingToUploadEarlierRecordings.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(WaitingToUploadEarlierRecordings);
@@ -466,6 +475,9 @@ void UFlockPlaytestSubsystem::ApplyStatus(EFlockPlaytestStatus NewStatus, const 
 	// Loud only when playtesting is turned on: a setting or a refusal that stops it is a warning, and waiting,
 	// fetching or being ready is logged. Turned off is the chosen state of every build that is not a playtest
 	// build, so it stays at Verbose, and so does shutting down with the game instance.
+	// The key that opens the form only listens while there is a form to open.
+	UpdateFeedbackFormKeyWatcher();
+
 	const FString Description = DescribePlaytestStatus(Status);
 	switch (Status)
 	{
@@ -707,6 +719,17 @@ bool UFlockPlaytestSubsystem::StopVideoRecording()
 	}
 	VideoRecording->StopCapturing(EFlockPlaytestVideoStopReason::StoppedByGame);
 	return true;
+}
+
+bool UFlockPlaytestSubsystem::CanSendTheRecording() const
+{
+	// The same conditions SaveVideoRecordingSession writes a session.json under, because that file is the only thing
+	// that gives a finished recording somewhere to go. Asking anything weaker offers a player a button that stops
+	// their recording and sends nothing.
+	return IsRecordingVideo()
+		&& VideoRecordingRun.IsValid()
+		&& VideoRecordingRun->GetKind() == EFlockPlaytestRecordingKind::Playtest
+		&& !PlaytestSessionId.IsEmpty();
 }
 
 bool UFlockPlaytestSubsystem::StopVideoRecordingAndUploadIt()
@@ -1071,30 +1094,38 @@ TSharedRef<FFlockPlaytestRecordingUploads> UFlockPlaytestSubsystem::GetOrCreateR
 
 void UFlockPlaytestSubsystem::UploadThisLaunchsRecording()
 {
-	// Never while the game instance is going away: a whole recording cannot be sent inside a shutdown, and the run is
-	// about to be let go of. It stays on disk and a later launch pushes it, which is what D10 is for.
+	// Every way out of here says why. They were all silent once, and a player who had asked for their recording was
+	// told it was on its way while nothing happened and the log held no reason -- which is worse than either.
 	if (bDeinitializing)
 	{
+		// A whole recording cannot be sent inside a shutdown, and the run is about to be let go of. It stays on disk
+		// and a later launch pushes it, which is what D10 is for.
+		UE_LOG(LogFlockPlaytest, Log, TEXT("The recording is not being uploaded now, because the game is closing. A later launch sends it."));
 		return;
 	}
 	if (!VideoRecordingRun.IsValid() || VideoRecordingRun->GetKind() != EFlockPlaytestRecordingKind::Playtest)
 	{
-		// A test video is never uploaded.
+		UE_LOG(LogFlockPlaytest, Verbose, TEXT("There is no playtest recording to upload; a test video is never uploaded."));
 		return;
 	}
 	if (FinishedVideoRecordingPath.IsEmpty())
 	{
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("The recording cannot be uploaded: no finished file was kept."));
 		return;
 	}
 
 	const FFlockPlaytestRecordingSession Session = VideoRecordingRun->LoadSession();
 	if (Session.IsEmpty())
 	{
-		// No Protokite session started for it, so there is nowhere to send it. The next launch deletes it.
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("The recording cannot be uploaded: no Protokite session started for it, so it has "
+			"nowhere to go. A Protokite session starts once a player signs in and their Flock session reaches the server. The "
+			"next launch deletes this recording."));
 		return;
 	}
 	if (!Flock.IsValid() || !Flock->IsInitialized())
 	{
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("The recording cannot be uploaded while the Flock SDK is not running. It is kept "
+			"for a later launch."));
 		return;
 	}
 
@@ -1142,6 +1173,9 @@ void UFlockPlaytestSubsystem::StartUploadingWhatEarlierLaunchesLeft()
 				return true;
 			}
 
+			// Forms kept from an earlier launch go out with the recordings: both need Flock running for the key.
+			Self->SendFormsKeptFromEarlierLaunches();
+
 			Self->bStartedUploadingWhatEarlierLaunchesLeft = true;
 			Self->WaitingToUploadEarlierRecordings.Reset();
 
@@ -1168,6 +1202,306 @@ void UFlockPlaytestSubsystem::FinishVideoRecordingNow(EFlockPlaytestVideoStopRea
 		ApplyFinishedVideoRecording();
 	}
 	UpdateVideoPump();
+}
+
+/**
+ * Watches for the key that opens the feedback form, above the game's own input.
+ *
+ * A Slate input processor rather than a binding on a player controller: a playtest build should not need the game to
+ * add an input action, and a game that swaps controllers or runs without one would lose the binding. It only ever
+ * answers the one key it was given, so the game's own input is untouched.
+ */
+class FFlockPlaytestFormKeyWatcher : public IInputProcessor
+{
+public:
+	FFlockPlaytestFormKeyWatcher(const TWeakObjectPtr<UFlockPlaytestSubsystem>& InPlaytest, const FKey& InKey)
+		: Playtest(InPlaytest)
+		, Key(InKey)
+	{
+	}
+
+	virtual void Tick(const float, FSlateApplication&, TSharedRef<ICursor>) override {}
+
+	virtual bool HandleKeyDownEvent(FSlateApplication&, const FKeyEvent& Event) override
+	{
+		if (Event.GetKey() != Key || Event.IsRepeat())
+		{
+			return false;
+		}
+		UFlockPlaytestSubsystem* Subsystem = Playtest.Get();
+		if (Subsystem == nullptr)
+		{
+			return false;
+		}
+		// The same key closes it again, so a player who opened it by accident is not stuck in it.
+		if (Subsystem->IsFeedbackFormOpen())
+		{
+			Subsystem->CloseFeedbackForm();
+			return true;
+		}
+		return Subsystem->OpenFeedbackForm();
+	}
+
+private:
+	TWeakObjectPtr<UFlockPlaytestSubsystem> Playtest;
+	FKey Key;
+};
+
+bool UFlockPlaytestSubsystem::CanOpenFeedbackForm() const
+{
+	return GetStatus() == EFlockPlaytestStatus::Ready && PlaytestConfig.HasForm();
+}
+
+bool UFlockPlaytestSubsystem::OpenFeedbackForm()
+{
+	if (!CanOpenFeedbackForm() || FormWidget.IsValid())
+	{
+		return false;
+	}
+	UGameInstance* GameInstance = GetGameInstance();
+	UGameViewportClient* Viewport = GameInstance != nullptr ? GameInstance->GetGameViewportClient() : nullptr;
+	if (Viewport == nullptr)
+	{
+		// A run that draws nothing -- a dedicated server, or a headless test -- has nowhere to put a form.
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("The feedback form cannot be opened: this game instance has no viewport."));
+		return false;
+	}
+
+	const TSharedRef<SFlockPlaytestFormWidget> Widget = SNew(SFlockPlaytestFormWidget)
+		.Form(PlaytestConfig.Form)
+		.OnSubmitted_Lambda([this](const FFlockPlaytestFormAnswers& Answers)
+		{
+			SendFilledInForm(Answers);
+			// Closed straight away rather than held open waiting: a form that does not get through is kept and sent by
+			// a later launch, so there is nothing for the player to wait for or to do again.
+			CloseFeedbackForm();
+		})
+		.OnClosed_Lambda([this]() { CloseFeedbackForm(); })
+		// Offered only when the recording has somewhere to go, never merely because one is running.
+		.CanSendRecording_Lambda([this]() { return CanSendTheRecording(); })
+		.OnSendRecording_Lambda([this]()
+		{
+			// The player's own choice, which is the only thing that stops a recording early: opening the form does not.
+			UE_LOG(LogFlockPlaytest, Log, TEXT("The player asked for their recording to be sent."));
+			return StopVideoRecordingAndUploadIt();
+		});
+
+	// High enough to sit over the game's own HUD widgets.
+	Viewport->AddViewportWidgetContent(Widget, /*ZOrder*/ 1000);
+	FormWidget = Widget;
+
+	if (APlayerController* Controller = GameInstance->GetFirstLocalPlayerController())
+	{
+		// Remembered rather than assumed: a game that already showed a cursor must still have one afterwards.
+		bCursorWasShownBeforeTheForm = Controller->bShowMouseCursor;
+		Controller->bShowMouseCursor = true;
+		FInputModeUIOnly Mode;
+		Mode.SetWidgetToFocus(Widget);
+		Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		Controller->SetInputMode(Mode);
+	}
+
+	const UFlockPlaytestSettings* Settings = GetDefault<UFlockPlaytestSettings>();
+	if (Settings->bPauseWhileFeedbackFormIsOpen && !UGameplayStatics::IsGamePaused(this))
+	{
+		bPausedForTheForm = UGameplayStatics::SetGamePaused(this, true);
+	}
+
+	FSlateApplication::Get().SetKeyboardFocus(Widget);
+	UE_LOG(LogFlockPlaytest, Log, TEXT("The playtest feedback form is open."));
+	return true;
+}
+
+bool UFlockPlaytestSubsystem::CloseFeedbackForm()
+{
+	if (!FormWidget.IsValid())
+	{
+		return false;
+	}
+
+	UGameInstance* GameInstance = GetGameInstance();
+	if (UGameViewportClient* Viewport = GameInstance != nullptr ? GameInstance->GetGameViewportClient() : nullptr)
+	{
+		Viewport->RemoveViewportWidgetContent(FormWidget.ToSharedRef());
+	}
+	FormWidget.Reset();
+
+	if (APlayerController* Controller = GameInstance != nullptr ? GameInstance->GetFirstLocalPlayerController() : nullptr)
+	{
+		// Put back exactly what was there, or a game that never had a cursor keeps one and its input stays on the UI.
+		Controller->bShowMouseCursor = bCursorWasShownBeforeTheForm;
+		Controller->SetInputMode(FInputModeGameOnly());
+	}
+
+	if (bPausedForTheForm)
+	{
+		// Only a pause of this subsystem's own is undone: a game paused for its own reasons stays paused.
+		UGameplayStatics::SetGamePaused(this, false);
+		bPausedForTheForm = false;
+	}
+
+	UE_LOG(LogFlockPlaytest, Log, TEXT("The playtest feedback form is closed."));
+	return true;
+}
+
+void UFlockPlaytestSubsystem::SendFilledInForm(const FFlockPlaytestFormAnswers& Answers)
+{
+	if (!PlaytestConfig.HasForm())
+	{
+		return;
+	}
+
+	FFlockPlaytestFormSubmission Submission;
+	Submission.PlaytestSessionId = PlaytestSessionId;
+	Submission.ProtokiteApiUrl = GetDefault<UFlockPlaytestSettings>()->ProtokiteApiUrl;
+	Submission.FlockGameVersionId = PlaytestConfig.FlockGameVersionId;
+
+	// The same identity the session was started with, or one resolved now for a form filled in before any session.
+	Submission.Identity = PlaytestIdentity;
+	if (Submission.Identity.IsEmpty())
+	{
+		FString WhyNone;
+		Submission.Identity = ResolvePlaytestIdentity(WhyNone);
+		if (Submission.Identity.IsEmpty())
+		{
+			// The server refuses a form with nobody to attribute it to, so keeping it would only fail forever.
+			UE_LOG(LogFlockPlaytest, Warning, TEXT("The feedback form cannot be sent: %s"), *WhyNone);
+			return;
+		}
+	}
+
+	FString AnswersJson;
+	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&AnswersJson);
+	FJsonSerializer::Serialize(Answers.ToWireObject(PlaytestConfig.Form), Writer);
+	Submission.AnswersJson = AnswersJson;
+
+	const FFlockPlaytestFormSpool Spool(FormSpoolFolderForTesting.Get(FFlockPlaytestFormSpool::GetDefaultFolder()));
+
+	// Written down before it is sent, not after a failure: the game may be closed between the two, and a player's
+	// answers are the one thing here that cannot be collected again.
+	FString KeepError;
+	const FString KeptAt = Spool.Keep(Submission, KeepError);
+	if (KeptAt.IsEmpty())
+	{
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("The feedback form could not be kept while it is sent: %s"), *KeepError);
+	}
+
+	if (!Flock.IsValid() || !Flock->IsInitialized())
+	{
+		UE_LOG(LogFlockPlaytest, Log, TEXT("The feedback form is kept until the Flock SDK is running."));
+		return;
+	}
+
+	UE_LOG(LogFlockPlaytest, Log, TEXT("Sending the feedback form."));
+	const FString SpoolFolder = Spool.GetDefaultFolder();
+	GetOrCreateProtokiteClient()->SubmitFeedbackForm(Flock->GetRequestHeaders(), Submission,
+		[KeptAt, SpoolFolderCopy = FormSpoolFolderForTesting.Get(SpoolFolder)]
+		(TFlockResult<FFlockPlaytestFormSubmitResult> Result)
+		{
+			const FFlockPlaytestFormSpool Done(SpoolFolderCopy);
+			if (Result.IsSuccess())
+			{
+				if (!KeptAt.IsEmpty())
+				{
+					Done.Forget(KeptAt);
+				}
+				UE_LOG(LogFlockPlaytest, Log, TEXT("The feedback form was sent."));
+				return;
+			}
+
+			// A refusal the server will repeat is not worth keeping: the answers would be sent again at every launch to
+			// be turned away again. Anything else -- no network, a server having a moment -- is kept.
+			const bool bServerRefusedIt = Result.Error.StatusCode == 422 || Result.Error.StatusCode == 404;
+			if (bServerRefusedIt && !KeptAt.IsEmpty())
+			{
+				Done.Forget(KeptAt);
+			}
+			// Protokite names the question it refused only inside the message, so it is pulled out and said plainly. A
+			// player cannot act on it -- the form has closed -- but whoever edited the form can.
+			const FString RefusedQuestion = FlockPlaytestFindFieldIdInComplaint(Result.Error.ToDisplayText());
+			UE_LOG(LogFlockPlaytest, Warning, TEXT("The feedback form was not sent%s%s: %s"),
+				bServerRefusedIt ? TEXT("") : TEXT(", and is kept for a later launch"),
+				RefusedQuestion.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (the question '%s' was refused)"), *RefusedQuestion),
+				*Result.Error.ToDisplayText());
+		});
+}
+
+void UFlockPlaytestSubsystem::SendFormsKeptFromEarlierLaunches()
+{
+	if (bStartedSendingKeptForms || !Flock.IsValid() || !Flock->IsInitialized())
+	{
+		return;
+	}
+	bStartedSendingKeptForms = true;
+
+	const FString Folder = FormSpoolFolderForTesting.Get(FFlockPlaytestFormSpool::GetDefaultFolder());
+	const FFlockPlaytestFormSpool Spool(Folder);
+	const TArray<TPair<FString, FFlockPlaytestFormSubmission>> Waiting = Spool.FindWaiting();
+	if (Waiting.Num() == 0)
+	{
+		return;
+	}
+
+	UE_LOG(LogFlockPlaytest, Log, TEXT("Sending %d feedback form(s) kept from an earlier launch."), Waiting.Num());
+	const TMap<FString, FString> LaunchHeaders = Flock->GetRequestHeaders();
+
+	for (const TPair<FString, FFlockPlaytestFormSubmission>& Kept : Waiting)
+	{
+		// This launch's own key, with the Game Version ID the form's own session ran under -- the same swap a kept
+		// recording needs, and for the same reason: Protokite finds the playtest from that version.
+		TMap<FString, FString> Headers = LaunchHeaders;
+		if (!Kept.Value.FlockGameVersionId.IsEmpty())
+		{
+			Headers.Add(TEXT("X-Game-Version-ID"), Kept.Value.FlockGameVersionId);
+		}
+
+		const FString Path = Kept.Key;
+		GetOrCreateProtokiteClient()->SubmitFeedbackForm(Headers, Kept.Value,
+			[Path, Folder](TFlockResult<FFlockPlaytestFormSubmitResult> Result)
+			{
+				const FFlockPlaytestFormSpool Done(Folder);
+				const bool bServerRefusedIt = Result.Error.StatusCode == 422 || Result.Error.StatusCode == 404;
+				if (Result.IsSuccess() || bServerRefusedIt)
+				{
+					// Taken, or refused in a way that will not change. Either way it stops waiting.
+					Done.Forget(Path);
+				}
+				if (Result.IsSuccess())
+				{
+					UE_LOG(LogFlockPlaytest, Log, TEXT("A kept feedback form was sent."));
+					return;
+				}
+				const FString RefusedQuestion = FlockPlaytestFindFieldIdInComplaint(Result.Error.ToDisplayText());
+				UE_LOG(LogFlockPlaytest, Warning, TEXT("A kept feedback form was not sent%s: %s"),
+					RefusedQuestion.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (the question '%s' was refused)"), *RefusedQuestion),
+					*Result.Error.ToDisplayText());
+			});
+	}
+}
+
+void UFlockPlaytestSubsystem::UpdateFeedbackFormKeyWatcher()
+{
+	const UFlockPlaytestSettings* Settings = GetDefault<UFlockPlaytestSettings>();
+	const bool bWanted = CanOpenFeedbackForm() && Settings->FeedbackFormKey.IsValid() && FSlateApplication::IsInitialized();
+
+	if (bWanted == FormKeyWatcher.IsValid())
+	{
+		return;
+	}
+	if (bWanted)
+	{
+		FormKeyWatcher = MakeShared<FFlockPlaytestFormKeyWatcher>(TWeakObjectPtr<UFlockPlaytestSubsystem>(this), Settings->FeedbackFormKey);
+		FSlateApplication::Get().RegisterInputPreProcessor(FormKeyWatcher);
+	}
+	else
+	{
+		if (FSlateApplication::IsInitialized())
+		{
+			FSlateApplication::Get().UnregisterInputPreProcessor(FormKeyWatcher);
+		}
+		FormKeyWatcher.Reset();
+	}
 }
 
 #if !UE_BUILD_SHIPPING
@@ -1209,6 +1543,105 @@ namespace
 			{
 				Output.Log(TEXT("No video is being recorded."));
 			}
+		}));
+
+	FAutoConsoleCommandWithWorldArgsAndOutputDevice SendTestFeedbackCommand(
+		TEXT("FlockPlaytest.SendTestFeedback"),
+		TEXT("Fills the playtest's feedback form with a plausible answer to every question and sends it, for checking a "
+			"form reaches the dashboard without typing it in by hand: FlockPlaytest.SendTestFeedback, or ... 10 to wait "
+			"ten seconds first. Development builds only."),
+		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World, FOutputDevice& Output)
+		{
+			double Seconds = 0.0;
+			if (Args.Num() > 0 && (!LexTryParseString(Seconds, *Args[0]) || Seconds < 0.0))
+			{
+				Output.Log(TEXT("Usage: FlockPlaytest.SendTestFeedback [seconds to wait first]."));
+				return;
+			}
+
+			auto Send = [](UWorld* InWorld, FOutputDevice* Out)
+			{
+				UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystemOfWorld(InWorld);
+				if (Playtest == nullptr || !Playtest->CanOpenFeedbackForm())
+				{
+					if (Out != nullptr)
+					{
+						Out->Log(TEXT("There is no feedback form to send."));
+					}
+					return;
+				}
+
+				// An answer of the right shape for each question, so the server takes it exactly as a player's would be.
+				const FFlockPlaytestForm& Form = Playtest->GetPlaytestConfig().Form;
+				FFlockPlaytestFormAnswers Answers;
+				for (const FFlockPlaytestFormField& Field : Form.Fields)
+				{
+					if (Field.Type == FlockPlaytestFormFieldTypes::Rating)
+					{
+						Answers.SetRating(Field.Id, 5);
+					}
+					else if (Field.Type == FlockPlaytestFormFieldTypes::Checkbox)
+					{
+						Answers.SetChecked(Field.Id, true);
+					}
+					else if (Field.Type == FlockPlaytestFormFieldTypes::Select)
+					{
+						// Its own first option, never a guess: any other value is one the server refuses.
+						Answers.SetChosenOption(Field.Id, Field.Options.Num() > 0 ? Field.Options[0] : FString());
+					}
+					else
+					{
+						Answers.SetText(Field.Id, TEXT("Sent by FlockPlaytest.SendTestFeedback."));
+					}
+				}
+				Playtest->SendFilledInForm(Answers);
+			};
+
+			if (Seconds <= 0.0)
+			{
+				Send(World, &Output);
+				return;
+			}
+			TWeakObjectPtr<UWorld> WeakWorld(World);
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakWorld, Send](float) -> bool
+			{
+				Send(WeakWorld.Get(), nullptr);
+				return false;
+			}), static_cast<float>(Seconds));
+		}));
+
+	FAutoConsoleCommandWithWorldArgsAndOutputDevice OpenFeedbackFormCommand(
+		TEXT("FlockPlaytest.OpenFeedbackForm"),
+		TEXT("Opens the playtest's feedback form, the way the form key does: FlockPlaytest.OpenFeedbackForm, or ... 10 to "
+			"open it ten seconds from now, which is how a harness reaches it at all."),
+		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World, FOutputDevice& Output)
+		{
+			// The wait exists for the same reason the one on the recording command does: every -ExecCmds command runs on
+			// the first frame, before the playtest is ready and before there is a viewport to put a form in.
+			double Seconds = 0.0;
+			if (Args.Num() > 0 && (!LexTryParseString(Seconds, *Args[0]) || Seconds < 0.0))
+			{
+				Output.Log(TEXT("Usage: FlockPlaytest.OpenFeedbackForm [seconds to wait first]."));
+				return;
+			}
+			if (Seconds <= 0.0)
+			{
+				UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystemOfWorld(World);
+				if (Playtest == nullptr || !Playtest->OpenFeedbackForm())
+				{
+					Output.Log(TEXT("There is no feedback form to open."));
+				}
+				return;
+			}
+			TWeakObjectPtr<UWorld> WeakWorld(World);
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakWorld](float) -> bool
+			{
+				if (UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystemOfWorld(WeakWorld.Get()))
+				{
+					Playtest->OpenFeedbackForm();
+				}
+				return false;
+			}), static_cast<float>(Seconds));
 		}));
 
 	FAutoConsoleCommandWithWorldArgsAndOutputDevice StopVideoRecordingAndUploadItCommand(

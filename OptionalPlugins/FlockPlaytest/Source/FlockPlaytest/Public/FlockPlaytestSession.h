@@ -65,6 +65,16 @@ struct FLOCKPLAYTEST_API FFlockPlaytestSessionEndResult
 	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockPlaytestSessionEndResult& OutResult, FString& OutError);
 };
 
+/** Protokite's answer to a feedback form, which carries the stored response; nothing here needs reading back. */
+USTRUCT()
+struct FLOCKPLAYTEST_API FFlockPlaytestFormSubmitResult
+{
+	GENERATED_BODY()
+
+	/** Accepts any JSON object: that the server took it is the whole answer. */
+	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockPlaytestFormSubmitResult& OutResult, FString& OutError);
+};
+
 /** Everything a session start sends apart from the request headers. */
 struct FLOCKPLAYTEST_API FFlockPlaytestSessionStartRequest
 {

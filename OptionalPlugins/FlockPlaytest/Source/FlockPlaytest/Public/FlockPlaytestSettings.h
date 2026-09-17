@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "InputCoreTypes.h"
 #include "Engine/DeveloperSettings.h"
 #include "FlockPlaytestSettings.generated.h"
 
@@ -75,4 +76,24 @@ public:
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Video Recording", meta = (DisplayName = "Recordings Disk Budget (MB)", ClampMin = "1"))
 	int32 RecordingsDiskBudgetMb = 4096;
+
+	/**
+	 * The key that opens the playtest's feedback form. Set it to none to leave opening the form entirely to the game,
+	 * which calls Open Feedback Form itself -- from a pause menu, say.
+	 *
+	 * The key does nothing when the playtest has published no form: there would be nothing to show.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Feedback Form", meta = (DisplayName = "Feedback Form Key"))
+	FKey FeedbackFormKey = EKeys::F9;
+
+	/**
+	 * Whether the game pauses while the form is open.
+	 *
+	 * Off by default, because a paused game is the wrong thing for a playtest built around what a player was doing:
+	 * pausing a multiplayer match does nothing, and pausing a single-player one loses whatever the player was about to
+	 * describe. A game that wants it can turn it on.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Feedback Form", meta = (DisplayName = "Pause The Game While The Form Is Open"))
+	bool bPauseWhileFeedbackFormIsOpen = false;
+
 };

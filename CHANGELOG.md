@@ -5,6 +5,40 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] - 2026-09-16
+
+### Added
+
+- **A playtest feedback form**, built from the questions the playtest publishes: text, longer text, a 1-to-5 rating, a
+  list to pick from, and a tickbox, each with its own help text and marked when an answer is needed. Editing the form
+  on the dashboard changes what players see without a new build, and a kind of question this version does not know is
+  still shown as a text box rather than left blank.
+- Answers are checked before anything is sent, with every problem shown against the question it belongs to at once, so
+  a player is not told about them one at a time. Nothing is said while someone is still typing.
+- The form opens with a key (F9 by default, and settable to none), from Blueprint or C++ with **Open Feedback Form**, or
+  from a game's own pause menu. **Can Open Feedback Form** is false when the playtest published none, so a game can
+  leave its feedback entry out rather than offering something that does nothing.
+- While the form is open the mouse is shown and typing goes to the form; closing or sending it puts both back exactly
+  as they were. The game can be paused meanwhile with **Pause The Game While The Form Is Open**, off by default.
+
+- **Answers are sent to the playtest they belong to**, and a form that cannot be sent right away is kept and sent by a
+  later launch, so a player who has answered never loses the work to a dropped connection or to closing the game.
+- Sending the form again in the same session **replaces** the earlier answers rather than adding a second report, so a
+  player can change their mind. One sent with no session running is never re-sent, because there the server would
+  record it twice.
+- The player is not made to wait: the form closes as soon as the answers are ones the server will take.
+- **An "Upload your recording" button on the form**, offered only when the recording has somewhere to go: one is
+  running, it belongs to the playtest, and a playtest session has started for it. Asking stops recording for the rest
+  of the session and sends what was recorded, and the offer is replaced by a word that the video is on its way -- shown
+  only when sending really began. Opening the form does not stop recording by itself.
+
+### Fixed
+
+- A video recording no longer looks up the same engine setting by name on every frame, which made the engine warn
+  about it after five hundred frames of recording.
+- A recording that cannot be uploaded now says why in the log — no playtest session to send it to, no finished file, or
+  the game closing — instead of stopping without a word.
+
 ## [1.17.0] - 2026-09-16
 
 ### Added

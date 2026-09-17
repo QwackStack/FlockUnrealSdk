@@ -64,6 +64,30 @@ FFlockRequestHandle FFlockProtokiteClient::FetchPlaytestConfig(const FString& Pr
 		/*bAllowAuthRetry*/ false, &LeaveReportingToTheCaller);
 }
 
+FString FFlockProtokiteClient::MakeFeedbackFormUrl(const FString& ProtokiteApiUrl)
+{
+	return JoinProtokiteUrl(ProtokiteApiUrl, TEXT("/game/sdk/feedback-form"));
+}
+
+FFlockRequestHandle FFlockProtokiteClient::SubmitFeedbackForm(const TMap<FString, FString>& RequestHeaders,
+	const FFlockPlaytestFormSubmission& Submission,
+	TFunction<void(TFlockResult<FFlockPlaytestFormSubmitResult>)> OnComplete)
+{
+	const TSharedRef<FFlockHttpClient> HttpClient = Client;
+	const FString Url = MakeFeedbackFormUrl(Submission.ProtokiteApiUrl);
+	const FString Body = Submission.ToJson();
+	const bool bSafeToSendAgain = Submission.CanBeSentAgainSafely();
+
+	return Execute<FFlockPlaytestFormSubmitResult>(
+		[HttpClient, Url, RequestHeaders, Body](TFunction<void(TFlockResult<FFlockPlaytestFormSubmitResult>)> Done)
+		{
+			// Enveloped: the route answers GenericResponse[PlaytestFormResponseSchema].
+			return HttpClient->PostJson<FFlockPlaytestFormSubmitResult>(Url, RequestHeaders, Body, MoveTemp(Done));
+		},
+		MoveTemp(OnComplete), TEXT("Playtest feedback form"), bSafeToSendAgain,
+		/*MaxRetriesOverride*/ bSafeToSendAgain ? -1 : 0, /*bAllowAuthRetry*/ false, &LeaveReportingToTheCaller);
+}
+
 FString FFlockProtokiteClient::MakeRecordingUploadUrl(const FString& ProtokiteApiUrl, const FString& PlaytestSessionId)
 {
 	return JoinProtokiteUrl(ProtokiteApiUrl,
