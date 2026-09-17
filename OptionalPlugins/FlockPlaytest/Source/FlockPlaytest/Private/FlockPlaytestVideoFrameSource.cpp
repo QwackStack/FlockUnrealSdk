@@ -30,7 +30,14 @@ namespace
 
 	int32 ReadFrameGrabberLatency()
 	{
-		const IConsoleVariable* Latency = IConsoleManager::Get().FindConsoleVariable(TEXT("framegrabber.framelatency"));
+		// Looked up once and kept, because this is read for every frame while recording and the engine complains after
+		// five hundred lookups of one name ("consider caching e.g. using static"). A console variable keeps its address
+		// once registered, so holding it is safe; only its value is read again each time.
+		//
+		// MovieSceneCapture, which registers this one, is a dependency of this module and so is loaded well before any
+		// frame is asked for. Were it somehow absent, the answer is 0 -- the value recording needs -- so a missing
+		// variable reads as nothing in the way rather than as a reason to refuse.
+		static IConsoleVariable* const Latency = IConsoleManager::Get().FindConsoleVariable(TEXT("framegrabber.framelatency"));
 		return Latency != nullptr ? Latency->GetInt() : 0;
 	}
 

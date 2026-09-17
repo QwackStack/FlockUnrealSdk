@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Analytics/FlockLifecyclePump.h"
 #include "FlockPlaytestConfig.h"
+#include "FlockPlaytestFormAnswers.h"
 #include "FlockPlaytestIdentity.h"
 #include "FlockPlaytestPerformanceTimeline.h"
 #include "FlockPlaytestSession.h"
@@ -18,7 +19,9 @@
 
 class FFlockPlaytestRecordingRun;
 class FFlockPlaytestVideoRecording;
+class FFlockPlaytestFormKeyWatcher;
 class FFlockPlaytestRecordingUploads;
+class SFlockPlaytestFormWidget;
 class FFlockProtokiteClient;
 class IFlockFileUploader;
 class IFlockPlaytestVideoFrameSource;
@@ -135,6 +138,17 @@ public:
 	bool StopVideoRecording();
 
 	/**
+	 * Whether this launch's recording has somewhere to go: one is running, it belongs to the playtest rather than being
+	 * a test video, and a Protokite session has started for it to be uploaded to.
+	 *
+	 * **A recording with no session cannot be uploaded at all** -- the next launch deletes it -- so anything offering
+	 * the player a way to send it asks this first. Offering it on "a recording is running" alone puts a button in front
+	 * of a player that stops their recording and sends nothing.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock|Playtest")
+	bool CanSendTheRecording() const;
+
+	/**
 	 * Stops this launch's recording and uploads it straight away, while the player is still in the game -- what the
 	 * feedback form's "upload what I recorded" button calls.
 	 *
@@ -145,6 +159,43 @@ public:
 	 * nothing is lost by the game closing meanwhile.
 	 */
 	bool StopVideoRecordingAndUploadIt();
+
+	/**
+	 * Whether there is a feedback form to show: the playtest is ready and published one.
+	 *
+	 * A playtest with no form offers nothing to open, and a game reads this to leave its "give feedback" entry out
+	 * rather than offering something that does nothing.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock|Playtest")
+	bool CanOpenFeedbackForm() const;
+
+	/**
+	 * Opens the playtest's feedback form over the game. Returns false, and changes nothing, when there is no form to
+	 * show or one is already open.
+	 *
+	 * While it is open the mouse is shown and input goes to the form; closing or sending it puts both back exactly as
+	 * they were, so a game that never used a cursor does not end up with one.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Playtest")
+	bool OpenFeedbackForm();
+
+	/** Closes the form without sending it. Returns false when none is open. */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Playtest")
+	bool CloseFeedbackForm();
+
+	UFUNCTION(BlueprintPure, Category = "Flock|Playtest")
+	bool IsFeedbackFormOpen() const { return FormWidget.IsValid(); }
+
+	/**
+	 * Sends a filled-in form, keeping it on disk when it cannot go now.
+	 *
+	 * The form calls this once its answers are ones the server would take, and **a game with a form of its own calls it
+	 * too** -- the answers are the whole contract, so a studio that would rather draw its own questions still gets the
+	 * checking, the keeping and the sending.
+	 *
+	 * The player is never made to wait: anything that does not get through is sent by a later launch.
+	 */
+	void SendFilledInForm(const FFlockPlaytestFormAnswers& Answers);
 
 	/** The finished file of this launch's video recording. Empty until one has been saved. */
 	const FString& GetFinishedVideoRecordingPath() const { return FinishedVideoRecordingPath; }
@@ -230,6 +281,9 @@ public:
 
 	/** Waits until what earlier launches left in the recordings folder has been gone through. */
 	void WaitUntilRecordingsFolderFinishedForTesting();
+
+	/** Keeps filled-in forms here instead of under Saved. Set before a form is sent. */
+	void SetFormSpoolFolderForTesting(const FString& InFolder) { FormSpoolFolderForTesting = InFolder; }
 
 	/** Sends recordings through this instead of the network. Set before a recording finishes. */
 	void SetFileUploaderForTesting(const TSharedPtr<IFlockFileUploader>& InUploader) { TestFileUploader = InUploader; }
@@ -317,6 +371,12 @@ private:
 	 * worker thread, which logs what it did. Called when following starts.
 	 */
 	void FinishWhatEndedRunsLeftInRecordingsFolder();
+
+	/** Sends every form kept from an earlier launch, once Flock has initialized. Runs whether or not a form is open. */
+	void SendFormsKeptFromEarlierLaunches();
+
+	/** Starts or stops watching for the form key, following whether there is a form to open. */
+	void UpdateFeedbackFormKeyWatcher();
 
 	/** The uploader, built on first use so a launch that never records never makes one. */
 	TSharedRef<FFlockPlaytestRecordingUploads> GetOrCreateRecordingUploads();
@@ -466,6 +526,24 @@ private:
 
 	/** Set once a recording has been started this launch, whatever became of it. */
 	bool bVideoRecordingStartedThisLaunch = false;
+
+	/** Set once this launch has begun sending forms earlier launches kept, so it is begun exactly once. */
+	bool bStartedSendingKeptForms = false;
+
+	/** Where filled-in forms wait when they cannot be sent; a test may point this somewhere of its own. */
+	TOptional<FString> FormSpoolFolderForTesting;
+
+	/** The feedback form while it is open; null when it is not. */
+	TSharedPtr<SFlockPlaytestFormWidget> FormWidget;
+
+	/** Watches for the key that opens the form. Only alive while there is a form to open. */
+	TSharedPtr<FFlockPlaytestFormKeyWatcher> FormKeyWatcher;
+
+	/** Whether the mouse was already being shown before the form opened, so closing it can put that back. */
+	bool bCursorWasShownBeforeTheForm = false;
+
+	/** Whether this subsystem is the one that paused the game, so it only unpauses a pause of its own. */
+	bool bPausedForTheForm = false;
 
 	/** Sends finished recordings to Protokite. Built when the first one is ready to go. */
 	TSharedPtr<FFlockPlaytestRecordingUploads> RecordingUploads;

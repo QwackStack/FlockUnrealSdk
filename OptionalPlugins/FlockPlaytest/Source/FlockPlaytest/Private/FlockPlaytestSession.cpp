@@ -83,3 +83,10 @@ TMap<FString, FString> MakePlaytestSessionDebugInfo(const FString& MapName)
 	Facts.Add(TEXT("sdk_version"), UFlockSubsystem::SdkVersion);
 	return Facts;
 }
+
+bool FFlockPlaytestFormSubmitResult::FromWireObject(const TSharedRef<FJsonObject>& Object,
+	FFlockPlaytestFormSubmitResult& OutResult, FString& OutError)
+{
+	OutResult = FFlockPlaytestFormSubmitResult();
+	return true;
+}

@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "FlockPlaytestConfig.h"
+#include "FlockPlaytestFormSubmission.h"
 #include "FlockPlaytestRecordingUpload.h"
 #include "FlockPlaytestSession.h"
 #include "Http/FlockProviderBase.h"
@@ -51,6 +52,20 @@ public:
 	 */
 	FFlockRequestHandle EndPlaytestSession(const FString& ProtokiteApiUrl, const TMap<FString, FString>& RequestHeaders,
 		const FString& PlaytestSessionId, TFunction<void(TFlockResult<FFlockPlaytestSessionEndResult>)> OnComplete);
+
+	/** The address a filled-in feedback form is sent to. */
+	static FString MakeFeedbackFormUrl(const FString& ProtokiteApiUrl);
+
+	/**
+	 * Sends a filled-in feedback form.
+	 *
+	 * **Retried only when it names a session.** The server keeps one response per form and session, so a re-send naming
+	 * the same session lands on the same row; with no session every send makes another row, and a retry after an
+	 * ambiguous failure would leave two reports from one player.
+	 */
+	FFlockRequestHandle SubmitFeedbackForm(const TMap<FString, FString>& RequestHeaders,
+		const FFlockPlaytestFormSubmission& Submission,
+		TFunction<void(TFlockResult<FFlockPlaytestFormSubmitResult>)> OnComplete);
 
 	/** The address a session's recording upload link is asked for. */
 	static FString MakeRecordingUploadUrl(const FString& ProtokiteApiUrl, const FString& PlaytestSessionId);
