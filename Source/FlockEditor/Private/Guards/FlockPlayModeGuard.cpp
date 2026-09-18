@@ -19,7 +19,10 @@ void FFlockPlayModeGuard::Register()
 {
 	if (!BeginPIEHandle.IsValid())
 	{
-		BeginPIEHandle = FEditorDelegates::PreBeginPIE.AddStatic(&FFlockPlayModeGuard::OnBeginPIE);
+		// Once Play has started rather than before it: the engine opens this session's page of the Play message log in
+		// between, so a warning written earlier lands on the previous session's page, and the log the engine opens when
+		// Play ends never shows it.
+		BeginPIEHandle = FEditorDelegates::PostPIEStarted.AddStatic(&FFlockPlayModeGuard::OnBeginPIE);
 	}
 }
 
@@ -27,7 +30,7 @@ void FFlockPlayModeGuard::Unregister()
 {
 	if (BeginPIEHandle.IsValid())
 	{
-		FEditorDelegates::PreBeginPIE.Remove(BeginPIEHandle);
+		FEditorDelegates::PostPIEStarted.Remove(BeginPIEHandle);
 		BeginPIEHandle.Reset();
 	}
 }

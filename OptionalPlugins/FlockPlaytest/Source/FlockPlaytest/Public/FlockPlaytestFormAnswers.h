@@ -111,6 +111,13 @@ struct FLOCKPLAYTEST_API FFlockPlaytestFormAnswers
 	/** Whether a question, read as its own kind, holds nothing -- the server's own emptiness test. */
 	static bool IsEmptyAnswer(const FFlockPlaytestFormField& Field, const FFlockPlaytestFormAnswer& Answer);
 
+	/**
+	 * The questions whose ids differ only in letter case, as "'Q1' and 'q1'", joined; empty when there are none. The server
+	 * keeps such questions apart and this plugin cannot -- answers are held and sent under an engine string key, which
+	 * ignores case -- so their answers would land on one of them. Said once when a form loads, so the studio renames one.
+	 */
+	static FString DescribeQuestionsItCannotTellApart(const FFlockPlaytestForm& Form);
+
 private:
 	FFlockPlaytestFormAnswer& FindOrAdd(const FString& FieldId);
 

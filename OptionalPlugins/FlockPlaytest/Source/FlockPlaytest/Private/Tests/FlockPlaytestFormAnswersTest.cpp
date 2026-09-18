@@ -135,6 +135,32 @@ bool FFlockPlaytestFormSelectTest::RunTest(const FString& Parameters)
 
 	Answers.SetChosenOption(TEXT("which_level"), TEXT("  The tower  "));
 	TestEqual(TEXT("One of its own, trimmed, is taken"), Answers.FindProblems(Form).Num(), 0);
+
+	// The server compares letter for letter. Taken here, this would be refused there and the answers dropped.
+	Answers.SetChosenOption(TEXT("which_level"), TEXT("the tower"));
+	TestEqual(TEXT("One of its own in other letter case is refused, as the server refuses it"), Answers.FindProblems(Form).Num(), 1);
+	return true;
+}
+
+/**
+ * The server keeps questions whose ids differ only in letter case apart; this plugin cannot, so it names them for the
+ * studio to rename one. Ids that are simply different are not named.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestFormQuestionsItCannotTellApartTest,
+	"Flock.Playtest.Form.NamesQuestionsDifferingOnlyInLetterCase",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestFormQuestionsItCannotTellApartTest::RunTest(const FString& Parameters)
+{
+	TestEqual(TEXT("Named, both spellings"), FFlockPlaytestFormAnswers::DescribeQuestionsItCannotTellApart(MakeForm({
+			MakeField(TEXT("Q1"), FlockPlaytestFormFieldTypes::Text),
+			MakeField(TEXT("steps"), FlockPlaytestFormFieldTypes::TextArea),
+			MakeField(TEXT("q1"), FlockPlaytestFormFieldTypes::Text),
+		})), FString(TEXT("'Q1' and 'q1'")));
+	TestTrue(TEXT("Different ids are not named"), FFlockPlaytestFormAnswers::DescribeQuestionsItCannotTellApart(MakeForm({
+			MakeField(TEXT("Q1"), FlockPlaytestFormFieldTypes::Text),
+			MakeField(TEXT("Q2"), FlockPlaytestFormFieldTypes::Text),
+		})).IsEmpty());
 	return true;
 }
 

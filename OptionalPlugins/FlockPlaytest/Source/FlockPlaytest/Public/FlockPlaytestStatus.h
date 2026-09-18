@@ -5,8 +5,10 @@
 #include "CoreMinimal.h"
 #include "FlockPlaytestConfig.h"
 #include "Http/FlockResult.h"
+#include "FlockPlaytestStatus.generated.h"
 
 /** Whether this build may do playtest work right now, and if not, why. */
+UENUM(BlueprintType)
 enum class EFlockPlaytestStatus : uint8
 {
 	/** Enable Playtesting is off. Nothing else is looked at. */

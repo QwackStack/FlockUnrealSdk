@@ -87,6 +87,24 @@ bool FFlockPlaytestFormAnswers::IsEmptyAnswer(const FFlockPlaytestFormField& Fie
 	return Answer.Text.TrimStartAndEnd().IsEmpty();
 }
 
+FString FFlockPlaytestFormAnswers::DescribeQuestionsItCannotTellApart(const FFlockPlaytestForm& Form)
+{
+	TArray<FString> Pairs;
+	for (int32 First = 0; First < Form.Fields.Num(); ++First)
+	{
+		for (int32 Second = First + 1; Second < Form.Fields.Num(); ++Second)
+		{
+			const FString& A = Form.Fields[First].Id;
+			const FString& B = Form.Fields[Second].Id;
+			if (A.Equals(B, ESearchCase::IgnoreCase) && !A.Equals(B, ESearchCase::CaseSensitive))
+			{
+				Pairs.Add(FString::Printf(TEXT("'%s' and '%s'"), *A, *B));
+			}
+		}
+	}
+	return FString::Join(Pairs, TEXT(", "));
+}
+
 TArray<FFlockPlaytestFormProblem> FFlockPlaytestFormAnswers::FindProblems(const FFlockPlaytestForm& Form) const
 {
 	TArray<FFlockPlaytestFormProblem> Problems;
@@ -127,9 +145,13 @@ TArray<FFlockPlaytestFormProblem> FFlockPlaytestFormAnswers::FindProblems(const 
 
 		if (IsKind(Field, FlockPlaytestFormFieldTypes::Select))
 		{
-			// Compared trimmed, the way the server compares it.
+			// Compared trimmed and letter for letter, the way the server compares it. TArray::Contains would ignore
+			// letter case, and "crash" for the option "Crash" would pass here and be refused there.
 			const FString Chosen = Answer.Text.TrimStartAndEnd();
-			if (!Field.Options.Contains(Chosen))
+			if (!Field.Options.ContainsByPredicate([&Chosen](const FString& Option)
+			{
+				return Option.Equals(Chosen, ESearchCase::CaseSensitive);
+			}))
 			{
 				FFlockPlaytestFormProblem Problem;
 				Problem.FieldId = Field.Id;

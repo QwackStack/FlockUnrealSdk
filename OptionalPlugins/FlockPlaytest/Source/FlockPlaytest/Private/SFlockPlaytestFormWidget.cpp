@@ -2,7 +2,11 @@
 
 #include "SFlockPlaytestFormWidget.h"
 
+#include "Brushes/SlateDynamicImageBrush.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/Paths.h"
 #include "Styling/CoreStyle.h"
+#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
@@ -25,6 +29,9 @@ namespace
 	constexpr int32 LowestRating = 1;
 	constexpr int32 HighestRating = 5;
 
+	/** Drawn at half the file's 64 pixels, so it stays sharp on a high-density screen. */
+	constexpr float FormIconSize = 32.f;
+
 	bool IsKind(const FFlockPlaytestFormField& Field, const TCHAR* Kind)
 	{
 		return Field.Type.Equals(Kind, ESearchCase::CaseSensitive);
@@ -41,8 +48,23 @@ namespace
 	}
 }
 
+FString SFlockPlaytestFormWidget::GetIconPath()
+{
+	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("FlockPlaytest"));
+	return Plugin.IsValid() ? FPaths::Combine(Plugin->GetBaseDir(), TEXT("Resources"), TEXT("FeedbackFormIcon.png")) : FString();
+}
+
 void SFlockPlaytestFormWidget::Construct(const FArguments& InArgs)
 {
+	// A brush that loads its file when first drawn. A plain image brush is drawn only from textures a registered style
+	// set loaded beforehand, so one made here draws a white square and says nothing. A packaged game carries the file
+	// because the plugin's build rules stage it.
+	const FString IconPath = GetIconPath();
+	if (!IconPath.IsEmpty() && FPaths::FileExists(IconPath))
+	{
+		IconBrush = MakeShared<FSlateDynamicImageBrush>(FName(*IconPath), FVector2D(FormIconSize, FormIconSize));
+	}
+
 	Form = InArgs._Form;
 	OnSubmitted = InArgs._OnSubmitted;
 	OnClosed = InArgs._OnClosed;
@@ -77,10 +99,22 @@ void SFlockPlaytestFormWidget::Construct(const FArguments& InArgs)
 
 					+ SVerticalBox::Slot().AutoHeight()
 					[
-						SNew(STextBlock)
-						.Text(FText::FromString(Form.Title.IsEmpty() ? TEXT("Feedback") : Form.Title))
-						.Font(BoldFont(22))
-						.ColorAndOpacity(LabelColour)
+						SNew(SHorizontalBox)
+
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.f, 0.f, 12.f, 0.f)
+						[
+							SNew(SImage)
+							.Image(IconBrush.Get())
+							.Visibility(IconBrush.IsValid() ? EVisibility::Visible : EVisibility::Collapsed)
+						]
+
+						+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(Form.Title.IsEmpty() ? TEXT("Feedback") : Form.Title))
+							.Font(BoldFont(22))
+							.ColorAndOpacity(LabelColour)
+						]
 					]
 
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 0.f)
@@ -297,15 +331,15 @@ TSharedRef<SWidget> SFlockPlaytestFormWidget::BuildSelect(const FFlockPlaytestFo
 {
 	const FString FieldId = Field.Id;
 
-	// The combo box holds its options by shared pointer, so they have to outlive this call.
-	TArray<TSharedPtr<FString>>& Options = OptionsByField.Add(FieldId);
+	// The combo box holds a pointer to its list of options, so the list has to outlive this call and never move.
+	const TSharedRef<TArray<TSharedPtr<FString>>> Options = SelectOptionLists.Add_GetRef(MakeShared<TArray<TSharedPtr<FString>>>());
 	for (const FString& Option : Field.Options)
 	{
-		Options.Add(MakeShared<FString>(Option));
+		Options->Add(MakeShared<FString>(Option));
 	}
 
 	return SNew(SComboBox<TSharedPtr<FString>>)
-		.OptionsSource(&OptionsByField[FieldId])
+		.OptionsSource(&Options.Get())
 		.OnGenerateWidget_Lambda([](TSharedPtr<FString> Option)
 		{
 			return SNew(STextBlock).Text(FText::FromString(Option.IsValid() ? *Option : FString())).Font(Font(11));
@@ -332,7 +366,7 @@ FText SFlockPlaytestFormWidget::GetProblemText(FString FieldId) const
 {
 	for (const FFlockPlaytestFormProblem& Problem : Problems)
 	{
-		if (Problem.FieldId == FieldId)
+		if (Problem.FieldId.Equals(FieldId, ESearchCase::CaseSensitive))
 		{
 			return FText::FromString(Problem.Message);
 		}

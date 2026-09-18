@@ -7,6 +7,8 @@
 #include "FlockPlaytestFormAnswers.h"
 #include "Widgets/SCompoundWidget.h"
 
+struct FSlateBrush;
+
 class SVerticalBox;
 
 /**
@@ -61,6 +63,10 @@ public:
 	EVisibility GetSendRecordingVisibilityForTesting() const { return GetSendRecordingVisibility(); }
 	EVisibility GetRecordingOnItsWayVisibilityForTesting() const { return GetRecordingOnItsWayVisibility(); }
 	void SendTheRecordingForTesting() { SendTheRecording(); }
+	const FSlateBrush* GetIconBrushForTesting() const { return IconBrush.Get(); }
+
+	/** The Qwacks icon drawn beside the form's title, inside the plugin's Resources folder. */
+	static FString GetIconPath();
 
 private:
 	TArray<FFlockPlaytestFormProblem> TrySubmit();
@@ -81,8 +87,15 @@ private:
 	/** What was wrong the last time a submit was tried. Empty until then, which is why nothing complains early. */
 	TArray<FFlockPlaytestFormProblem> Problems;
 
-	/** Kept alive for the select boxes, which hold their options by shared pointer. */
-	TMap<FString, TArray<TSharedPtr<FString>>> OptionsByField;
+	/**
+	 * Kept alive for the select boxes, which hold a pointer to their list of options. Each list lives on its own on the
+	 * heap: held by value in a container, a second select question could move the first one's list and leave its box
+	 * pointing at freed memory.
+	 */
+	TArray<TSharedRef<TArray<TSharedPtr<FString>>>> SelectOptionLists;
+
+	/** The icon beside the title. Unset when its file cannot be found, and the form then shows no icon rather than a gap. */
+	TSharedPtr<FSlateBrush> IconBrush;
 
 	/** The button offering to send the recording, and the note that replaces it once it has been asked for. */
 	EVisibility GetSendRecordingVisibility() const;

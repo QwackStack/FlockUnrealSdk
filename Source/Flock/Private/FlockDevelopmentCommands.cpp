@@ -14,6 +14,12 @@
 #include "Http/FlockError.h"
 #include "Models/FlockAuthModels.h"
 #include "Providers/FlockAuthProvider.h"
+#include "Blueprint/BlueprintExceptionInfo.h"
+#include "UObject/Script.h"
+#include "UObject/Stack.h"
+
+/** The category a test error is logged under: its own, so it is never mistaken for the SDK's, which capture ignores. */
+DEFINE_LOG_CATEGORY_STATIC(LogFlockTestException, Log, All);
 
 /**
  * Console commands for driving a game that has no interface of its own: a playtest build, or the test harness.
@@ -178,6 +184,67 @@ namespace FlockDevelopmentCommands
 		TEXT("Asks the game to close after a wait, the way a player closing it does, so shutdown can be driven from a "
 			"harness with a session still running. Takes the seconds to wait (development builds only)."),
 		FConsoleCommandWithArgsDelegate::CreateStatic(&QuitAfterSeconds));
+
+	/**
+	 * `Flock.RaiseTestException [error|blueprint] [times]` -- raises a fault the SDK's exception capture reports, so a
+	 * studio can check that exceptions reach its dashboard without breaking its game to do it.
+	 *
+	 * `error` logs an Error line, the way an engine or game fault does. `blueprint` raises a Blueprint Accessed None
+	 * through the engine's own script-exception broadcast, which is the call the Blueprint VM makes when a graph reads
+	 * through an empty reference. Every one raised by one call is the same fault, so the first is reported and the rest
+	 * are counted into one repeat report once the repeat window closes.
+	 */
+	void RaiseTestException(const TArray<FString>& Arguments)
+	{
+		// A thousand is plenty to watch repeats being counted; far more would hold the game thread for minutes of logging.
+		constexpr int32 MostTimes = 1000;
+		const FString Kind = Arguments.Num() > 0 ? Arguments[0] : FString(TEXT("error"));
+		const int32 Times = Arguments.Num() > 1 ? FMath::Clamp(FCString::Atoi(*Arguments[1]), 1, MostTimes) : 1;
+
+		if (Kind.Equals(TEXT("error"), ESearchCase::IgnoreCase))
+		{
+			for (int32 Index = 0; Index < Times; ++Index)
+			{
+				UE_LOG(LogFlockTestException, Error, TEXT("A test error raised by Flock.RaiseTestException."));
+			}
+		}
+		else if (Kind.Equals(TEXT("blueprint"), ESearchCase::IgnoreCase))
+		{
+			// The engine only broadcasts on the game thread, which is where console commands run.
+			UFunction* Function = UObject::StaticClass()->FindFunctionByName(NAME_ExecuteUbergraph);
+			UFlockSubsystem* Sdk = FindRunningFlockSubsystem();
+			if (Function == nullptr || Sdk == nullptr)
+			{
+				UE_LOG(LogFlock, Warning, TEXT("Flock.RaiseTestException: no running game to raise a Blueprint exception in."));
+				return;
+			}
+			TArray<uint8> Locals;
+			Locals.SetNumZeroed(FMath::Max<int32>(Function->ParmsSize, 1));
+			FFrame Stack(Sdk, Function, Locals.GetData());
+			const FBlueprintExceptionInfo Info(EBlueprintExceptionType::AccessViolation,
+				FText::FromString(TEXT("Accessed None trying to read property FlockTestTarget (raised by Flock.RaiseTestException)")));
+			for (int32 Index = 0; Index < Times; ++Index)
+			{
+				FBlueprintCoreDelegates::ThrowScriptException(Sdk, Stack, Info);
+			}
+		}
+		else
+		{
+			UE_LOG(LogFlock, Warning, TEXT("Flock.RaiseTestException: '%s' is not a kind this raises. Use error or blueprint."), *Kind);
+			return;
+		}
+
+		UE_LOG(LogFlock, Log, TEXT("Flock.RaiseTestException: raised %d %s fault(s). The first is reported with the next "
+			"flush, and any repeats are counted into one report once the repeat window closes. Nothing is reported when "
+			"Analytics Enabled or Analytics Capture Exceptions is off, or while consent is withheld."), Times, *Kind.ToLower());
+	}
+
+	FAutoConsoleCommand GFlockRaiseTestExceptionCommand(
+		TEXT("Flock.RaiseTestException"),
+		TEXT("Raises a fault the SDK's exception capture reports, to check exceptions reach the dashboard: 'error' logs an "
+			"Error line, 'blueprint' raises a Blueprint Accessed None. Takes the kind and how many times, up to 1000 "
+			"(development builds only)."),
+		FConsoleCommandWithArgsDelegate::CreateStatic(&RaiseTestException));
 }
 
 #endif // !UE_BUILD_SHIPPING

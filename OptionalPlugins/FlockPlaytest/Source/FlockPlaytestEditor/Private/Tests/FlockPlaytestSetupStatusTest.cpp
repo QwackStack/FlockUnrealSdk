@@ -1,0 +1,210 @@
+// Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
+
+#include "Misc/AutomationTest.h"
+
+#if WITH_AUTOMATION_TESTS
+
+#include "Config/FlockConfig.h"
+#include "FlockPlaytestSettings.h"
+#include "FlockPlaytestSetupStatus.h"
+
+namespace
+{
+	/** Everything a playtest needs, set up right: every test changes one thing from here. */
+	FFlockPlaytestSetupInput PlaytestReadyInput()
+	{
+		FFlockPlaytestSetupInput Input;
+		Input.bPlaytestingEnabled = true;
+		Input.ProtokiteApiUrl = TEXT("https://protokite.example.com");
+		Input.FlockGameVersion = TEXT("pt-01KX0PLAYTEST00000000000000");
+		Input.bFlockAnalyticsEnabled = true;
+		Input.bFlockAnalyticsAutoStartSession = true;
+		Input.bFlockAnalyticsRequireExplicitConsent = false;
+		return Input;
+	}
+
+	const FFlockPlaytestSetupFinding* FindSetupFinding(const TArray<FFlockPlaytestSetupFinding>& Findings, const TCHAR* Id)
+	{
+		return Findings.FindByPredicate([Id](const FFlockPlaytestSetupFinding& Finding) { return Finding.Id == FName(Id); });
+	}
+}
+
+/** A project set up for a playtest hears nothing, and a project with playtesting off hears nothing however wrong it is. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSetupQuietTest, "Flock.Playtest.Editor.Setup.QuietWhenSetUpOrTurnedOff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestSetupQuietTest::RunTest(const FString& Parameters)
+{
+	TestEqual(TEXT("Set up: nothing to say"), FFlockPlaytestSetupStatus::Evaluate(PlaytestReadyInput()).Num(), 0);
+
+	FFlockPlaytestSetupInput Off;
+	Off.bPlaytestingEnabled = false;
+	Off.ProtokiteApiUrl = TEXT(" not a url ");
+	Off.FlockGameVersion = TEXT("1.0.0");
+	Off.bFlockAnalyticsEnabled = false;
+	Off.bFlockAnalyticsAutoStartSession = false;
+	Off.bFlockAnalyticsRequireExplicitConsent = true;
+	TestEqual(TEXT("Turned off: nothing to say, however wrong the rest is"), FFlockPlaytestSetupStatus::Evaluate(Off).Num(), 0);
+	return true;
+}
+
+/**
+ * The Game Version must be a playtest's, named pt- and the test's id, letter for letter as Protokite names it. A release
+ * version finds no playtest, and it is the trap a studio walks into by pasting the ID from Protokite's test page.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSetupVersionTest, "Flock.Playtest.Editor.Setup.NamesAVersionThatIsNotAPlaytests",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestSetupVersionTest::RunTest(const FString& Parameters)
+{
+	FFlockPlaytestSetupInput Release = PlaytestReadyInput();
+	Release.FlockGameVersion = TEXT("1.0.0");
+	const TArray<FFlockPlaytestSetupFinding> Findings = FFlockPlaytestSetupStatus::Evaluate(Release);
+	const FFlockPlaytestSetupFinding* Finding = FindSetupFinding(Findings, TEXT("Playtest.NotAPlaytestVersion"));
+	if (TestNotNull(TEXT("A release version is named"), Finding))
+	{
+		TestEqual(TEXT("As a warning"), static_cast<int32>(Finding->Severity), static_cast<int32>(EFlockPlaytestSetupSeverity::Warning));
+		TestTrue(TEXT("Saying which version"), Finding->Detail.ToString().Contains(TEXT("'1.0.0'"), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("And what a playtest's is called"), Finding->Detail.ToString().Contains(TEXT("pt-<test id>"), ESearchCase::CaseSensitive));
+		TestEqual(TEXT("Fixed on the Flock SDK's page"), static_cast<int32>(Finding->Fix), static_cast<int32>(EFlockPlaytestSetupFix::OpenFlockSettings));
+	}
+	TestEqual(TEXT("And nothing else"), Findings.Num(), 1);
+
+	FFlockPlaytestSetupInput Capitals = PlaytestReadyInput();
+	Capitals.FlockGameVersion = TEXT("PT-01KX0PLAYTEST00000000000000");
+	TestNotNull(TEXT("Protokite names it in small letters, so capitals are not a playtest's"),
+		FindSetupFinding(FFlockPlaytestSetupStatus::Evaluate(Capitals), TEXT("Playtest.NotAPlaytestVersion")));
+
+	FFlockPlaytestSetupInput Empty = PlaytestReadyInput();
+	Empty.FlockGameVersion.Empty();
+	TestNull(TEXT("No version at all is the Flock SDK's own finding, not repeated here"),
+		FindSetupFinding(FFlockPlaytestSetupStatus::Evaluate(Empty), TEXT("Playtest.NotAPlaytestVersion")));
+	return true;
+}
+
+/** A missing or unusable URL stops playtesting, in the running game's own words. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSetupUrlTest, "Flock.Playtest.Editor.Setup.NamesAProtokiteUrlThatCannotBeUsed",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestSetupUrlTest::RunTest(const FString& Parameters)
+{
+	FFlockPlaytestSetupInput Missing = PlaytestReadyInput();
+	Missing.ProtokiteApiUrl.Empty();
+	const TArray<FFlockPlaytestSetupFinding> MissingFindings = FFlockPlaytestSetupStatus::Evaluate(Missing);
+	const FFlockPlaytestSetupFinding* MissingFinding = FindSetupFinding(MissingFindings, TEXT("Playtest.ProtokiteApiUrlMissing"));
+	if (TestNotNull(TEXT("An empty URL is named"), MissingFinding))
+	{
+		TestEqual(TEXT("As stopping playtesting"), static_cast<int32>(MissingFinding->Severity),
+			static_cast<int32>(EFlockPlaytestSetupSeverity::StopsPlaytesting));
+		TestEqual(TEXT("Fixed on the playtest page"), static_cast<int32>(MissingFinding->Fix),
+			static_cast<int32>(EFlockPlaytestSetupFix::OpenPlaytestSettings));
+	}
+
+	FFlockPlaytestSetupInput Spaced = PlaytestReadyInput();
+	Spaced.ProtokiteApiUrl = TEXT("https://protokite.example.com ");
+	const TArray<FFlockPlaytestSetupFinding> SpacedFindings = FFlockPlaytestSetupStatus::Evaluate(Spaced);
+	const FFlockPlaytestSetupFinding* SpacedFinding = FindSetupFinding(SpacedFindings, TEXT("Playtest.ProtokiteApiUrlUnusable"));
+	if (TestNotNull(TEXT("A URL with a trailing space is named, never trimmed"), SpacedFinding))
+	{
+		TestTrue(TEXT("Quoting it, so the space shows"), SpacedFinding->Detail.ToString().Contains(TEXT("'https://protokite.example.com '"), ESearchCase::CaseSensitive));
+	}
+	return true;
+}
+
+/**
+ * The Flock SDK's analytics off stops a playtest outright, since the playtest session starts from a Flock one. The
+ * start-session and consent settings only make it wait, which is worth knowing and nothing more -- and said only while a
+ * Flock session can start at all.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSetupFlockSettingsTest, "Flock.Playtest.Editor.Setup.NamesFlockSettingsAPlaytestWaitsOn",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestSetupFlockSettingsTest::RunTest(const FString& Parameters)
+{
+	FFlockPlaytestSetupInput NoAnalytics = PlaytestReadyInput();
+	NoAnalytics.bFlockAnalyticsEnabled = false;
+	NoAnalytics.bFlockAnalyticsAutoStartSession = false;
+	NoAnalytics.bFlockAnalyticsRequireExplicitConsent = true;
+	const TArray<FFlockPlaytestSetupFinding> NoAnalyticsFindings = FFlockPlaytestSetupStatus::Evaluate(NoAnalytics);
+	const FFlockPlaytestSetupFinding* Off = FindSetupFinding(NoAnalyticsFindings, TEXT("Playtest.FlockAnalyticsOff"));
+	if (TestNotNull(TEXT("Analytics off is named"), Off))
+	{
+		TestEqual(TEXT("As stopping playtesting"), static_cast<int32>(Off->Severity), static_cast<int32>(EFlockPlaytestSetupSeverity::StopsPlaytesting));
+		TestTrue(TEXT("Naming the setting"), Off->Detail.ToString().Contains(TEXT("Analytics Enabled"), ESearchCase::CaseSensitive));
+	}
+	TestEqual(TEXT("And the settings that only make it wait are not added on top"), NoAnalyticsFindings.Num(), 1);
+
+	FFlockPlaytestSetupInput Waits = PlaytestReadyInput();
+	Waits.bFlockAnalyticsAutoStartSession = false;
+	Waits.bFlockAnalyticsRequireExplicitConsent = true;
+	Waits.FlockGameVersion = TEXT("1.0.0");
+	const TArray<FFlockPlaytestSetupFinding> WaitFindings = FFlockPlaytestSetupStatus::Evaluate(Waits);
+	const FFlockPlaytestSetupFinding* StartSession = FindSetupFinding(WaitFindings, TEXT("Playtest.WaitsForStartSession"));
+	const FFlockPlaytestSetupFinding* Consent = FindSetupFinding(WaitFindings, TEXT("Playtest.WaitsForConsent"));
+	TestTrue(TEXT("Both waits are named"), StartSession != nullptr && Consent != nullptr);
+	if (StartSession != nullptr && Consent != nullptr)
+	{
+		TestEqual(TEXT("As information"), static_cast<int32>(StartSession->Severity), static_cast<int32>(EFlockPlaytestSetupSeverity::Info));
+		TestEqual(TEXT("Both of them"), static_cast<int32>(Consent->Severity), static_cast<int32>(EFlockPlaytestSetupSeverity::Info));
+	}
+	if (TestEqual(TEXT("Three findings"), WaitFindings.Num(), 3))
+	{
+		TestEqual(TEXT("The most serious first"), WaitFindings[0].Id, FName(TEXT("Playtest.NotAPlaytestVersion")));
+	}
+	return true;
+}
+
+/** The findings come from the project's own settings pages, which is what the editor reads as Play starts. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSetupReadsProjectSettingsTest, "Flock.Playtest.Editor.Setup.ReadsTheProjectsSettings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestSetupReadsProjectSettingsTest::RunTest(const FString& Parameters)
+{
+	UFlockPlaytestSettings* Playtest = GetMutableDefault<UFlockPlaytestSettings>();
+	UFlockConfig* Flock = GetMutableDefault<UFlockConfig>();
+	const bool bSavedPlaytesting = Playtest->bPlaytestingEnabled;
+	const FString SavedUrl = Playtest->ProtokiteApiUrl;
+	const FString SavedVersion = Flock->GameVersion;
+	const bool bSavedAnalytics = Flock->bAnalyticsEnabled;
+	const bool bSavedAutoStart = Flock->bAnalyticsAutoStartSession;
+	const bool bSavedConsent = Flock->bAnalyticsRequireExplicitConsent;
+	ON_SCOPE_EXIT
+	{
+		Playtest->bPlaytestingEnabled = bSavedPlaytesting;
+		Playtest->ProtokiteApiUrl = SavedUrl;
+		Flock->GameVersion = SavedVersion;
+		Flock->bAnalyticsEnabled = bSavedAnalytics;
+		Flock->bAnalyticsAutoStartSession = bSavedAutoStart;
+		Flock->bAnalyticsRequireExplicitConsent = bSavedConsent;
+	};
+
+	Playtest->bPlaytestingEnabled = true;
+	Playtest->ProtokiteApiUrl = TEXT("http://localhost:8020");
+	Flock->GameVersion = TEXT("2.4.0");
+
+	// Read twice, so every pair of the three Flock switches differs in one reading or the other: a field read from
+	// its neighbour cannot pass both.
+	Flock->bAnalyticsEnabled = false;
+	Flock->bAnalyticsAutoStartSession = true;
+	Flock->bAnalyticsRequireExplicitConsent = false;
+	const FFlockPlaytestSetupInput First = FFlockPlaytestSetupInput::FromProjectSettings();
+	TestTrue(TEXT("Enable Playtesting"), First.bPlaytestingEnabled);
+	TestEqual(TEXT("Protokite API URL"), First.ProtokiteApiUrl, FString(TEXT("http://localhost:8020")));
+	TestEqual(TEXT("The Flock SDK's Game Version"), First.FlockGameVersion, FString(TEXT("2.4.0")));
+	TestFalse(TEXT("First reading: Analytics Enabled"), First.bFlockAnalyticsEnabled);
+	TestTrue(TEXT("First reading: Analytics Auto Start Session"), First.bFlockAnalyticsAutoStartSession);
+	TestFalse(TEXT("First reading: Analytics Require Explicit Consent"), First.bFlockAnalyticsRequireExplicitConsent);
+
+	Flock->bAnalyticsAutoStartSession = false;
+	Flock->bAnalyticsRequireExplicitConsent = true;
+	const FFlockPlaytestSetupInput Second = FFlockPlaytestSetupInput::FromProjectSettings();
+	TestFalse(TEXT("Second reading: Analytics Enabled"), Second.bFlockAnalyticsEnabled);
+	TestFalse(TEXT("Second reading: Analytics Auto Start Session"), Second.bFlockAnalyticsAutoStartSession);
+	TestTrue(TEXT("Second reading: Analytics Require Explicit Consent"), Second.bFlockAnalyticsRequireExplicitConsent);
+
+	Playtest->bPlaytestingEnabled = false;
+	TestFalse(TEXT("Enable Playtesting, turned off"), FFlockPlaytestSetupInput::FromProjectSettings().bPlaytestingEnabled);
+	return true;
+}
+
+#endif // WITH_AUTOMATION_TESTS

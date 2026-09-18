@@ -202,20 +202,22 @@ namespace FlockPlaytestFixtures
 
 	/**
 	 * A playtest-config answer for the given Flock game version, with three features and a three-question form. Heavy
-	 * analytics and video recording are off unless a test turns them on.
+	 * analytics and video recording are off unless a test turns them on; exception capturing is on unless one turns it off.
 	 */
-	inline FString ConfigBody(const FString& FlockGameVersionId = GameVersionId, bool bHeavyAnalytics = false, bool bVideoRecording = false)
+	inline FString ConfigBody(const FString& FlockGameVersionId = GameVersionId, bool bHeavyAnalytics = false, bool bVideoRecording = false,
+		bool bExceptionCapturing = true)
 	{
 		return FString::Printf(TEXT("{\"error\":{\"code\":null},\"response\":{\"message\":null,\"code\":null},\"result\":{")
 			TEXT("\"session_started_event\":\"session_started\",\"test_id\":\"%s\",\"flock_game_version_id\":\"%s\",")
-			TEXT("\"features\":{\"video_recording\":%s,\"exception_capturing\":true,\"heavy_analytics\":%s},")
+			TEXT("\"features\":{\"video_recording\":%s,\"exception_capturing\":%s,\"heavy_analytics\":%s},")
 			TEXT("\"form\":{\"id\":\"01KX0FORM000000000000000000\",\"test_id\":\"%s\",\"game_id\":\"01KX0GAME000000000000000000\",")
 			TEXT("\"title\":\"Playtest feedback\",\"description\":null,\"is_published\":true,\"fields\":[")
 			TEXT("{\"id\":\"rating\",\"type\":\"rating\",\"label\":\"How was it?\",\"required\":true,\"help_text\":null,\"options\":[]},")
 			TEXT("{\"id\":\"category\",\"type\":\"select\",\"label\":\"What is this about?\",\"required\":true,\"help_text\":null,\"options\":[\"Bug\",\"Crash\",\"Feedback\",\"Other\"]},")
 			TEXT("{\"id\":\"steps\",\"type\":\"textarea\",\"label\":\"Steps to reproduce\",\"required\":false,\"help_text\":\"What were you doing when it happened?\",\"options\":[]}],")
 			TEXT("\"created_at\":\"2026-09-14T10:00:00Z\",\"updated_at\":\"2026-09-14T10:00:00Z\"}}}"),
-			TestId, *FlockGameVersionId, bVideoRecording ? TEXT("true") : TEXT("false"), bHeavyAnalytics ? TEXT("true") : TEXT("false"), TestId);
+			TestId, *FlockGameVersionId, bVideoRecording ? TEXT("true") : TEXT("false"), bExceptionCapturing ? TEXT("true") : TEXT("false"),
+			bHeavyAnalytics ? TEXT("true") : TEXT("false"), TestId);
 	}
 
 	/** The envelope around a hand-written result object, for tests that vary one member of an answer. */

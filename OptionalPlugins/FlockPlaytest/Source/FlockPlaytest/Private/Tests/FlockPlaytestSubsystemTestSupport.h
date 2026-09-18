@@ -80,8 +80,8 @@ namespace FlockPlaytestSubsystemTesting
 	};
 
 	/**
-	 * Sets the Flock SDK's analytics settings the heavy analytics tests rely on for one test: analytics on or off, a
-	 * session started on sign-in, and no consent needed. Events are sent as they are recorded rather than queued on
+	 * Sets the Flock SDK's analytics settings the playtest tests rely on for one test: analytics on or off, a session
+	 * started on sign-in, no consent needed, and exception capture on unless a test turns it off. Events are sent as they are recorded rather than queued on
 	 * disk, because that queue is one folder shared by every test and every run: an event one test left in it would be
 	 * sent, and counted, by the next. Puts the previous values back.
 	 */
@@ -92,13 +92,15 @@ namespace FlockPlaytestSubsystemTesting
 		bool bSavedAnalyticsAutoStartSession = FlockSettings->bAnalyticsAutoStartSession;
 		bool bSavedAnalyticsRequireExplicitConsent = FlockSettings->bAnalyticsRequireExplicitConsent;
 		bool bSavedAnalyticsCacheFailedEvents = FlockSettings->bAnalyticsCacheFailedEvents;
+		bool bSavedAnalyticsCaptureExceptions = FlockSettings->bAnalyticsCaptureExceptions;
 
-		explicit FScopedFlockAnalyticsSettings(bool bAnalyticsEnabled)
+		explicit FScopedFlockAnalyticsSettings(bool bAnalyticsEnabled, bool bCaptureExceptions = true)
 		{
 			FlockSettings->bAnalyticsEnabled = bAnalyticsEnabled;
 			FlockSettings->bAnalyticsAutoStartSession = true;
 			FlockSettings->bAnalyticsRequireExplicitConsent = false;
 			FlockSettings->bAnalyticsCacheFailedEvents = false;
+			FlockSettings->bAnalyticsCaptureExceptions = bCaptureExceptions;
 		}
 
 		~FScopedFlockAnalyticsSettings()
@@ -107,6 +109,7 @@ namespace FlockPlaytestSubsystemTesting
 			FlockSettings->bAnalyticsAutoStartSession = bSavedAnalyticsAutoStartSession;
 			FlockSettings->bAnalyticsRequireExplicitConsent = bSavedAnalyticsRequireExplicitConsent;
 			FlockSettings->bAnalyticsCacheFailedEvents = bSavedAnalyticsCacheFailedEvents;
+			FlockSettings->bAnalyticsCaptureExceptions = bSavedAnalyticsCaptureExceptions;
 		}
 	};
 

@@ -291,7 +291,25 @@ function Invoke-FlockTests {
         return [PSCustomObject]@{ Ran = $false; Total = 0; Failed = 0; Reason = 'no tests ran' }
     }
 
-    return [PSCustomObject]@{ Ran = $true; Total = $Total; Failed = ($Total - $Ok); Reason = '' }
+    # A failure is named, with the first error it logged, and its log is kept. The next run deletes this log, and a
+    # count alone once left a one-off failure on one engine that nothing could identify afterwards (2026-09-18).
+    $FailedTests = @()
+    if ($Ok -lt $Total) {
+        foreach ($Match in [regex]::Matches($LogText, 'Test Completed\. Result=\{Fail\w*\} Name=\{[^}]*\} Path=\{([^}]*)\}')) {
+            $Path = $Match.Groups[1].Value
+            # The first error between the test's BeginEvents and EndEvents lines; warnings can come before it.
+            $Events = [regex]::Match($LogText, '(?s)BeginEvents: ' + [regex]::Escape($Path) + '(.*?)EndEvents: ' + [regex]::Escape($Path))
+            $Detail = if ($Events.Success) { [regex]::Match($Events.Groups[1].Value, 'Error: ([^\r\n]*)') } else { $null }
+            $FailedTests += if ($Detail -and $Detail.Success) { "$Path -- $($Detail.Groups[1].Value)" } else { $Path }
+        }
+        $Engine = Split-Path -Leaf $EngineDir
+        $Context = if ($GameContext) { 'game' } else { 'editor' }
+        $KeptLog = Join-Path (Split-Path -Parent $LogPath) ("FlockSweep-$Engine-$Context-failed.log")
+        Copy-Item $LogPath $KeptLog -Force -ErrorAction SilentlyContinue
+        $FailedTests += "full log kept at $KeptLog"
+    }
+
+    return [PSCustomObject]@{ Ran = $true; Total = $Total; Failed = ($Total - $Ok); Reason = ''; FailedTests = $FailedTests }
 }
 
 # -- The declared floor, read from the one place that owns it --
@@ -448,6 +466,7 @@ foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
         if ($InRange) { $TestFailed.Add($Version) } else { $AboveCeiling.Add("$Version (tests did not run)") }
     } elseif ($Tests.Failed -gt 0) {
         Write-Host "UE $Version : $($Tests.Failed) of $($Tests.Total) tests FAILED" -ForegroundColor Red
+        foreach ($Line in $Tests.FailedTests) { Write-Host "    $Line" -ForegroundColor Red }
         if ($InRange) { $TestFailed.Add($Version) } else { $AboveCeiling.Add("$Version ($($Tests.Failed) failed)") }
     } else {
         Write-Host "UE $Version : $($Tests.Total)/$($Tests.Total) tests passed (editor)" -ForegroundColor Green
@@ -459,6 +478,7 @@ foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
             if ($InRange) { $TestFailed.Add($Version) } else { $AboveCeiling.Add("$Version (game-context tests did not run)") }
         } elseif ($GameTests.Failed -gt 0) {
             Write-Host "UE $Version : $($GameTests.Failed) of $($GameTests.Total) game-context tests FAILED" -ForegroundColor Red
+            foreach ($Line in $GameTests.FailedTests) { Write-Host "    $Line" -ForegroundColor Red }
             if ($InRange) { $TestFailed.Add($Version) } else { $AboveCeiling.Add("$Version ($($GameTests.Failed) game-context failed)") }
         } else {
             Write-Host "UE $Version : $($GameTests.Total)/$($GameTests.Total) tests passed (game context)" -ForegroundColor Green

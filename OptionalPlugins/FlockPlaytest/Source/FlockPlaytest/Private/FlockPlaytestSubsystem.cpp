@@ -297,6 +297,12 @@ void UFlockPlaytestSubsystem::StartPlaytestConfigFetch()
 			if (bLoaded)
 			{
 				Self->ConfigFailureMessage.Empty();
+				const FString QuestionsItCannotTellApart = FFlockPlaytestFormAnswers::DescribeQuestionsItCannotTellApart(Self->PlaytestConfig.Form);
+				if (!QuestionsItCannotTellApart.IsEmpty())
+				{
+					UE_LOG(LogFlockPlaytest, Warning, TEXT("The playtest's feedback form has questions whose ids differ only in letter case (%s). This plugin cannot keep their answers apart, so one answer would be sent for both: rename one of them on the dashboard."),
+						*QuestionsItCannotTellApart);
+				}
 			}
 			else if (Result.bSuccess)
 			{
@@ -363,6 +369,8 @@ void UFlockPlaytestSubsystem::StartPlaytestSessionWhenAllowed()
 	}
 	const UGameInstance* GameInstance = GetGameInstance();
 	Request.DebugInfo = MakePlaytestSessionDebugInfo(MapNameOf(GameInstance != nullptr ? GameInstance->GetWorld() : nullptr));
+
+	WarnIfExceptionsAreNotCaptured();
 
 	// Kept for the end, which goes to the same place with the same headers even after the Flock SDK has shut down.
 	PlaytestSessionApiUrl = GetDefault<UFlockPlaytestSettings>()->ProtokiteApiUrl;
@@ -549,6 +557,15 @@ bool UFlockPlaytestSubsystem::RecordPlaytestEvent(const FString& EventName, cons
 		return false;
 	}
 	return SendPlaytestEvent(EventName, Properties);
+}
+
+void UFlockPlaytestSubsystem::WarnIfExceptionsAreNotCaptured() const
+{
+	if (IsPlaytestFeatureEnabled(FlockPlaytestFeatures::ExceptionCapturing) && Flock.IsValid()
+		&& !Flock->GetExceptionCaptureCoverage().bEnabled)
+	{
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("This playtest turns exception capturing on, but the Flock SDK is not capturing exceptions, so no fault from this launch is reported. Turn on Analytics Capture Exceptions: Project Settings > Plugins > Flock SDK Settings."));
+	}
 }
 
 void UFlockPlaytestSubsystem::UpdatePerformanceTimeline()
@@ -1344,11 +1361,13 @@ bool UFlockPlaytestSubsystem::CloseFeedbackForm()
 	return true;
 }
 
-void UFlockPlaytestSubsystem::SendFilledInForm(const FFlockPlaytestFormAnswers& Answers)
+bool UFlockPlaytestSubsystem::SendFilledInForm(const FFlockPlaytestFormAnswers& Answers)
 {
 	if (!PlaytestConfig.HasForm())
 	{
-		return;
+		// Said out loud: a game drawing its own form calls this, and a silent return would read as sent.
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("The feedback form cannot be sent: this playtest has no published feedback form loaded."));
+		return false;
 	}
 
 	FFlockPlaytestFormSubmission Submission;
@@ -1366,7 +1385,7 @@ void UFlockPlaytestSubsystem::SendFilledInForm(const FFlockPlaytestFormAnswers& 
 		{
 			// The server refuses a form with nobody to attribute it to, so keeping it would only fail forever.
 			UE_LOG(LogFlockPlaytest, Warning, TEXT("The feedback form cannot be sent: %s"), *WhyNone);
-			return;
+			return false;
 		}
 	}
 
@@ -1389,8 +1408,13 @@ void UFlockPlaytestSubsystem::SendFilledInForm(const FFlockPlaytestFormAnswers& 
 
 	if (!Flock.IsValid() || !Flock->IsInitialized())
 	{
+		if (KeptAt.IsEmpty())
+		{
+			// Neither kept nor sent: the warning above already says why.
+			return false;
+		}
 		UE_LOG(LogFlockPlaytest, Log, TEXT("The feedback form is kept until the Flock SDK is running."));
-		return;
+		return true;
 	}
 
 	UE_LOG(LogFlockPlaytest, Log, TEXT("Sending the feedback form."));
@@ -1425,6 +1449,7 @@ void UFlockPlaytestSubsystem::SendFilledInForm(const FFlockPlaytestFormAnswers& 
 				RefusedQuestion.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (the question '%s' was refused)"), *RefusedQuestion),
 				*Result.Error.ToDisplayText());
 		});
+	return true;
 }
 
 void UFlockPlaytestSubsystem::SendFormsKeptFromEarlierLaunches()

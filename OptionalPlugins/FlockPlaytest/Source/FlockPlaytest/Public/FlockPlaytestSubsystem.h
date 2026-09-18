@@ -194,8 +194,12 @@ public:
 	 * checking, the keeping and the sending.
 	 *
 	 * The player is never made to wait: anything that does not get through is sent by a later launch.
+	 *
+	 * Returns true when the answers were sent, or kept to be sent later. False, with a warning saying why, when the
+	 * playtest has no published form, when there is nobody to attribute the answers to, or when they could be neither
+	 * kept nor sent. Check the answers with FindProblems first: a form the server would refuse is sent and refused.
 	 */
-	void SendFilledInForm(const FFlockPlaytestFormAnswers& Answers);
+	bool SendFilledInForm(const FFlockPlaytestFormAnswers& Answers);
 
 	/** The finished file of this launch's video recording. Empty until one has been saved. */
 	const FString& GetFinishedVideoRecordingPath() const { return FinishedVideoRecordingPath; }
@@ -324,6 +328,14 @@ private:
 	 * dropping the window in progress. The one place they start or stop.
 	 */
 	void UpdatePerformanceTimeline();
+
+	/**
+	 * Warns when the playtest turns exception capturing on and the Flock SDK is not capturing exceptions. Exceptions are
+	 * the Flock SDK's to report and a playtest switch never controls that (decision D4), so all this plugin can do is
+	 * say so. Called as the launch's one session start is sent, which is also the first moment the answer is settled:
+	 * the Flock SDK announces it is initialized before it starts capturing.
+	 */
+	void WarnIfExceptionsAreNotCaptured() const;
 
 	void HandlePerformanceFrame(float FrameSeconds);
 	void HandleBackgroundChanged(bool bBackgrounded);

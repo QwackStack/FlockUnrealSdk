@@ -9,21 +9,12 @@
 #include "FlockProtokiteClient.h"
 #include "Http/FlockHttpClient.h"
 #include "Tests/FlockPlaytestFakeTransport.h"
+#include "Tests/FlockPlaytestRecordingUploadTestSupport.h"
+
+using namespace FlockPlaytestRecordingUploadTesting;
 
 namespace
 {
-	const FString UploadRoute = TEXT("/recording-upload");
-	const FString SessionId = TEXT("01M2N94A0CM8JMH48XV1Z735YK");
-	const FString SignedUrl = TEXT("http://storage.local/bucket/recording.webm?signature=abc");
-
-	/** The shape the route really answers: the link sits under `result`, not at the root. */
-	FString EnvelopedLinkBody(const FString& UploadUrl = SignedUrl)
-	{
-		return FString::Printf(
-			TEXT("{\"error\":null,\"response\":null,\"result\":{\"upload_url\":\"%s\",\"bucket\":\"recordings\",\"key\":\"a/b.webm\"}}"),
-			*UploadUrl);
-	}
-
 	struct FLinkFixture
 	{
 		TSharedRef<FFlockPlaytestFakeTransport> Transport = MakeShared<FFlockPlaytestFakeTransport>();
@@ -47,7 +38,7 @@ namespace
 			Headers.Add(TEXT("X-Flock-API-Key"), TEXT("secret"));
 			Headers.Add(TEXT("X-Game-Version-ID"), FlockPlaytestFixtures::GameVersionId);
 			const TSharedRef<TOptional<TFlockResult<FFlockPlaytestRecordingUploadLink>>> Out = Result;
-			Client->RequestRecordingUploadLink(TEXT("http://localhost:8020"), Headers, SessionId, ContentType,
+			Client->RequestRecordingUploadLink(TEXT("http://localhost:8020"), Headers, UploadSessionId, ContentType,
 				[Out](TFlockResult<FFlockPlaytestRecordingUploadLink> Answer) { *Out = Answer; });
 		}
 	};
@@ -59,11 +50,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestUploadLinkUrlTest,
 
 bool FFlockPlaytestUploadLinkUrlTest::RunTest(const FString& Parameters)
 {
-	const FString Expected = TEXT("http://localhost:8020/game/sdk/playtest-session/") + SessionId + TEXT("/recording-upload");
+	const FString Expected = TEXT("http://localhost:8020/game/sdk/playtest-session/") + UploadSessionId + TEXT("/recording-upload");
 	TestEqual(TEXT("No trailing slash"),
-		FFlockProtokiteClient::MakeRecordingUploadUrl(TEXT("http://localhost:8020"), SessionId), Expected);
+		FFlockProtokiteClient::MakeRecordingUploadUrl(TEXT("http://localhost:8020"), UploadSessionId), Expected);
 	TestEqual(TEXT("Trailing slash"),
-		FFlockProtokiteClient::MakeRecordingUploadUrl(TEXT("http://localhost:8020/"), SessionId), Expected);
+		FFlockProtokiteClient::MakeRecordingUploadUrl(TEXT("http://localhost:8020/"), UploadSessionId), Expected);
 	return true;
 }
 
@@ -90,7 +81,7 @@ bool FFlockPlaytestUploadLinkEnvelopeTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	TestEqual(TEXT("The signed URL"), Answer.Value.UploadUrl, SignedUrl);
+	TestEqual(TEXT("The signed URL"), Answer.Value.UploadUrl, SignedUploadUrl);
 	TestEqual(TEXT("The bucket"), Answer.Value.Bucket, FString(TEXT("recordings")));
 	TestEqual(TEXT("The key"), Answer.Value.Key, FString(TEXT("a/b.webm")));
 	return true;
@@ -136,7 +127,7 @@ bool FFlockPlaytestUploadLinkSendsContentTypeTest::RunTest(const FString& Parame
 	}
 	const FFlockHttpRequest& Request = Fixture.Transport->Requests[0];
 	TestEqual(TEXT("A POST"), Request.Method, FString(TEXT("POST")));
-	TestTrue(TEXT("It names the session"), Request.Url.Contains(SessionId));
+	TestTrue(TEXT("It names the session"), Request.Url.Contains(UploadSessionId));
 	TestTrue(TEXT("It asks for video/webm"), Request.JsonBody.Contains(TEXT("\"content_type\":\"video/webm\"")));
 	// Neither is recorded, so neither is claimed: the server's own defaults are false.
 	TestFalse(TEXT("It claims no webcam"), Request.JsonBody.Contains(TEXT("has_webcam")));

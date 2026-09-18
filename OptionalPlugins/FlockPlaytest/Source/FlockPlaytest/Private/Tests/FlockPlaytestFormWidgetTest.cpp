@@ -6,6 +6,7 @@
 
 #include "FlockPlaytestSubsystem.h"
 #include "SFlockPlaytestFormWidget.h"
+#include "Styling/SlateBrush.h"
 #include "Tests/FlockPlaytestSubsystemTestSupport.h"
 
 using namespace FlockPlaytestSubsystemTesting;
@@ -170,6 +171,34 @@ bool FFlockPlaytestFormWithAFormOffersOneTest::RunTest(const FString& Parameters
 		static_cast<int32>(Fixture.Playtest->GetStatus()), static_cast<int32>(EFlockPlaytestStatus::Ready));
 	// Without this, "no form offers nothing" would pass just as well against a build that never offers anything.
 	TestTrue(TEXT("The default form is there to open"), Fixture.Playtest->CanOpenFeedbackForm());
+	return true;
+}
+
+/**
+ * The form carries the Qwacks icon beside its title. It is read from the plugin's own Resources folder, so renaming or
+ * moving the file would quietly drop it from every form; this names the file the form looks for.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestFormShowsTheIconTest,
+	"Flock.Playtest.Form.ShowsTheQwacksIcon",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestFormShowsTheIconTest::RunTest(const FString& Parameters)
+{
+	const FString IconPath = SFlockPlaytestFormWidget::GetIconPath();
+	TestTrue(TEXT("The icon is in the plugin's Resources folder"), IconPath.EndsWith(TEXT("Resources/FeedbackFormIcon.png")));
+	TestTrue(TEXT("And on disk"), FPaths::FileExists(IconPath));
+
+	FFlockPlaytestForm Form;
+	Form.Id = TEXT("form-1");
+	const TSharedRef<SFlockPlaytestFormWidget> Widget = SNew(SFlockPlaytestFormWidget).Form(Form);
+	const FSlateBrush* Icon = Widget->GetIconBrushForTesting();
+	if (TestNotNull(TEXT("The form shows it"), Icon))
+	{
+		// A brush that loads its own file. A plain image brush draws only what a registered style set loaded, and drew
+		// a white square here while every check above passed.
+		TestTrue(TEXT("Loading the file itself when drawn"), Icon->IsDynamicallyLoaded());
+		TestEqual(TEXT("From the file on disk"), Icon->GetResourceName().ToString(), IconPath);
+	}
 	return true;
 }
 

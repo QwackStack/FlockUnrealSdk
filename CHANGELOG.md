@@ -5,6 +5,44 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] - 2026-09-18
+
+### Added
+
+- **Blueprint nodes for the whole playtest.** Its status, and the sentence that explains it; whether a feature is on,
+  with a node for each feature name so none has to be typed; the launch's session; sending the recording; the built-in
+  feedback form; and **a feedback form of your own**, with nodes that read the playtest's questions, record answers,
+  check them the way the server will, and send them. Every node is safe with playtesting off.
+- **Setup findings when Play starts.** An empty or unusable Protokite API URL, the Flock SDK's analytics turned off, a
+  Game Version that is not a playtest's, and the settings a playtest session waits on are each listed in the Play
+  message log with a link to the page that fixes it. Nothing is said while Enable Playtesting is off.
+- **A warning while building a Shipping game** that has Enable Playtesting on or carries a playtest's Game Version.
+  The build still succeeds. It is given by a build that reads the plugin's build rules, such as a clean build; an
+  unchanged rebuild skips them and says nothing.
+- **A warning when a playtest asks for exceptions** and the Flock SDK's Analytics Capture Exceptions is off.
+- **`Flock.RaiseTestException [error|blueprint] [times]`**, a Development-build console command that raises a fault the
+  exception capture reports, to check exceptions reach the dashboard.
+- **A playtest setup guide**, from installing the plugin to a session on Protokite's Sessions page.
+- **The Qwacks icon on the feedback form**, beside its title. A packaged game carries the image with it.
+
+### Changed
+
+- **Sending your own form's answers says what happened.** It returns whether the answers were sent or kept, and says
+  why in the log when they were neither: no published form, or nobody to attribute them to. It used to return
+  nothing, and said nothing when the playtest had no form.
+
+### Fixed
+
+- **A crash is reported once.** The engine raises its crash events up to three times for one crash, and each became
+  its own "Unhandled system error" beside the error that caused it. A crash is now one report, named by the error the
+  engine recorded, and a Fatal log line counts as that report.
+- **A picked option is checked letter for letter**, as the server checks it. "crash" for the option "Crash" passed
+  the form's own check and was then refused by the server, which dropped the answers.
+- **A feedback form with two list questions** no longer risks its first list pointing at memory the second one moved.
+- The Flock panel's **Open Settings** opens the Flock SDK's own settings page.
+- A form whose question ids differ only in letter case is named in the log when it loads, because their answers
+  cannot be kept apart: rename one of them.
+
 ## [1.18.0] - 2026-09-16
 
 ### Added

@@ -96,7 +96,9 @@ With **Analytics Capture Exceptions** on (the default), the SDK reports faults a
 - **Blueprint script exceptions** — Accessed None, a missing property, a runaway loop — carrying the
   Blueprint call stack that locates the node. Breakpoints and tracepoints belong to the debugger and are
   never reported.
-- **Hard crashes** that never reach the log.
+- **Hard crashes** that never reach the log. A crash is one report, however many times the engine raises its
+  crash events for it, and it is named by the error the engine wrote down (an assertion's expression and line,
+  or an unhandled exception's code). A `Fatal` line counts as that crash's report.
 
 Each report carries `category` and `exception_source` (`log`, `blueprint` or `crash`); a Blueprint exception
 also carries `blueprint_exception_type` (`access_violation`, `infinite_loop`, `non_fatal_error`,
@@ -119,6 +121,11 @@ when nothing else was listening, the SDK writes that line back.
 
 Once the queue of captured faults is full, further ones are dropped *before* their callstack is walked, so
 an error storm stays cheap.
+
+**Checking it works.** In a Development build's console, `Flock.RaiseTestException error` logs an `Error`
+line and `Flock.RaiseTestException blueprint` raises a Blueprint Accessed None through the engine's own
+script-exception broadcast. Add a count to raise the same fault that many times: `Flock.RaiseTestException
+blueprint 100` arrives as one report, then one repeat report counting the other 99 when the window closes.
 
 ## What a build can see
 

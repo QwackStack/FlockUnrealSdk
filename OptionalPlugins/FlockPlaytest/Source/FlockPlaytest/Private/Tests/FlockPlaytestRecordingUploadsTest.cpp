@@ -14,20 +14,14 @@
 #include "Misc/Paths.h"
 #include "Tests/FlockPlaytestFakeFileUploader.h"
 #include "Tests/FlockPlaytestFakeTransport.h"
+#include "Tests/FlockPlaytestRecordingUploadTestSupport.h"
+
+using namespace FlockPlaytestRecordingUploadTesting;
 
 namespace
 {
-	const FString UploadRoute = TEXT("/recording-upload");
-	const FString SignedUrl = TEXT("http://storage.local/put/recording.webm?signature=abc");
-	const FString SessionId = TEXT("01M2N94A0CM8JMH48XV1Z735YK");
 	const FString SessionVersionId = TEXT("the-session-version");
 	const FString ThisLaunchVersionId = TEXT("this-launch-version");
-
-	FString EnvelopedLinkBody(const FString& UploadUrl = SignedUrl)
-	{
-		return FString::Printf(
-			TEXT("{\"error\":null,\"response\":null,\"result\":{\"upload_url\":\"%s\",\"bucket\":\"b\",\"key\":\"k\"}}"), *UploadUrl);
-	}
 
 	/** A scratch recordings folder that cleans itself up. */
 	struct FUploadsTestFolder
@@ -72,7 +66,7 @@ namespace
 		static FFlockPlaytestRecordingSession Session()
 		{
 			FFlockPlaytestRecordingSession Value;
-			Value.ProtokiteSessionId = SessionId;
+			Value.ProtokiteSessionId = UploadSessionId;
 			Value.ProtokiteApiUrl = TEXT("http://127.0.0.1:8020");
 			Value.FlockGameVersionId = SessionVersionId;
 			return Value;
