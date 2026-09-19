@@ -82,8 +82,8 @@ namespace FlockPlaytestSubsystemTesting
 	/**
 	 * Sets the Flock SDK's analytics settings the playtest tests rely on for one test: analytics on or off, a session
 	 * started on sign-in, no consent needed, and exception capture on unless a test turns it off. Events are sent as they are recorded rather than queued on
-	 * disk, because that queue is one folder shared by every test and every run: an event one test left in it would be
-	 * sent, and counted, by the next. Puts the previous values back.
+	 * disk, so each test sees its own events arrive as it records them. A test that has to watch the queue keeps it
+	 * (bKeepEventsUntilSent); the queue is in the fixture's own folder. Puts the previous values back.
 	 */
 	struct FScopedFlockAnalyticsSettings
 	{
@@ -94,12 +94,12 @@ namespace FlockPlaytestSubsystemTesting
 		bool bSavedAnalyticsCacheFailedEvents = FlockSettings->bAnalyticsCacheFailedEvents;
 		bool bSavedAnalyticsCaptureExceptions = FlockSettings->bAnalyticsCaptureExceptions;
 
-		explicit FScopedFlockAnalyticsSettings(bool bAnalyticsEnabled, bool bCaptureExceptions = true)
+		explicit FScopedFlockAnalyticsSettings(bool bAnalyticsEnabled, bool bCaptureExceptions = true, bool bKeepEventsUntilSent = false)
 		{
 			FlockSettings->bAnalyticsEnabled = bAnalyticsEnabled;
 			FlockSettings->bAnalyticsAutoStartSession = true;
 			FlockSettings->bAnalyticsRequireExplicitConsent = false;
-			FlockSettings->bAnalyticsCacheFailedEvents = false;
+			FlockSettings->bAnalyticsCacheFailedEvents = bKeepEventsUntilSent;
 			FlockSettings->bAnalyticsCaptureExceptions = bCaptureExceptions;
 		}
 
@@ -221,8 +221,14 @@ namespace FlockPlaytestSubsystemTesting
 				FFlockPlaytestFakeTransport::Status(200, FlockPlaytestFixtures::SessionStartBody()));
 			Transport->Answer(FlockPlaytestFixtures::PlaytestSessionEndRoute, FFlockPlaytestFakeTransport::NoContent());
 			Playtest->SetHttpAdapterForTesting(Transport);
+			// Every file the Flock SDK saves is kept in this fixture's folder. Otherwise the fixture is one more launch of the
+			// game: a real launch takes over the analytics it left and sends them (a killed run sent this fixture's signed-in
+			// player to the real server), and the fixture takes over, sends or deletes what real launches left.
+			Flock->SetSavedFilesFolderForTesting(FPaths::Combine(Folder, TEXT("Flock")));
 			// Recordings are kept in this fixture's folder too, so what a launch finds there is only what the test put there.
 			Playtest->SetVideoRecordingFolderForTesting(FPaths::Combine(Folder, TEXT("Recordings")));
+			// And feedback forms that could not be sent, which a later launch sends wherever it finds them.
+			Playtest->SetFormSpoolFolderForTesting(FPaths::Combine(Folder, TEXT("FeedbackForms")));
 			const TSharedRef<uint64> Frame = EngineFrameNumber;
 			Playtest->SetEngineFrameNumberReaderForTesting([Frame]() { return *Frame; });
 			if (bTurnRetriesOff)
@@ -322,8 +328,8 @@ namespace FlockPlaytestSubsystemTesting
 		}
 
 		/**
-		 * Every event in the playtest category the Flock SDK has sent so far, in order. A sign-in also sends whatever an
-		 * earlier run left in the Flock SDK's queue on disk, so only the playtest category is returned.
+		 * Every event in the playtest category the Flock SDK has sent so far, in order. Only the playtest category, because
+		 * the Flock SDK sends its own events on the same transport.
 		 */
 		TArray<TSharedPtr<FJsonObject>> SentPlaytestEvents() const
 		{

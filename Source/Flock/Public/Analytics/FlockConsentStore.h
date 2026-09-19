@@ -24,6 +24,9 @@ public:
 	/** An empty FilePath uses DefaultPath(). Loads the stored decision immediately. */
 	explicit FFlockConsentStore(const FString& InFilePath = FString());
 
+	/** The file's name, in whichever analytics folder holds it. */
+	static constexpr const TCHAR* FileName = TEXT("consent.json");
+
 	/** `<ProjectSavedDir>/Flock/analytics/consent.json`. */
 	static FString DefaultPath();
 

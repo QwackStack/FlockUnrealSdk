@@ -30,6 +30,13 @@ namespace FlockPlaytestFormFieldTypes
 	inline constexpr const TCHAR* Checkbox = TEXT("checkbox");
 }
 
+/** The range a rating question takes, as the server checks it. */
+namespace FlockPlaytestRatings
+{
+	inline constexpr int32 Lowest = 1;
+	inline constexpr int32 Highest = 5;
+}
+
 /** One question on a playtest feedback form. */
 USTRUCT(BlueprintType)
 struct FLOCKPLAYTEST_API FFlockPlaytestFormField
@@ -58,6 +65,9 @@ struct FLOCKPLAYTEST_API FFlockPlaytestFormField
 	/** The choices for a select question; empty for other kinds. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock|Playtest")
 	TArray<FString> Options;
+
+	/** Whether this question is of Kind, one of FlockPlaytestFormFieldTypes. Letter for letter, as the server names kinds. */
+	bool IsOfKind(const TCHAR* Kind) const { return Type.Equals(Kind, ESearchCase::CaseSensitive); }
 };
 
 /** A playtest's published feedback form. */

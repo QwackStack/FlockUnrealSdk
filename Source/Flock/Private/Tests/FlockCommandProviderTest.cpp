@@ -194,11 +194,11 @@ bool FFlockCommandUpdateDataTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("update succeeds"), bDone);
 	const FString Body = Fx.LastBodyTo(TEXT("game_command/update_player_data"));
-	TestTrue(TEXT("targets the row"), Body.Contains(TEXT("\"player_data_id\":\"pd-1\"")));
+	TestTrue(TEXT("targets the row"), Body.Contains(TEXT("\"player_data_id\":\"pd-1\""), ESearchCase::CaseSensitive));
 	// Types are preserved: an int is not quoted, a bool is not the string "true".
-	TestTrue(TEXT("int stays an int"), Body.Contains(TEXT("\"coins\":250")));
-	TestTrue(TEXT("bool stays a bool"), Body.Contains(TEXT("\"prestige\":true")));
-	TestTrue(TEXT("string is quoted"), Body.Contains(TEXT("\"title\":\"Champion\"")));
+	TestTrue(TEXT("int stays an int"), Body.Contains(TEXT("\"coins\":250"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("bool stays a bool"), Body.Contains(TEXT("\"prestige\":true"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("string is quoted"), Body.Contains(TEXT("\"title\":\"Champion\""), ESearchCase::CaseSensitive));
 	// Bare route: the row parsed from the root, not from an envelope.
 	TestEqual(TEXT("returned row id"), Row.Id, FString(TEXT("pd-1")));
 	TestEqual(TEXT("cache written through"), Fx.CachedCoins(), 250);
@@ -225,8 +225,8 @@ bool FFlockCommandUpdateFieldTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("field update succeeds"), bDone);
 	const FString Body = Fx.LastBodyTo(TEXT("game_command/update_player_data_key"));
 	// The author's key goes out verbatim — only they know what the template declares.
-	TestTrue(TEXT("key verbatim"), Body.Contains(TEXT("\"key\":\"max_health\"")));
-	TestTrue(TEXT("value typed"), Body.Contains(TEXT("\"value\":7")));
+	TestTrue(TEXT("key verbatim"), Body.Contains(TEXT("\"key\":\"max_health\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("value typed"), Body.Contains(TEXT("\"value\":7"), ESearchCase::CaseSensitive));
 
 	Cleanup(Fx.Dir);
 	return true;
@@ -246,7 +246,7 @@ bool FFlockCommandLiteralOverloadTest::RunTest(const FString& Parameters)
 	Fx.Commands->UpdatePlayerDataField(TEXT("pd-1"), TEXT("rank"), TEXT("gold"), nullptr);
 
 	const FString Body = Fx.LastBodyTo(TEXT("game_command/update_player_data_key"));
-	TestTrue(TEXT("literal stays a string"), Body.Contains(TEXT("\"value\":\"gold\"")));
+	TestTrue(TEXT("literal stays a string"), Body.Contains(TEXT("\"value\":\"gold\""), ESearchCase::CaseSensitive));
 	TestFalse(TEXT("literal did not become true"), Body.Contains(TEXT("\"value\":true")));
 
 	Cleanup(Fx.Dir);
@@ -273,9 +273,9 @@ bool FFlockCommandAddFundsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("add funds succeeds"), bDone);
 	const FString Body = Fx.LastBodyTo(TEXT("game_command/add_game_funds"));
 	// No player-data id is passed in: it comes from the "currency"-tagged template's row.
-	TestTrue(TEXT("wallet row resolved"), Body.Contains(TEXT("\"player_data_id\":\"pd-1\"")));
-	TestTrue(TEXT("currency sent"), Body.Contains(TEXT("\"currency\":\"coins\"")));
-	TestTrue(TEXT("amount sent"), Body.Contains(TEXT("\"amount\":250")));
+	TestTrue(TEXT("wallet row resolved"), Body.Contains(TEXT("\"player_data_id\":\"pd-1\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("currency sent"), Body.Contains(TEXT("\"currency\":\"coins\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("amount sent"), Body.Contains(TEXT("\"amount\":250"), ESearchCase::CaseSensitive));
 	TestEqual(TEXT("cache written through"), Fx.CachedCoins(), 350);
 
 	Cleanup(Fx.Dir);
@@ -861,8 +861,8 @@ bool FFlockCommandUnlockTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("unlock succeeds"), bDone);
 	const FString Body = Fx.LastBodyTo(TEXT("game_command/unlock_achievement"));
-	TestTrue(TEXT("row resolved from the tag"), Body.Contains(TEXT("\"player_data_id\":\"pd-2\"")));
-	TestTrue(TEXT("achievement name sent"), Body.Contains(TEXT("\"achievement_name\":\"first_blood\"")));
+	TestTrue(TEXT("row resolved from the tag"), Body.Contains(TEXT("\"player_data_id\":\"pd-2\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("achievement name sent"), Body.Contains(TEXT("\"achievement_name\":\"first_blood\""), ESearchCase::CaseSensitive));
 
 	Cleanup(Fx.Dir);
 	return true;

@@ -18,6 +18,7 @@
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
+#include "Tests/Support/FlockTestSpelling.h"
 
 namespace FlockNotificationProviderTestHelpers
 {
@@ -889,7 +890,7 @@ bool FFlockNotificationTemplateByNameUrlTest::RunTest(const FString& Parameters)
 	const FString Localized = F.LastUrlContaining(TEXT("notification_template/by-name"));
 	TestTrue(TEXT("name is a query param"), Localized.Contains(TEXT("by-name?name=")));
 	// A space has to be encoded or the request is malformed.
-	TestTrue(TEXT("name is percent-encoded"), Localized.Contains(TEXT("Daily%20Bonus")));
+	TestTrue(TEXT("name is percent-encoded"), Localized.Contains(TEXT("Daily%20Bonus"), ESearchCase::CaseSensitive));
 	TestTrue(TEXT("locale sent when given"), Localized.Contains(TEXT("locale=ar")));
 
 	// A locale-specific record is not the default one, so it must not have been memoized under the bare
@@ -932,13 +933,13 @@ bool FFlockNotificationScheduleByNameTest::RunTest(const FString& Parameters)
 
 	// The body carries the resolved **id**, never the name.
 	const FString Body = F.LastBodyContaining(TEXT("notification/schedule"));
-	TestTrue(TEXT("template_id resolved from the name"), Body.Contains(TEXT("\"template_id\":\"tpl-1\"")));
+	TestTrue(TEXT("template_id resolved from the name"), Body.Contains(TEXT("\"template_id\":\"tpl-1\""), ESearchCase::CaseSensitive));
 	TestFalse(TEXT("the name itself is not sent"), Body.Contains(TEXT("DailyBonus")));
-	TestTrue(TEXT("deliver_at is ISO-8601"), Body.Contains(TEXT("\"deliver_at\":\"2026-08-13T09:00:00")));
+	TestTrue(TEXT("deliver_at is ISO-8601"), Body.Contains(TEXT("\"deliver_at\":\"2026-08-13T09:00:00"), ESearchCase::CaseSensitive));
 	// Author keys are the template's own and must never be case-transformed on the way out.
 	TestTrue(TEXT("variable keys verbatim"), Body.Contains(TEXT("\"PlayerName\":\"Ada\""), ESearchCase::CaseSensitive));
 	TestTrue(TEXT("numeric variable keeps its type"), Body.Contains(TEXT("\"Reward\":100"), ESearchCase::CaseSensitive));
-	TestTrue(TEXT("channels use wire spellings"), Body.Contains(TEXT("\"channels\":[\"in_app\",\"push\"]")));
+	TestTrue(TEXT("channels use wire spellings"), Body.Contains(TEXT("\"channels\":[\"in_app\",\"push\"]"), ESearchCase::CaseSensitive));
 
 	// Second send by the same name reuses the memo.
 	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), When, [](TFlockResult<FFlockScheduledNotification>) {});
@@ -989,7 +990,7 @@ bool FFlockNotificationScheduleOmitsEmptyTest::RunTest(const FString& Parameters
 		[](TFlockResult<FFlockScheduledNotification>) {});
 
 	const FString Body = F.LastBodyContaining(TEXT("notification/schedule"));
-	TestTrue(TEXT("template_id still sent"), Body.Contains(TEXT("\"template_id\"")));
+	TestTrue(TEXT("template_id still sent"), Body.Contains(TEXT("\"template_id\""), ESearchCase::CaseSensitive));
 	TestFalse(TEXT("variables omitted when empty"), Body.Contains(TEXT("\"variables\"")));
 	TestFalse(TEXT("channels omitted when empty"), Body.Contains(TEXT("\"channels\"")));
 
@@ -1061,7 +1062,7 @@ bool FFlockNotificationCancelTest::RunTest(const FString& Parameters)
 			// Response channels stay verbatim strings — the response types them loosely, so a server-side
 			// addition must not fail the parse.
 			TestEqual(TEXT("channels parsed"), Result.Value.Channels.Num(), 2);
-			TestTrue(TEXT("channel spelling verbatim"), Result.Value.Channels.Contains(TEXT("in_app")));
+			TestTrue(TEXT("channel spelling verbatim"), FlockTestSpelling::HoldsExactly(Result.Value.Channels, TEXT("in_app")));
 			FString PlayerName;
 			TestTrue(TEXT("variables readable"), Result.Value.Variables.TryGetString(TEXT("PlayerName"), PlayerName));
 			TestEqual(TEXT("variable value"), PlayerName, FString(TEXT("Ada")));
@@ -1170,8 +1171,8 @@ bool FFlockDeviceTokenRegisterTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("completed"), bDone);
 
 	const FString Body = F.LastBodyContaining(TEXT("device_token/register"));
-	TestTrue(TEXT("wire platform spelling"), Body.Contains(TEXT("\"platform\":\"android\"")));
-	TestTrue(TEXT("token sent verbatim"), Body.Contains(TEXT("\"token\":\"fcm-abc123\"")));
+	TestTrue(TEXT("wire platform spelling"), Body.Contains(TEXT("\"platform\":\"android\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("token sent verbatim"), Body.Contains(TEXT("\"token\":\"fcm-abc123\""), ESearchCase::CaseSensitive));
 
 	// Unregister answers whether anything was actually deactivated.
 	bool bOff = false;
@@ -1183,7 +1184,7 @@ bool FFlockDeviceTokenRegisterTest::RunTest(const FString& Parameters)
 	});
 	TestTrue(TEXT("unregister completed"), bOff);
 	TestTrue(TEXT("unregister sends only the token"),
-		F.LastBodyContaining(TEXT("device_token/unregister")).Contains(TEXT("\"token\":\"fcm-abc123\"")));
+		F.LastBodyContaining(TEXT("device_token/unregister")).Contains(TEXT("\"token\":\"fcm-abc123\""), ESearchCase::CaseSensitive));
 
 	Cleanup(F.Dir);
 	return true;
@@ -1666,7 +1667,7 @@ bool FFlockNotificationGetScheduledTest::RunTest(const FString& Parameters)
 
 	// The defaults the SDK sends: pending, first page of 100.
 	const FString Url = F.LastUrlContaining(TEXT("notification/schedule?"));
-	TestTrue(TEXT("status filter sent"), Url.Contains(TEXT("status=pending")));
+	TestTrue(TEXT("status filter sent"), Url.Contains(TEXT("status=pending"), ESearchCase::CaseSensitive));
 	TestTrue(TEXT("page sent"), Url.Contains(TEXT("page=1")));
 	TestTrue(TEXT("limit sent"), Url.Contains(TEXT("limit=100")));
 
@@ -1689,7 +1690,7 @@ bool FFlockNotificationGetScheduledStatusTest::RunTest(const FString& Parameters
 	F.Provider->GetScheduled(FlockScheduledNotificationStatuses::Delivered, 2, 25,
 		[](TFlockResult<FFlockScheduledNotificationPage>) {});
 	FString Url = F.LastUrlContaining(TEXT("notification/schedule?"));
-	TestTrue(TEXT("a non-default status is sent verbatim"), Url.Contains(TEXT("status=delivered")));
+	TestTrue(TEXT("a non-default status is sent verbatim"), Url.Contains(TEXT("status=delivered"), ESearchCase::CaseSensitive));
 	TestTrue(TEXT("with the requested page"), Url.Contains(TEXT("page=2")));
 	TestTrue(TEXT("and limit"), Url.Contains(TEXT("limit=25")));
 
@@ -1697,7 +1698,7 @@ bool FFlockNotificationGetScheduledStatusTest::RunTest(const FString& Parameters
 	// reason this is not an enum.
 	F.Provider->GetScheduled(TEXT("expired"), 1, 100, [](TFlockResult<FFlockScheduledNotificationPage>) {});
 	Url = F.LastUrlContaining(TEXT("notification/schedule?"));
-	TestTrue(TEXT("an unknown status is passed through untouched"), Url.Contains(TEXT("status=expired")));
+	TestTrue(TEXT("an unknown status is passed through untouched"), Url.Contains(TEXT("status=expired"), ESearchCase::CaseSensitive));
 
 	F.Provider->GetScheduled(FString(), 1, 100, [](TFlockResult<FFlockScheduledNotificationPage>) {});
 	Url = F.LastUrlContaining(TEXT("notification/schedule?"));

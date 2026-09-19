@@ -21,7 +21,7 @@ bool FFlockEndpointsBuildTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("no raw space in encoded name"), Encoded.Contains(TEXT(" ")));
 
 	// Leaderboards. Every read is by name, so every one of these takes caller text and has to encode.
-	TestEqual(TEXT("leaderboard by name"), FlockEndpoints::LeaderboardByName(TEXT("HighScoreTest")),
+	TestEqualSensitive(TEXT("leaderboard by name"), FlockEndpoints::LeaderboardByName(TEXT("HighScoreTest")),
 		FString(TEXT("leaderboard/by-name/HighScoreTest")));
 
 	const FString EncodedBoard = FlockEndpoints::LeaderboardByName(TEXT("Weekly Best"));
@@ -48,13 +48,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockEndpointsLeaderboardPathsTest, "Flock.Htt
 
 bool FFlockEndpointsLeaderboardPathsTest::RunTest(const FString& Parameters)
 {
-	TestEqual(TEXT("board config"), FlockEndpoints::LeaderboardByName(TEXT("Weekly")),
+	TestEqualSensitive(TEXT("board config"), FlockEndpoints::LeaderboardByName(TEXT("Weekly")),
 		FString(TEXT("leaderboard/by-name/Weekly")));
-	TestEqual(TEXT("standings"), FlockEndpoints::LeaderboardStandings(TEXT("Weekly")),
+	TestEqualSensitive(TEXT("standings"), FlockEndpoints::LeaderboardStandings(TEXT("Weekly")),
 		FString(TEXT("leaderboard/by-name/Weekly/standings")));
-	TestEqual(TEXT("my rank"), FlockEndpoints::LeaderboardMe(TEXT("Weekly")),
+	TestEqualSensitive(TEXT("my rank"), FlockEndpoints::LeaderboardMe(TEXT("Weekly")),
 		FString(TEXT("leaderboard/by-name/Weekly/me")));
-	TestEqual(TEXT("around me"), FlockEndpoints::LeaderboardAroundMe(TEXT("Weekly")),
+	TestEqualSensitive(TEXT("around me"), FlockEndpoints::LeaderboardAroundMe(TEXT("Weekly")),
 		FString(TEXT("leaderboard/by-name/Weekly/around-me")));
 
 	// The id-shaped paths are the unversioned dashboard routes (OAuth2, X-Game-Id) and are not this SDK's

@@ -74,9 +74,9 @@ bool FFlockLeaderboardParsesBoardTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("weekly value"), WindowType == EFlockLeaderboardWindowType::Weekly);
 
 	// Round trip, so the wire spellings can never drift from what parsing accepts.
-	TestEqual(TEXT("value type to wire"), FlockLeaderboardValueTypeToWire(EFlockLeaderboardValueType::DurationSeconds), FString(TEXT("duration")));
-	TestEqual(TEXT("direction to wire"), FlockLeaderboardDirectionToWire(EFlockLeaderboardDirection::Lower), FString(TEXT("lower")));
-	TestEqual(TEXT("scope to wire"), FlockLeaderboardScopeToWire(EFlockLeaderboardScope::Country), FString(TEXT("country")));
+	TestEqualSensitive(TEXT("value type to wire"), FlockLeaderboardValueTypeToWire(EFlockLeaderboardValueType::DurationSeconds), FString(TEXT("duration")));
+	TestEqualSensitive(TEXT("direction to wire"), FlockLeaderboardDirectionToWire(EFlockLeaderboardDirection::Lower), FString(TEXT("lower")));
+	TestEqualSensitive(TEXT("scope to wire"), FlockLeaderboardScopeToWire(EFlockLeaderboardScope::Country), FString(TEXT("country")));
 	return true;
 }
 
@@ -277,11 +277,11 @@ bool FFlockLeaderboardWindowMakersTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("current has no key"), Current.Key.IsEmpty());
 
 	const FFlockLeaderboardWindow Season = FFlockLeaderboardWindow::Season(TEXT("abc"));
-	TestEqual(TEXT("season key"), Season.Key, FString(TEXT("season:abc")));
+	TestEqualSensitive(TEXT("season key"), Season.Key, FString(TEXT("season:abc")));
 	TestFalse(TEXT("season is not current"), Season.IsCurrent());
 
 	const FFlockLeaderboardWindow Period = FFlockLeaderboardWindow::Period(TEXT("2026-W31"));
-	TestEqual(TEXT("period key is verbatim"), Period.Key, FString(TEXT("2026-W31")));
+	TestEqualSensitive(TEXT("period key is verbatim"), Period.Key, FString(TEXT("2026-W31")));
 	TestFalse(TEXT("period is not current"), Period.IsCurrent());
 
 	// A default-constructed window must behave as Current, since that is what a caller who omits it gets.

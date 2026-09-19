@@ -128,7 +128,7 @@ bool FFlockStructEmitterNameTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("read binds via the spelling bridge"),
 		FFlockStructBinder::FillStruct(Struct, Scope.GetStructMemory(), Row), 1);
 	const FString Body = FFlockStructBinder::ToCommandData(Struct, Scope.GetStructMemory()).ToJsonString();
-	TestTrue(TEXT("write uses the declared name"), Body.Contains(TEXT("\"game_currencies\":250")));
+	TestTrue(TEXT("write uses the declared name"), Body.Contains(TEXT("\"game_currencies\":250"), ESearchCase::CaseSensitive));
 	TestFalse(TEXT("write does not use the read spelling"),
 		Body.Contains(TEXT("\"GameCurrencies\""), ESearchCase::CaseSensitive));
 
@@ -270,16 +270,16 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockStructEmitterNamingTest, "Flock.Editor.St
 
 bool FFlockStructEmitterNamingTest::RunTest(const FString& Parameters)
 {
-	TestEqual(TEXT("spaces become PascalCase"),
+	TestEqualSensitive(TEXT("spaces become PascalCase"),
 		FFlockStructEmitter::MakeStructName(TEXT("Player Progress"), TEXT("Template")), FString(TEXT("PlayerProgressTemplate")));
-	TestEqual(TEXT("snake_case too"),
+	TestEqualSensitive(TEXT("snake_case too"),
 		FFlockStructEmitter::MakeStructName(TEXT("player_progress"), TEXT("Template")), FString(TEXT("PlayerProgressTemplate")));
-	TestEqual(TEXT("already Pascal is unchanged"),
+	TestEqualSensitive(TEXT("already Pascal is unchanged"),
 		FFlockStructEmitter::MakeStructName(TEXT("Gameplay"), TEXT("Config")), FString(TEXT("GameplayConfig")));
 	// A leading digit is not a legal identifier, and an unnamed entity still needs a stable asset name.
-	TestEqual(TEXT("leading digit is prefixed"),
+	TestEqualSensitive(TEXT("leading digit is prefixed"),
 		FFlockStructEmitter::MakeStructName(TEXT("2ndWind"), TEXT("Template")), FString(TEXT("_2ndWindTemplate")));
-	TestEqual(TEXT("empty name is handled"),
+	TestEqualSensitive(TEXT("empty name is handled"),
 		FFlockStructEmitter::MakeStructName(FString(), TEXT("Template")), FString(TEXT("UnnamedTemplate")));
 
 	// Two entities that collapse to the same name must not overwrite each other's asset.

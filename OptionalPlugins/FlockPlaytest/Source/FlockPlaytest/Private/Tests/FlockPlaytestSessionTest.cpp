@@ -382,6 +382,47 @@ bool FFlockPlaytestSessionEndingTwiceSendsTwoEndsTest::RunTest(const FString& Pa
 	return true;
 }
 
+/**
+ * A game ending the session on demand hears whether Protokite took the end, and why not when it did not: an end that
+ * fails leaves the session in progress on Protokite, which the game cannot see any other way.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSessionEndReportsWhetherItWasTakenTest,
+	"Flock.Playtest.Session.EndingOnDemandReportsWhetherProtokiteTookIt",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestSessionEndReportsWhetherItWasTakenTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	Fixture.StartFlock();
+	Fixture.RegisterFlockSession(FirstFlockSessionId);
+
+	TArray<TPair<bool, FString>> Heard;
+	TestTrue(TEXT("The end is sent"), Fixture.Playtest->EndPlaytestSession([&Heard](bool bEnded, const FString& WhyNot)
+	{
+		Heard.Add({ bEnded, WhyNot });
+	}));
+	if (TestEqual(TEXT("Taken, it is heard once"), Heard.Num(), 1))
+	{
+		TestTrue(TEXT("As ended"), Heard[0].Key);
+		TestTrue(TEXT("With no reason"), Heard[0].Value.IsEmpty());
+	}
+
+	// The counter-case: an end Protokite does not take is heard as not ended, with its reason.
+	Heard.Reset();
+	Fixture.Transport->Answer(PlaytestSessionEndRoute, FFlockPlaytestFakeTransport::Status(500, TEXT("{\"detail\":\"Internal Server Error\"}")));
+	TestTrue(TEXT("A second end is sent"), Fixture.Playtest->EndPlaytestSession([&Heard](bool bEnded, const FString& WhyNot)
+	{
+		Heard.Add({ bEnded, WhyNot });
+	}));
+	if (TestEqual(TEXT("Refused, it is heard once"), Heard.Num(), 1))
+	{
+		TestFalse(TEXT("As not ended"), Heard[0].Key);
+		TestTrue(TEXT("Saying why"), Heard[0].Value.Contains(TEXT("500")));
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSessionStartAnsweredAfterTeardownIsEndedTest,
 	"Flock.Playtest.Session.StartAnsweredAfterTeardownIsEnded",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -588,7 +629,7 @@ bool FFlockPlaytestSessionStartCarriesTheBuildFactsTest::RunTest(const FString& 
 	const TSharedPtr<FJsonObject> Body = Fixture.LastSessionStartBody();
 	TestEqual(TEXT("No player_name without a Steam name"), StringMember(Body, TEXT("player_name")), FString(TEXT("<absent>")));
 	const TSharedPtr<FJsonObject>* Debug = nullptr;
-	if (TestTrue(TEXT("extra_debug is an object"), Body.IsValid() && Body->TryGetObjectField(TEXT("extra_debug"), Debug) && Debug != nullptr))
+	if (TestTrue(TEXT("extra_debug is an object"), HasMemberSpelled(Body, TEXT("extra_debug")) && Body->TryGetObjectField(TEXT("extra_debug"), Debug) && Debug != nullptr))
 	{
 		TestEqual(TEXT("engine_version"), StringMember(*Debug, TEXT("engine_version")), FEngineVersion::Current().ToString());
 		TestEqual(TEXT("build_configuration"), StringMember(*Debug, TEXT("build_configuration")),

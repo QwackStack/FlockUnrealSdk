@@ -6,6 +6,7 @@
 
 #include "Http/FlockJsonUtils.h"
 #include "Models/FlockPlayerModels.h"
+#include "Tests/Support/FlockTestSpelling.h"
 
 namespace
 {
@@ -114,8 +115,8 @@ bool FFlockPlayerBanParseTest::RunTest(const FString& Parameters)
 
 	// Feature keys are kept verbatim (a snake_case key is NOT Pascal-cased).
 	TestEqual(TEXT("two feature entries"), Ban.Data.Num(), 2);
-	TestTrue(TEXT("verbatim feature key currency"), Ban.Data.Contains(TEXT("currency")));
-	TestTrue(TEXT("verbatim feature key trade_house"), Ban.Data.Contains(TEXT("trade_house")));
+	TestTrue(TEXT("verbatim feature key currency"), FlockTestSpelling::HasKeySpelled(Ban.Data, TEXT("currency")));
+	TestTrue(TEXT("verbatim feature key trade_house"), FlockTestSpelling::HasKeySpelled(Ban.Data, TEXT("trade_house")));
 	TestFalse(TEXT("feature key NOT Pascal-cased (TradeHouse)"), Ban.Data.Contains(TEXT("TradeHouse")));
 
 	// Each value's fixed fields were read (snake -> Pascal within the value).
@@ -160,7 +161,7 @@ bool FFlockPlayerBanNullResultTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("banned envelope parses"), FFlockJsonUtils::WireJsonToStruct(BannedBody, BannedResponse, Error));
 	TestTrue(TEXT("present result -> banned"), BannedResponse.Ban.IsBanned());
 	TestEqual(TEXT("ban id"), BannedResponse.Ban.Id, FString(TEXT("ban-1")));
-	TestTrue(TEXT("ban feature preserved"), BannedResponse.Ban.Data.Contains(TEXT("currency")));
+	TestTrue(TEXT("ban feature preserved"), FlockTestSpelling::HasKeySpelled(BannedResponse.Ban.Data, TEXT("currency")));
 
 	return true;
 }

@@ -31,6 +31,9 @@ class UGameInstance;
 class UWorld;
 struct FWorldContext;
 
+/** Raised when this launch's recording finishes: uploaded, or not, with the reason it did not go. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPlaytestRecordingUploadFinished, bool, bUploaded, const FString&, WhyNot);
+
 /**
  * The playtest plugin's runtime home, one per game instance.
  *
@@ -108,8 +111,19 @@ public:
 	 * Ends this launch's Protokite session now, for a game that quits on its own schedule. Protokite ignores an end
 	 * for a session that has already ended, so calling this twice sends two ends. Returns false, and sends nothing,
 	 * when no session has started. The session also ends by itself when the game instance shuts down.
+	 *
+	 * OnEnded, when given, hears whether Protokite took the end, and why not when it did not.
 	 */
-	bool EndPlaytestSession();
+	bool EndPlaytestSession(TFunction<void(bool bEnded, const FString& WhyNot)> OnEnded = nullptr);
+
+	/**
+	 * Raised once for this launch's recording when it finishes, whatever stopped it: uploaded, or not uploaded with the
+	 * reason, which is also raised when the upload could not even begin (no Protokite session to send it to, the Flock SDK
+	 * not running). One not uploaded is kept on disk for a later launch, unless no session started for it. Not raised
+	 * while the game is closing, for recordings an earlier launch left, or for a test video, which is never uploaded.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Flock|Playtest")
+	FFlockPlaytestRecordingUploadFinished OnRecordingUploadFinished;
 
 	/**
 	 * Records one of the game's own events for this playtest, sent through the Flock SDK's analytics under the playtest
@@ -132,8 +146,8 @@ public:
 
 	/**
 	 * Stops this launch's video recording for good, for a game that quits on its own schedule. The file is finished on a
-	 * worker thread, and no other recording starts this launch. Returns false, and changes nothing, when no recording is
-	 * capturing.
+	 * worker thread, and no other recording starts this launch. Like any finished playtest recording, it is then uploaded
+	 * when a Protokite session started for it. Returns false, and changes nothing, when no recording is capturing.
 	 */
 	bool StopVideoRecording();
 

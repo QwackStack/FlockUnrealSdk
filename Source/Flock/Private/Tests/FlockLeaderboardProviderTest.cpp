@@ -200,15 +200,15 @@ bool FFlockLeaderboardReadsByNameTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("completed"), bDone);
 	TestEqual(TEXT("standings cost exactly one request"), F.Fake->Requests.Num(), 1);
 	TestTrue(TEXT("and it was the by-name standings route"),
-		F.LastUrlContaining(TEXT("/standings")).Contains(TEXT("leaderboard/by-name/HighScoreTest/standings")));
+		F.LastUrlContaining(TEXT("/standings")).Contains(TEXT("leaderboard/by-name/HighScoreTest/standings"), ESearchCase::CaseSensitive));
 
 	F.Provider->GetMyRank(TEXT("HighScoreTest"), [](TFlockResult<FFlockPlayerRank>) {});
 	TestTrue(TEXT("my rank uses by-name/me"),
-		F.LastUrlContaining(TEXT("/me")).Contains(TEXT("leaderboard/by-name/HighScoreTest/me")));
+		F.LastUrlContaining(TEXT("/me")).Contains(TEXT("leaderboard/by-name/HighScoreTest/me"), ESearchCase::CaseSensitive));
 
 	F.Provider->GetAroundMe(TEXT("HighScoreTest"), [](TFlockResult<FFlockStandings>) {});
 	TestTrue(TEXT("around me uses by-name/around-me"),
-		F.LastUrlContaining(TEXT("/around-me")).Contains(TEXT("leaderboard/by-name/HighScoreTest/around-me")));
+		F.LastUrlContaining(TEXT("/around-me")).Contains(TEXT("leaderboard/by-name/HighScoreTest/around-me"), ESearchCase::CaseSensitive));
 
 	// No request may carry a board id: the id routes belong to the unversioned dashboard API.
 	for (const FFlockHttpRequest& Request : F.Fake->Requests)
@@ -388,7 +388,7 @@ bool FFlockLeaderboardQueryParamsTest::RunTest(const FString& Parameters)
 		F.Provider->GetStandings(TEXT("HighScoreTest"), FFlockLeaderboardWindow::Period(TEXT("2026 W31")),
 			TEXT("SA"), 2, 25, [](TFlockResult<FFlockStandings>) {});
 		const FString Url = F.LastUrlContaining(TEXT("/standings"));
-		TestTrue(TEXT("window sent"), Url.Contains(TEXT("window=2026%20W31")));
+		TestTrue(TEXT("window sent"), Url.Contains(TEXT("window=2026%20W31"), ESearchCase::CaseSensitive));
 		TestFalse(TEXT("no raw space"), Url.Contains(TEXT(" ")));
 		TestTrue(TEXT("country sent"), Url.Contains(TEXT("country=SA")));
 		TestTrue(TEXT("page sent"), Url.Contains(TEXT("page=2")));
@@ -403,7 +403,7 @@ bool FFlockLeaderboardQueryParamsTest::RunTest(const FString& Parameters)
 		F.Provider->GetAroundMe(TEXT("HighScoreTest"), 3, FFlockLeaderboardWindow::Season(TEXT("s7")),
 			FString(), [](TFlockResult<FFlockStandings>) {});
 		const FString Url = F.LastUrlContaining(TEXT("around-me"));
-		TestTrue(TEXT("season window sent"), Url.Contains(TEXT("window=season%3As7")));
+		TestTrue(TEXT("season window sent"), Url.Contains(TEXT("window=season%3As7"), ESearchCase::CaseSensitive));
 		TestTrue(TEXT("neighbours sent"), Url.Contains(TEXT("n=3")));
 		TestFalse(TEXT("no country parameter"), Url.Contains(TEXT("country=")));
 		Cleanup(F.Dir);

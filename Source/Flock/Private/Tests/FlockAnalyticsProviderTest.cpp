@@ -27,6 +27,7 @@
 #include "Tests/Support/FlockMemoryTokenStore.h"
 #include "Tests/Support/FlockRecordingLogger.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
+#include "Tests/Support/FlockTestSpelling.h"
 #include "HAL/PlatformProperties.h"
 
 namespace FlockAnalyticsProviderTestHelpers
@@ -286,7 +287,8 @@ namespace FlockAnalyticsProviderTestHelpers
 	inline FString JsonString(const TSharedPtr<FJsonObject>& Object, const TCHAR* Key)
 	{
 		FString Value;
-		return Object.IsValid() && Object->TryGetStringField(Key, Value) ? Value : FString(TEXT("<absent>"));
+		// Found only under exactly this spelling: the object's own lookup ignores letter case, and the server does not.
+		return FlockTestSpelling::HasMemberSpelled(Object, Key) && Object->TryGetStringField(Key, Value) ? Value : FString(TEXT("<absent>"));
 	}
 
 	/** An extra_data value, or "<absent>". */
@@ -585,7 +587,7 @@ bool FFlockAnalyticsImplicitPlayerTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("session started without being handed a player id"), bStarted);
 	TestTrue(TEXT("active"), Fix.Provider->HasActiveSession());
 	TestTrue(TEXT("attributed to the signed-in player"),
-		Fix.Fake->Requests.Last().JsonBody.Contains(TEXT("\"player_id\":\"p-implicit\"")));
+		Fix.Fake->Requests.Last().JsonBody.Contains(TEXT("\"player_id\":\"p-implicit\""), ESearchCase::CaseSensitive));
 	return true;
 }
 
@@ -1333,9 +1335,9 @@ bool FFlockAnalyticsTrackEventShapeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("properties is an object"), bHasProps);
 	if (bHasProps)
 	{
-		TestTrue(TEXT("an int stays a number"), (*Props)->HasTypedField<EJson::Number>(TEXT("level")));
-		TestTrue(TEXT("a bool stays a bool"), (*Props)->HasTypedField<EJson::Boolean>(TEXT("won")));
-		TestTrue(TEXT("keys kept verbatim"), (*Props)->HasField(TEXT("playerLevel")));
+		TestTrue(TEXT("an int stays a number"), FlockTestSpelling::HasMemberSpelled(*Props, TEXT("level")) && (*Props)->HasTypedField<EJson::Number>(TEXT("level")));
+		TestTrue(TEXT("a bool stays a bool"), FlockTestSpelling::HasMemberSpelled(*Props, TEXT("won")) && (*Props)->HasTypedField<EJson::Boolean>(TEXT("won")));
+		TestTrue(TEXT("keys kept verbatim"), FlockTestSpelling::HasMemberSpelled(*Props, TEXT("playerLevel")));
 	}
 
 	// Spool bookkeeping never reaches the wire.
@@ -1352,7 +1354,7 @@ bool FFlockAnalyticsTrackEventShapeTest::RunTest(const FString& Parameters)
 	const TSharedPtr<FJsonObject> Bare = FlockTestAt(FlockTestAt(After, 1), 0);
 	TestTrue(TEXT("precondition: the bare event was sent"), Bare.IsValid());
 	TestFalse(TEXT("no category member"), Bare.IsValid() && Bare->HasField(TEXT("event_category")));
-	TestTrue(TEXT("empty properties still an object"), Bare.IsValid() && Bare->HasTypedField<EJson::Object>(TEXT("properties")));
+	TestTrue(TEXT("empty properties still an object"), FlockTestSpelling::HasMemberSpelled(Bare, TEXT("properties")) && Bare->HasTypedField<EJson::Object>(TEXT("properties")));
 
 	// A player switch without the session ending: the previous player's session is never attached to the new one's event.
 	FString TokenError;
@@ -2169,8 +2171,9 @@ bool FFlockAnalyticsJsonSpooledEventTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("timestamp"), Back.Event.Timestamp, Entry.Event.Timestamp);
 	TestEqual(TEXT("local session"), Back.LocalSessionId, Entry.LocalSessionId);
 	TestEqual(TEXT("attempts"), Back.FailedSends, 7);
-	TestTrue(TEXT("properties keep their keys"), Back.Event.Properties.ToJsonObject()->HasField(TEXT("playerLevel")));
-	TestTrue(TEXT("and their types"), Back.Event.Properties.ToJsonObject()->HasTypedField<EJson::Number>(TEXT("level")));
+	TestTrue(TEXT("properties keep their keys"), FlockTestSpelling::HasMemberSpelled(Back.Event.Properties.ToJsonObject(), TEXT("playerLevel")));
+	TestTrue(TEXT("and their types"), FlockTestSpelling::HasMemberSpelled(Back.Event.Properties.ToJsonObject(), TEXT("level"))
+		&& Back.Event.Properties.ToJsonObject()->HasTypedField<EJson::Number>(TEXT("level")));
 
 	FFlockSpooledAnalyticsEvent Held;
 	Held.Event.EventName = TEXT("title_screen");

@@ -12,6 +12,7 @@
 #include "Tests/Support/FlockEventTestListener.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
+#include "Tests/Support/FlockTestSdk.h"
 #include "Config/FlockConfig.h"
 #include "Misc/ScopeExit.h"
 #include "Providers/FlockAnalyticsProvider.h"
@@ -30,14 +31,6 @@ namespace
 		Config.GameVersionId = TEXT("ver-abc");
 		return Config;
 	}
-
-	// UFlockSubsystem is a UGameInstanceSubsystem (ClassWithin=UGameInstance), so its Outer must be a
-	// UGameInstance. Creating it under the transient package trips a "created in invalid Outer" ensure.
-	UFlockSubsystem* NewTransientSubsystem()
-	{
-		UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
-		return NewObject<UFlockSubsystem>(GameInstance);
-	}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemInitGateTest, "Flock.Runtime.Subsystem.InitGate",
@@ -48,7 +41,8 @@ bool FFlockSubsystemInitGateTest::RunTest(const FString& Parameters)
 	// The clean-failure path logs an Error on purpose; tell the framework to expect it.
 	AddExpectedError(TEXT("Initialize failed"), EAutomationExpectedErrorFlags::Contains, 1);
 
-	UFlockSubsystem* Sdk = NewTransientSubsystem();
+	const FFlockTestSdk Test;
+	UFlockSubsystem* Sdk = Test.Sdk;
 
 	// Missing baked version ID -> clean failure, stays uninitialized.
 	FFlockInitConfig NoVersion = MakeValidConfig();
@@ -73,7 +67,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemReinitTest, "Flock.Runtime.Subsy
 
 bool FFlockSubsystemReinitTest::RunTest(const FString& Parameters)
 {
-	UFlockSubsystem* Sdk = NewTransientSubsystem();
+	const FFlockTestSdk Test;
+	UFlockSubsystem* Sdk = Test.Sdk;
 	Sdk->InitializeWithConfig(MakeValidConfig());
 	TestTrue(TEXT("Initialized"), Sdk->IsInitialized());
 
@@ -115,16 +110,14 @@ namespace FlockSubsystemAuthTestHelpers
 
 	struct FSubsystemAuthFixture
 	{
-		UGameInstance* GameInstance = nullptr;
-		UFlockSubsystem* Sdk = nullptr;
+		FFlockTestSdk Test;
+		UFlockSubsystem* Sdk = Test.Sdk;
 		TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
 		TSharedRef<FFlockMemoryTokenStore> Store = MakeShared<FFlockMemoryTokenStore>();
 		UFlockEventTestListener* Listener = nullptr;
 
 		FSubsystemAuthFixture()
 		{
-			GameInstance = NewObject<UGameInstance>(GetTransientPackage());
-			Sdk = NewObject<UFlockSubsystem>(GameInstance);
 			Sdk->SetHttpAdapterForTesting(Fake);
 			Sdk->SetTokenStoreForTesting(Store);
 			Listener = NewObject<UFlockEventTestListener>();
@@ -218,9 +211,7 @@ bool FFlockAnalyticsSubsystemWiringTest::RunTest(const FString& Parameters)
 		F.Sdk->ShutdownSdk();
 		return false;
 	}
-	// The subsystem's spool is a real file on this machine: start from nothing and leave nothing behind.
-	Analytics->EraseLocalData();
-
+	// The spool is in the test SDK's own folder, so it starts empty.
 	TestTrue(TEXT("accepted while signed out"), F.Sdk->TrackAnalyticsEvent(TEXT("before_sign_in"), FFlockCommandData(), FString()));
 	TestEqual(TEXT("held"), Analytics->GetPendingAnalyticsEventCount(), 1);
 
@@ -243,13 +234,12 @@ bool FFlockAnalyticsSubsystemWiringTest::RunTest(const FString& Parameters)
 	const FFlockHttpRequest* Sent = F.Fake->Requests.FindByPredicate(
 		[](const FFlockHttpRequest& Request) { return Request.Url.Contains(TEXT("analytics/events")); });
 	TestTrue(TEXT("attributed to the player who signed in"),
-		Sent != nullptr && Sent->JsonBody.Contains(TEXT("\"player_id\":\"p-wired\"")));
+		Sent != nullptr && Sent->JsonBody.Contains(TEXT("\"player_id\":\"p-wired\""), ESearchCase::CaseSensitive));
 	TestEqual(TEXT("nothing left held"), Analytics->GetPendingAnalyticsEventCount(), 0);
 
 	TestFalse(TEXT("the subsystem refuses the reserved name too"),
 		F.Sdk->TrackAnalyticsEvent(TEXT("session_started"), FFlockCommandData(), FString()));
 
-	Analytics->EraseLocalData();
 	F.Sdk->ShutdownSdk();
 	return true;
 }
@@ -259,7 +249,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLeaderboardSubsystemWiringTest, "Flock.Le
 
 bool FFlockLeaderboardSubsystemWiringTest::RunTest(const FString& Parameters)
 {
-	UFlockSubsystem* Sdk = NewTransientSubsystem();
+	const FFlockTestSdk Test;
+	UFlockSubsystem* Sdk = Test.Sdk;
 
 	// Safe to ask for before init — a graph that resolves the SDK early must get null, not a crash.
 	TestNull(TEXT("no provider before init"), Sdk->GetLeaderboardProvider());
@@ -291,7 +282,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemRequestHeadersTest, "Flock.Runti
 
 bool FFlockSubsystemRequestHeadersTest::RunTest(const FString& Parameters)
 {
-	UFlockSubsystem* Sdk = NewTransientSubsystem();
+	const FFlockTestSdk Test;
+	UFlockSubsystem* Sdk = Test.Sdk;
 	TestEqual(TEXT("No headers before initialization"), Sdk->GetRequestHeaders().Num(), 0);
 
 	Sdk->InitializeWithConfig(MakeValidConfig());

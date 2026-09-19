@@ -287,7 +287,7 @@ bool FFlockProtokiteClientStartSendsTheRequestItIsGivenTest::RunTest(const FStri
 		TestEqual(TEXT("No steam_id when none is given"), StringMember(Body, TEXT("steam_id")), FString(TEXT("<absent>")));
 		TestEqual(TEXT("No player_name when none is given"), StringMember(Body, TEXT("player_name")), FString(TEXT("<absent>")));
 		const TSharedPtr<FJsonObject>* Debug = nullptr;
-		if (TestTrue(TEXT("extra_debug is an object"), Body.IsValid() && Body->TryGetObjectField(TEXT("extra_debug"), Debug) && Debug != nullptr))
+		if (TestTrue(TEXT("extra_debug is an object"), HasMemberSpelled(Body, TEXT("extra_debug")) && Body->TryGetObjectField(TEXT("extra_debug"), Debug) && Debug != nullptr))
 		{
 			TestEqual(TEXT("extra_debug carries the facts given"), StringMember(*Debug, TEXT("sdk_version")), FString(TEXT("1.13.0")));
 		}

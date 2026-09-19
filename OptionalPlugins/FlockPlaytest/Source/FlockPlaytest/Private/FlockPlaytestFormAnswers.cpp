@@ -2,18 +2,6 @@
 
 #include "FlockPlaytestFormAnswers.h"
 
-namespace
-{
-	/** The lowest and highest a rating may be, as the server reads them. */
-	constexpr int32 LowestRating = 1;
-	constexpr int32 HighestRating = 5;
-
-	bool IsKind(const FFlockPlaytestFormField& Field, const TCHAR* Kind)
-	{
-		return Field.Type.Equals(Kind, ESearchCase::CaseSensitive);
-	}
-}
-
 FFlockPlaytestFormAnswer& FFlockPlaytestFormAnswers::FindOrAdd(const FString& FieldId)
 {
 	FFlockPlaytestFormAnswer& Answer = Answers.FindOrAdd(FieldId);
@@ -73,12 +61,12 @@ bool FFlockPlaytestFormAnswers::IsEmptyAnswer(const FFlockPlaytestFormField& Fie
 	{
 		return true;
 	}
-	if (IsKind(Field, FlockPlaytestFormFieldTypes::Checkbox))
+	if (Field.IsOfKind(FlockPlaytestFormFieldTypes::Checkbox))
 	{
 		// Never empty once recorded, ticked or not: the server reads a checkbox as present whichever way it is set.
 		return false;
 	}
-	if (IsKind(Field, FlockPlaytestFormFieldTypes::Rating))
+	if (Field.IsOfKind(FlockPlaytestFormFieldTypes::Rating))
 	{
 		// No rating chosen. One that was chosen but is out of range is a different complaint, made below.
 		return Answer.Rating == 0;
@@ -131,19 +119,19 @@ TArray<FFlockPlaytestFormProblem> FFlockPlaytestFormAnswers::FindProblems(const 
 			continue;
 		}
 
-		if (IsKind(Field, FlockPlaytestFormFieldTypes::Rating))
+		if (Field.IsOfKind(FlockPlaytestFormFieldTypes::Rating))
 		{
-			if (Answer.Rating < LowestRating || Answer.Rating > HighestRating)
+			if (Answer.Rating < FlockPlaytestRatings::Lowest || Answer.Rating > FlockPlaytestRatings::Highest)
 			{
 				FFlockPlaytestFormProblem Problem;
 				Problem.FieldId = Field.Id;
-				Problem.Message = FString::Printf(TEXT("Choose a rating from %d to %d."), LowestRating, HighestRating);
+				Problem.Message = FString::Printf(TEXT("Choose a rating from %d to %d."), FlockPlaytestRatings::Lowest, FlockPlaytestRatings::Highest);
 				Problems.Add(Problem);
 			}
 			continue;
 		}
 
-		if (IsKind(Field, FlockPlaytestFormFieldTypes::Select))
+		if (Field.IsOfKind(FlockPlaytestFormFieldTypes::Select))
 		{
 			// Compared trimmed and letter for letter, the way the server compares it. TArray::Contains would ignore
 			// letter case, and "crash" for the option "Crash" would pass here and be refused there.
@@ -183,11 +171,11 @@ TSharedRef<FJsonObject> FFlockPlaytestFormAnswers::ToWireObject(const FFlockPlay
 			continue;
 		}
 
-		if (IsKind(Field, FlockPlaytestFormFieldTypes::Rating))
+		if (Field.IsOfKind(FlockPlaytestFormFieldTypes::Rating))
 		{
 			Object->SetNumberField(Field.Id, Held->Rating);
 		}
-		else if (IsKind(Field, FlockPlaytestFormFieldTypes::Checkbox))
+		else if (Field.IsOfKind(FlockPlaytestFormFieldTypes::Checkbox))
 		{
 			Object->SetBoolField(Field.Id, Held->Checked);
 		}

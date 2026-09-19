@@ -106,6 +106,7 @@ A recording is uploaded to its session:
 - when a length or size limit ends it;
 - when the game asks, with **Flock Stop And Upload Playtest Recording** (C++: `StopVideoRecordingAndUploadIt`) or the
   feedback form's **Upload your recording** button;
+- when the game stops it for good, with **Flock Stop Video Recording**;
 - and at the start of a later launch, for anything an earlier launch could not send: a failed upload, a quit, a crash.
 
 Quitting does not upload: a whole recording cannot be sent inside a shutdown, so it is kept and the next launch sends
@@ -115,6 +116,10 @@ uploaded go last. A recording no playtest session started for can never be uploa
 
 Offer a player a way to send their recording only while **Flock Can Send Playtest Recording** is true. It is false
 when no session has started for the recording, and pressing a button then would stop the recording and send nothing.
+
+To tell the player how it went, bind the playtest subsystem's **On Recording Upload Finished** event. It is raised once
+when the launch's recording finishes: uploaded, or not uploaded with the reason, including when the upload could not
+begin at all. It is not raised while the game is closing.
 
 ## Heavy analytics
 
@@ -192,11 +197,39 @@ playtest running it answers false, empty or Turned Off and changes nothing.
 | `FlockPlaytest.OpenFeedbackForm [seconds]` | Opens the form, after a wait if given |
 | `FlockPlaytest.SendTestFeedback [seconds]` | Fills in the published form and sends it, to check answers reach Protokite |
 | `FlockPlaytest.StopVideoRecordingAndUploadIt [seconds]` | Stops the recording and uploads it |
-| `FlockPlaytest.StopVideoRecording` | Stops the recording and keeps it |
+| `FlockPlaytest.StopVideoRecording` | Stops the recording; like any finished one, it is uploaded when it has a session |
 | `Flock.RaiseTestException [error\|blueprint] [times]` | Raises a fault the Flock SDK reports |
+| `FlockPlaytest.SelfTest [closed playtest's Game Version ID]` | Checks the whole playtest against Protokite; see below |
 
 The waits exist because every `-ExecCmds` command runs on the first frame, before anything has been recorded or a
 session has started.
+
+## Checking a playtest build
+
+`FlockPlaytest.SelfTest` checks everything a playtest build does against your real Protokite in one go, and logs a
+line per step and a count at the end: `Playtest self-test finished: 16 passed, 0 failed, 1 skipped.` Development builds
+only.
+
+Each check sits beside a request Protokite must refuse: a wrong API key, a missing one, a version no playtest is linked
+to, a session start that names no player, a form missing a needed answer or choosing an option that is not on the list,
+and a form, upload link and end for a session that does not exist. A check that only ever succeeds cannot tell a working
+build from a broken one. A refusal passes only with its own HTTP status and, for a form, the question it names.
+
+It signs nobody in, so sign in first. From a script:
+
+```
+UnrealEditor-Cmd.exe MyGame.uproject -game -windowed -ExecCmds="Flock.LoginWithDevice, FlockPlaytest.SelfTest, Flock.QuitAfterSeconds 90" -log
+```
+
+- **It ends the launch's session as its last step**, so run it in a launch of its own. A session a refusal should have
+  prevented is ended at once, so a run leaves nothing open.
+- **It leaves a trace on your dashboards:** one filled-in form on its session, one `playtest_self_test` event, one
+  Blueprint fault naming `FlockPlaytestSelfTestTarget` (raised twice, so its repeat is counted) and the launch's
+  recording.
+- **A step is skipped, saying why,** when the playtest does not turn its feature on; when the launch cannot draw
+  (`-nullrhi`), since nothing is recorded; when **Analytics Cache Failed Events** is off, since a report sent the moment
+  it is made cannot be watched; and for a closed playtest unless you name one:
+  `FlockPlaytest.SelfTest <Game Version ID of a closed playtest>`.
 
 ## Shipping builds
 

@@ -24,6 +24,17 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
   exception capture reports, to check exceptions reach the dashboard.
 - **A playtest setup guide**, from installing the plugin to a session on Protokite's Sessions page.
 - **The Qwacks icon on the feedback form**, beside its title. A packaged game carries the image with it.
+- **`FlockPlaytest.SelfTest [closed playtest's Game Version ID]`**, a Development-build console command that checks a
+  playtest build against the real Protokite and logs a line per step and a count. Each check sits beside a request
+  Protokite must refuse, and a refusal passes only with its own HTTP status and, for a form, the question it names: the
+  config (and a wrong key, a missing key, a version with no playtest), the session (and a start naming no player, and a
+  closed playtest when one is named), an exception reported once with its repeat counted, a playtest event (and the
+  plugin's own event name refused), the feedback form (and a missing answer, an option not on the list, an unknown
+  session), the recording's upload (and a link for an unknown session) and the session's end (and an end for an unknown
+  session). It ends the launch's session as its last step, and ends at once any session a refusal should have prevented.
+- **On Recording Upload Finished**, a Blueprint event raised once when the launch's recording finishes: uploaded, or not
+  uploaded with the reason, including when the upload could not begin. It is not raised while the game is closing.
+- **`EndPlaytestSession` takes an optional completion** in C++, which hears whether Protokite took the end and why not.
 
 ### Changed
 
@@ -42,6 +53,17 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - The Flock panel's **Open Settings** opens the Flock SDK's own settings page.
 - A form whose question ids differ only in letter case is named in the log when it loads, because their answers
   cannot be kept apart: rename one of them.
+- **The playtest plugin compiles when a unity build puts its form files together.** Two of them defined the same
+  helpers, which compiled only while the build kept them apart.
+- **The guide says a game that stops its recording gets it uploaded**, as every finished playtest recording is. It
+  said the recording was kept.
+- **Offline snapshots keep names exactly as declared.** The cache wrote every member name, at every depth, with its first
+  letter lower-cased. Snapshots written before this still load.
+- **The SDK's automation tests leave the project's saved files alone.** A test's Flock SDK kept its files in the
+  project's own `Saved/Flock` folder, like any launch of the game. A test run that was cut short left a test player's
+  session there, and the next launch of the game sent it to the Flock server, which refused it. A test run also took
+  over the analytics that ended launches of the game had kept, and deleted the saved sign-in, the consent decision and
+  other versions' offline data. Each test now keeps every file in a folder of its own, deleted when the test ends.
 
 ## [1.18.0] - 2026-09-16
 

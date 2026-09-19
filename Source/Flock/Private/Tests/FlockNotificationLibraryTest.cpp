@@ -44,9 +44,9 @@ bool FFlockNotificationLibraryParityTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("canceled row is not pending"), UFlockNotificationLibrary::IsScheduledPending(Canceled));
 
 	// Wire-spelling helpers delegate to the same functions the provider sends with.
-	TestEqual(TEXT("platform string parity"), UFlockNotificationLibrary::DevicePlatformToString(EFlockDevicePlatform::IOS),
+	TestEqualSensitive(TEXT("platform string parity"), UFlockNotificationLibrary::DevicePlatformToString(EFlockDevicePlatform::IOS),
 		FString(FlockDevicePlatformToWire(EFlockDevicePlatform::IOS)));
-	TestEqual(TEXT("channel string parity"), UFlockNotificationLibrary::NotificationChannelToString(EFlockNotificationChannel::Push),
+	TestEqualSensitive(TEXT("channel string parity"), UFlockNotificationLibrary::NotificationChannelToString(EFlockNotificationChannel::Push),
 		FString(FlockNotificationChannelToWire(EFlockNotificationChannel::Push)));
 
 	// And the platform query answers the same thing the provider would act on.
@@ -69,11 +69,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationScheduleStatusParityTest, "Fl
 
 bool FFlockNotificationScheduleStatusParityTest::RunTest(const FString& Parameters)
 {
-	TestEqual(TEXT("pending node matches the constant"),
+	TestEqualSensitive(TEXT("pending node matches the constant"),
 		UFlockNotificationLibrary::ScheduleStatusPending(), FString(FlockScheduledNotificationStatuses::Pending));
-	TestEqual(TEXT("delivered node matches the constant"),
+	TestEqualSensitive(TEXT("delivered node matches the constant"),
 		UFlockNotificationLibrary::ScheduleStatusDelivered(), FString(FlockScheduledNotificationStatuses::Delivered));
-	TestEqual(TEXT("canceled node matches the constant"),
+	TestEqualSensitive(TEXT("canceled node matches the constant"),
 		UFlockNotificationLibrary::ScheduleStatusCanceled(), FString(FlockScheduledNotificationStatuses::Canceled));
 
 	// The single-l spelling is the whole reason these are nodes; pin it against the British form.
@@ -87,7 +87,7 @@ bool FFlockNotificationScheduleStatusParityTest::RunTest(const FString& Paramete
 	if (const UFunction* Fn = UFlockGetScheduledNotificationsAction::StaticClass()
 			->FindFunctionByName(TEXT("GetScheduled")))
 	{
-		TestEqual(TEXT("the node's Status pin defaults to the pending constant"),
+		TestEqualSensitive(TEXT("the node's Status pin defaults to the pending constant"),
 			Fn->GetMetaData(TEXT("CPP_Default_Status")), FString(FlockScheduledNotificationStatuses::Pending));
 	}
 	else

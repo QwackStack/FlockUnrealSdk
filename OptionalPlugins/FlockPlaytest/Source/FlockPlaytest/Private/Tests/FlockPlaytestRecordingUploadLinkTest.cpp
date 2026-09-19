@@ -128,7 +128,7 @@ bool FFlockPlaytestUploadLinkSendsContentTypeTest::RunTest(const FString& Parame
 	const FFlockHttpRequest& Request = Fixture.Transport->Requests[0];
 	TestEqual(TEXT("A POST"), Request.Method, FString(TEXT("POST")));
 	TestTrue(TEXT("It names the session"), Request.Url.Contains(UploadSessionId));
-	TestTrue(TEXT("It asks for video/webm"), Request.JsonBody.Contains(TEXT("\"content_type\":\"video/webm\"")));
+	TestTrue(TEXT("It asks for video/webm"), Request.JsonBody.Contains(TEXT("\"content_type\":\"video/webm\""), ESearchCase::CaseSensitive));
 	// Neither is recorded, so neither is claimed: the server's own defaults are false.
 	TestFalse(TEXT("It claims no webcam"), Request.JsonBody.Contains(TEXT("has_webcam")));
 	TestFalse(TEXT("It claims no voice"), Request.JsonBody.Contains(TEXT("has_voice")));

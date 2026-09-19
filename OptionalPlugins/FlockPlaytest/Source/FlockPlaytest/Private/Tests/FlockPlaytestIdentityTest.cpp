@@ -241,7 +241,11 @@ bool FFlockPlaytestIdentityFailedSaveGivesUpAtOnceTest::RunTest(const FString& P
 
 	ExpectDeviceIdFileResult(*this, TEXT("An id that cannot be moved into place"), Result, EFlockDeviceIdFileResult::CouldNotSave);
 	TestTrue(TEXT("Is not used"), DeviceId.IsEmpty());
-	TestTrue(FString::Printf(TEXT("It gives up at once instead of retrying on the game thread (took %.2f s)"), Seconds), Seconds < 0.4);
+	// A move that retries takes five seconds. One that gives up at once finishes well inside this even when the disk holds a
+	// single write for a second or two, which Windows Defender does on this machine: 0.4 s failed once at 1.38 s.
+	const double SecondsWithoutARetry = 2.5;
+	TestTrue(FString::Printf(TEXT("It gives up at once instead of retrying on the game thread (took %.2f s)"), Seconds),
+		Seconds < SecondsWithoutARetry);
 	TestEqual(TEXT("The file manager logs no warning or error about it"), Complaints, 0);
 	TestEqual(TEXT("The id written beside it is removed"), Folder.Files().Num(), 0);
 	return true;

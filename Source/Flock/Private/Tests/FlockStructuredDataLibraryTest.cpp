@@ -7,6 +7,7 @@
 #include "Blueprint/FlockStructuredDataLibrary.h"
 #include "Http/FlockJsonUtils.h"
 #include "Models/FlockConfigModels.h"
+#include "Tests/Support/FlockTestSpelling.h"
 
 namespace
 {
@@ -67,7 +68,8 @@ bool FFlockStructuredDataLibraryReadsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("has present field"), UFlockStructuredDataLibrary::HasDataField(Data, TEXT("MaxHealth")));
 	TestFalse(TEXT("missing field absent"), UFlockStructuredDataLibrary::HasDataField(Data, TEXT("nope")));
 	TestTrue(TEXT("data valid"), UFlockStructuredDataLibrary::IsValidData(Data));
-	TestTrue(TEXT("field names include Stats"), UFlockStructuredDataLibrary::GetDataFieldNames(Data).Contains(TEXT("Stats")));
+	TestTrue(TEXT("field names include Stats"),
+		FlockTestSpelling::HoldsExactly(UFlockStructuredDataLibrary::GetDataFieldNames(Data), TEXT("Stats")));
 	TestFalse(TEXT("json not empty"), UFlockStructuredDataLibrary::DataToJsonString(Data).IsEmpty());
 
 	return true;

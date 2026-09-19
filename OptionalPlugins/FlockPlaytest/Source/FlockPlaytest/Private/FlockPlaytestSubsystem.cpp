@@ -17,6 +17,7 @@
 #include "FlockPlaytestVideoFrameSource.h"
 #include "FlockPlaytestVideoRecording.h"
 #include "FlockPlaytestRecordingUploads.h"
+#include "FlockPlaytestSampleAnswers.h"
 #include "FlockPlaytestFormSpool.h"
 #include "SFlockPlaytestFormWidget.h"
 #include "Framework/Application/IInputProcessor.h"
@@ -38,10 +39,11 @@ namespace
 {
 	/** Sends the end for one Protokite session and logs what became of it. The one place an end is sent. */
 	void SendPlaytestSessionEnd(const TSharedRef<FFlockProtokiteClient>& Client, const FString& ProtokiteApiUrl,
-		const TMap<FString, FString>& RequestHeaders, const FString& PlaytestSessionId)
+		const TMap<FString, FString>& RequestHeaders, const FString& PlaytestSessionId,
+		TFunction<void(bool bEnded, const FString& WhyNot)> OnEnded = nullptr)
 	{
 		Client->EndPlaytestSession(ProtokiteApiUrl, RequestHeaders, PlaytestSessionId,
-			[PlaytestSessionId](TFlockResult<FFlockPlaytestSessionEndResult> Result)
+			[PlaytestSessionId, OnEnded](TFlockResult<FFlockPlaytestSessionEndResult> Result)
 			{
 				if (Result.bSuccess)
 				{
@@ -51,6 +53,10 @@ namespace
 				{
 					UE_LOG(LogFlockPlaytest, Warning, TEXT("Protokite session %s could not be ended, so Protokite shows it as still in progress. %s"),
 						*PlaytestSessionId, *Result.Error.ToDisplayText());
+				}
+				if (OnEnded)
+				{
+					OnEnded(Result.bSuccess, Result.bSuccess ? FString() : Result.Error.ToDisplayText());
 				}
 			});
 	}
@@ -143,14 +149,15 @@ bool UFlockPlaytestSubsystem::IsPlaytestFeatureEnabled(const FString& FeatureNam
 	return Status == EFlockPlaytestStatus::Ready && PlaytestConfig.IsFeatureEnabled(FeatureName);
 }
 
-bool UFlockPlaytestSubsystem::EndPlaytestSession()
+bool UFlockPlaytestSubsystem::EndPlaytestSession(TFunction<void(bool bEnded, const FString& WhyNot)> OnEnded)
 {
 	if (SessionState != EFlockPlaytestSessionState::Started && SessionState != EFlockPlaytestSessionState::Ended)
 	{
 		return false;
 	}
 	SessionState = EFlockPlaytestSessionState::Ended;
-	SendPlaytestSessionEnd(GetOrCreateProtokiteClient(), PlaytestSessionApiUrl, PlaytestSessionHeaders, PlaytestSessionId);
+	SendPlaytestSessionEnd(GetOrCreateProtokiteClient(), PlaytestSessionApiUrl, PlaytestSessionHeaders, PlaytestSessionId,
+		MoveTemp(OnEnded));
 	return true;
 }
 
@@ -1089,8 +1096,9 @@ void UFlockPlaytestSubsystem::ApplyFinishedVideoRecording()
 			Summary.LongestWaitToEncodeMs, Summary.LongestWriteMs, Summary.FramesDroppedBecauseEncodingFellBehind,
 			Summary.FramesDroppedBecauseWritingFellBehind, Summary.FramesNotReadyInTime);
 	}
-	UploadThisLaunchsRecording();
+	// The ticker is settled first, so whoever hears how the upload went finds the recording fully put away.
 	UpdateVideoPump();
+	UploadThisLaunchsRecording();
 }
 
 TSharedRef<FFlockPlaytestRecordingUploads> UFlockPlaytestSubsystem::GetOrCreateRecordingUploads()
@@ -1113,21 +1121,32 @@ void UFlockPlaytestSubsystem::UploadThisLaunchsRecording()
 {
 	// Every way out of here says why. They were all silent once, and a player who had asked for their recording was
 	// told it was on its way while nothing happened and the log held no reason -- which is worse than either.
+	if (!VideoRecordingRun.IsValid() || VideoRecordingRun->GetKind() != EFlockPlaytestRecordingKind::Playtest)
+	{
+		// Not raised: there was no playtest recording, so nobody is waiting to hear about one.
+		UE_LOG(LogFlockPlaytest, Verbose, TEXT("There is no playtest recording to upload; a test video is never uploaded."));
+		return;
+	}
+
+	// Each way out below also raises OnRecordingUploadFinished, so whoever is waiting on this recording hears the answer
+	// instead of waiting for one that never comes.
+	const auto NotUploadedNow = [this](const FString& WhyNot)
+	{
+		OnRecordingUploadFinished.Broadcast(false, WhyNot);
+	};
 	if (bDeinitializing)
 	{
 		// A whole recording cannot be sent inside a shutdown, and the run is about to be let go of. It stays on disk
 		// and a later launch pushes it, which is what D10 is for.
+		// Not raised: the game is closing, so nothing it would tell could act on the answer, and its handlers would run
+		// against objects being torn down.
 		UE_LOG(LogFlockPlaytest, Log, TEXT("The recording is not being uploaded now, because the game is closing. A later launch sends it."));
-		return;
-	}
-	if (!VideoRecordingRun.IsValid() || VideoRecordingRun->GetKind() != EFlockPlaytestRecordingKind::Playtest)
-	{
-		UE_LOG(LogFlockPlaytest, Verbose, TEXT("There is no playtest recording to upload; a test video is never uploaded."));
 		return;
 	}
 	if (FinishedVideoRecordingPath.IsEmpty())
 	{
 		UE_LOG(LogFlockPlaytest, Warning, TEXT("The recording cannot be uploaded: no finished file was kept."));
+		NotUploadedNow(TEXT("No finished recording file was kept."));
 		return;
 	}
 
@@ -1137,18 +1156,21 @@ void UFlockPlaytestSubsystem::UploadThisLaunchsRecording()
 		UE_LOG(LogFlockPlaytest, Warning, TEXT("The recording cannot be uploaded: no Protokite session started for it, so it has "
 			"nowhere to go. A Protokite session starts once a player signs in and their Flock session reaches the server. The "
 			"next launch deletes this recording."));
+		NotUploadedNow(TEXT("No Protokite session started for the recording, so it has nowhere to go."));
 		return;
 	}
 	if (!Flock.IsValid() || !Flock->IsInitialized())
 	{
 		UE_LOG(LogFlockPlaytest, Warning, TEXT("The recording cannot be uploaded while the Flock SDK is not running. It is kept "
 			"for a later launch."));
+		NotUploadedNow(TEXT("The Flock SDK is not running; the recording is kept for a later launch."));
 		return;
 	}
 
 	UE_LOG(LogFlockPlaytest, Log, TEXT("Uploading this launch's recording to Protokite session %s."), *Session.ProtokiteSessionId);
+	const TWeakObjectPtr<UFlockPlaytestSubsystem> WeakThis(this);
 	GetOrCreateRecordingUploads()->UploadOne(VideoRecordingRun.ToSharedRef(), Session, Flock->GetRequestHeaders(),
-		[](FFlockPlaytestRecordingUploadOutcome Outcome)
+		[WeakThis](FFlockPlaytestRecordingUploadOutcome Outcome)
 		{
 			if (Outcome.bUploaded)
 			{
@@ -1158,6 +1180,10 @@ void UFlockPlaytestSubsystem::UploadThisLaunchsRecording()
 			{
 				UE_LOG(LogFlockPlaytest, Warning, TEXT("The recording was not uploaded, so it is kept for a later launch to push: %s"),
 					*Outcome.Error);
+			}
+			if (UFlockPlaytestSubsystem* Self = WeakThis.Get())
+			{
+				Self->OnRecordingUploadFinished.Broadcast(Outcome.bUploaded, Outcome.bUploaded ? FString() : Outcome.Error);
 			}
 		});
 }
@@ -1597,29 +1623,8 @@ namespace
 				}
 
 				// An answer of the right shape for each question, so the server takes it exactly as a player's would be.
-				const FFlockPlaytestForm& Form = Playtest->GetPlaytestConfig().Form;
-				FFlockPlaytestFormAnswers Answers;
-				for (const FFlockPlaytestFormField& Field : Form.Fields)
-				{
-					if (Field.Type == FlockPlaytestFormFieldTypes::Rating)
-					{
-						Answers.SetRating(Field.Id, 5);
-					}
-					else if (Field.Type == FlockPlaytestFormFieldTypes::Checkbox)
-					{
-						Answers.SetChecked(Field.Id, true);
-					}
-					else if (Field.Type == FlockPlaytestFormFieldTypes::Select)
-					{
-						// Its own first option, never a guess: any other value is one the server refuses.
-						Answers.SetChosenOption(Field.Id, Field.Options.Num() > 0 ? Field.Options[0] : FString());
-					}
-					else
-					{
-						Answers.SetText(Field.Id, TEXT("Sent by FlockPlaytest.SendTestFeedback."));
-					}
-				}
-				Playtest->SendFilledInForm(Answers);
+				Playtest->SendFilledInForm(FlockPlaytestAnswerEveryQuestion(Playtest->GetPlaytestConfig().Form,
+					TEXT("Sent by FlockPlaytest.SendTestFeedback.")));
 			};
 
 			if (Seconds <= 0.0)

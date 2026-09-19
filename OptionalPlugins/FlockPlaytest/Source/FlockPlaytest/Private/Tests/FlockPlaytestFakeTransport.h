@@ -34,7 +34,9 @@ public:
 	{
 		Requests.Add(Request);
 		const FFlockHttpResponse Response = Resolve(Request.Url);
-		if (bHoldReplies)
+		const bool bHoldThisOne = bHoldReplies || HoldRepliesToUrlsContaining.ContainsByPredicate(
+			[&Request](const FString& Fragment) { return Request.Url.Contains(Fragment); });
+		if (bHoldThisOne)
 		{
 			HeldReplies.Add([OnComplete, Response]()
 			{
@@ -134,6 +136,9 @@ public:
 
 	/** When true, replies wait until a Release call delivers them, or a Drop call loses them. */
 	bool bHoldReplies = false;
+
+	/** Holds only the replies to addresses containing one of these, the way bHoldReplies holds every reply. */
+	TArray<FString> HoldRepliesToUrlsContaining;
 
 	/** Every request sent, in order. */
 	TArray<FFlockHttpRequest> Requests;

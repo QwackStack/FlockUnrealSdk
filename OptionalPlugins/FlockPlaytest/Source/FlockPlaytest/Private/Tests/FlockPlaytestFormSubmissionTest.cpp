@@ -97,7 +97,7 @@ bool FFlockPlaytestFormWireShapeTest::RunTest(const FString& Parameters)
 
 	FString Which;
 	TestTrue(TEXT("A select is text"), Wire->TryGetStringField(TEXT("which"), Which));
-	TestEqual(TEXT("Trimmed, as the server keeps it"), Which, FString(TEXT("Tower")));
+	TestEqualSensitive(TEXT("Trimmed, as the server keeps it"), Which, FString(TEXT("Tower")));
 
 	FString Notes;
 	Wire->TryGetStringField(TEXT("notes"), Notes);

@@ -51,13 +51,11 @@ namespace
 		return FFlockPlaytestFormSpool(Folder).CountWaiting();
 	}
 
-	/** A ready fixture whose kept forms live in a folder of its own, so no test sends another's. */
+	/** A ready fixture, and the folder its kept forms live in: the fixture's own, so no test sends another's. */
 	FString StartReadyWithItsOwnFormFolder(FPlaytestFixture& Fixture)
 	{
-		const FString Folder = FPaths::Combine(Fixture.Folder, TEXT("FeedbackForms"));
-		Fixture.Playtest->SetFormSpoolFolderForTesting(Folder);
 		Fixture.StartFlock();
-		return Folder;
+		return FPaths::Combine(Fixture.Folder, TEXT("FeedbackForms"));
 	}
 
 	/** A config with no published form: the server sends form as null until the studio publishes one. */
@@ -110,10 +108,10 @@ bool FFlockPlaytestFormSendingSentThenForgottenTest::RunTest(const FString& Para
 		const TSharedPtr<FJsonObject> Body = ParseObject(Request->JsonBody);
 		TestFalse(TEXT("Naming who filled it in"), StringMember(Body, TEXT("device_id")).Equals(TEXT("<absent>")));
 		const TSharedPtr<FJsonObject>* Answers = nullptr;
-		if (TestTrue(TEXT("With the answers"), Body.IsValid() && Body->TryGetObjectField(TEXT("answers"), Answers) && Answers != nullptr))
+		if (TestTrue(TEXT("With the answers"), HasMemberSpelled(Body, TEXT("answers")) && Body->TryGetObjectField(TEXT("answers"), Answers) && Answers != nullptr))
 		{
 			TestEqual(TEXT("The rating as a number"), (*Answers)->GetNumberField(TEXT("rating")), 4.0);
-			TestEqual(TEXT("The picked option"), StringMember(*Answers, TEXT("category")), FString(TEXT("Bug")));
+			TestEqualSensitive(TEXT("The picked option"), StringMember(*Answers, TEXT("category")), FString(TEXT("Bug")));
 			TestEqual(TEXT("The text"), StringMember(*Answers, TEXT("steps")), FString(TEXT("Opened the map")));
 		}
 	}

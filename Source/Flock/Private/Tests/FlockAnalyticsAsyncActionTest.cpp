@@ -8,6 +8,7 @@
 #include "Engine/GameInstance.h"
 #include "FlockSubsystem.h"
 #include "Tests/Support/FlockEventTestListener.h"
+#include "Tests/Support/FlockTestSdk.h"
 
 /**
  * A Blueprint graph can reach these nodes before the SDK is up, or with analytics switched off in
@@ -63,9 +64,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSubsystemGuardTest, "Flock.Analy
 
 bool FFlockAnalyticsSubsystemGuardTest::RunTest(const FString& Parameters)
 {
-	// UFlockSubsystem is ClassWithin=UGameInstance, so its Outer must be one.
-	UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
-	UFlockSubsystem* Sdk = NewObject<UFlockSubsystem>(GameInstance);
+	const FFlockTestSdk Test;
+	UFlockSubsystem* Sdk = Test.Sdk;
 
 	TestNull(TEXT("no provider before initialization"), Sdk->GetAnalyticsProvider());
 

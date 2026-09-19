@@ -23,7 +23,7 @@ bool FFlockAnalyticsLibraryChainTest::RunTest(const FString& Parameters)
 
 	TestEqual(TEXT("four entries"), Built.Num(), 4);
 	TestEqual(TEXT("int"), Built.FindRef(TEXT("level")), TEXT("3"));
-	TestEqual(TEXT("bool"), Built.FindRef(TEXT("flawless")), TEXT("true"));
+	TestEqualSensitive(TEXT("bool"), Built.FindRef(TEXT("flawless")), TEXT("true"));
 	TestEqual(TEXT("string"), Built.FindRef(TEXT("zone")), TEXT("cavern"));
 	TestTrue(TEXT("float"), Built.FindRef(TEXT("elapsed")).StartsWith(TEXT("12.5")));
 
@@ -83,7 +83,7 @@ bool FFlockAnalyticsLibraryParityTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("same entry count"), FromBlueprint.Num(), FromCpp.Num());
 	for (const TPair<FString, FString>& Pair : FromCpp)
 	{
-		TestEqual(*FString::Printf(TEXT("'%s' matches C++"), *Pair.Key),
+		TestEqualSensitive(*FString::Printf(TEXT("'%s' matches C++"), *Pair.Key),
 			FromBlueprint.FindRef(Pair.Key), Pair.Value);
 	}
 	return true;

@@ -66,7 +66,7 @@ FFlockConsentStore::FFlockConsentStore(const FString& InFilePath)
 
 FString FFlockConsentStore::DefaultPath()
 {
-	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Flock"), TEXT("analytics"), TEXT("consent.json"));
+	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Flock"), TEXT("analytics"), FileName);
 }
 
 bool FFlockConsentStore::Load(bool& OutGranted) const

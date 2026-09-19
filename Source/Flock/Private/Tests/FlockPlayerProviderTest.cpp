@@ -6,6 +6,7 @@
 
 #include "Auth/FlockAuthSession.h"
 #include "FlockLogger.h"
+#include "Tests/Support/FlockTestSpelling.h"
 #include "HAL/FileManager.h"
 #include "Http/FlockHttpClient.h"
 #include "Http/FlockSnapshotStore.h"
@@ -364,7 +365,7 @@ bool FFlockPlayerGetBanTest::RunTest(const FString& Parameters)
 	FFlockPlayerBan Banned;
 	Fx.Provider->GetBan(FString(), [&](TFlockResult<FFlockPlayerBan> R) { Banned = R.Value; });
 	TestTrue(TEXT("banned"), Banned.IsBanned());
-	TestTrue(TEXT("verbatim feature key"), Banned.Data.Contains(TEXT("currency")));
+	TestTrue(TEXT("verbatim feature key"), FlockTestSpelling::HasKeySpelled(Banned.Data, TEXT("currency")));
 	TestEqual(TEXT("ban never cached -> two requests"), Fx.Fake->CountTo(TEXT("player-ban")), 2);
 
 	Cleanup(Fx.Dir);

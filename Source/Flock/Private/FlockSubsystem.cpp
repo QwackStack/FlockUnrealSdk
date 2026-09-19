@@ -177,9 +177,13 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		? MakeShared<FFlockHttpClient>(TestHttpAdapter.ToSharedRef(), LoggerRef, Settings->HttpTimeoutSeconds)
 		: FFlockHttpClient::CreateDefault(Settings->HttpTimeoutSeconds, LoggerRef);
 
+	// Only a test names a folder for every file this SDK saves, so that it is never one more launch of the game.
+	const bool bSavesInTestFolder = !TestSavedFilesFolder.IsEmpty();
+
 	TokenStore = TestTokenStore.IsValid()
 		? TestTokenStore
-		: TSharedPtr<IFlockTokenStore>(MakeShared<FFlockFileTokenStore>(FFlockFileTokenStore::DefaultPath(), Config.GameId));
+		: TSharedPtr<IFlockTokenStore>(MakeShared<FFlockFileTokenStore>(bSavesInTestFolder
+			? FPaths::Combine(TestSavedFilesFolder, TEXT("auth.dat")) : FFlockFileTokenStore::DefaultPath(), Config.GameId));
 
 	AuthSession = MakeShared<FFlockAuthSession>(HttpClient.ToSharedRef(), TokenStore, LoggerRef,
 		GetVersionedApiUrl(), Config.GetBaseHeaders());
@@ -192,7 +196,8 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	// which case the providers degrade to plain fetches.
 	if (Settings->bEnableOfflineCache)
 	{
-		SnapshotStore = MakeShared<FFlockSnapshotStore>(Settings->OfflineCacheDirectory, LoggerRef, SdkVersion);
+		SnapshotStore = MakeShared<FFlockSnapshotStore>(bSavesInTestFolder
+			? FPaths::Combine(TestSavedFilesFolder, TEXT("snapshots")) : Settings->OfflineCacheDirectory, LoggerRef, SdkVersion);
 
 		// Order matters and is the whole fix: rescue state out of the version-scoped tree BEFORE pruning it.
 		// A queue left where builds before 1.9.0 put it would already be deleted by the time its provider
@@ -216,11 +221,13 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		// Every launch keeps its queues, crash marker and live-session record in a folder of its own, locked while it runs, and
 		// takes over the files of launches that have ended. Another game started from the same project folder is never
 		// reported as crashed, has its session ended, or has its queued entries sent a second time.
-		const TSharedRef<FFlockAnalyticsLaunches> Launches = FFlockAnalyticsLaunches::Start(FFlockAnalyticsLaunches::DefaultFolder());
+		const FString AnalyticsFolder = bSavesInTestFolder
+			? FPaths::Combine(TestSavedFilesFolder, TEXT("analytics")) : FFlockAnalyticsLaunches::DefaultFolder();
+		const TSharedRef<FFlockAnalyticsLaunches> Launches = FFlockAnalyticsLaunches::Start(AnalyticsFolder);
 		if (!Launches->IsHoldingItsFolder())
 		{
 			LoggerRef->LogWarning(FString::Printf(TEXT("Could not lock a folder for this launch's analytics files under %s, so ")
-				TEXT("launches that ended before this one are not reported this time."), *FFlockAnalyticsLaunches::DefaultFolder()));
+				TEXT("launches that ended before this one are not reported this time."), *AnalyticsFolder));
 		}
 		Deps.Launches = Launches;
 		// A cap of zero is how "don't spool" is expressed, so the caching switch maps onto it.
@@ -238,10 +245,10 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(
 			AnalyticsConfig.bPersistSessionOnDisk && !GIsEditor, Launches->GetTerminationMarkerPath());
 		// The consent decision and the coverage notice belong to the install, so every launch shares them.
-		Deps.ConsentStore = MakeShared<FFlockConsentStore>();
+		Deps.ConsentStore = MakeShared<FFlockConsentStore>(FPaths::Combine(AnalyticsFolder, FFlockConsentStore::FileName));
 		Deps.Pump = MakeShared<FFlockLifecyclePump>();
 		Deps.bEnableLogSink = true;
-		Deps.CoverageNoticeMarkerPath = FPaths::Combine(FFlockAnalyticsLaunches::DefaultFolder(), TEXT("coverage_notice.txt"));
+		Deps.CoverageNoticeMarkerPath = FPaths::Combine(AnalyticsFolder, TEXT("coverage_notice.txt"));
 
 		AnalyticsProvider = MakeShared<FFlockAnalyticsProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 			AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl(), AnalyticsConfig, Deps,
@@ -275,7 +282,8 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	AssetProvider = MakeShared<FFlockAssetProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId,
 		FlockCreateHttpAssetDownloader(LoggerRef),
-		MakeShared<FFlockAssetCache>(Settings->AssetCacheDirectory, Settings->AssetCacheMaxSizeMB, LoggerRef));
+		MakeShared<FFlockAssetCache>(bSavesInTestFolder ? FPaths::Combine(TestSavedFilesFolder, TEXT("assets")) : Settings->AssetCacheDirectory,
+			Settings->AssetCacheMaxSizeMB, LoggerRef));
 	AssetProvider->Configure(Settings->bEnableAssetCache, static_cast<float>(Settings->AssetDownloadTimeoutSeconds),
 		Settings->AssetDownloadRetryCount, Settings->AssetMaxConcurrentDownloads);
 

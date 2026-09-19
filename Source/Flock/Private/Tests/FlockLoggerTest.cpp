@@ -7,6 +7,7 @@
 #include "FlockSubsystem.h"
 #include "FlockInitConfig.h"
 #include "FlockLogger.h"
+#include "Tests/Support/FlockTestSdk.h"
 #include "Engine/GameInstance.h"
 #include "UObject/Package.h"
 
@@ -37,14 +38,6 @@ namespace
 		Config.GameVersionId = TEXT("ver-abc");
 		return Config;
 	}
-
-	// UFlockSubsystem is a UGameInstanceSubsystem (ClassWithin=UGameInstance), so its Outer must be a
-	// UGameInstance. Creating it under the transient package trips a "created in invalid Outer" ensure.
-	UFlockSubsystem* NewTransientSubsystem()
-	{
-		UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
-		return NewObject<UFlockSubsystem>(GameInstance);
-	}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLoggerRoutingTest, "Flock.Runtime.Logger.Routing",
@@ -53,7 +46,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLoggerRoutingTest, "Flock.Runtime.Logger.
 bool FFlockLoggerRoutingTest::RunTest(const FString& Parameters)
 {
 	// An injected logger captures, so no error reaches the automation framework (no AddExpectedError).
-	UFlockSubsystem* Sdk = NewTransientSubsystem();
+	const FFlockTestSdk Test;
+	UFlockSubsystem* Sdk = Test.Sdk;
 	const TSharedRef<FCapturingLogger> Capture = MakeShared<FCapturingLogger>();
 	Sdk->SetLogger(Capture);
 
@@ -80,7 +74,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNullLoggerTest, "Flock.Runtime.Logger.Nul
 bool FFlockNullLoggerTest::RunTest(const FString& Parameters)
 {
 	// The null logger swallows everything without touching UE_LOG — safe to drive a failure through it.
-	UFlockSubsystem* Sdk = NewTransientSubsystem();
+	const FFlockTestSdk Test;
+	UFlockSubsystem* Sdk = Test.Sdk;
 	Sdk->SetLogger(MakeShared<FFlockNullLogger>());
 
 	FFlockInitConfig Unresolved = MakeValidConfig();

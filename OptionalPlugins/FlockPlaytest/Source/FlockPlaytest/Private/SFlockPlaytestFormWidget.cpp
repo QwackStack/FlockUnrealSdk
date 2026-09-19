@@ -26,16 +26,8 @@ namespace
 	const FLinearColor ProblemColour(1.f, 0.42f, 0.38f, 1.f);
 	const FLinearColor NeededColour(1.f, 0.72f, 0.28f, 1.f);
 
-	constexpr int32 LowestRating = 1;
-	constexpr int32 HighestRating = 5;
-
 	/** Drawn at half the file's 64 pixels, so it stays sharp on a high-density screen. */
 	constexpr float FormIconSize = 32.f;
-
-	bool IsKind(const FFlockPlaytestFormField& Field, const TCHAR* Kind)
-	{
-		return Field.Type.Equals(Kind, ESearchCase::CaseSensitive);
-	}
 
 	FSlateFontInfo Font(int32 Size)
 	{
@@ -256,7 +248,7 @@ TSharedRef<SWidget> SFlockPlaytestFormWidget::BuildAnswerControl(const FFlockPla
 {
 	const FString FieldId = Field.Id;
 
-	if (IsKind(Field, FlockPlaytestFormFieldTypes::TextArea))
+	if (Field.IsOfKind(FlockPlaytestFormFieldTypes::TextArea))
 	{
 		return SNew(SBox).HeightOverride(96.f)
 		[
@@ -266,17 +258,17 @@ TSharedRef<SWidget> SFlockPlaytestFormWidget::BuildAnswerControl(const FFlockPla
 		];
 	}
 
-	if (IsKind(Field, FlockPlaytestFormFieldTypes::Rating))
+	if (Field.IsOfKind(FlockPlaytestFormFieldTypes::Rating))
 	{
 		return BuildRating(Field);
 	}
 
-	if (IsKind(Field, FlockPlaytestFormFieldTypes::Select))
+	if (Field.IsOfKind(FlockPlaytestFormFieldTypes::Select))
 	{
 		return BuildSelect(Field);
 	}
 
-	if (IsKind(Field, FlockPlaytestFormFieldTypes::Checkbox))
+	if (Field.IsOfKind(FlockPlaytestFormFieldTypes::Checkbox))
 	{
 		// Recorded straight away, unticked, because the server counts a checkbox as answered whichever way it is set.
 		// Leaving it unrecorded would make a required checkbox impossible to satisfy without ticking it, which is
@@ -300,7 +292,7 @@ TSharedRef<SWidget> SFlockPlaytestFormWidget::BuildRating(const FFlockPlaytestFo
 	const FString FieldId = Field.Id;
 	const TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
 
-	for (int32 Score = LowestRating; Score <= HighestRating; ++Score)
+	for (int32 Score = FlockPlaytestRatings::Lowest; Score <= FlockPlaytestRatings::Highest; ++Score)
 	{
 		Row->AddSlot().AutoWidth().Padding(0.f, 0.f, 6.f, 0.f)
 		[

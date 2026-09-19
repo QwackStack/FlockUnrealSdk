@@ -8,6 +8,7 @@
 #include "Models/FlockConfigModels.h"
 #include "Models/FlockGameModels.h"
 #include "Tests/Support/FlockConfigCodegenFixture.h"
+#include "Tests/Support/FlockTestSpelling.h"
 
 namespace
 {
@@ -57,7 +58,7 @@ bool FFlockConfigDictVsFieldNameTest::RunTest(const FString& Parameters)
 	const FString Flat = Config.Data.ToJsonString();
 
 	// Field names were Pascal-cased.
-	TestTrue(TEXT("object field name -> Pascal (LootTable)"), Flat.Contains(TEXT("\"LootTable\"")));
+	TestTrue(TEXT("object field name -> Pascal (LootTable)"), Flat.Contains(TEXT("\"LootTable\""), ESearchCase::CaseSensitive));
 	TestFalse(TEXT("no snake field name survives (loot_table)"), Flat.Contains(TEXT("\"loot_table\"")));
 
 	// Author dict keys were NOT transformed.
@@ -113,8 +114,8 @@ bool FFlockConfigFlattenTest::RunTest(const FString& Parameters)
 	int32 Absent = 7;
 	TestFalse(TEXT("absent read returns false"), Config.Data.TryGetInt(TEXT("nope"), Absent));
 	const TArray<FString> Names = Config.Data.GetFieldNames();
-	TestTrue(TEXT("top-level names include MaxHealth"), Names.Contains(TEXT("MaxHealth")));
-	TestTrue(TEXT("top-level names include Stats"), Names.Contains(TEXT("Stats")));
+	TestTrue(TEXT("top-level names include MaxHealth"), FlockTestSpelling::HoldsExactly(Names, TEXT("MaxHealth")));
+	TestTrue(TEXT("top-level names include Stats"), FlockTestSpelling::HoldsExactly(Names, TEXT("Stats")));
 
 	// Scalar fields on the schema itself.
 	TestEqual(TEXT("id"), Config.Id, FString(TEXT("cfg-1")));

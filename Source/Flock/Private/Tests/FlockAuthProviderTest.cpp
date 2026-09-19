@@ -217,8 +217,8 @@ bool FFlockAuthProviderLoginTest::RunTest(const FString& Parameters)
 		const FFlockHttpRequest& Request = F.Fake->Requests.Last();
 		TestEqual(TEXT("url"), Request.Url, FString(TEXT("http://x/v1/player/login")));
 		TestEqual(TEXT("method"), Request.Method, FString(TEXT("POST")));
-		TestTrue(TEXT("login_type"), Request.JsonBody.Contains(TEXT("\"login_type\":\"email\"")));
-		TestTrue(TEXT("email"), Request.JsonBody.Contains(TEXT("\"email\":\"a@b.c\"")));
+		TestTrue(TEXT("login_type"), Request.JsonBody.Contains(TEXT("\"login_type\":\"email\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("email"), Request.JsonBody.Contains(TEXT("\"email\":\"a@b.c\""), ESearchCase::CaseSensitive));
 		TestFalse(TEXT("unused ids dropped"), Request.JsonBody.Contains(TEXT("device_id")));
 		TestTrue(TEXT("api key header"), Request.Headers.Contains(TEXT("X-Flock-API-Key")));
 		TestTrue(TEXT("session authenticated"), F.Session->IsAuthenticated());
@@ -266,14 +266,14 @@ bool FFlockAuthProviderLoginTest::RunTest(const FString& Parameters)
 			FProviderFixture F;
 			F.Fake->On(TEXT("player/login"), FFlockFakeTransport::Ok(LoginBody(TEXT("p-1"), MakeJwt(TEXT("p-1")))));
 			F.Provider->LoginWithDevice(TEXT("dev-1"), nullptr);
-			TestTrue(TEXT("device_type sent"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"device_type\"")));
+			TestTrue(TEXT("device_type sent"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"device_type\""), ESearchCase::CaseSensitive));
 		}
 		// Facebook/Discord ride the generic route with a login_type discriminator.
 		{
 			FProviderFixture F;
 			F.Fake->On(TEXT("player/login"), FFlockFakeTransport::Ok(LoginBody(TEXT("p-1"), MakeJwt(TEXT("p-1")))));
 			F.Provider->LoginWithFacebook(TEXT("fb-1"), nullptr);
-			TestTrue(TEXT("facebook login_type"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"login_type\":\"facebook\"")));
+			TestTrue(TEXT("facebook login_type"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"login_type\":\"facebook\""), ESearchCase::CaseSensitive));
 		}
 	}
 	// Response without an access token -> Auth error, still signed out, no event.
@@ -388,8 +388,8 @@ bool FFlockAuthProviderRegisterTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("not already registered"), bAlready);
 		const FFlockHttpRequest& Request = F.Fake->Requests.Last();
 		TestEqual(TEXT("url"), Request.Url, FString(TEXT("http://x/v1/player/register")));
-		TestTrue(TEXT("email"), Request.JsonBody.Contains(TEXT("\"email\":\"a@b.c\"")));
-		TestTrue(TEXT("name"), Request.JsonBody.Contains(TEXT("\"name\":\"Duck\"")));
+		TestTrue(TEXT("email"), Request.JsonBody.Contains(TEXT("\"email\":\"a@b.c\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("name"), Request.JsonBody.Contains(TEXT("\"name\":\"Duck\""), ESearchCase::CaseSensitive));
 		TestTrue(TEXT("session authenticated"), F.Session->IsAuthenticated());
 		TestEqual(TEXT("method"), static_cast<int32>(F.Session->GetAuthMethod().GetValue()), static_cast<int32>(EFlockAuthMethod::Email));
 		TestEqual(TEXT("authenticated event"), F.Listener->AuthenticatedCount, 1);
@@ -473,7 +473,7 @@ bool FFlockAuthProviderRegisterTest::RunTest(const FString& Parameters)
 			Case.Call(F);
 			TestTrue(FString::Printf(TEXT("%s url"), Case.UrlSuffix), F.Fake->Requests.Last().Url.EndsWith(Case.UrlSuffix));
 			TestTrue(FString::Printf(TEXT("%s body"), Case.BodyFragment), F.Fake->Requests.Last().JsonBody.Contains(Case.BodyFragment));
-			TestTrue(TEXT("name in body"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"name\":\"N\"")));
+			TestTrue(TEXT("name in body"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"name\":\"N\""), ESearchCase::CaseSensitive));
 			TestEqual(TEXT("method recorded"), static_cast<int32>(F.Session->GetAuthMethod().GetValue()), static_cast<int32>(Case.Method));
 		}
 	}
@@ -640,7 +640,7 @@ bool FFlockAuthProviderAccountTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("success"), bSuccess);
 		TestTrue(TEXT("server success"), bServerSuccess);
 		TestTrue(TEXT("url"), F.Fake->Requests.Last().Url.EndsWith(TEXT("/player/password/forgot")));
-		TestTrue(TEXT("email in body"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"email\":\"a@b.c\"")));
+		TestTrue(TEXT("email in body"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"email\":\"a@b.c\""), ESearchCase::CaseSensitive));
 
 		EFlockErrorType GuardType = EFlockErrorType::None;
 		F.Provider->ForgotPassword(TEXT(""), [&](TFlockResult<FFlockAuthActionResponse> R) { GuardType = R.Error.Type; });
@@ -674,8 +674,8 @@ bool FFlockAuthProviderAccountTest::RunTest(const FString& Parameters)
 			[&](TFlockResult<FFlockAuthActionResponse> R) { bSuccess = R.bSuccess; });
 		TestTrue(TEXT("reset posted"), bSuccess);
 		const FString& Body = F.Fake->Requests.Last().JsonBody;
-		TestTrue(TEXT("code"), Body.Contains(TEXT("\"code\":\"123\"")));
-		TestTrue(TEXT("new_password"), Body.Contains(TEXT("\"new_password\":\"np\"")));
+		TestTrue(TEXT("code"), Body.Contains(TEXT("\"code\":\"123\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("new_password"), Body.Contains(TEXT("\"new_password\":\"np\""), ESearchCase::CaseSensitive));
 
 		// Empty args are guarded.
 		Type = EFlockErrorType::None;
@@ -701,7 +701,7 @@ bool FFlockAuthProviderAccountTest::RunTest(const FString& Parameters)
 		bool bSuccess = false;
 		F.Provider->VerifyEmail(TEXT("999"), [&](TFlockResult<FFlockAuthActionResponse> R) { bSuccess = R.bSuccess; });
 		TestTrue(TEXT("verified"), bSuccess);
-		TestTrue(TEXT("code in body"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"code\":\"999\"")));
+		TestTrue(TEXT("code in body"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"code\":\"999\""), ESearchCase::CaseSensitive));
 
 		EFlockErrorType Type = EFlockErrorType::None;
 		F.Provider->VerifyEmail(TEXT(""), [&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
