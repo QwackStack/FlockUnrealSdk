@@ -21,6 +21,7 @@
 #include "FlockPlaytestSettings.h"
 #include "FlockPlaytestStatus.h"
 #include "FlockPlaytestSubsystem.h"
+#include "FlockPlaytestVideoEncoder.h"
 #include "FlockProtokiteClient.h"
 #include "FlockSubsystem.h"
 #include "HAL/IConsoleManager.h"
@@ -876,6 +877,13 @@ void FFlockPlaytestSelfTest::CheckRecordingUploaded()
 	if (!PlaytestNow->IsPlaytestFeatureEnabled(FlockPlaytestFeatures::VideoRecording))
 	{
 		Finish(EFlockPlaytestSelfTestOutcome::Skipped, TEXT("this playtest does not record video"));
+		return;
+	}
+	// Every platform but 64-bit Windows records nothing: a limit of this build, not a fault of the launch.
+	if (!FFlockPlaytestVideoEncoder::IsBuiltWithVideo())
+	{
+		Finish(EFlockPlaytestSelfTestOutcome::Skipped,
+			TEXT("this build has no video encoder: video recording is built for 64-bit Windows only"));
 		return;
 	}
 	if (!PlaytestNow->CanSendTheRecording())

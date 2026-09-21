@@ -6,6 +6,7 @@
 
 #include "Containers/Ticker.h"
 #include "FlockPlaytestSelfTest.h"
+#include "FlockPlaytestVideoEncoder.h"
 #include "FlockPlaytestSubsystem.h"
 #include "Http/FlockError.h"
 #include "Tests/FlockPlaytestFakeFileUploader.h"
@@ -309,8 +310,10 @@ bool FFlockPlaytestSelfTestFullRunTest::RunTest(const FString& Parameters)
 	Fixture.SignInToFlockOnStart();
 	Fixture.StartFlock();
 	RecordHalfASecond(Fixture);
+	// Every platform but 64-bit Windows builds with no video encoder: there the recording step is skipped, saying why.
+	const bool bBuiltWithVideo = FFlockPlaytestVideoEncoder::IsBuiltWithVideo();
 	if (!TestEqual(TEXT("Precondition: the launch's session started"), static_cast<int32>(Fixture.Playtest->GetPlaytestSessionState()), static_cast<int32>(EFlockPlaytestSessionState::Started))
-		|| !TestTrue(TEXT("Precondition: it is recording"), Fixture.Playtest->IsRecordingVideo()))
+		|| !TestEqual(TEXT("Precondition: it is recording where this build can"), Fixture.Playtest->IsRecordingVideo(), bBuiltWithVideo))
 	{
 		return false;
 	}
@@ -326,6 +329,13 @@ bool FFlockPlaytestSelfTestFullRunTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("It ran seventeen steps"), Steps.Num(), 17);
 	for (const FFlockPlaytestSelfTestStep& Step : Steps)
 	{
+		if (!bBuiltWithVideo && Step.Name.Equals(RecordingUploaded, ESearchCase::CaseSensitive))
+		{
+			TestEqual(FString::Printf(TEXT("'%s' is skipped where this build has no video (detail: %s)"), *Step.Name, *Step.Detail),
+				static_cast<int32>(Step.Outcome), static_cast<int32>(EOutcome::Skipped));
+			TestTrue(TEXT("Saying why"), Step.Detail.Contains(TEXT("no video encoder"), ESearchCase::CaseSensitive));
+			continue;
+		}
 		TestEqual(FString::Printf(TEXT("'%s' passed (detail: %s)"), *Step.Name, *Step.Detail),
 			static_cast<int32>(Step.Outcome), static_cast<int32>(EOutcome::Passed));
 	}
@@ -369,7 +379,7 @@ bool FFlockPlaytestSelfTestFullRunTest::RunTest(const FString& Parameters)
 			PlaytestSessionId);
 		TestEqualSensitive(TEXT("With the answer the server takes"), StringMember(SelfTestSentAnswers(Forms[3]), TEXT("category")), TEXT("Bug"));
 	}
-	TestEqual(TEXT("The recording was uploaded once"), Uploader->Uploads.Num(), 1);
+	TestEqual(TEXT("The recording was uploaded once, where this build records"), Uploader->Uploads.Num(), bBuiltWithVideo ? 1 : 0);
 	TestEqual(TEXT("The launch's session was ended once"),
 		Fixture.Transport->CountRequestsEndingWith(FString::Printf(TEXT("/%s/end"), PlaytestSessionId)), 1);
 	TestEqual(TEXT("And the playtest shows it ended"), static_cast<int32>(Fixture.Playtest->GetPlaytestSessionState()), static_cast<int32>(EFlockPlaytestSessionState::Ended));
@@ -693,6 +703,9 @@ bool FFlockPlaytestSelfTestSessionAlreadyEndedTest::RunTest(const FString& Param
 	return true;
 }
 
+// The upload-finished event needs a recording, which only a build with video can make.
+#if WITH_FLOCK_PLAYTEST_VIDEO
+
 namespace
 {
 /** Hears the recording's upload-finished event for a test. */
@@ -924,6 +937,8 @@ bool FFlockPlaytestUploadFinishedAfterTheTickerSettlesTest::RunTest(const FStrin
 	}
 	return true;
 }
+
+#endif // WITH_FLOCK_PLAYTEST_VIDEO
 
 /** A game that goes away mid-run is one failure, not one for every step left: the rest are skipped, saying why. */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSelfTestGameShutDownTest,

@@ -226,8 +226,9 @@ UnrealEditor-Cmd.exe MyGame.uproject -game -windowed -ExecCmds="Flock.LoginWithD
 - **It leaves a trace on your dashboards:** one filled-in form on its session, one `playtest_self_test` event, one
   Blueprint fault naming `FlockPlaytestSelfTestTarget` (raised twice, so its repeat is counted) and the launch's
   recording.
-- **A step is skipped, saying why,** when the playtest does not turn its feature on; when the launch cannot draw
-  (`-nullrhi`), since nothing is recorded; when **Analytics Cache Failed Events** is off, since a report sent the moment
+- **A step is skipped, saying why,** when the playtest does not turn its feature on; when the build has no video
+  encoder, which is every platform but 64-bit Windows; when the launch cannot draw (`-nullrhi`), since nothing is
+  recorded; when **Analytics Cache Failed Events** is off, since a report sent the moment
   it is made cannot be watched; and for a closed playtest unless you name one:
   `FlockPlaytest.SelfTest <Game Version ID of a closed playtest>`.
 

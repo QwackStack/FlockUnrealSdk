@@ -2,7 +2,8 @@
 
 #include "Misc/AutomationTest.h"
 
-#if WITH_AUTOMATION_TESTS
+// Both need a recording, which only a build with video can make.
+#if WITH_AUTOMATION_TESTS && WITH_FLOCK_PLAYTEST_VIDEO
 
 #include "FlockPlaytestSubsystem.h"
 #include "HAL/FileManager.h"
@@ -124,4 +125,4 @@ bool FFlockPlaytestDoesNotUploadAtTeardownTest::RunTest(const FString& Parameter
 	return true;
 }
 
-#endif // WITH_AUTOMATION_TESTS
+#endif // WITH_AUTOMATION_TESTS && WITH_FLOCK_PLAYTEST_VIDEO

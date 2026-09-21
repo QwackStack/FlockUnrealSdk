@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
   plugin's own event name refused), the feedback form (and a missing answer, an option not on the list, an unknown
   session), the recording's upload (and a link for an unknown session) and the session's end (and an end for an unknown
   session). It ends the launch's session as its last step, and ends at once any session a refusal should have prevented.
+  On a build with no video encoder, which is every platform but 64-bit Windows, the recording step is skipped, saying why.
 - **On Recording Upload Finished**, a Blueprint event raised once when the launch's recording finishes: uploaded, or not
   uploaded with the reason, including when the upload could not begin. It is not raised while the game is closing.
 - **`EndPlaytestSession` takes an optional completion** in C++, which hears whether Protokite took the end and why not.
