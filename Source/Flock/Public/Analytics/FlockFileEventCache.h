@@ -6,8 +6,9 @@
 #include "Analytics/FlockEventCache.h"
 
 /**
- * Default IFlockEventCache: one plain-JSON file per entry under
- * `<ProjectSavedDir>/Flock/analytics/<Subfolder>/`.
+ * Default IFlockEventCache: one plain-JSON file per entry under `<root>/<Subfolder>/`, where the root is one launch's
+ * analytics folder (FFlockAnalyticsLaunches::GetFolder). Two games running at once never share a queue: each sends only
+ * the entries it queued or took over from a launch that has ended.
  *
  * One file per entry rather than one appended log, because entries are removed individually as
  * each send succeeds — a single file would mean rewriting the whole spool per acknowledgement.
@@ -23,14 +24,10 @@ class FLOCK_API FFlockFileEventCache : public IFlockEventCache
 {
 public:
 	/**
-	 * Subfolder separates consumers (e.g. `log_events`, `session_ends`). An empty InRootDirectory
-	 * uses DefaultRoot(). MaxEntries of 0 or less retains nothing — use the caching config flag to
-	 * turn the spool off, not the cap.
+	 * Subfolder separates consumers (e.g. `log_events`, `session_ends`). MaxEntries of 0 or less retains nothing — use the
+	 * caching config flag to turn the spool off, not the cap.
 	 */
-	FFlockFileEventCache(const FString& Subfolder, int32 InMaxEntries, const FString& InRootDirectory = FString());
-
-	/** `<ProjectSavedDir>/Flock/analytics`. */
-	static FString DefaultRoot();
+	FFlockFileEventCache(const FString& Subfolder, int32 InMaxEntries, const FString& InRootDirectory);
 
 	/** The directory this cache owns. */
 	const FString& GetDirectory() const { return Directory; }
@@ -49,16 +46,14 @@ public:
 
 private:
 	FString PathForHandle(const FString& Handle) const;
-	/** Where a write lands before it is moved onto PathForHandle. */
-	FString TempPathForHandle(const FString& Handle) const;
 	/** Monotonic within a run, and sortable across runs, so age order survives a restart. */
 	FString MakeHandle();
 	/** Trims from the front until the cap is satisfied. */
 	void EvictToCap();
 	/**
-	 * Writes via a temp file and moves it into place, so a crash mid-write cannot leave a truncated entry
-	 * that the next run loads, counts against the cap, and only discards once a flush tries to parse it.
-	 * Same idiom as FFlockSnapshotStore::Write.
+	 * Writes via a temporary file of its own and moves it into place (FFlockTemporaryFiles), so a crash mid-write cannot
+	 * leave a truncated entry that the next run loads, counts against the cap, and only discards once a flush tries to
+	 * parse it. Same idiom as FFlockSnapshotStore::Write.
 	 */
 	bool WriteAtomic(const FString& Handle, const FString& Payload) const;
 

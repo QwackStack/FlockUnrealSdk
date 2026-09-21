@@ -5,6 +5,7 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Analytics/FlockAnalyticsJson.h"
+#include "Analytics/FlockAnalyticsLaunches.h"
 #include "Analytics/FlockLogSink.h"
 #include "Auth/FlockAuthSession.h"
 #include "FlockEvents.h"
@@ -14,6 +15,7 @@
 #include "Misc/App.h"
 #include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockLaunchFolder.h"
 #include "Misc/Paths.h"
 #include "Providers/FlockAnalyticsProvider.h"
 #include "Serialization/JsonReader.h"
@@ -23,7 +25,10 @@
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryEventCache.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
+#include "Tests/Support/FlockRecordingLogger.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
+#include "Tests/Support/FlockTestSpelling.h"
+#include "HAL/PlatformProperties.h"
 
 namespace FlockAnalyticsProviderTestHelpers
 {
@@ -56,6 +61,8 @@ namespace FlockAnalyticsProviderTestHelpers
 	{
 		/** Shared with a second fixture to model a relaunch over the same on-disk state. */
 		FString Dir;
+		/** Only the fixture that made Dir deletes it, so a second launch over the same files never wipes the first's. */
+		bool bOwnsDir = false;
 		TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
 		TSharedRef<FFlockHttpClient> Client;
 		TSharedRef<FFlockMemoryTokenStore> Store = MakeShared<FFlockMemoryTokenStore>();
@@ -71,6 +78,7 @@ namespace FlockAnalyticsProviderTestHelpers
 		explicit FFixture(FFlockAnalyticsConfig Config = FFlockAnalyticsConfig(),
 			const FString& ExistingDir = FString())
 			: Dir(ExistingDir.IsEmpty() ? TempDir() : ExistingDir)
+			, bOwnsDir(ExistingDir.IsEmpty())
 			, Client(MakeShared<FFlockHttpClient>(Fake, MakeShared<FFlockNullLogger>()))
 			, Session(MakeShared<FFlockAuthSession>(Client, Store, MakeShared<FFlockNullLogger>(),
 				TEXT("http://x/v1"), TMap<FString, FString>{ { TEXT("X-Flock-API-Key"), TEXT("k") } }))
@@ -89,8 +97,10 @@ namespace FlockAnalyticsProviderTestHelpers
 			Deps.SessionEndCache = EndCache;
 			EventCache = MakeShared<FFlockMemoryEventCache>(Config.MaxCachedEvents);
 			Deps.AnalyticsEventCache = EventCache;
-			Deps.Session = MakeShared<FFlockSession>(Config, FPaths::Combine(Dir, TEXT("session.json")));
-			Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(true, MarkerPath());
+			// Each fixture is one launch of the game, with an analytics folder of its own under Dir.
+			Deps.Launches = FFlockAnalyticsLaunches::Start(Dir);
+			Deps.Session = MakeShared<FFlockSession>(Config, Deps.Launches->GetSessionStatePath());
+			Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(true, Deps.Launches->GetTerminationMarkerPath());
 			Deps.ConsentStore = MakeShared<FFlockConsentStore>(FPaths::Combine(Dir, TEXT("consent.json")));
 			Deps.Pump = MakeShared<FFlockLifecyclePump>();
 			Deps.bEnableLogSink = false; // a GLog tap inside the runner captures the runner's own errors
@@ -102,7 +112,22 @@ namespace FlockAnalyticsProviderTestHelpers
 				Session, Events, TEXT("http://x/v1"), Config, Deps, TEXT("gv-1"), TEXT("0.7.0"));
 		}
 
-		FString MarkerPath() const { return FPaths::Combine(Dir, TEXT("marker.json")); }
+		/** Lets go of this launch's lock while its files stay, the way a game that crashed looks to the next launch. */
+		void EndLaunchWithoutShuttingDown() const
+		{
+			Deps.Launches->StopHoldingItsFolderForTesting();
+		}
+
+		/** Saves Contents as FileName in a launch folder under ParentDir whose launch has already ended. */
+		static void SaveInAnEndedLaunch(const FString& ParentDir, const FString& FileName, const FString& Contents)
+		{
+			const TSharedPtr<FFlockLaunchFolder> Ended =
+				FFlockLaunchFolder::Create(FPaths::Combine(ParentDir, FFlockAnalyticsLaunches::LaunchesFolderName));
+			if (Ended.IsValid())
+			{
+				FFileHelper::SaveStringToFile(Contents, *FPaths::Combine(Ended->GetPath(), FileName));
+			}
+		}
 
 		// ── routing ──
 		// The fake matches by URL fragment in insertion order, and "analytics/sessions" is a prefix of
@@ -140,7 +165,11 @@ namespace FlockAnalyticsProviderTestHelpers
 		~FFixture()
 		{
 			Provider.Reset();
-			IFileManager::Get().DeleteDirectory(*Dir, false, true);
+			Deps.Launches.Reset();
+			if (bOwnsDir)
+			{
+				IFileManager::Get().DeleteDirectory(*Dir, false, true);
+			}
 		}
 
 		/** The single spooled payload, parsed. */
@@ -258,7 +287,8 @@ namespace FlockAnalyticsProviderTestHelpers
 	inline FString JsonString(const TSharedPtr<FJsonObject>& Object, const TCHAR* Key)
 	{
 		FString Value;
-		return Object.IsValid() && Object->TryGetStringField(Key, Value) ? Value : FString(TEXT("<absent>"));
+		// Found only under exactly this spelling: the object's own lookup ignores letter case, and the server does not.
+		return FlockTestSpelling::HasMemberSpelled(Object, Key) && Object->TryGetStringField(Key, Value) ? Value : FString(TEXT("<absent>"));
 	}
 
 	/** An extra_data value, or "<absent>". */
@@ -557,7 +587,7 @@ bool FFlockAnalyticsImplicitPlayerTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("session started without being handed a player id"), bStarted);
 	TestTrue(TEXT("active"), Fix.Provider->HasActiveSession());
 	TestTrue(TEXT("attributed to the signed-in player"),
-		Fix.Fake->Requests.Last().JsonBody.Contains(TEXT("\"player_id\":\"p-implicit\"")));
+		Fix.Fake->Requests.Last().JsonBody.Contains(TEXT("\"player_id\":\"p-implicit\""), ESearchCase::CaseSensitive));
 	return true;
 }
 
@@ -882,7 +912,8 @@ bool FFlockAnalyticsSessionRecoveryTest::RunTest(const FString& Parameters)
 	Fix.Provider->Initialize();
 	Fix.Provider->StartSession(TEXT("p-1"));
 	Fix.Provider->TickForTesting(120.f);
-	// The run dies here: no EndSession, no Shutdown.
+	// The run dies here: no EndSession, no Shutdown, and its lock goes with the process.
+	Fix.EndLaunchWithoutShuttingDown();
 
 	{
 		// Same files, new process. A fresh directory would pass even if nothing were persisted at all.
@@ -905,12 +936,120 @@ bool FFlockAnalyticsSessionRecoveryTest::RunTest(const FString& Parameters)
 		// This run exits cleanly, so the launch after it has nothing to recover — the same orphan is
 		// never reported twice.
 		NextLaunch.Provider->EndSession(EFlockSessionEndReason::Quit);
+		NextLaunch.EndLaunchWithoutShuttingDown();
 		{
 			FFixture ThirdLaunch(FFlockAnalyticsConfig(), Fix.Dir);
 			ThirdLaunch.Provider->Initialize();
 			TestEqual(TEXT("a clean exit leaves nothing to recover"), ThirdLaunch.EndCache->PendingCount(), 0);
 		}
 	}
+	return true;
+}
+
+/**
+ * A second game started from the same project folder (two game clients on one machine, Play In Editor beside a standalone
+ * game) while the first still runs neither reports the first as crashed nor ends its session. Once the first dies, the next
+ * launch does both.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSecondLaunchLeavesARunningLaunchAloneTest, "Flock.Analytics.Provider.ASecondLaunchLeavesARunningLaunchAlone",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSecondLaunchLeavesARunningLaunchAloneTest::RunTest(const FString& Parameters)
+{
+	FFixture First;
+	First.Provider->Initialize();
+	First.Provider->StartSession(TEXT("p-1"));
+	First.Provider->TickForTesting(30.f);
+	const FString FirstMarker = First.Deps.Launches->GetTerminationMarkerPath();
+	const FString FirstRecord = First.Deps.Launches->GetSessionStatePath();
+	TestTrue(TEXT("Precondition: the first game leaves a crash marker while it runs"), IFileManager::Get().FileExists(*FirstMarker));
+	TestTrue(TEXT("Precondition: and a live-session record"), IFileManager::Get().FileExists(*FirstRecord));
+
+	{
+		FFixture Second(FFlockAnalyticsConfig(), First.Dir);
+		Second.Provider->Initialize();
+		TestEqual(TEXT("A game started while the first still runs does not report it as crashed"), Second.Provider->GetPendingEventCount(), 0);
+		TestEqual(TEXT("Nor end its session"), Second.EndCache->PendingCount(), 0);
+		TestTrue(TEXT("The first game's marker is still on disk"), IFileManager::Get().FileExists(*FirstMarker));
+		TestTrue(TEXT("So is its live-session record"), IFileManager::Get().FileExists(*FirstRecord));
+	}
+
+	// Control: the first game dies, and the next launch finds what it left.
+	First.EndLaunchWithoutShuttingDown();
+	{
+		FFixture Next(FFlockAnalyticsConfig(), First.Dir);
+		Next.Provider->Initialize();
+		TestEqual(TEXT("Control: once it has died, it is reported as crashed"), Next.Provider->GetPendingEventCount(), 1);
+		TestEqual(TEXT("Control: and its session end is spooled"), Next.EndCache->PendingCount(), 1);
+		TestFalse(TEXT("Control: and its folder is deleted"), IFileManager::Get().FileExists(*FirstRecord));
+	}
+	return true;
+}
+
+/** A launch whose session end could not be spooled is kept, so a later launch still ends that session. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsKeepsLaunchWhoseEndCouldNotBeSpooledTest, "Flock.Analytics.Provider.KeepsALaunchWhoseSessionEndCouldNotBeSpooled",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsKeepsLaunchWhoseEndCouldNotBeSpooledTest::RunTest(const FString& Parameters)
+{
+	FFixture First;
+	First.Provider->Initialize();
+	First.Provider->StartSession(TEXT("p-1"));
+	const FString FirstRecord = First.Deps.Launches->GetSessionStatePath();
+	First.EndLaunchWithoutShuttingDown();
+
+	{
+		// The spool takes nothing, the way a full disk refuses the write.
+		FFlockAnalyticsConfig NothingSpooled;
+		NothingSpooled.MaxCachedEvents = 0;
+		FFixture Full(NothingSpooled, First.Dir);
+		Full.Provider->Initialize();
+		TestEqual(TEXT("Precondition: the session end could not be spooled"), Full.EndCache->PendingCount(), 0);
+		TestEqual(TEXT("Precondition: the crash is reported, sent straight away as nothing is spooled"),
+			Full.CountMethod(TEXT("POST"), TEXT("log_event")), 1);
+		TestTrue(TEXT("The ended launch's record is kept for a later launch"), IFileManager::Get().FileExists(*FirstRecord));
+	}
+	{
+		FFixture Later(FFlockAnalyticsConfig(), First.Dir);
+		Later.Provider->Initialize();
+		TestEqual(TEXT("Its crash was reported once, not again"), Later.Provider->GetPendingEventCount(), 0);
+		TestEqual(TEXT("A later launch spools the session end"), Later.EndCache->PendingCount(), 1);
+		TestFalse(TEXT("And then deletes the ended launch"), IFileManager::Get().FileExists(*FirstRecord));
+	}
+	return true;
+}
+
+/** Session numbers carry on from the launches before: a launch's first session is numbered after the last one's. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionNumbersCarryOnTest, "Flock.Analytics.Provider.SessionNumbersCarryOnAcrossLaunches",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionNumbersCarryOnTest::RunTest(const FString& Parameters)
+{
+	FFixture First;
+	First.Provider->Initialize();
+	First.Provider->StartSession(TEXT("p-1"));
+	First.Provider->EndSession(EFlockSessionEndReason::Quit);
+	First.Provider->StartSession(TEXT("p-1"));
+	TestEqual(TEXT("Precondition: the first launch counted two sessions"), First.Deps.Session->GetSessionNumber(), 2);
+	First.EndLaunchWithoutShuttingDown();
+
+	FFixture Next(FFlockAnalyticsConfig(), First.Dir);
+	Next.Provider->Initialize();
+	Next.Provider->StartSession(TEXT("p-1"));
+	TestEqual(TEXT("The next launch's first session is numbered after them"), Next.Deps.Session->GetSessionNumber(), 3);
+
+	// A launch that starts no session of its own still carries the count on for the launch after it.
+	Next.Provider->EndSession(EFlockSessionEndReason::Quit);
+	Next.EndLaunchWithoutShuttingDown();
+	{
+		FFixture NoSessions(FFlockAnalyticsConfig(), First.Dir);
+		NoSessions.Provider->Initialize();
+		NoSessions.EndLaunchWithoutShuttingDown();
+	}
+	FFixture Later(FFlockAnalyticsConfig(), First.Dir);
+	Later.Provider->Initialize();
+	Later.Provider->StartSession(TEXT("p-1"));
+	TestEqual(TEXT("A launch that started none still carried the count on"), Later.Deps.Session->GetSessionNumber(), 4);
 	return true;
 }
 
@@ -1066,15 +1205,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsTerminationReportTest, "Flock.An
 
 bool FFlockAnalyticsTerminationReportTest::RunTest(const FString& Parameters)
 {
-	FFixture Fix;
+	// Owns the temporary folder; its own launch still runs and has nothing to report.
+	FFixture Owner;
 
-	// Leave behind a tombstone as if the previous run died backgrounded.
+	// Leave behind a tombstone as if an earlier launch died backgrounded.
 	const FString Marker =
 		TEXT("{\"last_state\":\"background\",\"session_id\":\"old-1\",\"server_session_id\":\"srv-old\",")
 		TEXT("\"player_id\":\"p-1\",\"last_alive_utc\":\"2026-07-20T10:00:00Z\",\"exception_count\":2,")
 		TEXT("\"app_version\":\"1.2.3\",\"sdk_version\":\"0.6.0\"}");
-	FFileHelper::SaveStringToFile(Marker, *Fix.MarkerPath());
+	FFixture::SaveInAnEndedLaunch(Owner.Dir, FFlockAnalyticsLaunches::TerminationMarkerFileName, Marker);
 
+	FFixture Fix(FFlockAnalyticsConfig(), Owner.Dir);
 	Fix.Provider->Initialize();
 
 	TestEqual(TEXT("one termination event queued"), Fix.Provider->GetPendingEventCount(), 1);
@@ -1107,8 +1248,9 @@ bool FFlockAnalyticsTerminationReportTest::RunTest(const FString& Parameters)
 	// Reported once only. This must relaunch over the SAME files — a fresh directory would pass even
 	// if the marker were never cleared, which is exactly the bug this guards against.
 	Fix.Cache->Clear();
+	Fix.EndLaunchWithoutShuttingDown();
 	{
-		FFixture NextLaunch(FFlockAnalyticsConfig(), Fix.Dir);
+		FFixture NextLaunch(FFlockAnalyticsConfig(), Owner.Dir);
 		NextLaunch.Provider->Initialize();
 		TestEqual(TEXT("the same death is not reported twice"), NextLaunch.Provider->GetPendingEventCount(), 0);
 	}
@@ -1193,9 +1335,9 @@ bool FFlockAnalyticsTrackEventShapeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("properties is an object"), bHasProps);
 	if (bHasProps)
 	{
-		TestTrue(TEXT("an int stays a number"), (*Props)->HasTypedField<EJson::Number>(TEXT("level")));
-		TestTrue(TEXT("a bool stays a bool"), (*Props)->HasTypedField<EJson::Boolean>(TEXT("won")));
-		TestTrue(TEXT("keys kept verbatim"), (*Props)->HasField(TEXT("playerLevel")));
+		TestTrue(TEXT("an int stays a number"), FlockTestSpelling::HasMemberSpelled(*Props, TEXT("level")) && (*Props)->HasTypedField<EJson::Number>(TEXT("level")));
+		TestTrue(TEXT("a bool stays a bool"), FlockTestSpelling::HasMemberSpelled(*Props, TEXT("won")) && (*Props)->HasTypedField<EJson::Boolean>(TEXT("won")));
+		TestTrue(TEXT("keys kept verbatim"), FlockTestSpelling::HasMemberSpelled(*Props, TEXT("playerLevel")));
 	}
 
 	// Spool bookkeeping never reaches the wire.
@@ -1212,7 +1354,7 @@ bool FFlockAnalyticsTrackEventShapeTest::RunTest(const FString& Parameters)
 	const TSharedPtr<FJsonObject> Bare = FlockTestAt(FlockTestAt(After, 1), 0);
 	TestTrue(TEXT("precondition: the bare event was sent"), Bare.IsValid());
 	TestFalse(TEXT("no category member"), Bare.IsValid() && Bare->HasField(TEXT("event_category")));
-	TestTrue(TEXT("empty properties still an object"), Bare.IsValid() && Bare->HasTypedField<EJson::Object>(TEXT("properties")));
+	TestTrue(TEXT("empty properties still an object"), FlockTestSpelling::HasMemberSpelled(Bare, TEXT("properties")) && Bare->HasTypedField<EJson::Object>(TEXT("properties")));
 
 	// A player switch without the session ending: the previous player's session is never attached to the new one's event.
 	FString TokenError;
@@ -1238,13 +1380,21 @@ bool FFlockAnalyticsTrackEventRefusalTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("a blank name is refused"), Fix.Provider->TrackEvent(TEXT("  \t ")));
 	// The server writes session_started when a session starts, and would count a client's copy as a second session.
 	TestFalse(TEXT("session_started is refused"), Fix.Provider->TrackEvent(FFlockAnalyticsProvider::ReservedSessionStartedEvent));
+	// The server cannot store a longer name or category, and fails the whole request for one.
+	const FString LongestName = FString::ChrN(FFlockAnalyticsProvider::MaxEventNameLength, TEXT('n'));
+	const FString LongestCategory = FString::ChrN(FFlockAnalyticsProvider::MaxEventCategoryLength, TEXT('c'));
+	TestFalse(TEXT("a name one character over the limit is refused"), Fix.Provider->TrackEvent(LongestName + TEXT("n")));
+	TestFalse(TEXT("a category one character over the limit is refused"),
+		Fix.Provider->TrackEvent(TEXT("level_complete"), FFlockCommandData(), LongestCategory + TEXT("c")));
 	TestEqual(TEXT("nothing spooled"), Fix.Provider->GetPendingAnalyticsEventCount(), 0);
 
 	// Only that exact name is reserved.
 	TestTrue(TEXT("a longer name is fine"), Fix.Provider->TrackEvent(TEXT("session_started_tutorial")));
 	TestTrue(TEXT("a different case is a different name"), Fix.Provider->TrackEvent(TEXT("Session_Started")));
 	TestTrue(TEXT("session_end is not reserved"), Fix.Provider->TrackEvent(TEXT("session_end")));
-	TestEqual(TEXT("all three spooled"), Fix.Provider->GetPendingAnalyticsEventCount(), 3);
+	TestTrue(TEXT("the longest name and category the server stores are fine"),
+		Fix.Provider->TrackEvent(LongestName, FFlockCommandData(), LongestCategory));
+	TestEqual(TEXT("all four spooled"), Fix.Provider->GetPendingAnalyticsEventCount(), 4);
 
 	Fix.Provider->EraseLocalData();
 	TestEqual(TEXT("erasing local data takes them"), Fix.Provider->GetPendingAnalyticsEventCount(), 0);
@@ -1414,6 +1564,39 @@ bool FFlockAnalyticsTrackEventRefusedPlayerTest::RunTest(const FString& Paramete
 		const TArray<FFlockSpooledAnalyticsEvent> Spooled = Busy.SpooledEvents();
 		TestEqual(TEXT("the sent event counts a failed send"), FlockTestAt(Spooled, 0).FailedSends, 1);
 		TestEqual(TEXT("the unsent one is not"), FlockTestAt(Spooled, 1).FailedSends, 0);
+	}
+	return true;
+}
+
+/**
+ * A build that did not check lengths may have queued an event the server cannot store. It is dropped when found, never
+ * sent: the server fails the whole request for it, so every event beside it would be held back until its attempts ran out.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsTrackEventTooLongToStoreTest, "Flock.Analytics.Provider.TrackEvent.TooLongToStoreIsNotSent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsTrackEventTooLongToStoreTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	Fix.Provider->TrackEventAsPlayerForTesting(TEXT("p-fixture"), FString::ChrN(FFlockAnalyticsProvider::MaxEventNameLength + 1, TEXT('n')));
+	Fix.Provider->TrackEventAsPlayerForTesting(TEXT("p-fixture"), FString::ChrN(FFlockAnalyticsProvider::MaxEventNameLength, TEXT('n')));
+	TestTrue(TEXT("an ordinary event is accepted"), Fix.Provider->TrackEvent(TEXT("level_complete")));
+	TestEqual(TEXT("precondition: all three queued"), Fix.Provider->GetPendingAnalyticsEventCount(), 3);
+
+	Fix.Fake->On(TEXT("analytics/events"), FFlockFakeTransport::Ok(TEXT("{\"ok\":true}")));
+	bool bFlushed = false;
+	Fix.Provider->Flush([&bFlushed](TFlockResult<FFlockAnalyticsAck> Result) { bFlushed = Result.bSuccess; });
+	TestTrue(TEXT("the flush succeeded"), bFlushed);
+	TestEqual(TEXT("nothing is left queued"), Fix.Provider->GetPendingAnalyticsEventCount(), 0);
+
+	const TArray<TArray<TSharedPtr<FJsonObject>>> Batches = Fix.SentEventBatches();
+	TestEqual(TEXT("one request"), Batches.Num(), 1);
+	TestEqual(TEXT("carrying the two events the server can store"), FlockTestAt(Batches, 0).Num(), 2);
+	for (const TSharedPtr<FJsonObject>& Event : FlockTestAt(Batches, 0))
+	{
+		TestTrue(TEXT("no event name longer than the server stores"),
+			JsonString(Event, TEXT("event_name")).Len() <= FFlockAnalyticsProvider::MaxEventNameLength);
 	}
 	return true;
 }
@@ -1988,8 +2171,9 @@ bool FFlockAnalyticsJsonSpooledEventTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("timestamp"), Back.Event.Timestamp, Entry.Event.Timestamp);
 	TestEqual(TEXT("local session"), Back.LocalSessionId, Entry.LocalSessionId);
 	TestEqual(TEXT("attempts"), Back.FailedSends, 7);
-	TestTrue(TEXT("properties keep their keys"), Back.Event.Properties.ToJsonObject()->HasField(TEXT("playerLevel")));
-	TestTrue(TEXT("and their types"), Back.Event.Properties.ToJsonObject()->HasTypedField<EJson::Number>(TEXT("level")));
+	TestTrue(TEXT("properties keep their keys"), FlockTestSpelling::HasMemberSpelled(Back.Event.Properties.ToJsonObject(), TEXT("playerLevel")));
+	TestTrue(TEXT("and their types"), FlockTestSpelling::HasMemberSpelled(Back.Event.Properties.ToJsonObject(), TEXT("level"))
+		&& Back.Event.Properties.ToJsonObject()->HasTypedField<EJson::Number>(TEXT("level")));
 
 	FFlockSpooledAnalyticsEvent Held;
 	Held.Event.EventName = TEXT("title_screen");
@@ -2189,6 +2373,187 @@ bool FFlockAnalyticsFatalCaptureDetailsTest::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("the crash was spooled"), bFound);
 	Fix.Provider->Shutdown();
+	return true;
+}
+
+/**
+ * OnSessionRegistered hands listeners the id a session's records are filed under, once per session, from that
+ * session's own registration. A heartbeat on a session that already has its id raises nothing more.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionRegisteredOncePerSessionTest,
+	"Flock.Analytics.Provider.SessionRegistered.OncePerSession",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionRegisteredOncePerSessionTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	UFlockEventTestListener* Listener = NewObject<UFlockEventTestListener>();
+	Fix.Events->OnSessionRegistered.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionRegistered);
+
+	Fix.Provider->StartSession(TEXT("p-1"));
+	const FString FirstLocalId = Fix.Provider->GetCurrentSnapshot().SessionId;
+	TestEqual(TEXT("Raised once the server answered"), Listener->SessionRegisteredCount, 1);
+	TestEqual(TEXT("With the local id OnSessionStarted carried"), Listener->LastRegisteredSessionId, FirstLocalId);
+	TestEqual(TEXT("And the server's id"), Listener->LastRegisteredServerSessionId, FString(TEXT("srv-1")));
+
+	Fix.Provider->TickForTesting(120.f);
+	TestEqual(TEXT("A heartbeat on a registered session raises nothing more"), Listener->SessionRegisteredCount, 1);
+
+	Fix.OnRegistration(FFlockFakeTransport::Ok(TEXT("{\"session_id\":\"srv-2\"}")));
+	Fix.Provider->StartSession(TEXT("p-1"));
+	TestEqual(TEXT("The next session raises for itself"), Listener->SessionRegisteredCount, 2);
+	TestEqual(TEXT("With its own server id"), Listener->LastRegisteredServerSessionId, FString(TEXT("srv-2")));
+	TestNotEqual(TEXT("And its own local id"), Listener->LastRegisteredSessionId, FirstLocalId);
+	return true;
+}
+
+/** Nothing is raised until the server has handed over an id; the heartbeat retry that gets one raises it. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionRegisteredOnlyWithAServerIdTest,
+	"Flock.Analytics.Provider.SessionRegistered.OnlyWithAServerId",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionRegisteredOnlyWithAServerIdTest::RunTest(const FString& Parameters)
+{
+	FFlockAnalyticsConfig Config;
+	Config.HeartbeatIntervalSeconds = 60.f;
+	Config.EventBufferFlushIntervalSeconds = 0.f; // isolate the heartbeat
+	Config.bTrackFps = false;
+	FFixture Fix(Config);
+	Fix.Provider->Initialize();
+	UFlockEventTestListener* Listener = NewObject<UFlockEventTestListener>();
+	Fix.Events->OnSessionRegistered.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionRegistered);
+
+	Fix.OnRegistration(FFlockFakeTransport::Offline());
+	Fix.Provider->StartSession(TEXT("p-1"));
+	TestEqual(TEXT("A registration that never reached the server raises nothing"), Listener->SessionRegisteredCount, 0);
+
+	Fix.OnRegistration(FFlockFakeTransport::Ok(TEXT("{}")));
+	Fix.Provider->TickForTesting(61.f);
+	TestEqual(TEXT("The heartbeat retried"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")), 2);
+	TestEqual(TEXT("A 2xx with no id raises nothing"), Listener->SessionRegisteredCount, 0);
+
+	Fix.OnRegistration(FFlockFakeTransport::Ok(TEXT("{\"session_id\":\"srv-healed\"}")));
+	Fix.Provider->TickForTesting(61.f);
+	TestEqual(TEXT("The retry that got an id raises it"), Listener->SessionRegisteredCount, 1);
+	TestEqual(TEXT("With that id"), Listener->LastRegisteredServerSessionId, FString(TEXT("srv-healed")));
+	return true;
+}
+
+/**
+ * A session that ends before its registration reply lands is closed from the spool, and its id reaches the spooled
+ * record, not the listeners: the session they would be told about is already over.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionRegisteredNotForAnEndedSessionTest,
+	"Flock.Analytics.Provider.SessionRegistered.NotForASessionThatEndedFirst",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionRegisteredNotForAnEndedSessionTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	UFlockEventTestListener* Listener = NewObject<UFlockEventTestListener>();
+	Fix.Events->OnSessionRegistered.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionRegistered);
+
+	Fix.Fake->bDeferred = true;
+	Fix.Provider->StartSession(TEXT("p-1"));
+	Fix.Provider->EndSession(EFlockSessionEndReason::Logout);
+	// The registration reply for the ended session, then whatever the spool drain sends after it.
+	for (int32 Round = 0; Round < 4; ++Round)
+	{
+		Fix.Fake->FlushPending();
+	}
+
+	TestTrue(TEXT("The session did register"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")) >= 1);
+	TestEqual(TEXT("A reply for a session that already ended raises nothing"), Listener->SessionRegisteredCount, 0);
+	return true;
+}
+
+/** An end spooled by an earlier run registers itself on the next flush, and that is not this run's session. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionRegisteredNotForASpooledEndTest,
+	"Flock.Analytics.Provider.SessionRegistered.NotForASpooledEnd",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionRegisteredNotForASpooledEndTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	UFlockEventTestListener* Listener = NewObject<UFlockEventTestListener>();
+	Fix.Events->OnSessionRegistered.AddDynamic(Listener, &UFlockEventTestListener::HandleSessionRegistered);
+
+	FFlockSessionSnapshot Unregistered;
+	Unregistered.SessionId = TEXT("local-earlier-run");
+	Unregistered.PlayerId = TEXT("p-1");
+	Unregistered.StartTimeUtc = TEXT("2026-07-22T08:00:00Z");
+	Fix.EndCache->Enqueue(FFlockAnalyticsJson::SerializeSnapshot(Unregistered));
+	Fix.OnRegistration(FFlockFakeTransport::Ok(TEXT("{\"session_id\":\"srv-earlier-run\"}")));
+	Fix.OnClose(TEXT("srv-earlier-run"), FFlockFakeTransport::Ok(TEXT("{}")));
+
+	Fix.Provider->Flush();
+
+	TestEqual(TEXT("The spooled end registered itself"), Fix.CountMethod(TEXT("POST"), TEXT("analytics/sessions")), 1);
+	TestEqual(TEXT("An earlier run's session raises nothing"), Listener->SessionRegisteredCount, 0);
+	return true;
+}
+
+namespace FlockAnalyticsProviderTestHelpers
+{
+	/** The platform the latest session registration sent, or "<absent>". */
+	inline FString RegisteredPlatform(const FFixture& Fix)
+	{
+		for (int32 Index = Fix.Fake->Requests.Num() - 1; Index >= 0; --Index)
+		{
+			const FFlockHttpRequest& Request = Fix.Fake->Requests[Index];
+			if (Request.Method == TEXT("POST") && Request.Url.EndsWith(TEXT("analytics/sessions")))
+			{
+				TSharedPtr<FJsonObject> Body;
+				const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Request.JsonBody);
+				return FJsonSerializer::Deserialize(Reader, Body) ? JsonString(Body, TEXT("platform")) : FString(TEXT("<unreadable>"));
+			}
+		}
+		return TEXT("<absent>");
+	}
+}
+
+/** Session Platform replaces the engine's platform name on a session start, and a stray space is refused with a warning. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionPlatformIsSentTest, "Flock.Analytics.Provider.SessionPlatformIsSent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsSessionPlatformIsSentTest::RunTest(const FString& Parameters)
+{
+	const FString EnginePlatformName = FPlatformProperties::IniPlatformName();
+	{
+		FFixture Fix;
+		Fix.Provider->Initialize();
+		Fix.Provider->StartSession(TEXT("p-1"));
+		TestEqual(TEXT("Unset sends the engine's platform name"), RegisteredPlatform(Fix), EnginePlatformName);
+	}
+
+	struct FCase
+	{
+		const TCHAR* Setting;
+		FString Expected;
+		bool bWarns;
+	};
+	const FCase Cases[] = {
+		{ TEXT("steam"), TEXT("steam"), false },
+		{ TEXT("steam "), EnginePlatformName, true },
+	};
+	for (const FCase& Case : Cases)
+	{
+		FFlockAnalyticsConfig Config;
+		Config.SessionPlatform = Case.Setting;
+		FFixture Fix(Config);
+		const TSharedRef<FFlockRecordingLogger> Logger = MakeShared<FFlockRecordingLogger>();
+		Fix.Provider = MakeShared<FFlockAnalyticsProvider>(Fix.Client, NoRetryPolicy(), Logger, Fix.Session, Fix.Events,
+			TEXT("http://x/v1"), Config, Fix.Deps, TEXT("gv-1"), TEXT("0.7.0"));
+		Fix.Provider->Initialize();
+		Fix.Provider->StartSession(TEXT("p-1"));
+
+		TestEqual(FString::Printf(TEXT("'%s' sends the expected platform"), Case.Setting), RegisteredPlatform(Fix), Case.Expected);
+		TestEqual(FString::Printf(TEXT("'%s' warns only when it is not used"), Case.Setting),
+			FFlockRecordingLogger::AnyContains(Logger->Warnings, FString::Printf(TEXT("'%s'"), Case.Setting)), Case.bWarns);
+	}
 	return true;
 }
 

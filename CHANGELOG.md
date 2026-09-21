@@ -5,6 +5,301 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.20.0] - 2026-09-21
+
+### Added
+
+- **A playtest build asks its player what it may collect, and collects nothing until they answer.** The question is
+  drawn over the game once this build's playtest is loaded, and offers four answers: the screen and play data, the
+  screen only, play data only, or nothing at all. It is the playtest's own question and its words say so -- a game's
+  own privacy or analytics choices are asked separately, and neither answer moves the other. The answer is kept on the
+  player's machine and used by every later launch.
+- **Choosing nothing leaves the build behaving exactly as one with Enable Playtesting off**: nothing is recorded,
+  nothing is sent, and no Protokite session is started for the launch.
+- **Each half of the answer is honoured feature by feature.** Video recording follows the screen half, and the
+  performance windows, level loads, the game's own playtest events and the exceptions a playtest asks for follow the
+  play-data half. A feature name this build does not know needs the answer that allows everything.
+- **The session start carries two extra parameters**, in the `extra_debug` it already sends: `playtest_consent`, the
+  answer the launch collected under, and `playtest_consent_asked`, whether the player was asked at all. A session with
+  no recording then reads as a player who asked for none rather than a build that went wrong.
+- **Blueprint nodes for it**: Flock Get Playtest Consent, Flock Get Players Consent Answer, Flock Describe Playtest
+  Consent, Flock Set Playtest Consent (for a game that asks in its own screens), Flock Ask For Playtest Consent (a
+  "change what this playtest collects" entry), and Flock Is Consent Question Open.
+- **Two new statuses**, Waiting For Player Consent and Player Refused Playtest, each with the sentence that explains it.
+- **Ask The Player For Playtest Consent** (Project Settings > Plugins > Flock Playtest Settings), on by default. Turn
+  it off where players are asked another way, for an internal test, or for an automated run with nobody there to
+  answer; the build then collects what the playtest turns on and says so in what each session sends. An answer a player
+  has already given is still honoured in such a build.
+- **`FlockPlaytest.AnswerConsent <video_and_play_data|video_only|play_data_only|nothing|not_answered>`**, a
+  Development-build console command, for a run with nobody at the keyboard.
+- **A setup finding when Play starts** naming the playtest's own consent question, beside the existing one for the
+  Flock SDK's analytics consent -- each saying whose consent it is, since a build can wait on both.
+
+### Changed
+
+- **A recording is deleted, not uploaded, when the player takes the screen back after it started.** Keeping it would
+  send it a launch later, since the session it belongs to is saved beside it.
+- **Nothing an earlier launch left goes out while this launch's question is still on screen**, and none of it is pushed
+  while the player's answer is nothing -- it waits instead, so a player who changes their mind has it sent in the same
+  launch. Feedback forms kept from an earlier launch are still sent whatever the answer: a form is something the player
+  filled in and sent themselves.
+- **An answer that could not be saved takes the older answer with it**, so the next launch asks again rather than
+  collecting under an answer the player has replaced. Forgetting an answer removes its temporary files too.
+- **The playtest self-test skips, rather than fails, when nobody has answered the consent question**, naming the
+  console command that answers it.
+
+## [1.19.0] - 2026-09-18
+
+### Added
+
+- **Blueprint nodes for the whole playtest.** Its status, and the sentence that explains it; whether a feature is on,
+  with a node for each feature name so none has to be typed; the launch's session; sending the recording; the built-in
+  feedback form; and **a feedback form of your own**, with nodes that read the playtest's questions, record answers,
+  check them the way the server will, and send them. Every node is safe with playtesting off.
+- **Setup findings when Play starts.** An empty or unusable Protokite API URL, the Flock SDK's analytics turned off, a
+  Game Version that is not a playtest's, and the settings a playtest session waits on are each listed in the Play
+  message log with a link to the page that fixes it. Nothing is said while Enable Playtesting is off.
+- **A warning while building a Shipping game** that has Enable Playtesting on or carries a playtest's Game Version.
+  The build still succeeds. It is given by a build that reads the plugin's build rules, such as a clean build; an
+  unchanged rebuild skips them and says nothing.
+- **A warning when a playtest asks for exceptions** and the Flock SDK's Analytics Capture Exceptions is off.
+- **`Flock.RaiseTestException [error|blueprint] [times]`**, a Development-build console command that raises a fault the
+  exception capture reports, to check exceptions reach the dashboard.
+- **A playtest setup guide**, from installing the plugin to a session on Protokite's Sessions page.
+- **The Qwacks icon on the feedback form**, beside its title. A packaged game carries the image with it.
+- **`FlockPlaytest.SelfTest [closed playtest's Game Version ID]`**, a Development-build console command that checks a
+  playtest build against the real Protokite and logs a line per step and a count. Each check sits beside a request
+  Protokite must refuse, and a refusal passes only with its own HTTP status and, for a form, the question it names: the
+  config (and a wrong key, a missing key, a version with no playtest), the session (and a start naming no player, and a
+  closed playtest when one is named), an exception reported once with its repeat counted, a playtest event (and the
+  plugin's own event name refused), the feedback form (and a missing answer, an option not on the list, an unknown
+  session), the recording's upload (and a link for an unknown session) and the session's end (and an end for an unknown
+  session). It ends the launch's session as its last step, and ends at once any session a refusal should have prevented.
+  On a build with no video encoder, which is every platform but 64-bit Windows, the recording step is skipped, saying why.
+- **On Recording Upload Finished**, a Blueprint event raised once when the launch's recording finishes: uploaded, or not
+  uploaded with the reason, including when the upload could not begin. It is not raised while the game is closing.
+- **`EndPlaytestSession` takes an optional completion** in C++, which hears whether Protokite took the end and why not.
+
+### Changed
+
+- **Sending your own form's answers says what happened.** It returns whether the answers were sent or kept, and says
+  why in the log when they were neither: no published form, or nobody to attribute them to. It used to return
+  nothing, and said nothing when the playtest had no form.
+
+### Fixed
+
+- **A crash is reported once.** The engine raises its crash events up to three times for one crash, and each became
+  its own "Unhandled system error" beside the error that caused it. A crash is now one report, named by the error the
+  engine recorded, and a Fatal log line counts as that report.
+- **A picked option is checked letter for letter**, as the server checks it. "crash" for the option "Crash" passed
+  the form's own check and was then refused by the server, which dropped the answers.
+- **A feedback form with two list questions** no longer risks its first list pointing at memory the second one moved.
+- The Flock panel's **Open Settings** opens the Flock SDK's own settings page.
+- A form whose question ids differ only in letter case is named in the log when it loads, because their answers
+  cannot be kept apart: rename one of them.
+- **The playtest plugin compiles when a unity build puts its form files together.** Two of them defined the same
+  helpers, which compiled only while the build kept them apart.
+- **The guide says a game that stops its recording gets it uploaded**, as every finished playtest recording is. It
+  said the recording was kept.
+- **Offline snapshots keep names exactly as declared.** The cache wrote every member name, at every depth, with its first
+  letter lower-cased. Snapshots written before this still load.
+- **The SDK's automation tests leave the project's saved files alone.** A test's Flock SDK kept its files in the
+  project's own `Saved/Flock` folder, like any launch of the game. A test run that was cut short left a test player's
+  session there, and the next launch of the game sent it to the Flock server, which refused it. A test run also took
+  over the analytics that ended launches of the game had kept, and deleted the saved sign-in, the consent decision and
+  other versions' offline data. Each test now keeps every file in a folder of its own, deleted when the test ends.
+
+## [1.18.0] - 2026-09-16
+
+### Added
+
+- **A playtest feedback form**, built from the questions the playtest publishes: text, longer text, a 1-to-5 rating, a
+  list to pick from, and a tickbox, each with its own help text and marked when an answer is needed. Editing the form
+  on the dashboard changes what players see without a new build, and a kind of question this version does not know is
+  still shown as a text box rather than left blank.
+- Answers are checked before anything is sent, with every problem shown against the question it belongs to at once, so
+  a player is not told about them one at a time. Nothing is said while someone is still typing.
+- The form opens with a key (F9 by default, and settable to none), from Blueprint or C++ with **Open Feedback Form**, or
+  from a game's own pause menu. **Can Open Feedback Form** is false when the playtest published none, so a game can
+  leave its feedback entry out rather than offering something that does nothing.
+- While the form is open the mouse is shown and typing goes to the form; closing or sending it puts both back exactly
+  as they were. The game can be paused meanwhile with **Pause The Game While The Form Is Open**, off by default.
+
+- **Answers are sent to the playtest they belong to**, and a form that cannot be sent right away is kept and sent by a
+  later launch, so a player who has answered never loses the work to a dropped connection or to closing the game.
+- Sending the form again in the same session **replaces** the earlier answers rather than adding a second report, so a
+  player can change their mind. One sent with no session running is never re-sent, because there the server would
+  record it twice.
+- The player is not made to wait: the form closes as soon as the answers are ones the server will take.
+- **An "Upload your recording" button on the form**, offered only when the recording has somewhere to go: one is
+  running, it belongs to the playtest, and a playtest session has started for it. Asking stops recording for the rest
+  of the session and sends what was recorded, and the offer is replaced by a word that the video is on its way -- shown
+  only when sending really began. Opening the form does not stop recording by itself.
+
+### Fixed
+
+- A video recording no longer looks up the same engine setting by name on every frame, which made the engine warn
+  about it after five hundred frames of recording.
+- A recording that cannot be uploaded now says why in the log — no playtest session to send it to, no finished file, or
+  the game closing — instead of stopping without a word.
+
+## [1.17.0] - 2026-09-16
+
+### Added
+
+- **Playtest recordings are uploaded.** A finished recording is sent to the playtest session it belongs to: when a
+  length or size limit ends it, when the game asks for it to be stopped and uploaded, and — for anything an earlier
+  launch could not send — at the start of a later one. A recording is deleted once it has been uploaded, and kept
+  otherwise, so nothing is lost by a failed upload, a crash or the game closing.
+- **Stop the recording and upload it**, for a game that offers the player a way to hand in what they recorded. Opening
+  a feedback form does not stop recording on its own.
+- Recordings an earlier launch left are uploaded **even when playtesting is switched off** in the launch that finds
+  them, and nothing else playtest-related happens in that launch. Otherwise turning playtesting off would strand every
+  recording still waiting to be sent.
+- A recording is sent straight from disk and is never held in memory, so uploading one costs the same whether it is a
+  few megabytes or the size limit.
+
+## [1.16.0] - 2026-09-15
+
+### Added
+
+- **A playtest recording that was not uploaded is kept for a later launch.** Each launch's recording now has a folder
+  of its own under `Saved/FlockPlaytest/Recordings/Playtest/`, and the Protokite session it belongs to is saved beside
+  it: the session id, the Protokite API URL and the Game Version ID the session started with, never the API key.
+  Uploading comes in a later version.
+- **A recording cut off when its game ended** (closed from the task manager, crashed, or the power went) is finished by
+  the next launch with every whole frame it holds, so it plays. A recording whose file could not be written to the end,
+  on a full disk for example, keeps the frames written before.
+- **A playtest recording that no Protokite session started for is deleted by the next launch.** The player never
+  signed in, or the game ended first, so it has nowhere to be uploaded. The log says how many were deleted.
+- **Recordings Disk Budget** in *Project Settings > Plugins > Flock Playtest Settings* (4096 MB): how much the
+  recordings may take together. Before a recording starts, recordings of games that are no longer running are deleted
+  until it fits: test videos first, oldest first, and a playtest recording waiting to be uploaded only when that is not
+  enough. A recording only makes room for what its length limit can record at its bitrate. It is cut shorter when the
+  budget has less left than **Recording Size Limit**, and with less than 1 MB left none starts.
+- Nothing touches a recording while the game that made it is still running, so two games started from one project, or
+  several Play In Editor clients, never delete each other's recordings. A Game Version ID changing deletes nothing.
+
+### Changed
+
+- **Playtest recordings are saved as WebM files, which a browser plays with nothing installed** — 1.15.0 wrote IVF
+  files, which needed a desktop player. The video inside is the same VP9, so nothing is re-encoded: a recording costs
+  no more time and no more disk than before, and is ready to watch the moment it is saved. A recording whose game
+  ended part-way through is still finished by the next launch, and plays up to the point where it stopped.
+- Test videos, from `FlockPlaytest.RecordTestVideo` or **Record Video In Play In Editor**, are saved under
+  `Saved/FlockPlaytest/Recordings/TestVideos/` and kept until Recordings Disk Budget needs their room.
+
+### Fixed
+
+- **A session that ends as the game closes is no longer abandoned part-way.** Both the analytics session end and the
+  playtest session end were sent from shutdown and then torn down around, so the requests were dropped while still in
+  flight: the engine reported unbinding them, nothing failed, nothing was logged, and the playtest dashboard showed
+  those sessions as still in progress with no duration. Requests already on their way now get a bounded chance to
+  finish while the SDK is still alive, so their outcome is known. The wait is limited by the engine and cannot hold up
+  a game's exit, and anything that does not make it is cancelled exactly as it would have been a moment later. This
+  matters most for the playtest session, which has no second chance -- an analytics session end is saved to disk and
+  re-sent on a later launch, so it was only ever delayed.
+
+- **Two games started from one project folder no longer lose each other's saved files** (two game clients on one
+  machine, or Play In Editor beside a standalone game). When Flock started, it deleted every temporary file in its
+  analytics queue and asset cache folders, including one another running game had just written and was about to move
+  into place. That game's queued event or downloaded asset was lost, and its game thread waited five seconds while the
+  engine retried the move and logged an error. A temporary file is now deleted only once it is a minute old, and each of
+  these saves uses a temporary file of its own, so two games saving the same offline cache entry or downloading the same
+  asset no longer share one.
+- The offline cache now deletes the temporary files a crash left behind. It never did.
+- A save that cannot be moved into place gives up at once instead of holding the game thread for five seconds.
+- **A second game started from the same project folder no longer reports the first as crashed, ends its session, or sends
+  its queued analytics a second time.** Each launch now keeps its crash marker, its live-session record and its event
+  queues in a folder of its own under `Saved/Flock/analytics/launches/`, locked for as long as the game runs, and takes over
+  only the folders of launches that have ended, however they ended: their queued entries join its own queues, and a crash
+  or an unfinished session is reported once. The files an earlier build kept straight in `Saved/Flock/analytics/` are
+  taken over the same way, once. Session numbers carry on across launches.
+- **A game killed while it saves the consent choice or the sign-in no longer loses it.** Both are written beside the old
+  file and moved over it, and a save cut off in between is read back from the file it was written to. Before, a kill could
+  leave an empty consent file, which reads as no decision, so a project that does not require explicit consent collected
+  again from a player who had opted out.
+
+## [1.15.0] - 2026-09-15
+
+### Added
+
+- **Flock Playtest records the game's screen when the playtest turns video recording on.** Recording starts as soon as
+  the playtest config is loaded, and saves VP9 video to `Saved/FlockPlaytest/Recordings/` as an IVF file, which VLC
+  plays. It records what the player sees, the game's interface included. Uploading the file comes in a later version.
+- **Video Recording settings** in *Project Settings > Plugins > Flock Playtest Settings*: **Video Width** and **Video
+  Height** (1280 by 720; the video keeps the screen's shape and fits inside, and a smaller window is recorded at its own
+  size), **Video Frames Per Second** (30), **Video Bitrate** (2000 kbps, about 0.9 GB an hour), **Recording Length Limit**
+  (60 minutes) and **Recording Size Limit** (1536 MB).
+- **One recording per launch.** It stops for good at either limit, when the game calls `StopVideoRecording` or the
+  **Flock Stop Video Recording** node, when playtesting stops, or when the game instance shuts down, and the file is
+  finished before shutting down returns. Time the game spends in the background is not recorded. `IsRecordingVideo()`
+  and **Flock Is Recording Video** say whether it is running.
+- **Recording can be tried without a playtest.** Tick **Record Video In Play In Editor** in *Project Settings > Plugins >
+  Flock Playtest Local Settings* (saved for you only, never committed) and press Play, or type
+  `FlockPlaytest.RecordTestVideo <seconds>` in the console of any build that is not Shipping;
+  `FlockPlaytest.StopVideoRecording` stops it early. The log names the saved file. A test video is refused while the
+  playtest records video itself.
+- **Video is recorded on 64-bit Windows only.** Everywhere else, and in a run that draws nothing (a dedicated server, or
+  `-nullrhi`), one warning says so and the rest of the playtest carries on.
+- Each captured frame is read back from the GPU on the render thread, which adds about 7 ms of render-thread time to
+  that frame at 1280 by 720 (measured at 30 captured frames a second). In a game capped at 60 frames a second the
+  frames still met their 16.7 ms budget where it was measured; a game whose render thread is already near its budget
+  can miss it on captured frames.
+
+## [1.14.0] - 2026-09-15
+
+### Added
+
+- **Flock Playtest sends heavy analytics when the playtest turns it on.** While playtesting is ready and the Flock
+  SDK's **Analytics Enabled** is on, every ten seconds of play become one `performance_window` event: the frame count,
+  the median, 95th and 99th percentile frame times, the hitches (frames at or over the engine's
+  `t.HitchFrameTimeThreshold`), and the memory in use and at its peak. Each map the game instance loads from then on
+  becomes one `level_loaded` event, with the map before it and, when the load held the game up, how long it took. Both
+  go through the Flock SDK's analytics under the category `playtest`, so they follow its consent setting and wait for a
+  signed-in player the same way.
+- **Time away is not play.** The timeline pauses while the game is in the background, leaves out the frame time that a
+  level load or a return from the background stretched, and drops a window that playtesting stopping cut short. The
+  session's length, pauses and frame rate stay the Flock SDK's, and are never sent twice.
+- **`UFlockPlaytestSubsystem::RecordPlaytestEvent`** and the **Flock Record Playtest Event** Blueprint node record
+  the game's own events for the playtest, under the same category. Outside a heavy analytics playtest they record
+  nothing and return false, so the call is safe in every build. `IsMeasuringPerformance()` says whether the timeline is
+  running.
+
+### Changed
+
+- **Track Event refuses a name over 200 characters or a category over 100.** The server cannot store either, and
+  failed the whole request for it, so every event sent alongside was held back and sent again until its attempts ran
+  out. An event like that already waiting from an earlier build is dropped with a warning instead of being sent.
+
+## [1.13.0] - 2026-09-15
+
+### Added
+
+- **Flock Playtest starts one Protokite session per launch.** Once this build's playtest is loaded and the first
+  Flock session of the launch has reached the server, the plugin starts a Protokite session that names that Flock
+  session. It sends the player's Steam id when a Steam subsystem is already running, and otherwise a device id kept
+  in `Saved/FlockPlaytest/device_id.txt`, which stays the same from one launch to the next. Steam is never required
+  and never started.
+- **The session lasts the launch.** A later Flock session, a sign-out or the Flock SDK shutting down neither ends nor
+  restarts it. It ends when the game instance shuts down, or when `UFlockPlaytestSubsystem::EndPlaytestSession()` is
+  called. `GetPlaytestSessionState()`, `GetPlaytestSessionId()` and `GetPlaytestIdentity()` report where it is.
+- **A start is sent once.** Every start creates a session, so a start that failed, or whose answer never arrived, is
+  not tried again that launch. With neither a Steam id nor a device id, nothing is sent and a warning says why.
+- **A new status: the playtest has closed.** When Protokite refuses the session because the playtest takes no more
+  sessions (HTTP 400), playtesting stays off until the game is launched again.
+- **`UFlockEvents::OnSessionRegistered`**, raised once a session reaches the server, with its local id and the id the
+  server gave it. `OnSessionStarted` carries only the local id.
+- **Session Platform** (Project Settings > Plugins > Flock SDK Settings > Analytics) replaces the engine's platform
+  name when a session starts, for example `steam` for a Steam build. A value that starts or ends with a space is not
+  used, and a warning says so.
+
+### Changed
+
+- **Flock Playtest depends on the engine's OnlineSubsystem plugin**, which is on by default, to read the Steam id of a
+  Steam subsystem that is already running. It does not depend on the Steam plugin.
+- **The Flock panel's live view shows a session reaching the server.**
+
 ## [1.12.0] - 2026-09-14
 
 ### Added

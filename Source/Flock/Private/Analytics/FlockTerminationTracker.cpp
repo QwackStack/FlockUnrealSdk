@@ -5,6 +5,7 @@
 #include "Dom/JsonObject.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
@@ -29,14 +30,9 @@ namespace
 
 FFlockTerminationTracker::FFlockTerminationTracker(bool bInEnabled, const FString& InMarkerPath, FClock InClock)
 	: bEnabled(bInEnabled)
-	, MarkerPath(InMarkerPath.IsEmpty() ? DefaultMarkerPath() : InMarkerPath)
+	, MarkerPath(InMarkerPath)
 	, Clock(InClock ? MoveTemp(InClock) : FClock([]() { return FDateTime::UtcNow(); }))
 {
-}
-
-FString FFlockTerminationTracker::DefaultMarkerPath()
-{
-	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Flock"), TEXT("analytics"), TEXT("termination_marker.json"));
 }
 
 FString FFlockTerminationTracker::Classify(const FFlockTerminationMarker& InMarker)
@@ -189,6 +185,7 @@ void FFlockTerminationTracker::WriteMarker() const
 	FJsonSerializer::Serialize(Root, Writer);
 
 	FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*FPaths::GetPath(MarkerPath));
-	// Log-and-continue: failing to leave a tombstone costs one crash report, never the game.
-	FFileHelper::SaveStringToFile(Json, *MarkerPath);
+	// Log-and-continue: failing to leave a tombstone costs one crash report, never the game. Through a temporary file, so a
+	// crash mid-write never leaves a torn marker the next launch would drop unread.
+	FFlockTemporaryFiles::SaveThenMove(Json, MarkerPath);
 }

@@ -7,9 +7,13 @@
 #include "Analytics/FlockAnalyticsConfig.h"
 #include "Analytics/FlockConsentStore.h"
 #include "Config/FlockConfig.h"
+#include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
+#include "Tests/Support/FlockTemporaryFilesTestSupport.h"
 
 namespace
 {
@@ -114,6 +118,177 @@ bool FFlockConsentStoreCorruptTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/** A new decision is written beside the old one and moved over it, so a kill part-way through never leaves a torn file. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConsentStoreSavesThroughATemporaryFileTest, "Flock.Analytics.Consent.SavesThroughATemporaryFile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockConsentStoreSavesThroughATemporaryFileTest::RunTest(const FString& Parameters)
+{
+	const FString Path = MakeTempConsentPath(TEXT("temporary"));
+	FFlockConsentStore Store(Path);
+	Store.Save(true);
+
+	bool bWrittenAside = false;
+	bool bPreviousDecisionReadsBack = false;
+	bool bPreviousGranted = false;
+	ON_SCOPE_EXIT { FFlockTemporaryFiles::SetBeforeNextMoveForTesting(nullptr); };
+	FFlockTemporaryFiles::SetBeforeNextMoveForTesting([&bWrittenAside, &bPreviousDecisionReadsBack, &bPreviousGranted, &Path](const FString&)
+	{
+		// The game is killed at this moment: what does the next launch read?
+		bWrittenAside = true;
+		const FFlockConsentStore NextLaunch(Path);
+		bPreviousDecisionReadsBack = NextLaunch.Load(bPreviousGranted);
+	});
+	Store.Save(false);
+
+	TestTrue(TEXT("The new decision is written to a temporary file of its own first"), bWrittenAside);
+	TestTrue(TEXT("Until it is moved into place, the previous decision still reads back whole"), bPreviousDecisionReadsBack && bPreviousGranted);
+	bool bGranted = true;
+	TestTrue(TEXT("The new decision lands"), FFlockConsentStore(Path).Load(bGranted) && !bGranted);
+	TestEqual(TEXT("No temporary file is left"), FFlockTemporaryFiles::FindTemporaryFilesOf(Path).Num(), 0);
+	DeleteTempFile(Path);
+	return true;
+}
+
+/** A decision a kill cut off part-way through its save is not lost, so a player who opted out stays opted out. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConsentStoreKeepsDecisionCutOffMidSaveTest, "Flock.Analytics.Consent.KeepsADecisionCutOffMidSave",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockConsentStoreKeepsDecisionCutOffMidSaveTest::RunTest(const FString& Parameters)
+{
+	// What a kill in the middle of a save straight over the file leaves: an empty file. It reads as no decision, so a project
+	// that does not require explicit consent collects again from a player who had opted out.
+	{
+		const FString Path = MakeTempConsentPath(TEXT("emptied"));
+		FFileHelper::SaveStringToFile(FString(), *Path);
+		const FFlockConsentStore Store(Path);
+		TestFalse(TEXT("An empty consent file reads as no decision"), Store.HasDecision());
+		TestTrue(TEXT("Which collects when consent is not required"), Store.ResolveEffective(/*bRequireExplicitConsent*/ false));
+		DeleteTempFile(Path);
+	}
+
+	// What a kill between the engine deleting the old file and moving the new one in leaves: no file, and the new decision
+	// whole in its temporary file. The next launch may come days later, so the temporary file is old.
+	{
+		const FString Path = MakeTempConsentPath(TEXT("cutoff"));
+		const FString TemporaryFile = FFlockTemporaryFiles::MakePath(Path);
+		TestTrue(TEXT("Precondition: the new decision is whole in its temporary file"),
+			FFileHelper::SaveStringToFile(TEXT("{\"granted\":false,\"decided_at\":\"2026-09-16T00:00:00Z\"}"), *TemporaryFile));
+		FlockMoveTestFileTimeBack(TemporaryFile);
+		const FFlockConsentStore Store(Path);
+		bool bGranted = true;
+		TestTrue(TEXT("The decision is read back from its temporary file"), Store.Load(bGranted));
+		TestFalse(TEXT("As the player left it: opted out"), bGranted);
+		TestFalse(TEXT("So nothing is collected"), Store.ResolveEffective(/*bRequireExplicitConsent*/ false));
+		TestTrue(TEXT("And it is moved into place"), IFileManager::Get().FileExists(*Path));
+		TestEqual(TEXT("Leaving no temporary file"), FFlockTemporaryFiles::FindTemporaryFilesOf(Path).Num(), 0);
+		DeleteTempFile(Path);
+	}
+
+	// Control: a temporary file cut off while it was written holds no decision.
+	{
+		const FString Path = MakeTempConsentPath(TEXT("halfwritten"));
+		const FString TemporaryFile = FFlockTemporaryFiles::MakePath(Path);
+		FFileHelper::SaveStringToFile(TEXT("{\"granted\":"), *TemporaryFile);
+		const FFlockConsentStore Store(Path);
+		TestFalse(TEXT("Control: a half-written temporary file is not a decision"), Store.HasDecision());
+		DeleteTempFile(TemporaryFile);
+		DeleteTempFile(Path);
+	}
+
+	// Control: the newest temporary file was cut off while it was written; the whole one before it is the decision.
+	{
+		const FString Path = MakeTempConsentPath(TEXT("newesthalf"));
+		const FString WholeFile = FFlockTemporaryFiles::MakePath(Path);
+		const FString HalfFile = FFlockTemporaryFiles::MakePath(Path);
+		FFileHelper::SaveStringToFile(TEXT("{\"granted\":true}"), *WholeFile);
+		FFileHelper::SaveStringToFile(TEXT("{\"granted\":"), *HalfFile);
+		FlockMoveTestFileTimeBack(WholeFile, 5.0);
+		FlockMoveTestFileTimeBack(HalfFile, 2.0);
+		const FFlockConsentStore Store(Path);
+		bool bGranted = false;
+		TestTrue(TEXT("Control: a half-written newest file is passed over for the whole one before it"), Store.Load(bGranted) && bGranted);
+		DeleteTempFile(HalfFile);
+		DeleteTempFile(Path);
+	}
+
+	// A decision that cannot be moved into place stays in its temporary file, so a later launch still finds it.
+	{
+		const FString Path = MakeTempConsentPath(TEXT("cannotmove"));
+		const FString TemporaryFile = FFlockTemporaryFiles::MakePath(Path);
+		FFileHelper::SaveStringToFile(TEXT("{\"granted\":false}"), *TemporaryFile);
+		FlockMoveTestFileTimeBack(TemporaryFile);
+		// A folder stands where the file goes, so nothing can be moved over it.
+		IFileManager::Get().MakeDirectory(*Path, /*Tree*/ true);
+
+		const FFlockConsentStore Store(Path);
+		bool bGranted = true;
+		TestTrue(TEXT("The decision is still read"), Store.Load(bGranted) && !bGranted);
+		TestTrue(TEXT("And kept where it is rather than swept, as it is the only copy"), IFileManager::Get().FileExists(*TemporaryFile));
+		IFileManager::Get().Delete(*TemporaryFile);
+		IFileManager::Get().DeleteDirectory(*Path, /*RequireExists*/ false, /*Tree*/ true);
+	}
+
+	// Control: while the file itself is there it is the decision; a temporary file beside it is a save still in progress.
+	{
+		const FString Path = MakeTempConsentPath(TEXT("present"));
+		const FString TemporaryFile = FFlockTemporaryFiles::MakePath(Path);
+		FFileHelper::SaveStringToFile(TEXT("{\"granted\":true}"), *Path);
+		FFileHelper::SaveStringToFile(TEXT("{\"granted\":false}"), *TemporaryFile);
+		const FFlockConsentStore Store(Path);
+		bool bGranted = false;
+		TestTrue(TEXT("Control: the file beats a temporary file beside it"), Store.Load(bGranted) && bGranted);
+		DeleteTempFile(TemporaryFile);
+		DeleteTempFile(Path);
+	}
+	return true;
+}
+
+/** Temporary files a crash left beside the consent file are deleted once they are old; a fresh one may be another game's save. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConsentStoreDeletesOldLeftOverFilesTest, "Flock.Analytics.Consent.DeletesOnlyOldLeftOverFiles",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockConsentStoreDeletesOldLeftOverFilesTest::RunTest(const FString& Parameters)
+{
+	const FString Path = MakeTempConsentPath(TEXT("leftovers"));
+	FFileHelper::SaveStringToFile(TEXT("{\"granted\":true}"), *Path);
+	const FString OldFile = FFlockTemporaryFiles::MakePath(Path);
+	const FString FreshFile = FFlockTemporaryFiles::MakePath(Path);
+	FFileHelper::SaveStringToFile(TEXT("{\"granted\":"), *OldFile);
+	FFileHelper::SaveStringToFile(TEXT("{\"granted\":"), *FreshFile);
+	FlockMoveTestFileTimeBack(OldFile);
+
+	const FFlockConsentStore Store(Path);
+	TestFalse(TEXT("A temporary file a crash left long ago is deleted"), IFileManager::Get().FileExists(*OldFile));
+	TestTrue(TEXT("A fresh one may be another game's save in progress, and is kept"), IFileManager::Get().FileExists(*FreshFile));
+	DeleteTempFile(FreshFile);
+	DeleteTempFile(Path);
+	return true;
+}
+
+/** Erasing the decision erases a save from moments ago too, so nothing brings it back on the next launch. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConsentStoreClearForgetsASaveInProgressTest, "Flock.Analytics.Consent.ClearForgetsASaveMomentsOld",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockConsentStoreClearForgetsASaveInProgressTest::RunTest(const FString& Parameters)
+{
+	const FString Path = MakeTempConsentPath(TEXT("cleared"));
+	FFlockConsentStore Store(Path);
+	Store.Save(true);
+	// A save from moments ago, cut off before its move: fresh, so no sweep would touch it.
+	const FString TemporaryFile = FFlockTemporaryFiles::MakePath(Path);
+	TestTrue(TEXT("Precondition: a fresh temporary file sits beside the decision"),
+		FFileHelper::SaveStringToFile(TEXT("{\"granted\":true}"), *TemporaryFile));
+
+	Store.Clear();
+	TestFalse(TEXT("The decision is forgotten"), Store.HasDecision());
+	TestFalse(TEXT("Its file is gone"), IFileManager::Get().FileExists(*Path));
+	TestEqual(TEXT("And so is the save from moments ago"), FFlockTemporaryFiles::FindTemporaryFilesOf(Path).Num(), 0);
+	TestFalse(TEXT("So the next launch finds no decision"), FFlockConsentStore(Path).HasDecision());
+	DeleteTempFile(Path);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConsentStoreEffectiveTest, "Flock.Analytics.Consent.Effective",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -165,6 +340,7 @@ bool FFlockAnalyticsConfigFromSettingsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("max cached"), Config.MaxCachedEvents, 1000);
 		TestEqual(TEXT("batch size"), Config.CacheFlushBatchSize, 50);
 		TestEqual(TEXT("buffer flush"), Config.EventBufferFlushIntervalSeconds, 10.f);
+		TestTrue(TEXT("no session platform, so the engine's name is sent"), Config.SessionPlatform.IsEmpty());
 	}
 
 	// Every knob is carried across, so a settings change can't silently stop reaching the core.
@@ -184,6 +360,7 @@ bool FFlockAnalyticsConfigFromSettingsTest::RunTest(const FString& Parameters)
 		Settings->AnalyticsMaxCachedEvents = 15;
 		Settings->AnalyticsCacheFlushBatchSize = 16;
 		Settings->AnalyticsEventBufferFlushInterval = 17.f;
+		Settings->AnalyticsSessionPlatform = TEXT("steam");
 
 		const FFlockAnalyticsConfig Config = FFlockAnalyticsConfig::FromSettings(*Settings);
 		TestFalse(TEXT("enabled"), Config.bEnabled);
@@ -200,6 +377,35 @@ bool FFlockAnalyticsConfigFromSettingsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("max cached"), Config.MaxCachedEvents, 15);
 		TestEqual(TEXT("batch size"), Config.CacheFlushBatchSize, 16);
 		TestEqual(TEXT("buffer flush"), Config.EventBufferFlushIntervalSeconds, 17.f);
+		TestEqual(TEXT("session platform"), Config.SessionPlatform, FString(TEXT("steam")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsConfigSessionPlatformTest, "Flock.Analytics.Config.SessionPlatform",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsConfigSessionPlatformTest::RunTest(const FString& Parameters)
+{
+	FFlockAnalyticsConfig Config;
+	TestFalse(TEXT("Empty is not a usable platform"), Config.HasUsableSessionPlatform());
+	TestEqual(TEXT("Empty sends the engine's platform name"), Config.GetSessionPlatform(TEXT("Windows")), FString(TEXT("Windows")));
+
+	Config.SessionPlatform = TEXT("steam");
+	TestEqual(TEXT("A set value is sent"), Config.GetSessionPlatform(TEXT("Windows")), FString(TEXT("steam")));
+
+	Config.SessionPlatform = TEXT("Steam Deck");
+	TestEqual(TEXT("A space inside the name is kept, letter case included"), Config.GetSessionPlatform(TEXT("Windows")),
+		FString(TEXT("Steam Deck")));
+
+	// Refused, never trimmed: a trimmed value would hide the mistake, and a verbatim one files sessions under a
+	// platform nobody meant.
+	for (const TCHAR* Unusable : { TEXT(" steam"), TEXT("steam "), TEXT("steam\n"), TEXT("\tsteam") })
+	{
+		Config.SessionPlatform = Unusable;
+		TestFalse(FString::Printf(TEXT("'%s' is not usable"), Unusable), Config.HasUsableSessionPlatform());
+		TestEqual(FString::Printf(TEXT("'%s' sends the engine's platform name"), Unusable),
+			Config.GetSessionPlatform(TEXT("Windows")), FString(TEXT("Windows")));
 	}
 	return true;
 }

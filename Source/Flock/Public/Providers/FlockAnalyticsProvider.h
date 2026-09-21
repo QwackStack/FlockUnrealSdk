@@ -17,6 +17,7 @@
 #include "Models/FlockAnalyticsModels.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 
+class FFlockAnalyticsLaunches;
 class FFlockLogSink;
 struct FFlockSpooledAnalyticsEvent;
 
@@ -26,6 +27,13 @@ struct FFlockSpooledAnalyticsEvent;
  */
 struct FLOCK_API FFlockAnalyticsDependencies
 {
+	/**
+	 * This launch's analytics folder, held for the provider's life, and the launches that had ended when it started. Their crash
+	 * markers and live-session records are reported once at Initialize, and then those launches are deleted. Null reports
+	 * nothing from earlier launches.
+	 */
+	TSharedPtr<FFlockAnalyticsLaunches> Launches;
+
 	TSharedPtr<IFlockEventCache> LogEventCache;
 
 	/**
@@ -183,6 +191,15 @@ public:
 	/** Reserved: the server records this itself when `POST analytics/sessions` succeeds. */
 	static constexpr const TCHAR* ReservedSessionStartedEvent = TEXT("session_started");
 
+	/** The longest event name the server can store. It fails the whole request for an event with a longer one. */
+	static constexpr int32 MaxEventNameLength = 200;
+
+	/** The longest event category the server can store. It fails the whole request for an event with a longer one. */
+	static constexpr int32 MaxEventCategoryLength = 100;
+
+	/** True when the server could not store an event with this name or category. */
+	static bool IsEventTooLongToStore(const FString& EventName, const FString& EventCategory);
+
 	/**
 	 * Answered failed sends a spooled entry survives before it is dropped. Unanswered ones — offline, a timeout —
 	 * do not count: a flush fires every interval, so counting those would discard data after minutes offline.
@@ -204,7 +221,8 @@ public:
 	 * is safe on a hot path and while offline. With nobody signed in it is held and credited to whoever signs in
 	 * next — the server refuses an event with no player. Properties keep their keys verbatim and their JSON types.
 	 *
-	 * Returns false when refused: analytics off, no consent, an empty name, or `session_started`, which the
+	 * Returns false when refused: analytics off, no consent, an empty name, a name longer than MaxEventNameLength or a
+	 * category longer than MaxEventCategoryLength (the server cannot store either), or `session_started`, which the
 	 * server writes itself and would otherwise count twice. Called off the game thread it is forwarded there
 	 * and answers true, since it cannot be judged from the calling thread.
 	 *
@@ -341,7 +359,12 @@ private:
 	void HandleQuit();
 
 	void DrainLogSink();
-	void ReportSurvivingTermination();
+
+	/** Reports the crash marker and spools the live session of every launch that had ended, then deletes those launches. */
+	void ReportWhatEndedLaunchesLeft();
+
+	/** Reports the marker at MarkerPath, if an ended launch left one, and deletes it. */
+	void ReportSurvivingTermination(const FString& MarkerPath);
 
 	/** Builds and spools an exception entry from a trace already in hand. LogException adds the walk and the tally. */
 	void SpoolException(const FString& Message, const FString& StackTrace, const FFlockLogDetails& Details);
@@ -405,8 +428,11 @@ private:
 	/** Consent-revoke path: stops the session locally with no spool, no send, and no OnSessionEnded. */
 	void DiscardSession();
 
-	/** Spools the end of a session the previous run left open. */
-	void RecoverOrphanedSession();
+	/**
+	 * Spools the end of the session an ended launch left open in the record at SessionStatePath, and carries its session number
+	 * on. False only when there was an end to keep and it could not be spooled, so that launch is kept for a later one.
+	 */
+	bool RecoverOrphanedSession(const FString& SessionStatePath);
 
 	/**
 	 * IsExpectedFailure is supplied by the spool drain, where a signed-out failure is a wait rather

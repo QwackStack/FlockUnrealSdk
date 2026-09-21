@@ -24,6 +24,9 @@ public:
 	/** An empty FilePath uses DefaultPath(). Loads the stored decision immediately. */
 	explicit FFlockConsentStore(const FString& InFilePath = FString());
 
+	/** The file's name, in whichever analytics folder holds it. */
+	static constexpr const TCHAR* FileName = TEXT("consent.json");
+
 	/** `<ProjectSavedDir>/Flock/analytics/consent.json`. */
 	static FString DefaultPath();
 
@@ -35,7 +38,11 @@ public:
 
 	void Save(bool bGranted);
 
-	/** Forgets the decision — the "erase my analytics data" path, not a way to revoke. */
+	/**
+	 * Forgets the decision — the "erase my analytics data" path, not a way to revoke.
+	 * It also deletes a save still being written, however fresh: a player asking to be forgotten outranks another
+	 * game of the same build finishing its write, which would otherwise be adopted as a decision on the next launch.
+	 */
 	void Clear();
 
 	/**

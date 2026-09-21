@@ -23,11 +23,11 @@ bool FFlockCommandDataTypesTest::RunTest(const FString& Parameters)
 		.Set(TEXT("tags"), TArray<FString>{ TEXT("a"), TEXT("b") });
 
 	const FString Json = Data.ToJsonString();
-	TestTrue(TEXT("int unquoted"), Json.Contains(TEXT("\"level\":7")));
-	TestTrue(TEXT("float unquoted"), Json.Contains(TEXT("\"ratio\":0.5")));
-	TestTrue(TEXT("string quoted"), Json.Contains(TEXT("\"name\":\"Ada\"")));
-	TestTrue(TEXT("bool unquoted"), Json.Contains(TEXT("\"flawless\":true")));
-	TestTrue(TEXT("array preserved"), Json.Contains(TEXT("\"tags\":[\"a\",\"b\"]")));
+	TestTrue(TEXT("int unquoted"), Json.Contains(TEXT("\"level\":7"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("float unquoted"), Json.Contains(TEXT("\"ratio\":0.5"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("string quoted"), Json.Contains(TEXT("\"name\":\"Ada\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("bool unquoted"), Json.Contains(TEXT("\"flawless\":true"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("array preserved"), Json.Contains(TEXT("\"tags\":[\"a\",\"b\"]"), ESearchCase::CaseSensitive));
 	TestEqual(TEXT("five fields"), Data.GetFieldNames().Num(), 5);
 	TestFalse(TEXT("not empty"), Data.IsEmpty());
 
@@ -43,8 +43,8 @@ bool FFlockCommandDataVerbatimKeysTest::RunTest(const FString& Parameters)
 	const FFlockCommandData Data = FFlockCommandData().Set(TEXT("max_health"), 100).Set(TEXT("MaxMana"), 50);
 	const FString Json = Data.ToJsonString();
 
-	TestTrue(TEXT("snake_case key untouched"), Json.Contains(TEXT("\"max_health\":100")));
-	TestTrue(TEXT("Pascal key untouched"), Json.Contains(TEXT("\"MaxMana\":50")));
+	TestTrue(TEXT("snake_case key untouched"), Json.Contains(TEXT("\"max_health\":100"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("Pascal key untouched"), Json.Contains(TEXT("\"MaxMana\":50"), ESearchCase::CaseSensitive));
 	TestFalse(TEXT("no snake->Pascal transform"), Json.Contains(TEXT("MaxHealth")));
 
 	return true;
@@ -75,7 +75,7 @@ bool FFlockCommandDataOverwriteTest::RunTest(const FString& Parameters)
 {
 	const FFlockCommandData Data = FFlockCommandData().Set(TEXT("coins"), 1).Set(TEXT("coins"), 99);
 	TestEqual(TEXT("one field"), Data.GetFieldNames().Num(), 1);
-	TestTrue(TEXT("latest value"), Data.ToJsonString().Contains(TEXT("\"coins\":99")));
+	TestTrue(TEXT("latest value"), Data.ToJsonString().Contains(TEXT("\"coins\":99"), ESearchCase::CaseSensitive));
 
 	return true;
 }
@@ -87,7 +87,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandDataRawJsonTest, "Flock.Command.Da
 bool FFlockCommandDataRawJsonTest::RunTest(const FString& Parameters)
 {
 	const FFlockCommandData Nested = FFlockCommandData().SetRawJson(TEXT("loadout"), TEXT("{\"weapon\":\"bow\"}"));
-	TestTrue(TEXT("nested object spliced in"), Nested.ToJsonString().Contains(TEXT("\"loadout\":{\"weapon\":\"bow\"}")));
+	TestTrue(TEXT("nested object spliced in"), Nested.ToJsonString().Contains(TEXT("\"loadout\":{\"weapon\":\"bow\"}"), ESearchCase::CaseSensitive));
 
 	const FFlockCommandValue Broken = FFlockCommandValue::FromRawJson(TEXT("{not json"));
 	TestEqual(TEXT("unparseable becomes null"), Broken.ToJsonString(), FString(TEXT("null")));
@@ -212,8 +212,8 @@ bool FFlockCommandLibraryParityTest::RunTest(const FString& Parameters)
 	// A Set node returns a new bag rather than mutating its input — that is what makes it chainable.
 	const FFlockCommandData Source = FFlockCommandData().Set(TEXT("coins"), 1);
 	const FFlockCommandData Derived = UFlockCommandDataLibrary::SetCommandInt(Source, TEXT("coins"), 2);
-	TestTrue(TEXT("source unchanged"), Source.ToJsonString().Contains(TEXT("\"coins\":1")));
-	TestTrue(TEXT("derived updated"), Derived.ToJsonString().Contains(TEXT("\"coins\":2")));
+	TestTrue(TEXT("source unchanged"), Source.ToJsonString().Contains(TEXT("\"coins\":1"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("derived updated"), Derived.ToJsonString().Contains(TEXT("\"coins\":2"), ESearchCase::CaseSensitive));
 
 	TestEqual(TEXT("value node parity (int)"),
 		UFlockCommandDataLibrary::CommandValueToJsonString(UFlockCommandDataLibrary::CommandValueInt(7)),

@@ -140,8 +140,8 @@ bool FFlockAuthSessionRefreshTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("event raised"), F.Listener->TokenRefreshedCount, 1);
 		TestEqual(TEXT("no auth-expired"), F.Listener->AuthExpiredCount, 0);
 		const FFlockHttpRequest& Request = F.Fake->Requests.Last();
-		TestTrue(TEXT("body has refresh token"), Request.JsonBody.Contains(TEXT("\"refresh_token\":\"r-1\"")));
-		TestTrue(TEXT("body has player id"), Request.JsonBody.Contains(TEXT("\"player_id\":\"p-1\"")));
+		TestTrue(TEXT("body has refresh token"), Request.JsonBody.Contains(TEXT("\"refresh_token\":\"r-1\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("body has player id"), Request.JsonBody.Contains(TEXT("\"player_id\":\"p-1\""), ESearchCase::CaseSensitive));
 		TestFalse(TEXT("no bearer on refresh"), Request.Headers.Contains(TEXT("Authorization")));
 	}
 	// Server rejection (401) -> tokens cleared, OnAuthExpired raised.

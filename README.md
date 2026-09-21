@@ -127,7 +127,14 @@ Protokite playtests. Extract it next to the Flock SDK, so that `Plugins/FlockPla
 `Plugins/FlockUnrealSdk/`, then enable it under **Edit → Plugins**. It stays off until **Enable Playtesting** is
 turned on in *Project Settings > Plugins > Flock Playtest Settings*. If you cloned the repository, copy or link
 `Plugins/FlockUnrealSdk/OptionalPlugins/FlockPlaytest/` to `Plugins/FlockPlaytest/`: Unreal does not load it
-where it sits. Leave it out of projects that are not running playtests.
+where it sits. Leave it out of projects that are not running playtests. [Playtesting with Protokite](Documentation/playtesting.md)
+walks through the rest, from pointing the build at a playtest to a session on Protokite's Sessions page.
+
+To see what a playtest recording looks like before any playtest exists, tick **Record Video In Play In Editor** in
+*Project Settings > Plugins > Flock Playtest Local Settings* and press Play, or type `FlockPlaytest.RecordTestVideo 30`
+in the console of a Development build. The video is saved under `Saved/FlockPlaytest/Recordings/TestVideos/`, and the
+log names the file, which is a WebM video a browser plays. Video is recorded on 64-bit Windows, with the **Video Recording** settings in *Flock
+Playtest Settings*. Recordings are kept inside **Recordings Disk Budget**, and the oldest test videos make room first.
 
 ### Blueprint-only projects
 
@@ -420,6 +427,7 @@ so you can read only the half you work in.
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, screen views, gameplay events, transactions, consent — what players did (Dashboards → Game Metrics) |
 | [Diagnostics](Documentation/diagnostics.md) | Log entries, automatic exception and Blueprint exception capture, crash reporting — what went wrong (Diagnostics → Errors / Events) |
+| [Playtesting with Protokite](Documentation/playtesting.md) | The optional Flock Playtest plugin: setup, the session per launch, video, heavy analytics, exceptions, the feedback form and its Blueprint nodes, what to tell players |
 | [SDK events](Documentation/events.md) | The event hub — lifecycle, auth, and session events |
 | [Errors](Documentation/errors.md) | What an `FFlockError` carries, branching on codes, the hint that names the fix, field-error validation failures |
 | [Logging & debugging](Documentation/logging.md) | The SDK's own log output, the network call trace, the self-test |
@@ -500,7 +508,19 @@ gameplay events** (`Flock Track Event`) and captures Blueprint script errors suc
 automatically, counting repeats of the same error instead of sending each one. **1.11.0 adds Flock Playtest**,
 an optional plugin for Protokite playtests, in beta and shipped as its own download: its settings, and a status
 that says whether playtest work may run. **1.12.0 has it fetch the build's playtest from Protokite**, with the
-playtest's feature switches and feedback form, and say why when it cannot. It collects no playtest data yet.
+playtest's feature switches and feedback form, and say why when it cannot. **1.13.0 starts one Protokite session
+per launch**, named after the launch's first Flock session and sent with the player's Steam id or a device id, and
+ends it when the game shuts down; it also adds `OnSessionRegistered` and the **Session Platform** setting to the
+Flock SDK. **1.14.0 sends heavy analytics** when a playtest turns it on: a performance window for every ten seconds
+of play, each level load, and the game's own playtest events, all through the Flock SDK's analytics. **1.15.0 records
+the game's screen** when a playtest turns video recording on, saving VP9 video on disk on 64-bit Windows, and lets a
+developer try it in Play In Editor or with the `FlockPlaytest.RecordTestVideo` console command. **1.16.0 keeps a
+playtest recording that was not uploaded** for a later launch, with the session it belongs to, finishes a recording cut
+off when its game ended, and keeps recordings inside a disk budget. **1.17.0 uploads playtest recordings** to the
+session they belong to, and pushes what earlier launches left. **1.18.0 adds the playtest's feedback form**, built from
+the questions the playtest publishes, with a button to upload the recording from it. **1.19.0 adds Blueprint nodes for
+the whole playtest**, including a form of your own, setup findings when Play starts, a warning for a Shipping build
+carrying a playtest, and reports a crash once rather than three times.
 
 Deliberate omissions and known gaps:
 
@@ -512,6 +532,10 @@ Deliberate omissions and known gaps:
   which is what most graphs want. Provider cache clearing is also C++-only.
 - **Asset uploads are not included.** The SDK reads and downloads assets; publishing them is a dashboard
   operation.
+- **Leave `framegrabber.framelatency` at 0 while Flock Playtest records video.** Changing that engine console
+  variable while a frame is on its way to be captured stops a Development build: the engine's frame grabber then
+  flushes rendering commands from the render thread. The plugin asks for no frame while it is not 0, but cannot
+  stop the change itself.
 
 See [CHANGELOG.md](CHANGELOG.md) for the version history.
 

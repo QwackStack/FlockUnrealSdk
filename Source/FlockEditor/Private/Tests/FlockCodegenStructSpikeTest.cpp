@@ -348,10 +348,10 @@ bool FFlockSpikeRoundTripTest::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("write body = %s"), *Json));
 
 	TestEqual(TEXT("all four fields written"), Body.GetFieldNames().Num(), 4);
-	TestTrue(TEXT("mutated value carried, under the DECLARED name"), Json.Contains(TEXT("\"level\":6")));
-	TestTrue(TEXT("int stays an int"), Json.Contains(TEXT("\"xp\":1200")));
-	TestTrue(TEXT("string stays a string"), Json.Contains(TEXT("\"title\":\"Champion\"")));
-	TestTrue(TEXT("bool stays a bool"), Json.Contains(TEXT("\"flawless\":true")));
+	TestTrue(TEXT("mutated value carried, under the DECLARED name"), Json.Contains(TEXT("\"level\":6"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("int stays an int"), Json.Contains(TEXT("\"xp\":1200"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("string stays a string"), Json.Contains(TEXT("\"title\":\"Champion\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("bool stays a bool"), Json.Contains(TEXT("\"flawless\":true"), ESearchCase::CaseSensitive));
 	// Case-sensitive on purpose: FString::Contains ignores case by default, which would match the
 	// declared "level" and make this assertion pass for the wrong reason.
 	TestFalse(TEXT("no authored name leaked into the body"),

@@ -3,6 +3,7 @@
 #include "Providers/FlockAnalyticsProvider.h"
 
 #include "Analytics/FlockAnalyticsJson.h"
+#include "Analytics/FlockAnalyticsLaunches.h"
 #include "Analytics/FlockLogSink.h"
 #include "Analytics/FlockStackTrace.h"
 #include "Async/Async.h"
@@ -177,12 +178,15 @@ void FFlockAnalyticsProvider::Initialize()
 	}
 	bInitialized = true;
 
-	// Before anything else writes a marker of its own.
-	ReportSurvivingTermination();
+	if (!Config.SessionPlatform.IsEmpty() && !Config.HasUsableSessionPlatform())
+	{
+		// Quoted, so the stray space shows.
+		Logger->LogWarning(FString::Printf(TEXT("Session Platform '%s' starts or ends with a space or line break, so sessions send the engine's platform name instead. Fix it in Project Settings > Plugins > Flock SDK Settings."),
+			*Config.SessionPlatform));
+	}
 
-	// Reads a different file than the tombstone and writes neither of the other's, so the order
-	// between them is free.
-	RecoverOrphanedSession();
+	// Before this launch writes a marker or a live-session record of its own: what launches that have ended left behind.
+	ReportWhatEndedLaunchesLeft();
 
 	// Two switches with two owners: Deps.bEnableLogSink says whether this process may tap GLog at all (off inside
 	// the automation runner), Config.bCaptureExceptions is the project's own choice.
@@ -276,22 +280,38 @@ void FFlockAnalyticsProvider::Shutdown()
 	}
 }
 
-void FFlockAnalyticsProvider::ReportSurvivingTermination()
+void FFlockAnalyticsProvider::ReportWhatEndedLaunchesLeft()
 {
-	if (!Deps.TerminationTracker.IsValid())
+	if (!Deps.Launches.IsValid())
 	{
 		return;
 	}
+	const TArray<FFlockEndedLaunchRecords>& EndedLaunches = Deps.Launches->GetEndedLaunchRecords();
+	for (int32 Index = 0; Index < EndedLaunches.Num(); ++Index)
+	{
+		ReportSurvivingTermination(EndedLaunches[Index].TerminationMarkerPath);
+		// A launch whose session end could not be spooled keeps its record, so a later launch tries again.
+		if (RecoverOrphanedSession(EndedLaunches[Index].SessionStatePath))
+		{
+			Deps.Launches->DeleteEndedLaunch(Index);
+		}
+	}
+	Deps.Launches->LetGoOfEndedLaunches();
+}
 
+void FFlockAnalyticsProvider::ReportSurvivingTermination(const FString& MarkerPath)
+{
+	// Reading and deleting a marker an ended launch left is allowed whatever this launch's own tracking switch says.
+	const FFlockTerminationTracker EndedLaunchTracker(/*bInEnabled*/ false, MarkerPath);
 	FFlockTerminationMarker Survivor;
-	if (!Deps.TerminationTracker->ReadSurvivingMarker(Survivor))
+	if (!EndedLaunchTracker.ReadSurvivingMarker(Survivor))
 	{
 		return;
 	}
 
 	// Always drop the marker, even when we cannot report it — otherwise a dirty exit found while
 	// consent is off would be re-reported on every single launch from now on.
-	Deps.TerminationTracker->ClearMarker();
+	EndedLaunchTracker.ClearMarker();
 
 	if (!IsCollecting())
 	{
@@ -458,6 +478,11 @@ void FFlockAnalyticsProvider::RecordScreenView(const FString& ScreenName)
 	Deps.Session->RecordScreenView(ScreenName);
 }
 
+bool FFlockAnalyticsProvider::IsEventTooLongToStore(const FString& EventName, const FString& EventCategory)
+{
+	return EventName.Len() > MaxEventNameLength || EventCategory.Len() > MaxEventCategoryLength;
+}
+
 bool FFlockAnalyticsProvider::TrackEvent(const FString& EventName, const FFlockCommandData& Properties,
 	const FString& EventCategory)
 {
@@ -484,6 +509,15 @@ bool FFlockAnalyticsProvider::TrackEvent(const FString& EventName, const FFlockC
 	if (EventName.TrimStartAndEnd().IsEmpty())
 	{
 		Logger->LogWarning(TEXT("Track event refused: an event needs a name."));
+		return false;
+	}
+	// The server cannot store a longer name or category, and fails the whole request for it: every event sent alongside
+	// would be held back and sent again until its attempts ran out.
+	if (IsEventTooLongToStore(EventName, EventCategory))
+	{
+		Logger->LogWarning(FString::Printf(
+			TEXT("Track event refused: its name has %d characters and its category %d, and the server stores at most %d and %d. Name: '%s'."),
+			EventName.Len(), EventCategory.Len(), MaxEventNameLength, MaxEventCategoryLength, *EventName.Left(MaxEventNameLength)));
 		return false;
 	}
 	// The server writes session_started itself when a session starts, and accepts the name from a client without
@@ -785,7 +819,7 @@ FFlockSessionStartRequest FFlockAnalyticsProvider::MakeStartRequest(const FFlock
 	FFlockSessionStartRequest Request;
 	Request.PlayerId = Snapshot.PlayerId;
 	const FFlockDeviceInfo Device = CollectDeviceInfo(SdkVersion);
-	Request.Platform = Device.Platform;
+	Request.Platform = Config.GetSessionPlatform(Device.Platform);
 	Request.DeviceType = Device.DeviceType;
 	Request.GameVersionId = GameVersion;
 	// The snapshot's own start time, so a session registered late — from the spool, days after the
@@ -856,6 +890,12 @@ void FFlockAnalyticsProvider::RegisterActiveSession(TFunction<void(TFlockResult<
 				if (Self->Deps.TerminationTracker.IsValid())
 				{
 					Self->Deps.TerminationTracker->SetServerSessionId(Result.Value.SessionId);
+				}
+				// Only here, for the session still running. A session that ended first is registered from the spool,
+				// possibly by a later launch, and announcing that one would hand listeners an id from another run.
+				if (UFlockEvents* EventsPtr = Self->Events.Get())
+				{
+					EventsPtr->InvokeSessionRegistered(LocalId, Result.Value.SessionId);
 				}
 			}
 			else if (bRegistered)
@@ -1003,39 +1043,42 @@ void FFlockAnalyticsProvider::HandleLoggedOut()
 	KnownPlayerId.Reset();
 }
 
-void FFlockAnalyticsProvider::RecoverOrphanedSession()
+bool FFlockAnalyticsProvider::RecoverOrphanedSession(const FString& SessionStatePath)
 {
 	if (!Deps.Session.IsValid())
 	{
-		return;
+		return true;
 	}
 
+	const FFlockSession EndedLaunchSession(Config, SessionStatePath);
+	// Session numbers carry on from the launches before this one.
+	Deps.Session->ContinueSessionNumbersFrom(EndedLaunchSession.GetSessionNumber());
+
 	FFlockSessionSnapshot Orphan;
-	if (!Deps.Session->RecoverOrphanedSession(Orphan))
+	if (!EndedLaunchSession.RecoverOrphanedSession(Orphan))
 	{
-		return;
+		return true;
 	}
 
 	// Same rule as the termination marker: with collection off the record is dropped rather than
 	// left to be re-read on every launch from now on.
 	if (!IsCollecting() || !Deps.SessionEndCache.IsValid())
 	{
-		Deps.Session->ClearPersistedSession();
-		return;
+		return true;
 	}
 
-	// Spool first, clear second — clearing first loses the session if the write fails.
+	// Spooled before the ended launch is deleted — deleting first loses the session if the write fails.
 	if (Deps.SessionEndCache->Enqueue(FFlockAnalyticsJson::SerializeSnapshot(Orphan)).IsEmpty())
 	{
 		Logger->LogWarning(FString::Printf(
 			TEXT("Could not spool the end of orphaned session '%s'; keeping it for the next launch"),
 			*Orphan.SessionId));
-		return;
+		return false;
 	}
-	Deps.Session->ClearPersistedSession();
 	Logger->LogInfo(FString::Printf(
-		TEXT("Recovered a session the previous run left open: %s (ended at %s)"),
+		TEXT("Recovered a session a launch that ended left open: %s (ended at %s)"),
 		*Orphan.SessionId, *Orphan.EndTimeUtc));
+	return true;
 }
 
 void FFlockAnalyticsProvider::PatchSessionEnd(const FString& ServerSessionId,
@@ -1483,6 +1526,15 @@ void FFlockAnalyticsProvider::SendNextEventBatch(const TSharedRef<FDeliveryPass>
 		if (!FFlockAnalyticsJson::DeserializeSpooledAnalyticsEvent(ScanPayloads[Index], Entry))
 		{
 			// Unreadable, or not an event: it can never become deliverable.
+			Deps.AnalyticsEventCache->Remove(ScanHandles[Index]);
+			continue;
+		}
+		if (IsEventTooLongToStore(Entry.Event.EventName, Entry.Event.EventCategory))
+		{
+			// Recorded by a build that did not check. The server would fail every batch carrying it, on every flush.
+			Logger->LogWarning(FString::Printf(
+				TEXT("Dropping analytics event '%s': its name or category is longer than the server can store."),
+				*Entry.Event.EventName.Left(MaxEventNameLength)));
 			Deps.AnalyticsEventCache->Remove(ScanHandles[Index]);
 			continue;
 		}

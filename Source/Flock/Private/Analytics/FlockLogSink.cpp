@@ -3,6 +3,7 @@
 #include "Analytics/FlockLogSink.h"
 
 #include "Analytics/FlockStackTrace.h"
+#include "CoreGlobals.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "UObject/Script.h"
@@ -75,8 +76,9 @@ void FFlockLogSink::Start()
 		GLog->AddOutputDevice(this);
 	}
 
-	SystemErrorHandle = FCoreDelegates::OnHandleSystemError.AddLambda([this]() { HandleSystemError(); });
-	ShutdownAfterErrorHandle = FCoreDelegates::OnShutdownAfterError.AddLambda([this]() { HandleSystemError(); });
+	// GErrorHist is where the engine writes down what went wrong, before it raises either delegate.
+	SystemErrorHandle = FCoreDelegates::OnHandleSystemError.AddLambda([this]() { HandleSystemError(GErrorHist); });
+	ShutdownAfterErrorHandle = FCoreDelegates::OnShutdownAfterError.AddLambda([this]() { HandleSystemError(GErrorHist); });
 
 	// Read before binding: once anything is bound, the engine stops logging a script exception's stack trace.
 	bWriteBackScriptWarning = !FBlueprintCoreDelegates::OnScriptException.IsBound();
@@ -150,6 +152,11 @@ void FFlockLogSink::Serialize(const TCHAR* Message, ELogVerbosity::Type Verbosit
 
 	if (bFatal)
 	{
+		// A Fatal line is this process's crash, and the crash delegates that follow it have nothing to add.
+		if (!ClaimTheCrashReport())
+		{
+			return;
+		}
 		// No tick will follow a fatal; hand it over now and let the handler spool to disk.
 		OnFatal.Broadcast(Captured);
 		return;
@@ -174,7 +181,7 @@ bool FFlockLogSink::Dequeue(FFlockCapturedLog& OutCaptured)
 	return true;
 }
 
-void FFlockLogSink::HandleSystemError()
+void FFlockLogSink::HandleSystemError(const TCHAR* EngineErrorRecord)
 {
 	// A hard crash may never reach the log at all, so synthesize the entry.
 	const FScopedReentrancyGuard Guard;
@@ -182,9 +189,15 @@ void FFlockLogSink::HandleSystemError()
 	{
 		return;
 	}
+	// One crash, one report. Reported every time the engine raised a delegate, one assertion reached the dashboard as
+	// three identical "Unhandled system error" entries next to the assertion itself (measured 2026-09-15).
+	if (!ClaimTheCrashReport())
+	{
+		return;
+	}
 
 	FFlockCapturedLog Captured;
-	Captured.Message = TEXT("Unhandled system error");
+	Captured.Message = DescribeCrash(EngineErrorRecord);
 	Captured.Category = FName(TEXT("SystemError"));
 	Captured.bFatal = true;
 	Captured.TimestampUtc = FDateTime::UtcNow();
@@ -192,6 +205,26 @@ void FFlockLogSink::HandleSystemError()
 	// The crash delegates carry no message of their own, so the stack is the only useful evidence.
 	Captured.StackTrace = FFlockStackTrace::Capture(StackFramesToSkip);
 	OnFatal.Broadcast(Captured);
+}
+
+FString FFlockLogSink::DescribeCrash(const TCHAR* EngineErrorRecord)
+{
+	if (EngineErrorRecord != nullptr)
+	{
+		// The first line names the fault; the lines after it are the engine's own copy of the callstack, which the
+		// report already carries in the format every other report uses.
+		TArray<FString> Lines;
+		FString(EngineErrorRecord).ParseIntoArrayLines(Lines, /*CullEmpty*/ true);
+		for (FString& Line : Lines)
+		{
+			Line.TrimStartAndEndInline();
+			if (!Line.IsEmpty())
+			{
+				return Line;
+			}
+		}
+	}
+	return TEXT("Unhandled system error");
 }
 
 bool FFlockLogSink::IsReportableScriptException(EBlueprintExceptionType::Type Type)

@@ -117,9 +117,9 @@ bool FFlockBinderToCommandTest::RunTest(const FString& Parameters)
 	const FFlockCommandData Body = FFlockStructBinder::ToCommandData(FFlockDeviceInfo::StaticStruct(), &Info);
 	const FString Json = Body.ToJsonString();
 
-	TestTrue(TEXT("string stays a string"), Json.Contains(TEXT("\"Platform\":\"Windows\"")));
-	TestTrue(TEXT("int stays an int"), Json.Contains(TEXT("\"ScreenWidth\":1920")));
-	TestTrue(TEXT("float stays a number"), Json.Contains(TEXT("\"ScreenDpi\":141.5")));
+	TestTrue(TEXT("string stays a string"), Json.Contains(TEXT("\"Platform\":\"Windows\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("int stays an int"), Json.Contains(TEXT("\"ScreenWidth\":1920"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("float stays a number"), Json.Contains(TEXT("\"ScreenDpi\":141.5"), ESearchCase::CaseSensitive));
 	// Every member is written, so an update is a full statement of the struct rather than a diff.
 	TestEqual(TEXT("every member written"), Body.GetFieldNames().Num(), 12);
 
@@ -143,8 +143,8 @@ bool FFlockBinderDeclaredNameTest::RunTest(const FString& Parameters)
 	};
 	const FString Json = FFlockStructBinder::ToCommandData(FFlockDeviceInfo::StaticStruct(), &Info, Declared).ToJsonString();
 
-	TestTrue(TEXT("mapped member uses the declared name"), Json.Contains(TEXT("\"screen_width\":1920")));
-	TestTrue(TEXT("second mapped member"), Json.Contains(TEXT("\"platform\":\"Windows\"")));
+	TestTrue(TEXT("mapped member uses the declared name"), Json.Contains(TEXT("\"screen_width\":1920"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("second mapped member"), Json.Contains(TEXT("\"platform\":\"Windows\""), ESearchCase::CaseSensitive));
 	// Case-sensitive: FString::Contains ignores case by default, which would match the declared spelling.
 	TestFalse(TEXT("member name did not leak"), Json.Contains(TEXT("\"ScreenWidth\""), ESearchCase::CaseSensitive));
 	// An unmapped member keeps its own name rather than being dropped.
@@ -166,8 +166,8 @@ bool FFlockBinderRoundTripTest::RunTest(const FString& Parameters)
 	Info.ScreenWidth = 2560; // "change field"
 
 	const FString Json = FFlockStructBinder::ToCommandData(FFlockDeviceInfo::StaticStruct(), &Info).ToJsonString();
-	TestTrue(TEXT("mutation carried"), Json.Contains(TEXT("\"ScreenWidth\":2560")));
-	TestTrue(TEXT("untouched member carried"), Json.Contains(TEXT("\"Platform\":\"Windows\"")));
+	TestTrue(TEXT("mutation carried"), Json.Contains(TEXT("\"ScreenWidth\":2560"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("untouched member carried"), Json.Contains(TEXT("\"Platform\":\"Windows\""), ESearchCase::CaseSensitive));
 
 	return true;
 }

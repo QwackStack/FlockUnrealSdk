@@ -22,6 +22,7 @@ void UFlockEditorLiveProbe::Bind(UFlockEvents* Events)
 	Events->OnLoggedOut.AddDynamic(this, &UFlockEditorLiveProbe::HandleLoggedOut);
 	Events->OnSessionRestored.AddDynamic(this, &UFlockEditorLiveProbe::HandleSessionRestored);
 	Events->OnSessionStarted.AddDynamic(this, &UFlockEditorLiveProbe::HandleSessionStarted);
+	Events->OnSessionRegistered.AddDynamic(this, &UFlockEditorLiveProbe::HandleSessionRegistered);
 	Events->OnSessionEnded.AddDynamic(this, &UFlockEditorLiveProbe::HandleSessionEnded);
 	Events->OnSessionPaused.AddDynamic(this, &UFlockEditorLiveProbe::HandleSessionPaused);
 	Events->OnSessionResumed.AddDynamic(this, &UFlockEditorLiveProbe::HandleSessionResumed);
@@ -46,6 +47,7 @@ void UFlockEditorLiveProbe::Unbind()
 	Events->OnLoggedOut.RemoveDynamic(this, &UFlockEditorLiveProbe::HandleLoggedOut);
 	Events->OnSessionRestored.RemoveDynamic(this, &UFlockEditorLiveProbe::HandleSessionRestored);
 	Events->OnSessionStarted.RemoveDynamic(this, &UFlockEditorLiveProbe::HandleSessionStarted);
+	Events->OnSessionRegistered.RemoveDynamic(this, &UFlockEditorLiveProbe::HandleSessionRegistered);
 	Events->OnSessionEnded.RemoveDynamic(this, &UFlockEditorLiveProbe::HandleSessionEnded);
 	Events->OnSessionPaused.RemoveDynamic(this, &UFlockEditorLiveProbe::HandleSessionPaused);
 	Events->OnSessionResumed.RemoveDynamic(this, &UFlockEditorLiveProbe::HandleSessionResumed);
@@ -100,6 +102,11 @@ void UFlockEditorLiveProbe::HandleSessionRestored(bool bRestored)
 void UFlockEditorLiveProbe::HandleSessionStarted(const FString& SessionId)
 {
 	Emit(FString::Printf(TEXT("Analytics session started (%s)"), *SessionId));
+}
+
+void UFlockEditorLiveProbe::HandleSessionRegistered(const FString& SessionId, const FString& ServerSessionId)
+{
+	Emit(FString::Printf(TEXT("Analytics session reached the server (server id %s)"), *ServerSessionId));
 }
 
 void UFlockEditorLiveProbe::HandleSessionEnded(const FFlockSessionEndedArgs& Args)

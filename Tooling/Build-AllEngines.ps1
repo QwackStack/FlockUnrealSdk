@@ -27,6 +27,10 @@
     It cannot run in GitHub-hosted CI: those runners have no engine. The no-engine half of the checks
     lives in .github/workflows/consistency.yml.
 
+    Exit codes: 0 the claim is verified, 1 the claim is unproven (something in range failed, or an end of
+    the range went uncovered), 2 the source tree changed while the sweep was running -- which invalidates
+    every result in the run, including the ones that passed.
+
 .PARAMETER Project
     The .uproject used to drive the build. Defaults to the sibling UEBuildEnviroment project.
 
@@ -99,6 +103,83 @@ if (-not (Test-Path $GameTargetFile)) {
     throw "Cannot find the game target at $GameTargetFile -- pass -GameTarget explicitly. Without a game build the sweep cannot see a defect that only a packaged game compiles."
 }
 
+# -- The tree the sweep measures must not move underneath it --
+#
+# Every engine compiles whatever is on disk at that moment, so a commit, a checkout, a pull or a branch
+# switch part-way through leaves the engines before it and the engines after it measuring different source
+# -- and nothing in the report can tell. Measured on 2026-09-16: a checkout during a sweep left one engine
+# compiling a file from before the very change being verified. It reported GAME BUILD FAILED naming a
+# symbol that exists nowhere in the tree, read exactly like a defect on that engine, cost the whole
+# 44-minute run, and took a reflog and a line-number match to disprove.
+function Get-TreeState {
+    param([string] $Dir)
+
+    Push-Location $Dir
+    try {
+        $Head = & git rev-parse HEAD 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $Head) {
+            return $null
+        }
+
+        # Only the paths a build actually reads. Editing a doc, a plan or this script during a sweep changes
+        # nothing the compiler sees, and voiding a 44-minute run over it would only teach people to work
+        # around the guard. Each path's tree object covers its committed content, so HEAD moving for a
+        # docs-only commit is correctly ignored while a source change is not.
+        $Watched = @('Source', 'OptionalPlugins', 'Flock.uplugin')
+        $Parts = [System.Collections.Generic.List[string]]::new()
+        foreach ($Path in $Watched) {
+            $Tree = & git rev-parse "HEAD:$Path" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $Tree) {
+                $Parts.Add("$Path=" + $Tree.Trim())
+            }
+        }
+        # Uncommitted edits count as much as commits do: the compiler reads the bytes on disk either way.
+        $Parts.Add((& git status --porcelain -- $Watched 2>$null) -join "`n")
+
+        $Sha = [System.Security.Cryptography.SHA1]::Create()
+        try {
+            $Bytes = [System.Text.Encoding]::UTF8.GetBytes(($Parts -join "`n"))
+            $Print = [System.BitConverter]::ToString($Sha.ComputeHash($Bytes)).Replace('-', '')
+        } finally {
+            $Sha.Dispose()
+        }
+        return [PSCustomObject]@{ Head = $Head.Trim(); Fingerprint = $Print }
+    } finally {
+        Pop-Location
+    }
+}
+
+# True while the tree still matches what the sweep started on. A checkout that cannot be read by git at all
+# is reported once and the sweep carries on: an unguarded run is still worth having, an unnoticed one is not.
+function Test-TreeUnchanged {
+    param($Before, [string] $Dir, [string] $When)
+
+    if (-not $Before) { return $true }
+    $Now = Get-TreeState $Dir
+    if (-not $Now -or $Now.Fingerprint -eq $Before.Fingerprint) { return $true }
+
+    Write-Host ''
+    Write-Host 'THE SOURCE TREE CHANGED WHILE THE SWEEP WAS RUNNING.' -ForegroundColor Red
+    Write-Host ("  started on: " + $Before.Head) -ForegroundColor Red
+    Write-Host ("  $When`: " + $Now.Head) -ForegroundColor Red
+    Write-Host '  Engines built either side of that change measured different source, so nothing in this' -ForegroundColor Red
+    Write-Host '  report means what it says -- a pass as much as a failure. Leave git alone for the length' -ForegroundColor Red
+    Write-Host '  of a sweep, then run it again.' -ForegroundColor Red
+    return $false
+}
+
+$TreeAtStart = Get-TreeState $PluginRoot
+if ($TreeAtStart) {
+    Write-Host ("Tree:           " + $TreeAtStart.Head.Substring(0, 12) + " (Source, OptionalPlugins and Flock.uplugin, committed and not)") -ForegroundColor Cyan
+} else {
+    Write-Host 'Tree:           not a git checkout, so a source change during the sweep cannot be detected.' -ForegroundColor DarkYellow
+}
+
+# The project's drive carries every Intermediate and Binaries the sweep writes, and it cleans and rebuilds
+# one per engine. Reported up front because a build that dies for want of disk does not say so plainly.
+$ProjectDrive = New-Object System.IO.DriveInfo((Split-Path -Qualifier $ProjectDir) + '\')
+Write-Host ("Free space:     {0:N1} GB on {1}" -f ($ProjectDrive.AvailableFreeSpace / 1GB), $ProjectDrive.Name) -ForegroundColor Cyan
+
 # Every engine in the sweep builds into this one project's Intermediate/Binaries, and UHT output does
 # NOT reliably regenerate when the engine underneath it changes. A later engine's .gen.cpp compiled
 # against an earlier engine's headers fails in generated code that names no SDK file at all -- which
@@ -120,7 +201,8 @@ function Format-Duration {
 }
 
 # The build log goes to the console, not into the returned object: a native command's output inside a
-# function is part of what the function returns.
+# function is part of what the function returns. Tee-Object keeps a copy for the strain scan while Out-Host
+# still consumes the pipeline, so none of it leaks into the return value.
 function Invoke-TimedBuild {
     param(
         [string] $BuildBat,
@@ -130,10 +212,24 @@ function Invoke-TimedBuild {
     )
 
     $Watch = [System.Diagnostics.Stopwatch]::StartNew()
-    & $BuildBat $TargetName Win64 $Configuration -project="$Project" -WaitMutex | Out-Host
+    & $BuildBat $TargetName Win64 $Configuration -project="$Project" -WaitMutex |
+        Tee-Object -Variable BuildOutput | Out-Host
     $ExitCode = $LASTEXITCODE
     $Watch.Stop()
-    return [PSCustomObject]@{ Succeeded = ($ExitCode -eq 0); Seconds = [int]$Watch.Elapsed.TotalSeconds }
+
+    # A machine that runs short of paging file or disk usually still finishes the build -- the build system
+    # sleeps and retries -- so it never reaches the report, and whatever fails next looks like a code defect
+    # instead of a tired machine. Measured on 2026-09-16: UE 5.7 logged "The paging file is too small for
+    # this operation to complete" and still passed. Surfaced rather than failed on, because it did complete.
+    $Strain = @($BuildOutput | Where-Object {
+        $_ -is [string] -and $_ -match 'paging file is too small|Allocation failed in VirtualAlloc|not enough space on the disk|out of memory'
+    })
+
+    return [PSCustomObject]@{
+        Succeeded = ($ExitCode -eq 0)
+        Seconds   = [int]$Watch.Elapsed.TotalSeconds
+        Strain    = $Strain
+    }
 }
 
 # Compiling is not the claim. "It builds on 5.7" says nothing about whether it behaves the same there,
@@ -195,7 +291,25 @@ function Invoke-FlockTests {
         return [PSCustomObject]@{ Ran = $false; Total = 0; Failed = 0; Reason = 'no tests ran' }
     }
 
-    return [PSCustomObject]@{ Ran = $true; Total = $Total; Failed = ($Total - $Ok); Reason = '' }
+    # A failure is named, with the first error it logged, and its log is kept. The next run deletes this log, and a
+    # count alone once left a one-off failure on one engine that nothing could identify afterwards (2026-09-18).
+    $FailedTests = @()
+    if ($Ok -lt $Total) {
+        foreach ($Match in [regex]::Matches($LogText, 'Test Completed\. Result=\{Fail\w*\} Name=\{[^}]*\} Path=\{([^}]*)\}')) {
+            $Path = $Match.Groups[1].Value
+            # The first error between the test's BeginEvents and EndEvents lines; warnings can come before it.
+            $Events = [regex]::Match($LogText, '(?s)BeginEvents: ' + [regex]::Escape($Path) + '(.*?)EndEvents: ' + [regex]::Escape($Path))
+            $Detail = if ($Events.Success) { [regex]::Match($Events.Groups[1].Value, 'Error: ([^\r\n]*)') } else { $null }
+            $FailedTests += if ($Detail -and $Detail.Success) { "$Path -- $($Detail.Groups[1].Value)" } else { $Path }
+        }
+        $Engine = Split-Path -Leaf $EngineDir
+        $Context = if ($GameContext) { 'game' } else { 'editor' }
+        $KeptLog = Join-Path (Split-Path -Parent $LogPath) ("FlockSweep-$Engine-$Context-failed.log")
+        Copy-Item $LogPath $KeptLog -Force -ErrorAction SilentlyContinue
+        $FailedTests += "full log kept at $KeptLog"
+    }
+
+    return [PSCustomObject]@{ Ran = $true; Total = $Total; Failed = ($Total - $Ok); Reason = ''; FailedTests = $FailedTests }
 }
 
 # -- The declared floor, read from the one place that owns it --
@@ -274,6 +388,7 @@ $TestFailed      = [System.Collections.Generic.List[string]]::new()
 $Skipped         = [System.Collections.Generic.List[string]]::new()
 $Unusable        = [System.Collections.Generic.List[string]]::new()
 $AboveCeiling    = [System.Collections.Generic.List[string]]::new()   # informational: outside the claim
+$ResourceStrain  = [System.Collections.Generic.List[string]]::new()   # the machine ran short while building
 
 foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
     if ([version]$Version -lt $Floor) {
@@ -287,6 +402,12 @@ foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
         Write-Host "UE $Version : no Build.bat, cannot cover" -ForegroundColor DarkYellow
         $Unusable.Add($Version)
         continue
+    }
+
+    # Checked per engine, not only at the end: a tree that has moved invalidates everything measured after
+    # it, so stopping here costs one engine rather than the rest of the sweep.
+    if (-not (Test-TreeUnchanged $TreeAtStart $PluginRoot "before UE $Version")) {
+        exit 2
     }
 
     Write-Host ''
@@ -310,6 +431,7 @@ foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
         continue
     }
     Write-Host "UE $Version : editor target built in $(Format-Duration $EditorBuild.Seconds)" -ForegroundColor DarkGray
+    foreach ($Line in $EditorBuild.Strain) { $ResourceStrain.Add("$Version editor: " + $Line.Trim()) }
 
     # The game target, without the editor -- see the description at the top for why the editor build and
     # both test passes cannot stand in for it. The suite still runs when this fails, so the report says
@@ -319,6 +441,7 @@ foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
     foreach ($Configuration in $GameConfigurations) {
         $GameBuild = Invoke-TimedBuild -BuildBat $BuildBat -TargetName $GameTarget -Configuration $Configuration -Project $Project
         $GameBuildSeconds += $GameBuild.Seconds
+        foreach ($Line in $GameBuild.Strain) { $ResourceStrain.Add("$Version $Configuration`: " + $Line.Trim()) }
         if ($GameBuild.Succeeded) {
             Write-Host "UE $Version : game target built ($GameTarget Win64 $Configuration) in $(Format-Duration $GameBuild.Seconds)" -ForegroundColor Green
         } else {
@@ -343,6 +466,7 @@ foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
         if ($InRange) { $TestFailed.Add($Version) } else { $AboveCeiling.Add("$Version (tests did not run)") }
     } elseif ($Tests.Failed -gt 0) {
         Write-Host "UE $Version : $($Tests.Failed) of $($Tests.Total) tests FAILED" -ForegroundColor Red
+        foreach ($Line in $Tests.FailedTests) { Write-Host "    $Line" -ForegroundColor Red }
         if ($InRange) { $TestFailed.Add($Version) } else { $AboveCeiling.Add("$Version ($($Tests.Failed) failed)") }
     } else {
         Write-Host "UE $Version : $($Tests.Total)/$($Tests.Total) tests passed (editor)" -ForegroundColor Green
@@ -354,6 +478,7 @@ foreach ($Version in ($Engines.Keys | Sort-Object { [version]$_ })) {
             if ($InRange) { $TestFailed.Add($Version) } else { $AboveCeiling.Add("$Version (game-context tests did not run)") }
         } elseif ($GameTests.Failed -gt 0) {
             Write-Host "UE $Version : $($GameTests.Failed) of $($GameTests.Total) game-context tests FAILED" -ForegroundColor Red
+            foreach ($Line in $GameTests.FailedTests) { Write-Host "    $Line" -ForegroundColor Red }
             if ($InRange) { $TestFailed.Add($Version) } else { $AboveCeiling.Add("$Version ($($GameTests.Failed) game-context failed)") }
         } else {
             Write-Host "UE $Version : $($GameTests.Total)/$($GameTests.Total) tests passed (game context)" -ForegroundColor Green
@@ -389,6 +514,17 @@ if ($TestFailed.Count)      { Write-Host ("TESTS FAILED:  " + ($TestFailed -join
 if ($Unusable.Count)        { Write-Host ("NOT COVERED:   " + ($Unusable -join '  ') + "  (no Build.bat)") -ForegroundColor Yellow }
 if ($AboveCeiling.Count)    { Write-Host ("above ceiling: " + ($AboveCeiling -join '  ') + "  (informational)") -ForegroundColor DarkCyan }
 if ($Skipped.Count)         { Write-Host ("below floor:   " + ($Skipped -join '  ')) -ForegroundColor DarkGray }
+if ($ResourceStrain.Count) {
+    # Not a failure: every one of these builds finished. It is here so that the next run which does fail is
+    # read against a machine known to be short of memory or disk, rather than as a defect in the SDK.
+    Write-Host ("resource strain: " + $ResourceStrain.Count + " line(s) -- the machine ran short while building") -ForegroundColor Yellow
+    foreach ($Line in ($ResourceStrain | Select-Object -First 5)) {
+        Write-Host ("  " + $Line) -ForegroundColor Yellow
+    }
+    if ($ResourceStrain.Count -gt 5) {
+        Write-Host ("  ... and " + ($ResourceStrain.Count - 5) + " more") -ForegroundColor Yellow
+    }
+}
 Write-Host "claim:         UE $Floor to UE $Ceiling"
 
 # Both ends of the range are the claim, so both ends must be verified -- and so must everything between
@@ -402,6 +538,13 @@ foreach ($End in @($Floor, $Ceiling)) {
 }
 
 Write-Host ''
+
+# Checked once more before any verdict is printed: a tree that moved during the last engine would otherwise
+# be reported as verified, which is the one outcome worse than reporting it as failed.
+if (-not (Test-TreeUnchanged $TreeAtStart $PluginRoot 'at the end')) {
+    exit 2
+}
+
 if ($Unproven.Count) {
     Write-Host ("UE " + ($Unproven -join ' and UE ') + " bound the declared range and were not verified. The claim is unproven.") -ForegroundColor Red
     exit 1

@@ -2,6 +2,7 @@
 
 #include "FlockSubsystem.h"
 
+#include "Analytics/FlockAnalyticsLaunches.h"
 #include "Analytics/FlockFileEventCache.h"
 #include "Flock.h"
 #include "FlockEvents.h"
@@ -10,9 +11,10 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "Http/FlockHttpShutdown.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.12.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.20.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -175,9 +177,13 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		? MakeShared<FFlockHttpClient>(TestHttpAdapter.ToSharedRef(), LoggerRef, Settings->HttpTimeoutSeconds)
 		: FFlockHttpClient::CreateDefault(Settings->HttpTimeoutSeconds, LoggerRef);
 
+	// Only a test names a folder for every file this SDK saves, so that it is never one more launch of the game.
+	const bool bSavesInTestFolder = !TestSavedFilesFolder.IsEmpty();
+
 	TokenStore = TestTokenStore.IsValid()
 		? TestTokenStore
-		: TSharedPtr<IFlockTokenStore>(MakeShared<FFlockFileTokenStore>(FFlockFileTokenStore::DefaultPath(), Config.GameId));
+		: TSharedPtr<IFlockTokenStore>(MakeShared<FFlockFileTokenStore>(bSavesInTestFolder
+			? FPaths::Combine(TestSavedFilesFolder, TEXT("auth.dat")) : FFlockFileTokenStore::DefaultPath(), Config.GameId));
 
 	AuthSession = MakeShared<FFlockAuthSession>(HttpClient.ToSharedRef(), TokenStore, LoggerRef,
 		GetVersionedApiUrl(), Config.GetBaseHeaders());
@@ -190,7 +196,8 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	// which case the providers degrade to plain fetches.
 	if (Settings->bEnableOfflineCache)
 	{
-		SnapshotStore = MakeShared<FFlockSnapshotStore>(Settings->OfflineCacheDirectory, LoggerRef, SdkVersion);
+		SnapshotStore = MakeShared<FFlockSnapshotStore>(bSavesInTestFolder
+			? FPaths::Combine(TestSavedFilesFolder, TEXT("snapshots")) : Settings->OfflineCacheDirectory, LoggerRef, SdkVersion);
 
 		// Order matters and is the whole fix: rescue state out of the version-scoped tree BEFORE pruning it.
 		// A queue left where builds before 1.9.0 put it would already be deleted by the time its provider
@@ -211,25 +218,37 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	if (AnalyticsConfig.bEnabled)
 	{
 		FFlockAnalyticsDependencies Deps;
+		// Every launch keeps its queues, crash marker and live-session record in a folder of its own, locked while it runs, and
+		// takes over the files of launches that have ended. Another game started from the same project folder is never
+		// reported as crashed, has its session ended, or has its queued entries sent a second time.
+		const FString AnalyticsFolder = bSavesInTestFolder
+			? FPaths::Combine(TestSavedFilesFolder, TEXT("analytics")) : FFlockAnalyticsLaunches::DefaultFolder();
+		const TSharedRef<FFlockAnalyticsLaunches> Launches = FFlockAnalyticsLaunches::Start(AnalyticsFolder);
+		if (!Launches->IsHoldingItsFolder())
+		{
+			LoggerRef->LogWarning(FString::Printf(TEXT("Could not lock a folder for this launch's analytics files under %s, so ")
+				TEXT("launches that ended before this one are not reported this time."), *AnalyticsFolder));
+		}
+		Deps.Launches = Launches;
 		// A cap of zero is how "don't spool" is expressed, so the caching switch maps onto it.
-		Deps.LogEventCache = MakeShared<FFlockFileEventCache>(TEXT("log_events"),
-			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedEvents : 0);
+		Deps.LogEventCache = MakeShared<FFlockFileEventCache>(FFlockAnalyticsLaunches::LogEventsQueueName,
+			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedEvents : 0, Launches->GetFolder());
 		// Its own queue, so ends drain ahead of events and erasing one leaves the other alone.
-		Deps.SessionEndCache = MakeShared<FFlockFileEventCache>(TEXT("session_ends"),
-			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedSessionEnds : 0);
+		Deps.SessionEndCache = MakeShared<FFlockFileEventCache>(FFlockAnalyticsLaunches::SessionEndsQueueName,
+			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedSessionEnds : 0, Launches->GetFolder());
 		// Gameplay events get a third, so a log storm can never evict one. No game version in the path: a build
 		// shipping a new version must not delete the previous one's unsent events.
-		Deps.AnalyticsEventCache = MakeShared<FFlockFileEventCache>(TEXT("analytics_events"),
-			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedEvents : 0);
-		Deps.Session = MakeShared<FFlockSession>(AnalyticsConfig);
+		Deps.AnalyticsEventCache = MakeShared<FFlockFileEventCache>(FFlockAnalyticsLaunches::AnalyticsEventsQueueName,
+			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedEvents : 0, Launches->GetFolder());
+		Deps.Session = MakeShared<FFlockSession>(AnalyticsConfig, Launches->GetSessionStatePath());
 		// Off in the editor: a PIE shutdown is not a real app death and would be reported as a crash.
 		Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(
-			AnalyticsConfig.bPersistSessionOnDisk && !GIsEditor);
-		Deps.ConsentStore = MakeShared<FFlockConsentStore>();
+			AnalyticsConfig.bPersistSessionOnDisk && !GIsEditor, Launches->GetTerminationMarkerPath());
+		// The consent decision and the coverage notice belong to the install, so every launch shares them.
+		Deps.ConsentStore = MakeShared<FFlockConsentStore>(FPaths::Combine(AnalyticsFolder, FFlockConsentStore::FileName));
 		Deps.Pump = MakeShared<FFlockLifecyclePump>();
 		Deps.bEnableLogSink = true;
-		Deps.CoverageNoticeMarkerPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Flock"), TEXT("analytics"),
-			TEXT("coverage_notice.txt"));
+		Deps.CoverageNoticeMarkerPath = FPaths::Combine(AnalyticsFolder, TEXT("coverage_notice.txt"));
 
 		AnalyticsProvider = MakeShared<FFlockAnalyticsProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 			AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl(), AnalyticsConfig, Deps,
@@ -263,7 +282,8 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	AssetProvider = MakeShared<FFlockAssetProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId,
 		FlockCreateHttpAssetDownloader(LoggerRef),
-		MakeShared<FFlockAssetCache>(Settings->AssetCacheDirectory, Settings->AssetCacheMaxSizeMB, LoggerRef));
+		MakeShared<FFlockAssetCache>(bSavesInTestFolder ? FPaths::Combine(TestSavedFilesFolder, TEXT("assets")) : Settings->AssetCacheDirectory,
+			Settings->AssetCacheMaxSizeMB, LoggerRef));
 	AssetProvider->Configure(Settings->bEnableAssetCache, static_cast<float>(Settings->AssetDownloadTimeoutSeconds),
 		Settings->AssetDownloadRetryCount, Settings->AssetMaxConcurrentDownloads);
 
@@ -425,6 +445,11 @@ void UFlockSubsystem::ShutdownSdk()
 	if (AnalyticsProvider.IsValid())
 	{
 		AnalyticsProvider->Shutdown();
+		// The session end it just sent is the last thing this SDK does and has no second chance: a saved end is not
+		// re-sent on a later launch, so one abandoned here leaves the session open for good. Waited for while the
+		// provider is still alive, so its completion runs and says what became of it, and before the HTTP client is
+		// let go below.
+		FlockFinishRequestsBeforeShutdown();
 		AnalyticsProvider.Reset();
 	}
 	// Same reason: stop the pump while the provider is alive rather than leaving it to the destructor.

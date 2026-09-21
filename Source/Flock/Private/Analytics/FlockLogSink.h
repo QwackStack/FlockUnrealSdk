@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Blueprint/BlueprintExceptionInfo.h"
 #include "Containers/Queue.h"
+#include "HAL/ThreadSafeBool.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "Misc/OutputDevice.h"
 
@@ -37,7 +38,8 @@ struct FFlockCapturedLog
  *
  * UE has no managed exception stream, so the closest equivalent is tapping the log. This registers
  * an FOutputDevice on GLog and takes Error and Fatal lines, plus FCoreDelegates::OnHandleSystemError
- * for the hard crashes that never reach the log at all.
+ * for the hard crashes that never reach the log at all. A crash is reported once, however many times
+ * the engine raises its crash delegates for it, and a Fatal line counts as that report.
  *
  * Two things make this safe rather than a footgun:
  *
@@ -106,8 +108,14 @@ public:
 	virtual bool CanBeUsedOnAnyThread() const override { return true; }
 	virtual bool CanBeUsedOnMultipleThreads() const override { return true; }
 
-	/** Test seam: drive the crash path without crashing. */
-	void SimulateSystemErrorForTesting() { HandleSystemError(); }
+	/** Test seam: drive the crash path without crashing, with what the engine wrote down about the error. */
+	void SimulateSystemErrorForTesting(const TCHAR* EngineErrorRecord = TEXT("")) { HandleSystemError(EngineErrorRecord); }
+
+	/**
+	 * The message a crash report carries: the first line of what the engine wrote down about the error (an assertion's
+	 * expression, file and line, or an unhandled exception's code), or "Unhandled system error" when it wrote nothing.
+	 */
+	static FString DescribeCrash(const TCHAR* EngineErrorRecord);
 
 	/** Faults only. Breakpoints and tracepoints ride the same delegate for the debugger's sake. */
 	static bool IsReportableScriptException(EBlueprintExceptionType::Type Type);
@@ -132,7 +140,14 @@ public:
 	void SetWriteBackScriptWarningForTesting(bool bWriteBack) { bWriteBackScriptWarning = bWriteBack; }
 
 private:
-	void HandleSystemError();
+	void HandleSystemError(const TCHAR* EngineErrorRecord);
+
+	/**
+	 * True the first time only. A process crashes once, but the engine raises its crash delegates up to three times for
+	 * that one crash (measured on Windows: OnHandleSystemError from the crash-reporting thread and again from the error
+	 * handler, then OnShutdownAfterError), and a Fatal log line is followed by the same delegates.
+	 */
+	bool ClaimTheCrashReport() { return !bCrashReported.AtomicSet(true); }
 	void HandleScriptException(const UObject* ActiveObject, const FFrame& StackFrame, const FBlueprintExceptionInfo& Info);
 	void CaptureScriptException(EBlueprintExceptionType::Type Type, const FString& Description, const FString& ScriptStack);
 
@@ -152,4 +167,7 @@ private:
 	int32 WrittenBackScriptWarnings = 0;
 
 	bool bRunning = false;
+
+	/** Set once this process's crash has been reported. Read and written from whichever thread is crashing. */
+	FThreadSafeBool bCrashReported;
 };

@@ -15,9 +15,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsLogEventWireTest, "Flock.Analyti
 bool FFlockAnalyticsLogEventWireTest::RunTest(const FString& Parameters)
 {
 	// The three channels map to the wire spellings, not the enum names.
-	TestEqual(TEXT("exception wire"), FFlockAnalyticsJson::LogEventTypeToWire(EFlockLogEventType::Exception), TEXT("exception"));
-	TestEqual(TEXT("logic_error wire"), FFlockAnalyticsJson::LogEventTypeToWire(EFlockLogEventType::LogicError), TEXT("logic_error"));
-	TestEqual(TEXT("debug wire"), FFlockAnalyticsJson::LogEventTypeToWire(EFlockLogEventType::Debug), TEXT("debug"));
+	TestEqualSensitive(TEXT("exception wire"), FFlockAnalyticsJson::LogEventTypeToWire(EFlockLogEventType::Exception), TEXT("exception"));
+	TestEqualSensitive(TEXT("logic_error wire"), FFlockAnalyticsJson::LogEventTypeToWire(EFlockLogEventType::LogicError), TEXT("logic_error"));
+	TestEqualSensitive(TEXT("debug wire"), FFlockAnalyticsJson::LogEventTypeToWire(EFlockLogEventType::Debug), TEXT("debug"));
 
 	// A bare debug entry carries only what it must; every unset optional is absent, not blank.
 	{
@@ -26,7 +26,7 @@ bool FFlockAnalyticsLogEventWireTest::RunTest(const FString& Parameters)
 		Event.Data.Type = EFlockLogEventType::Debug;
 
 		const FString Json = FFlockAnalyticsJson::SerializeEvent(Event);
-		TestTrue(TEXT("message"), Json.Contains(TEXT("\"message\":\"hello\"")));
+		TestTrue(TEXT("message"), Json.Contains(TEXT("\"message\":\"hello\""), ESearchCase::CaseSensitive));
 		// Case-sensitive: the wire spelling is lowercase and the enum name is not, so a default
 		// (IgnoreCase) check would accept "Debug" and defeat the point of LogEventTypeToWire.
 		TestTrue(TEXT("type"), Json.Contains(TEXT("\"type\":\"debug\""), ESearchCase::CaseSensitive));
@@ -51,10 +51,10 @@ bool FFlockAnalyticsLogEventWireTest::RunTest(const FString& Parameters)
 
 		const FString Json = FFlockAnalyticsJson::SerializeEvent(Event);
 		TestTrue(TEXT("type exception"), Json.Contains(TEXT("\"type\":\"exception\""), ESearchCase::CaseSensitive));
-		TestTrue(TEXT("game_version"), Json.Contains(TEXT("\"game_version\":\"1.2.3\"")));
+		TestTrue(TEXT("game_version"), Json.Contains(TEXT("\"game_version\":\"1.2.3\""), ESearchCase::CaseSensitive));
 		TestTrue(TEXT("error_message"), Json.Contains(TEXT("\"error_message\":\"null deref\"")));
-		TestTrue(TEXT("error_code"), Json.Contains(TEXT("\"error_code\":\"E42\"")));
-		TestTrue(TEXT("timestamp"), Json.Contains(TEXT("\"timestamp\":\"2026-07-21T00:00:00Z\"")));
+		TestTrue(TEXT("error_code"), Json.Contains(TEXT("\"error_code\":\"E42\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("timestamp"), Json.Contains(TEXT("\"timestamp\":\"2026-07-21T00:00:00Z\""), ESearchCase::CaseSensitive));
 		TestTrue(TEXT("traceback lines"), Json.Contains(TEXT("\"error_traceback_lines\":[\"at Foo()\",\"at Bar()\"]")));
 	}
 
@@ -67,8 +67,8 @@ bool FFlockAnalyticsLogEventWireTest::RunTest(const FString& Parameters)
 
 		const FString Json = FFlockAnalyticsJson::SerializeEvents({ A, B });
 		TestTrue(TEXT("events array"), Json.StartsWith(TEXT("{\"events\":[")));
-		TestTrue(TEXT("first"), Json.Contains(TEXT("\"message\":\"one\"")));
-		TestTrue(TEXT("second"), Json.Contains(TEXT("\"message\":\"two\"")));
+		TestTrue(TEXT("first"), Json.Contains(TEXT("\"message\":\"one\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("second"), Json.Contains(TEXT("\"message\":\"two\""), ESearchCase::CaseSensitive));
 	}
 	return true;
 }
@@ -150,8 +150,8 @@ bool FFlockAnalyticsSessionWireTest::RunTest(const FString& Parameters)
 		Req.Platform = TEXT("Windows");
 		FString Json;
 		TestTrue(TEXT("serializes"), FFlockJsonUtils::StructToWireJson(Req, Json, /*bOmitEmptyStrings*/ true));
-		TestTrue(TEXT("player_id"), Json.Contains(TEXT("\"player_id\":\"p-1\"")));
-		TestTrue(TEXT("platform"), Json.Contains(TEXT("\"platform\":\"Windows\"")));
+		TestTrue(TEXT("player_id"), Json.Contains(TEXT("\"player_id\":\"p-1\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("platform"), Json.Contains(TEXT("\"platform\":\"Windows\""), ESearchCase::CaseSensitive));
 		TestFalse(TEXT("no empty device_type"), Json.Contains(TEXT("device_type")));
 		TestFalse(TEXT("no empty game_version_id"), Json.Contains(TEXT("game_version_id")));
 	}
@@ -165,10 +165,10 @@ bool FFlockAnalyticsSessionWireTest::RunTest(const FString& Parameters)
 		Req.EndedAt = TEXT("2026-07-21T00:00:00Z");
 		FString Json;
 		TestTrue(TEXT("serializes"), FFlockJsonUtils::StructToWireJson(Req, Json, true));
-		TestTrue(TEXT("duration_seconds"), Json.Contains(TEXT("\"duration_seconds\":42")));
-		TestTrue(TEXT("screens_viewed"), Json.Contains(TEXT("\"screens_viewed\":3")));
-		TestTrue(TEXT("is_bounce"), Json.Contains(TEXT("\"is_bounce\":true")));
-		TestTrue(TEXT("ended_at"), Json.Contains(TEXT("\"ended_at\":\"2026-07-21T00:00:00Z\"")));
+		TestTrue(TEXT("duration_seconds"), Json.Contains(TEXT("\"duration_seconds\":42"), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("screens_viewed"), Json.Contains(TEXT("\"screens_viewed\":3"), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("is_bounce"), Json.Contains(TEXT("\"is_bounce\":true"), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("ended_at"), Json.Contains(TEXT("\"ended_at\":\"2026-07-21T00:00:00Z\""), ESearchCase::CaseSensitive));
 	}
 
 	// The session-start response is BARE: the model sits at the root, not under `result`.

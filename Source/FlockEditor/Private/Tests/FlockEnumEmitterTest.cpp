@@ -84,7 +84,7 @@ bool FFlockEnumShopItemTest::RunTest(const FString& Parameters)
 		[](const TPair<FString, FString>& Member) { return Member.Value == TEXT("item-1"); });
 	if (TestNotNull(TEXT("gem pack present"), GemPack))
 	{
-		TestEqual(TEXT("display name is Pascal-cased from the item name"), GemPack->Key, FString(TEXT("GemPack")));
+		TestEqualSensitive(TEXT("display name is Pascal-cased from the item name"), GemPack->Key, FString(TEXT("GemPack")));
 	}
 
 	// A name starting with a digit cannot be an identifier — same problem the canonical SDK hits.
@@ -92,7 +92,7 @@ bool FFlockEnumShopItemTest::RunTest(const FString& Parameters)
 		[](const TPair<FString, FString>& Member) { return Member.Value == TEXT("item-3"); });
 	if (TestNotNull(TEXT("digit-led item present"), Gems))
 	{
-		TestEqual(TEXT("leading digit is prefixed"), Gems->Key, FString(TEXT("_100Gems")));
+		TestEqualSensitive(TEXT("leading digit is prefixed"), Gems->Key, FString(TEXT("_100Gems")));
 	}
 
 	return true;
@@ -107,14 +107,14 @@ bool FFlockEnumCurrencyAchievementTest::RunTest(const FString& Parameters)
 	const TArray<TPair<FString, FString>> Currencies = FFlockEnumEmitter::CollectCurrencies(Snapshot());
 	TestEqual(TEXT("two distinct currencies"), Currencies.Num(), 2);
 	// Sorted, so a backend reordering its shops does not reorder the enum (which would renumber it).
-	TestEqual(TEXT("sorted"), Currencies[0].Key, FString(TEXT("Gold")));
-	TestEqual(TEXT("wire value is the currency name"), Currencies[0].Value, FString(TEXT("Gold")));
+	TestEqualSensitive(TEXT("sorted"), Currencies[0].Key, FString(TEXT("Gold")));
+	TestEqualSensitive(TEXT("wire value is the currency name"), Currencies[0].Value, FString(TEXT("Gold")));
 
 	const TArray<TPair<FString, FString>> Achievements = FFlockEnumEmitter::CollectAchievements(Snapshot());
 	TestEqual(TEXT("two achievements"), Achievements.Num(), 2);
 	// Display is friendly, wire is the declared field name the command actually sends.
-	TestEqual(TEXT("display name"), Achievements[0].Key, FString(TEXT("FirstWin")));
-	TestEqual(TEXT("wire value is the declared name"), Achievements[0].Value, FString(TEXT("first_win")));
+	TestEqualSensitive(TEXT("display name"), Achievements[0].Key, FString(TEXT("FirstWin")));
+	TestEqualSensitive(TEXT("wire value is the declared name"), Achievements[0].Value, FString(TEXT("first_win")));
 
 	// No tagged template means no achievements — not an error.
 	FFlockSchemaSnapshot Untagged = Snapshot();
@@ -142,13 +142,13 @@ bool FFlockEnumBuildTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("achievement members"), MemberCount(Result.Achievements.Enum), 2);
 
 	// Display names are what a graph author picks from.
-	TestEqual(TEXT("first currency display name"), DisplayNameAt(Result.Currencies.Enum, 0), FString(TEXT("Gold")));
-	TestEqual(TEXT("first achievement display name"), DisplayNameAt(Result.Achievements.Enum, 0), FString(TEXT("FirstWin")));
+	TestEqualSensitive(TEXT("first currency display name"), DisplayNameAt(Result.Currencies.Enum, 0), FString(TEXT("Gold")));
+	TestEqualSensitive(TEXT("first achievement display name"), DisplayNameAt(Result.Achievements.Enum, 0), FString(TEXT("FirstWin")));
 
 	// The mapping travels with the enum, because the wire value cannot be recovered from it afterwards.
 	TestEqual(TEXT("mapping matches member count"),
 		Result.Achievements.WireValueByDisplayName.Num(), MemberCount(Result.Achievements.Enum));
-	TestEqual(TEXT("mapping order matches enum order"),
+	TestEqualSensitive(TEXT("mapping order matches enum order"),
 		Result.Achievements.WireValueByDisplayName[0].Value, FString(TEXT("first_win")));
 
 	return true;

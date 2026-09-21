@@ -33,9 +33,9 @@ bool FFlockLeaderboardLibraryParityTest::RunTest(const FString& Parameters)
 	// Window makers.
 	TestEqual(TEXT("current window"), UFlockLeaderboardLibrary::MakeCurrentWindow().Key,
 		FFlockLeaderboardWindow::Current().Key);
-	TestEqual(TEXT("season window"), UFlockLeaderboardLibrary::MakeSeasonWindow(TEXT("s7")).Key,
+	TestEqualSensitive(TEXT("season window"), UFlockLeaderboardLibrary::MakeSeasonWindow(TEXT("s7")).Key,
 		FFlockLeaderboardWindow::Season(TEXT("s7")).Key);
-	TestEqual(TEXT("period window"), UFlockLeaderboardLibrary::MakePeriodWindow(TEXT("2026-W31")).Key,
+	TestEqualSensitive(TEXT("period window"), UFlockLeaderboardLibrary::MakePeriodWindow(TEXT("2026-W31")).Key,
 		FFlockLeaderboardWindow::Period(TEXT("2026-W31")).Key);
 
 	TestTrue(TEXT("current is current"), UFlockLeaderboardLibrary::IsCurrentWindow(FFlockLeaderboardWindow::Current()));

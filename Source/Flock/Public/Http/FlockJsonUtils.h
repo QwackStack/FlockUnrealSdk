@@ -154,13 +154,17 @@ public:
 	// is an internal format, not the wire, so it must NOT run the key transform (which is one-directional
 	// by intent and would mangle a config's data on the way back). Every member therefore has to be
 	// reflectable — a model that hides data behind a custom wire parse keeps it in a reflectable field.
+	// It writes with SkipStandardizeCase: without it the engine's converter lower-cases the first letter of
+	// every member name it writes, at every depth, so a cached model would come back re-spelled.
+	// The reader matches member names ignoring case, so snapshots written before this still load.
 
 	/** USTRUCT -> condensed plain JSON (PascalCase keys), for snapshot storage. */
 	template <typename T>
 	static bool StructToPlainJson(const T& Struct, FString& OutJson)
 	{
 		const TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
-		if (!FJsonObjectConverter::UStructToJsonObject(T::StaticStruct(), &Struct, Obj, 0, 0))
+		if (!FJsonObjectConverter::UStructToJsonObject(T::StaticStruct(), &Struct, Obj, /*CheckFlags*/ 0, /*SkipFlags*/ 0,
+			/*ExportCb*/ nullptr, EJsonObjectConversionFlags::SkipStandardizeCase))
 		{
 			return false;
 		}
@@ -190,7 +194,8 @@ public:
 		for (const T& Item : Items)
 		{
 			const TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
-			if (!FJsonObjectConverter::UStructToJsonObject(T::StaticStruct(), &Item, Obj, 0, 0))
+			if (!FJsonObjectConverter::UStructToJsonObject(T::StaticStruct(), &Item, Obj, /*CheckFlags*/ 0, /*SkipFlags*/ 0,
+				/*ExportCb*/ nullptr, EJsonObjectConversionFlags::SkipStandardizeCase))
 			{
 				return false;
 			}

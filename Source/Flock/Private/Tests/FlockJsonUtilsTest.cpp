@@ -5,17 +5,19 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Http/FlockJsonUtils.h"
+#include "Models/FlockAnalyticsModels.h"
 #include "Models/FlockGameModels.h"
+#include "Tests/Support/FlockTestSpelling.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonCaseRoundTripTest, "Flock.Http.Json.CaseRoundTrip",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockJsonCaseRoundTripTest::RunTest(const FString& Parameters)
 {
-	TestEqual(TEXT("snake -> pascal"), FFlockJsonUtils::SnakeToPascal(TEXT("game_version_id")), FString(TEXT("GameVersionId")));
-	TestEqual(TEXT("single word snake -> pascal"), FFlockJsonUtils::SnakeToPascal(TEXT("id")), FString(TEXT("Id")));
-	TestEqual(TEXT("pascal -> snake"), FFlockJsonUtils::ToSnakeCase(TEXT("GameVersionId")), FString(TEXT("game_version_id")));
-	TestEqual(TEXT("camel -> snake"), FFlockJsonUtils::ToSnakeCase(TEXT("releaseType")), FString(TEXT("release_type")));
+	TestEqualSensitive(TEXT("snake -> pascal"), FFlockJsonUtils::SnakeToPascal(TEXT("game_version_id")), FString(TEXT("GameVersionId")));
+	TestEqualSensitive(TEXT("single word snake -> pascal"), FFlockJsonUtils::SnakeToPascal(TEXT("id")), FString(TEXT("Id")));
+	TestEqualSensitive(TEXT("pascal -> snake"), FFlockJsonUtils::ToSnakeCase(TEXT("GameVersionId")), FString(TEXT("game_version_id")));
+	TestEqualSensitive(TEXT("camel -> snake"), FFlockJsonUtils::ToSnakeCase(TEXT("releaseType")), FString(TEXT("release_type")));
 	return true;
 }
 
@@ -157,14 +159,14 @@ bool FFlockJsonUtilsOmitEmptyTest::RunTest(const FString& Parameters)
 
 	FString Json;
 	TestTrue(TEXT("serializes"), FFlockJsonUtils::StructToWireJson(Model, Json, /*bOmitEmptyStrings*/ true));
-	TestTrue(TEXT("keeps non-empty"), Json.Contains(TEXT("\"env\"")));
-	TestTrue(TEXT("keeps id"), Json.Contains(TEXT("\"id\"")));
+	TestTrue(TEXT("keeps non-empty"), Json.Contains(TEXT("\"env\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("keeps id"), Json.Contains(TEXT("\"id\""), ESearchCase::CaseSensitive));
 	TestFalse(TEXT("omits empty name"), Json.Contains(TEXT("\"name\"")));
 
 	// Default keeps empties (existing callers unchanged).
 	FString DefaultJson;
 	TestTrue(TEXT("serializes default"), FFlockJsonUtils::StructToWireJson(Model, DefaultJson));
-	TestTrue(TEXT("default keeps empty name"), DefaultJson.Contains(TEXT("\"name\"")));
+	TestTrue(TEXT("default keeps empty name"), DefaultJson.Contains(TEXT("\"name\""), ESearchCase::CaseSensitive));
 
 	return true;
 }
@@ -231,6 +233,34 @@ bool FFlockJsonWireParseDetectionTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * A snapshot keeps every member name as declared, at every depth. The engine's converter lower-cases the first letter of
+ * each member name it writes unless told not to, so a cached model came back from disk re-spelled. (It leaves a map's
+ * string keys alone: it re-spells only enum and FName keys.)
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonPlainRoundTripKeepsNamesTest, "Flock.Http.Json.PlainRoundTripKeepsNames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockJsonPlainRoundTripKeepsNamesTest::RunTest(const FString& Parameters)
+{
+	FFlockLogEventRequest In;
+	In.Message = TEXT("hello");
+	In.Data.ErrorCode = TEXT("E42");
+	In.Data.ExtraData.Add(TEXT("HttpStatus"), TEXT("500"));
+
+	FString Json;
+	TestTrue(TEXT("struct serializes"), FFlockJsonUtils::StructToPlainJson(In, Json));
+	TestTrue(TEXT("a member is written as declared"), Json.Contains(TEXT("\"Message\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and a member of a nested struct"), Json.Contains(TEXT("\"ErrorCode\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and a nested map's own name"), Json.Contains(TEXT("\"ExtraData\""), ESearchCase::CaseSensitive));
+
+	FFlockLogEventRequest Out;
+	TestTrue(TEXT("struct round-trips"), FFlockJsonUtils::PlainJsonToStruct(Json, Out));
+	TestEqual(TEXT("with the nested member's value"), Out.Data.ErrorCode, FString(TEXT("E42")));
+	TestEqual(TEXT("and the nested map's"), Out.Data.ExtraData.FindRef(TEXT("HttpStatus")), FString(TEXT("500")));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonPlainRoundTripTest, "Flock.Http.Json.PlainRoundTrip",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -246,7 +276,7 @@ bool FFlockJsonPlainRoundTripTest::RunTest(const FString& Parameters)
 	FString Json;
 	TestTrue(TEXT("struct serializes"), FFlockJsonUtils::StructToPlainJson(In, Json));
 	// Plain form keeps PascalCase field names — it is not the wire form.
-	TestTrue(TEXT("plain keys are PascalCase"), Json.Contains(TEXT("\"Id\":\"ver-1\"")));
+	TestTrue(TEXT("plain keys are PascalCase"), Json.Contains(TEXT("\"Id\":\"ver-1\""), ESearchCase::CaseSensitive));
 	TestFalse(TEXT("no snake keys in plain form"), Json.Contains(TEXT("release_type")));
 
 	FFlockGameVersionSchema Out;
@@ -306,9 +336,9 @@ bool FFlockJsonKeySemanticsTest::RunTest(const FString& Parameters)
 	// commands surface both write keys back to the server using exactly what this returns.
 	const TArray<FString> Names = FFlockJsonUtils::GetFieldNames(Object);
 	TestEqual(TEXT("three field names"), Names.Num(), 3);
-	TestTrue(TEXT("snake key kept verbatim"), Names.Contains(TEXT("max_health")));
-	TestTrue(TEXT("pascal key kept verbatim"), Names.Contains(TEXT("GameCurrencies")));
-	TestTrue(TEXT("mixed-case key kept verbatim"), Names.Contains(TEXT("MixedCase")));
+	TestTrue(TEXT("snake key kept verbatim"), FlockTestSpelling::HoldsExactly(Names, TEXT("max_health")));
+	TestTrue(TEXT("pascal key kept verbatim"), FlockTestSpelling::HoldsExactly(Names, TEXT("GameCurrencies")));
+	TestTrue(TEXT("mixed-case key kept verbatim"), FlockTestSpelling::HoldsExactly(Names, TEXT("MixedCase")));
 
 	// Lookup ignores case, so a caller's spelling need not match the dashboard's.
 	TestTrue(TEXT("exact lookup"), Object->HasField(TEXT("max_health")));

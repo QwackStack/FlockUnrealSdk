@@ -362,7 +362,9 @@ void SFlockPanel::RunFix(EFlockSetupFix Fix)
 	case EFlockSetupFix::OpenSettings:
 		if (ISettingsModule* Settings = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
 		{
-			Settings->ShowViewer("Project", "Plugins", "Flock SDK Settings");
+			// By the section the page registers under, which is the settings class's name and not the title it shows.
+			const UFlockConfig* Page = GetDefault<UFlockConfig>();
+			Settings->ShowViewer(Page->GetContainerName(), Page->GetCategoryName(), Page->GetSectionName());
 		}
 		break;
 

@@ -142,7 +142,7 @@ bool FFlockAccountLinkingWireTest::RunTest(const FString& Parameters)
 	}
 	// Wire mapping round-trips, and Unknown has no sendable spelling.
 	{
-		TestEqual(TEXT("device_id is the one non-lowercase-name mapping"),
+		TestEqualSensitive(TEXT("device_id is the one non-lowercase-name mapping"),
 			FFlockCredentialProviders::ToWire(EFlockCredentialProvider::DeviceId), FString(TEXT("device_id")));
 		TestEqual(TEXT("Unknown has no wire value"),
 			FFlockCredentialProviders::ToWire(EFlockCredentialProvider::Unknown), FString());
@@ -171,8 +171,8 @@ bool FFlockAccountLinkingRequestShapeTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("one request"), F.Fake->Requests.Num(), 1);
 		const FFlockHttpRequest& Sent = F.Fake->Requests.Last();
 		TestEqual(TEXT("POST"), Sent.Method, FString(TEXT("POST")));
-		TestTrue(TEXT("email on the wire"), Sent.JsonBody.Contains(TEXT("\"email\":\"a@b.c\"")));
-		TestTrue(TEXT("password on the wire"), Sent.JsonBody.Contains(TEXT("\"password\":\"pw\"")));
+		TestTrue(TEXT("email on the wire"), Sent.JsonBody.Contains(TEXT("\"email\":\"a@b.c\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("password on the wire"), Sent.JsonBody.Contains(TEXT("\"password\":\"pw\""), ESearchCase::CaseSensitive));
 		TestTrue(TEXT("Authorization sent"), Sent.Headers.Contains(TEXT("Authorization")));
 	}
 	// Device link snake_cases both fields.
@@ -183,8 +183,8 @@ bool FFlockAccountLinkingRequestShapeTest::RunTest(const FString& Parameters)
 		F.Provider->LinkDevice(TEXT("dev-9"), nullptr);
 
 		const FFlockHttpRequest& Sent = F.Fake->Requests.Last();
-		TestTrue(TEXT("device_id snake_cased"), Sent.JsonBody.Contains(TEXT("\"device_id\":\"dev-9\"")));
-		TestTrue(TEXT("device_type sent"), Sent.JsonBody.Contains(TEXT("\"device_type\"")));
+		TestTrue(TEXT("device_id snake_cased"), Sent.JsonBody.Contains(TEXT("\"device_id\":\"dev-9\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("device_type sent"), Sent.JsonBody.Contains(TEXT("\"device_type\""), ESearchCase::CaseSensitive));
 	}
 	// Every OAuth provider posts a BARE {token} to its own route — not the login routes' id_token/identity_token/session_ticket.
 	{
@@ -213,7 +213,7 @@ bool FFlockAccountLinkingRequestShapeTest::RunTest(const FString& Parameters)
 			const FFlockHttpRequest& Sent = F.Fake->Requests.Last();
 			TestTrue(FString::Printf(TEXT("%s hits its own route"), Case.Wire),
 				Sent.Url.EndsWith(FString::Printf(TEXT("player/link/oauth/%s"), Case.Wire)));
-			TestTrue(FString::Printf(TEXT("%s posts a bare token"), Case.Wire), Sent.JsonBody.Contains(TEXT("\"token\":\"tok\"")));
+			TestTrue(FString::Printf(TEXT("%s posts a bare token"), Case.Wire), Sent.JsonBody.Contains(TEXT("\"token\":\"tok\""), ESearchCase::CaseSensitive));
 			TestFalse(FString::Printf(TEXT("%s does not send id_token"), Case.Wire), Sent.JsonBody.Contains(TEXT("id_token")));
 			TestFalse(FString::Printf(TEXT("%s does not send session_ticket"), Case.Wire), Sent.JsonBody.Contains(TEXT("session_ticket")));
 		}

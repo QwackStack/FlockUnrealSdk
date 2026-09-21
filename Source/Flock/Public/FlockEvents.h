@@ -21,6 +21,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnSessionRestored, bool, bRest
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnAccountLinked, EFlockCredentialProvider, Provider);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnAccountUnlinked, EFlockCredentialProvider, Provider);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnSessionStarted, const FString&, SessionId);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockOnSessionRegistered, const FString&, SessionId, const FString&, ServerSessionId);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnSessionEnded, const FFlockSessionEndedArgs&, Args);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockOnSessionPaused);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockOnSessionResumed);
@@ -98,9 +99,23 @@ public:
 
 	// ── Session (raised by the session/analytics features when they land) ──
 
-	/** A gameplay/analytics session began; payload is the local session id. */
+	/**
+	 * A gameplay/analytics session began; payload is the local session id. The server's id for the session arrives
+	 * later, with OnSessionRegistered.
+	 */
 	UPROPERTY(BlueprintAssignable, Category = "Flock|Events")
 	FFlockOnSessionStarted OnSessionStarted;
+
+	/**
+	 * The running session reached the server, which gave it the id its records are filed under (the id
+	 * GetAnalyticsSessionId returns). SessionId is the local id OnSessionStarted carried. Raised once per session,
+	 * when its start call succeeds or the heartbeat's later retry registers it; never for a session that ended before
+	 * that. With Analytics Heartbeat Interval at 0 a failed start call is not retried while the session runs, so this
+	 * does not fire for that session. It is not replayed: code that binds after a session registered reads
+	 * GetAnalyticsSessionId instead.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Flock|Events")
+	FFlockOnSessionRegistered OnSessionRegistered;
 
 	/** A session ended (any path); payload carries the final snapshot and the reason. */
 	UPROPERTY(BlueprintAssignable, Category = "Flock|Events")
@@ -170,6 +185,7 @@ public:
 	void InvokeAccountLinked(EFlockCredentialProvider Provider);
 	void InvokeAccountUnlinked(EFlockCredentialProvider Provider);
 	void InvokeSessionStarted(const FString& SessionId);
+	void InvokeSessionRegistered(const FString& SessionId, const FString& ServerSessionId);
 	void InvokeSessionEnded(const FFlockSessionEndedArgs& Args);
 	void InvokeSessionPaused();
 	void InvokeSessionResumed();

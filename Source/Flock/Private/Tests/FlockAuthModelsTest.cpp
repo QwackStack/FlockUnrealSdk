@@ -20,9 +20,9 @@ bool FFlockAuthModelsRequestWireTest::RunTest(const FString& Parameters)
 		Req.Password = TEXT("pw");
 		FString Json;
 		TestTrue(TEXT("serializes"), FFlockJsonUtils::StructToWireJson(Req, Json, /*bOmitEmptyStrings*/ true));
-		TestTrue(TEXT("login_type"), Json.Contains(TEXT("\"login_type\":\"email\"")));
-		TestTrue(TEXT("email"), Json.Contains(TEXT("\"email\":\"a@b.c\"")));
-		TestTrue(TEXT("password"), Json.Contains(TEXT("\"password\":\"pw\"")));
+		TestTrue(TEXT("login_type"), Json.Contains(TEXT("\"login_type\":\"email\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("email"), Json.Contains(TEXT("\"email\":\"a@b.c\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("password"), Json.Contains(TEXT("\"password\":\"pw\""), ESearchCase::CaseSensitive));
 		TestFalse(TEXT("no google_id"), Json.Contains(TEXT("google_id")));
 		TestFalse(TEXT("no device_id"), Json.Contains(TEXT("device_id")));
 		TestFalse(TEXT("no facebook_id"), Json.Contains(TEXT("facebook_id")));
@@ -34,14 +34,14 @@ bool FFlockAuthModelsRequestWireTest::RunTest(const FString& Parameters)
 		Req.DeviceId = TEXT("dev-1");
 		FString Json;
 		TestTrue(TEXT("serializes"), FFlockJsonUtils::StructToWireJson(Req, Json, true));
-		TestTrue(TEXT("device_type"), Json.Contains(TEXT("\"device_type\":\"Windows\"")));
-		TestTrue(TEXT("device_id"), Json.Contains(TEXT("\"device_id\":\"dev-1\"")));
+		TestTrue(TEXT("device_type"), Json.Contains(TEXT("\"device_type\":\"Windows\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("device_id"), Json.Contains(TEXT("\"device_id\":\"dev-1\""), ESearchCase::CaseSensitive));
 		TestFalse(TEXT("no empty name"), Json.Contains(TEXT("\"name\"")));
 
 		Req.Name = TEXT("Duck");
 		FString Json2;
 		TestTrue(TEXT("serializes named"), FFlockJsonUtils::StructToWireJson(Req, Json2, true));
-		TestTrue(TEXT("name present"), Json2.Contains(TEXT("\"name\":\"Duck\"")));
+		TestTrue(TEXT("name present"), Json2.Contains(TEXT("\"name\":\"Duck\""), ESearchCase::CaseSensitive));
 	}
 	// Refresh request wire keys.
 	{
@@ -50,8 +50,8 @@ bool FFlockAuthModelsRequestWireTest::RunTest(const FString& Parameters)
 		Req.RefreshToken = TEXT("r-1");
 		FString Json;
 		TestTrue(TEXT("serializes"), FFlockJsonUtils::StructToWireJson(Req, Json, true));
-		TestTrue(TEXT("player_id"), Json.Contains(TEXT("\"player_id\":\"p-1\"")));
-		TestTrue(TEXT("refresh_token"), Json.Contains(TEXT("\"refresh_token\":\"r-1\"")));
+		TestTrue(TEXT("player_id"), Json.Contains(TEXT("\"player_id\":\"p-1\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("refresh_token"), Json.Contains(TEXT("\"refresh_token\":\"r-1\""), ESearchCase::CaseSensitive));
 	}
 	// Social/provider-token requests.
 	{
@@ -62,9 +62,9 @@ bool FFlockAuthModelsRequestWireTest::RunTest(const FString& Parameters)
 		FFlockJsonUtils::StructToWireJson(Google, GJson, true);
 		FFlockJsonUtils::StructToWireJson(Apple, AJson, true);
 		FFlockJsonUtils::StructToWireJson(Steam, SJson, true);
-		TestTrue(TEXT("id_token"), GJson.Contains(TEXT("\"id_token\":\"g\"")));
-		TestTrue(TEXT("identity_token"), AJson.Contains(TEXT("\"identity_token\":\"a\"")));
-		TestTrue(TEXT("session_ticket"), SJson.Contains(TEXT("\"session_ticket\":\"s\"")));
+		TestTrue(TEXT("id_token"), GJson.Contains(TEXT("\"id_token\":\"g\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("identity_token"), AJson.Contains(TEXT("\"identity_token\":\"a\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("session_ticket"), SJson.Contains(TEXT("\"session_ticket\":\"s\""), ESearchCase::CaseSensitive));
 	}
 	// Password/email flows.
 	{
@@ -72,8 +72,8 @@ bool FFlockAuthModelsRequestWireTest::RunTest(const FString& Parameters)
 		Req.Email = TEXT("a@b.c"); Req.Code = TEXT("123"); Req.NewPassword = TEXT("np");
 		FString Json;
 		FFlockJsonUtils::StructToWireJson(Req, Json, true);
-		TestTrue(TEXT("code"), Json.Contains(TEXT("\"code\":\"123\"")));
-		TestTrue(TEXT("new_password"), Json.Contains(TEXT("\"new_password\":\"np\"")));
+		TestTrue(TEXT("code"), Json.Contains(TEXT("\"code\":\"123\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("new_password"), Json.Contains(TEXT("\"new_password\":\"np\""), ESearchCase::CaseSensitive));
 	}
 	return true;
 }

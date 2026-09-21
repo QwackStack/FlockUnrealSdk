@@ -173,12 +173,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLibraryNamingTest, "Flock.Editor.Function
 
 bool FFlockLibraryNamingTest::RunTest(const FString& Parameters)
 {
-	TestEqual(TEXT("spaces collapse"),
+	TestEqualSensitive(TEXT("spaces collapse"),
 		FFlockFunctionLibraryEmitter::MakeTemplateIdFunctionName(TEXT("player progress")),
 		FString(TEXT("PlayerProgressTemplateId")));
-	TestEqual(TEXT("snake_case collapses"),
+	TestEqualSensitive(TEXT("snake_case collapses"),
 		FFlockFunctionLibraryEmitter::MakeConfigIdFunctionName(TEXT("game_play")), FString(TEXT("GamePlayConfigId")));
-	TestEqual(TEXT("leading digit is prefixed"),
+	TestEqualSensitive(TEXT("leading digit is prefixed"),
 		FFlockFunctionLibraryEmitter::MakeTemplateIdFunctionName(TEXT("2ndWind")), FString(TEXT("_2ndWindTemplateId")));
 
 	// A template and a config are one function namespace, so names that collapse together must still

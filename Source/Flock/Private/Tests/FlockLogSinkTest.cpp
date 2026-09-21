@@ -115,13 +115,71 @@ bool FFlockLogSinkFatalTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("fatal carries a callstack"), FlockTestAt(Fatals, 0).StackTrace.IsEmpty());
 	TestEqual(TEXT("not queued"), Sink.PendingCount(), 0);
 
-	// A hard crash may never reach the log at all; the crash delegates synthesize an entry.
+	// The Fatal line is this process's crash. The engine then raises its crash delegates, and they add nothing.
+	Sink.SimulateSystemErrorForTesting(TEXT("assert failed"));
+	Sink.Serialize(TEXT("fatal after the crash"), ELogVerbosity::Fatal, FName(TEXT("LogGame")));
+	TestEqual(TEXT("one crash, one report"), Fatals.Num(), 1);
+	return true;
+}
+
+/**
+ * A hard crash may never reach the log at all, so the crash delegates make a report of their own. The engine raises
+ * them up to three times for one crash, and each used to become its own "Unhandled system error" on the dashboard.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLogSinkOneReportPerCrashTest, "Flock.Analytics.LogSink.OneReportPerCrash",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockLogSinkOneReportPerCrashTest::RunTest(const FString& Parameters)
+{
+	FFlockLogSink Sink;
+	TArray<FFlockCapturedLog> Fatals;
+	Sink.OnFatal.AddLambda([&Fatals](const FFlockCapturedLog& Captured) { Fatals.Add(Captured); });
+
+	// What Windows does for one assertion: the crash-reporting thread, the error handler, then shutting down after it.
+	const TCHAR* Record = TEXT("Assertion failed: bCreatingCDO || !InOuter [File:UObjectGlobals.cpp] [Line: 3977]\r\n")
+		TEXT("NewObject with an outer of the wrong class\r\n\r\n");
+	Sink.SimulateSystemErrorForTesting(Record);
+	Sink.SimulateSystemErrorForTesting(Record);
+	Sink.SimulateSystemErrorForTesting(Record);
+
+	TestEqual(TEXT("one crash, one report"), Fatals.Num(), 1);
+	const FFlockCapturedLog Crash = FlockTestAt(Fatals, 0);
+	TestTrue(TEXT("fatal"), Crash.bFatal);
+	TestEqual(TEXT("filed as a system error"), Crash.Category, FName(TEXT("SystemError")));
+	TestEqual(TEXT("from the crash path"), Crash.Source, FString(TEXT("crash")));
+	TestEqual(TEXT("named by what the engine wrote down"), Crash.Message,
+		FString(TEXT("Assertion failed: bCreatingCDO || !InOuter [File:UObjectGlobals.cpp] [Line: 3977]")));
+	TestFalse(TEXT("with a callstack"), Crash.StackTrace.IsEmpty());
+
+	// Nor does a Fatal line the dying process logs afterwards start a second report.
+	Sink.Serialize(TEXT("fatal while going down"), ELogVerbosity::Fatal, FName(TEXT("LogGame")));
+	TestEqual(TEXT("still one"), Fatals.Num(), 1);
+	return true;
+}
+
+/** What a crash report is called when the engine wrote something down, and when it wrote nothing. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLogSinkDescribeCrashTest, "Flock.Analytics.LogSink.DescribeCrash",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockLogSinkDescribeCrashTest::RunTest(const FString& Parameters)
+{
+	TestEqual(TEXT("the first line of an assertion"),
+		FFlockLogSink::DescribeCrash(TEXT("Assertion failed: Index >= 0 [File:A.cpp] [Line: 12]\r\nwhy\r\n")),
+		FString(TEXT("Assertion failed: Index >= 0 [File:A.cpp] [Line: 12]")));
+	TestEqual(TEXT("blank lines and spaces before it are skipped"),
+		FFlockLogSink::DescribeCrash(TEXT("\r\n   \r\n  Unhandled Exception: EXCEPTION_ACCESS_VIOLATION reading address 0x0  \n")),
+		FString(TEXT("Unhandled Exception: EXCEPTION_ACCESS_VIOLATION reading address 0x0")));
+	TestEqual(TEXT("nothing written down"), FFlockLogSink::DescribeCrash(TEXT("")), FString(TEXT("Unhandled system error")));
+	TestEqual(TEXT("only blank lines"), FFlockLogSink::DescribeCrash(TEXT(" \r\n\t\r\n")), FString(TEXT("Unhandled system error")));
+	TestEqual(TEXT("no record at all"), FFlockLogSink::DescribeCrash(nullptr), FString(TEXT("Unhandled system error")));
+
+	// A crash with nothing written down is still reported, under the plain name.
+	FFlockLogSink Sink;
+	TArray<FFlockCapturedLog> Fatals;
+	Sink.OnFatal.AddLambda([&Fatals](const FFlockCapturedLog& Captured) { Fatals.Add(Captured); });
 	Sink.SimulateSystemErrorForTesting();
-	TestEqual(TEXT("system error delivered"), Fatals.Num(), 2);
-	TestTrue(TEXT("also fatal"), FlockTestAt(Fatals, 1).bFatal);
-	TestEqual(TEXT("synthesized category"), FlockTestAt(Fatals, 1).Category, FName(TEXT("SystemError")));
-	// The crash delegates carry no message, so the stack is the only evidence there is.
-	TestFalse(TEXT("system error carries a callstack"), FlockTestAt(Fatals, 1).StackTrace.IsEmpty());
+	TestEqual(TEXT("reported"), Fatals.Num(), 1);
+	TestEqual(TEXT("under the plain name"), FlockTestAt(Fatals, 0).Message, FString(TEXT("Unhandled system error")));
 	return true;
 }
 

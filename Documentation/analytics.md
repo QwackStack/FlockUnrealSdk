@@ -49,8 +49,9 @@ and properties.
 - **It never waits on the network.** The event is written to disk and delivered on the next flush, so it is
   safe to call often and while offline. It returns false only when it refuses the event outright.
 - **It is refused on the spot** when analytics is off, when consent is withheld, when the name is empty or
-  blank, and for the name `session_started` — the server records that one itself when a session starts, and
-  a copy from the game would count every session twice.
+  blank, when the name is longer than 200 characters or the category longer than 100 (the server cannot store
+  either, and would fail every event sent alongside), and for the name `session_started` — the server records
+  that one itself when a session starts, and a copy from the game would count every session twice.
 - **Every event belongs to a player.** An event recorded with nobody signed in is held, and credited to
   whoever signs in next. Events are delivered only while a player is signed in; one recorded earlier keeps
   the player it was recorded under.
@@ -65,8 +66,13 @@ and properties.
 **Sessions** open when a player signs in and close on logout or quit, tracking duration, screen views,
 pauses, and FPS. Backgrounding pauses the session; returning after **Analytics Session Timeout** starts a
 fresh one. Starting a session while one is open replaces it, closing the old one first. Bind
-`OnSessionStarted` / `OnSessionEnded` / `OnSessionPaused` / `OnSessionResumed` on `GetEvents()`, or read
-`GetAnalyticsSnapshot()` for live metrics.
+`OnSessionStarted` / `OnSessionRegistered` / `OnSessionEnded` / `OnSessionPaused` / `OnSessionResumed` on
+`GetEvents()`, or read `GetAnalyticsSnapshot()` for live metrics. `OnSessionRegistered` carries the id the server
+gave the session, which `GetAnalyticsSessionId()` also returns once it has arrived.
+
+A session reports the engine's platform name (Windows, Android and so on). Set **Session Platform** when the store
+matters more than the operating system, for example `steam` for a Steam build. A value that starts or ends with a
+space is not used: the engine's platform name is sent instead, and a warning says so.
 
 **A session end is never lost.** Every close is written to disk before it is sent, so quitting, signing
 out, losing the network, or crashing outright all cost delivery time rather than the record — whatever did

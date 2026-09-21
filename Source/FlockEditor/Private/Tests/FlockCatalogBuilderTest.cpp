@@ -7,6 +7,7 @@
 #include "Codegen/FlockCatalogBuilder.h"
 #include "Codegen/FlockContentCatalog.h"
 #include "Codegen/FlockSchemaSnapshot.h"
+#include "Tests/Support/FlockTestSpelling.h"
 
 namespace FlockCatalogBuilderTestHelpers
 {
@@ -113,8 +114,8 @@ bool FFlockCatalogAchievementTest::RunTest(const FString& Parameters)
 	UFlockContentCatalog* Catalog = Build(Snapshot());
 
 	TestEqual(TEXT("both achievements"), Catalog->Achievements.Num(), 2);
-	TestTrue(TEXT("first_win listed"), Catalog->Achievements.Contains(TEXT("first_win")));
-	TestTrue(TEXT("flawless listed"), Catalog->Achievements.Contains(TEXT("flawless")));
+	TestTrue(TEXT("first_win listed"), FlockTestSpelling::HoldsExactly(Catalog->Achievements, TEXT("first_win")));
+	TestTrue(TEXT("flawless listed"), FlockTestSpelling::HoldsExactly(Catalog->Achievements, TEXT("flawless")));
 	// Sorted, so a backend reordering its fields does not churn the asset.
 	TestEqual(TEXT("sorted"), Catalog->Achievements[0], FString(TEXT("first_win")));
 

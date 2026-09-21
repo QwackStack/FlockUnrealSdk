@@ -157,6 +157,14 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Analytics")
 	bool bAnalyticsRequireExplicitConsent = false;
 
+	/**
+	 * The platform name sent when a session starts. Leave empty to send the engine's platform name (Windows,
+	 * Android and so on). Set it when the store matters more than the operating system, for example steam for a
+	 * Steam build. A value that starts or ends with a space is not used, and the engine's platform name is sent.
+	 */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Analytics", meta = (DisplayName = "Session Platform"))
+	FString AnalyticsSessionPlatform;
+
 	// ───────────────────────── Analytics | Exceptions ─────────────────────────
 
 	/**
@@ -205,7 +213,10 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Asset Cache")
 	bool bEnableAssetCache = true;
 
-	/** Absolute path for the asset cache. Leave empty to default under the project's persistent data path. */
+	/**
+	 * Absolute path for the asset cache. Leave empty to default under the project's persistent data path. Give it a folder of
+	 * its own: Clear Asset Cache deletes the whole folder, and each start deletes temporary files older than a minute in it.
+	 */
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Asset Cache")
 	FString AssetCacheDirectory;
 
@@ -231,7 +242,11 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Offline Cache")
 	bool bEnableOfflineCache = true;
 
-	/** Absolute path for snapshot storage. Leave empty to default under the project's persistent data path. */
+	/**
+	 * Absolute path for snapshot storage. Leave empty to default under the project's persistent data path. Give it a folder of
+	 * its own: each start deletes every folder in it except the current game version's and Flock's own state, and temporary
+	 * files older than a minute anywhere inside it.
+	 */
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Offline Cache")
 	FString OfflineCacheDirectory;
 

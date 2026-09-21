@@ -223,7 +223,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Flock|Analytics")
 	bool HasActiveAnalyticsSession() const;
 
-	/** The backend's id for the running session; empty until the session start call returns. */
+	/** The backend's id for the running session; empty until the session start call returns, which OnSessionRegistered announces. */
 	UFUNCTION(BlueprintPure, Category = "Flock|Analytics")
 	FString GetAnalyticsSessionId() const;
 
@@ -328,6 +328,14 @@ public:
 	/** Persists tokens through the given store instead of the encrypted file store. */
 	void SetTokenStoreForTesting(const TSharedPtr<IFlockTokenStore>& InStore) { TestTokenStore = InStore; }
 
+	/**
+	 * Saves every file under the given folder instead of the project's Saved folder: the sign-in, the offline cache, the asset cache,
+	 * and the analytics folder with each launch's queues, crash marker and session record, the consent decision and the
+	 * coverage notice. A test's SDK is otherwise one more launch of the game: a real launch takes over what the test left
+	 * and sends it, and the test takes over, sends or deletes what a real launch left.
+	 */
+	void SetSavedFilesFolderForTesting(const FString& InFolder) { TestSavedFilesFolder = InFolder; }
+
 private:
 	/** Applies the baked-version gate and adopts the config. Returns false with OutError on failure. */
 	bool TryInitialize(const FFlockInitConfig& Config, FString& OutError);
@@ -387,4 +395,5 @@ private:
 
 	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
 	TSharedPtr<IFlockTokenStore> TestTokenStore;
+	FString TestSavedFilesFolder;
 };

@@ -32,12 +32,19 @@ bool FFlockLiveProbeBindingTest::RunTest(const FString& Parameters)
 	Events->OnTokenRefreshed.Broadcast();
 	TestEqual(TEXT("Further events keep arriving"), Lines.Num(), 3);
 
+	Events->OnSessionRegistered.Broadcast(TEXT("local-1"), TEXT("srv-1"));
+	if (TestEqual(TEXT("A session reaching the server is shown"), Lines.Num(), 4))
+	{
+		TestTrue(TEXT("...with the server's id"), Lines.Last().Contains(TEXT("srv-1")));
+	}
+
 	// Teardown is mandatory, not hygiene: the panel outlives the PIE session that raised these events.
 	Probe->Unbind();
 	Lines.Reset();
 
 	Events->OnInitialized.Broadcast();
 	Events->OnLoggedOut.Broadcast();
+	Events->OnSessionRegistered.Broadcast(TEXT("local-1"), TEXT("srv-1"));
 	TestEqual(TEXT("Nothing arrives after unbinding"), Lines.Num(), 0);
 
 	// Rebinding is what happens on the second play session, since the subsystem — and therefore the hub —

@@ -29,5 +29,9 @@ public:
 	/** Returns false when there is no usable stored session (missing, corrupt, or empty access token). */
 	virtual bool Load(FFlockStoredTokens& OutTokens) = 0;
 
+	/**
+	 * Forgets the stored sign-in. A file store also deletes a save still being written, however fresh: signing out
+	 * outranks another game of the same build finishing its write, which would otherwise be restored on the next launch.
+	 */
 	virtual void Clear() = 0;
 };

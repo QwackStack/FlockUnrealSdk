@@ -8,7 +8,9 @@
 #include "Analytics/FlockSession.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
 
 namespace
@@ -37,6 +39,40 @@ namespace
 
 		void Advance(double Seconds) const { *Now += FTimespan::FromSeconds(Seconds); }
 	};
+}
+
+/** The live-session record is written beside the old one and moved over it, so a kill part-way through never tears it. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSessionSavesThroughATemporaryFileTest, "Flock.Analytics.Session.SavesThroughATemporaryFile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSessionSavesThroughATemporaryFileTest::RunTest(const FString& Parameters)
+{
+	const FString StatePath = MakeTempStatePath();
+	const FFlockAnalyticsConfig Config;
+	const FFakeClock Clock;
+	FFlockSession Session(Config, StatePath, Clock.Get());
+	Session.Start(TEXT("p-1"));
+
+	bool bWrittenAside = false;
+	bool bRecordReadsBack = false;
+	ON_SCOPE_EXIT { FFlockTemporaryFiles::SetBeforeNextMoveForTesting(nullptr); };
+	FFlockTemporaryFiles::SetBeforeNextMoveForTesting([&bWrittenAside, &bRecordReadsBack, &Session, &Config, &Clock, &StatePath](const FString&)
+	{
+		// The game is killed at this moment: can the next launch still recover the session?
+		bWrittenAside = true;
+		const FFlockSession NextLaunch(Config, StatePath, Clock.Get());
+		FFlockSessionSnapshot Orphan;
+		bRecordReadsBack = NextLaunch.RecoverOrphanedSession(Orphan) && Orphan.SessionId == Session.GetSessionId();
+	});
+	Clock.Advance(10.0);
+	Session.Tick(10.f);
+	Session.PersistState();
+
+	TestTrue(TEXT("The record is written to a temporary file of its own first"), bWrittenAside);
+	TestTrue(TEXT("Until it is moved into place, the previous record still recovers the session"), bRecordReadsBack);
+	TestEqual(TEXT("No temporary file is left"), FFlockTemporaryFiles::FindTemporaryFilesOf(StatePath).Num(), 0);
+	DeleteTempFile(StatePath);
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSessionLifecycleTest, "Flock.Analytics.Session.Lifecycle",

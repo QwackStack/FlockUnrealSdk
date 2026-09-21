@@ -96,6 +96,7 @@ jobs:
           require_entry playtest-entries.txt FlockPlaytest/FlockPlaytest.uplugin
           require_entry playtest-entries.txt FlockPlaytest/LICENSE.md
           require_entry playtest-entries.txt FlockPlaytest/Source/FlockPlaytest/FlockPlaytest.Build.cs
+          require_entry playtest-entries.txt FlockPlaytest/Source/FlockPlaytestEditor/FlockPlaytestEditor.Build.cs
           if grep -v '^FlockPlaytest/' playtest-entries.txt; then
             echo "::error::The playtest archive has entries outside FlockPlaytest/ (above)."
             FAILED=1

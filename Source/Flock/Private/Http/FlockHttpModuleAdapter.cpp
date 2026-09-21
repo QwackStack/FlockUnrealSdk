@@ -1,9 +1,27 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Http/FlockHttpModuleAdapter.h"
+#include "HttpManager.h"
 #include "HttpModule.h"
+#include "Http/FlockHttpShutdown.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
+
+// Declared in a public header so the playtest plugin can call it too, and defined here because this is the one file
+// that already knows the engine's HTTP module -- the transport seam exists to keep that knowledge in one place.
+void FlockFinishRequestsBeforeShutdown()
+{
+	// Not loaded means nothing was ever sent through it, and asking for the module would load it only to flush nothing.
+	if (!FModuleManager::Get().IsModuleLoaded(TEXT("HTTP")))
+	{
+		return;
+	}
+	// Default, never Shutdown. Shutdown is reserved for the module's own Shutdown(), which unbinds every completion
+	// first -- the very thing being avoided here -- and FHttpManager::Flush asserts on that reason while any request
+	// still has a completion bound (HttpManager.cpp:334), which is exactly the case this exists for. Default waits a
+	// bounded 2 s, cancels whatever is left, and gives up after 4 s, with completions live throughout.
+	FHttpModule::Get().GetHttpManager().Flush(EHttpFlushReason::Default);
+}
 
 FFlockHttpModuleAdapter::FFlockHttpModuleAdapter(float InDefaultTimeoutSeconds)
 	: DefaultTimeoutSeconds(InDefaultTimeoutSeconds)

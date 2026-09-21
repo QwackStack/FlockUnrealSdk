@@ -16,136 +16,11 @@
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/ScopeLock.h"
 #include "Tests/FlockPlaytestFakeTransport.h"
+#include "Tests/FlockPlaytestSubsystemTestSupport.h"
 #include "Tests/FlockPlaytestTestSupport.h"
 #include "UObject/Package.h"
 
-namespace
-{
-	/** Sets the project's playtest settings for one test and puts the previous values back when it ends. */
-	struct FScopedPlaytestSettings
-	{
-		UFlockPlaytestSettings* Settings;
-		bool bSavedPlaytestingEnabled;
-		FString SavedProtokiteApiUrl;
-
-		FScopedPlaytestSettings(bool bPlaytestingEnabled, const FString& ProtokiteApiUrl)
-			: Settings(GetMutableDefault<UFlockPlaytestSettings>())
-			, bSavedPlaytestingEnabled(Settings->bPlaytestingEnabled)
-			, SavedProtokiteApiUrl(Settings->ProtokiteApiUrl)
-		{
-			Settings->bPlaytestingEnabled = bPlaytestingEnabled;
-			Settings->ProtokiteApiUrl = ProtokiteApiUrl;
-		}
-
-		~FScopedPlaytestSettings()
-		{
-			Settings->bPlaytestingEnabled = bSavedPlaytestingEnabled;
-			Settings->ProtokiteApiUrl = SavedProtokiteApiUrl;
-		}
-	};
-
-	FFlockInitConfig MakeFlockConfig(const FString& GameVersionId = FlockPlaytestFixtures::GameVersionId)
-	{
-		FFlockInitConfig Config;
-		// Nothing in these tests signs in, so nothing is sent to Flock; the address is unreachable all the same.
-		Config.ApiUrl = TEXT("http://127.0.0.1:9");
-		Config.ApiKey = TEXT("secret");
-		Config.GameId = TEXT("flock-playtest-test");
-		Config.GameVersion = TEXT("1.2.3");
-		Config.GameVersionId = GameVersionId;
-		return Config;
-	}
-
-	/**
-	 * Both subsystems under one game instance, built directly rather than through the game instance's subsystem
-	 * collection, so each test drives the Flock SDK's lifecycle itself. Protokite is the fake transport, which
-	 * answers the playtest-config route with a loaded config unless a test says otherwise, and nothing is retried
-	 * unless a test keeps the Flock SDK's retry settings.
-	 */
-	struct FPlaytestFixture
-	{
-		UGameInstance* GameInstance = NewObject<UGameInstance>(GetTransientPackage());
-		UFlockSubsystem* Flock = NewObject<UFlockSubsystem>(GameInstance);
-		UFlockPlaytestSubsystem* Playtest = NewObject<UFlockPlaytestSubsystem>(GameInstance);
-		TSharedRef<FFlockPlaytestFakeTransport> Transport = MakeShared<FFlockPlaytestFakeTransport>();
-
-		explicit FPlaytestFixture(bool bTurnRetriesOff = true)
-		{
-			AnswerConfig(FFlockPlaytestFakeTransport::Status(200, FlockPlaytestFixtures::ConfigBody()));
-			Playtest->SetHttpAdapterForTesting(Transport);
-			if (bTurnRetriesOff)
-			{
-				FFlockRetryPolicy NoRetries;
-				NoRetries.MaxRetries = 0;
-				Playtest->SetRetryPolicyForTesting(NoRetries);
-			}
-		}
-
-		~FPlaytestFixture()
-		{
-			Flock->ShutdownSdk();
-		}
-
-		void AnswerConfig(const FFlockHttpResponse& Response)
-		{
-			Transport->Answer(FlockPlaytestFixtures::PlaytestConfigRoute, Response);
-		}
-
-		int32 ConfigRequests() const
-		{
-			return Transport->Requests.Num();
-		}
-	};
-
-	/** Collects what the playtest plugin logs while it exists. */
-	class FPlaytestLogCapture : public FOutputDevice
-	{
-	public:
-		struct FLine
-		{
-			ELogVerbosity::Type Verbosity;
-			FString Message;
-		};
-
-		FPlaytestLogCapture()
-		{
-			GLog->AddOutputDevice(this);
-		}
-
-		virtual ~FPlaytestLogCapture() override
-		{
-			GLog->RemoveOutputDevice(this);
-		}
-
-		virtual void Serialize(const TCHAR* Message, ELogVerbosity::Type Verbosity, const FName& Category) override
-		{
-			if (Category == PlaytestCategory)
-			{
-				FScopeLock Lock(&LinesLock);
-				Lines.Add({ static_cast<ELogVerbosity::Type>(Verbosity & ELogVerbosity::VerbosityMask), Message });
-			}
-		}
-
-		// Handed each line as it is logged rather than later from a buffer, so the lines are here when read.
-		virtual bool CanBeUsedOnAnyThread() const override { return true; }
-		virtual bool CanBeUsedOnMultipleThreads() const override { return true; }
-
-		/** The lines logged at Log or louder, in order. */
-		TArray<FLine> LinesAtLogOrLouder()
-		{
-			GLog->Flush();
-			FScopeLock Lock(&LinesLock);
-			return Lines.FilterByPredicate([](const FLine& Line) { return Line.Verbosity <= ELogVerbosity::Log; });
-		}
-
-	private:
-		const FName PlaytestCategory = TEXT("LogFlockPlaytest");
-		FCriticalSection LinesLock;
-		TArray<FLine> Lines;
-	};
-
-	const TCHAR* const UsableUrl = TEXT("http://localhost:8020");
-}
+using namespace FlockPlaytestSubsystemTesting;
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSubsystemFollowsFlockLifecycleTest,
 	"Flock.Playtest.Subsystem.FollowsFlockLifecycle",
@@ -227,6 +102,8 @@ bool FFlockPlaytestSubsystemStopsFollowingFlockWhenDeinitializedTest::RunTest(co
 		EFlockPlaytestStatus::Ready);
 	TestTrue(TEXT("It listens for Flock sessions starting while it follows the Flock SDK"),
 		Fixture.Flock->GetEvents()->OnSessionStarted.Contains(Fixture.Playtest, TEXT("HandleFlockSessionStarted")));
+	TestTrue(TEXT("It listens for Flock sessions reaching the server while it follows the Flock SDK"),
+		Fixture.Flock->GetEvents()->OnSessionRegistered.Contains(Fixture.Playtest, TEXT("HandleFlockSessionRegistered")));
 
 	// Ready must not survive teardown: nothing may start playtest work on a subsystem that has shut down.
 	Fixture.Playtest->Deinitialize();
@@ -234,6 +111,8 @@ bool FFlockPlaytestSubsystemStopsFollowingFlockWhenDeinitializedTest::RunTest(co
 		EFlockPlaytestStatus::Stopped);
 	TestFalse(TEXT("It stops listening for Flock sessions starting once torn down"),
 		Fixture.Flock->GetEvents()->OnSessionStarted.Contains(Fixture.Playtest, TEXT("HandleFlockSessionStarted")));
+	TestFalse(TEXT("It stops listening for Flock sessions reaching the server once torn down"),
+		Fixture.Flock->GetEvents()->OnSessionRegistered.Contains(Fixture.Playtest, TEXT("HandleFlockSessionRegistered")));
 	TestFalse(TEXT("No feature is on once stopped"),
 		Fixture.Playtest->IsPlaytestFeatureEnabled(FlockPlaytestFeatures::VideoRecording));
 
@@ -271,7 +150,8 @@ bool FFlockPlaytestSubsystemLogsEachChangeOnceTest::RunTest(const FString& Param
 		}
 	}
 	{
-		// With playtesting turned on, waiting for the Flock SDK, fetching and being ready are each logged once, at Log.
+		// With playtesting turned on, waiting for the Flock SDK, fetching, being ready and then waiting for a Flock session
+		// are each logged once, at Log.
 		FScopedPlaytestSettings Settings(true, UsableUrl);
 		FPlaytestFixture Fixture;
 		Fixture.Transport->bHoldReplies = true;
@@ -282,7 +162,7 @@ bool FFlockPlaytestSubsystemLogsEachChangeOnceTest::RunTest(const FString& Param
 		Fixture.Transport->ReleaseAllHeldReplies();
 
 		const TArray<FPlaytestLogCapture::FLine> Lines = Capture.LinesAtLogOrLouder();
-		if (TestEqual(TEXT("Waiting, fetching and ready are logged once each"), Lines.Num(), 3))
+		if (TestEqual(TEXT("Waiting, fetching, ready and waiting for a Flock session are logged once each"), Lines.Num(), 4))
 		{
 			const EFlockPlaytestStatus Expected[] = {
 				EFlockPlaytestStatus::WaitingForFlock, EFlockPlaytestStatus::FetchingPlaytestConfig, EFlockPlaytestStatus::Ready };
@@ -293,6 +173,9 @@ bool FFlockPlaytestSubsystemLogsEachChangeOnceTest::RunTest(const FString& Param
 				TestTrue(FString::Printf(TEXT("Line %d describes the expected status"), Index),
 					Lines[Index].Message.Contains(DescribePlaytestStatus(Expected[Index])));
 			}
+			TestEqual(TEXT("Line 3 is logged at Log"), static_cast<int32>(Lines[3].Verbosity), static_cast<int32>(ELogVerbosity::Log));
+			TestTrue(TEXT("Line 3 says the Protokite session waits for a Flock session"),
+				Lines[3].Message.Contains(TEXT("starts once a Flock session reaches the server")));
 		}
 	}
 	{
@@ -449,26 +332,6 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSubsystemUsesTheFlockSdkRetrySett
 
 bool FFlockPlaytestSubsystemUsesTheFlockSdkRetrySettingsTest::RunTest(const FString& Parameters)
 {
-	/** Sets the Flock SDK's retry settings for this test and puts the previous values back when it ends. */
-	struct FScopedFlockRetrySettings
-	{
-		UFlockConfig* FlockSettings = GetMutableDefault<UFlockConfig>();
-		int32 SavedRetryMaxRetries = FlockSettings->RetryMaxRetries;
-		bool bSavedRetryUseJitter = FlockSettings->bRetryUseJitter;
-
-		FScopedFlockRetrySettings(int32 RetryMaxRetries, bool bRetryUseJitter)
-		{
-			FlockSettings->RetryMaxRetries = RetryMaxRetries;
-			FlockSettings->bRetryUseJitter = bRetryUseJitter;
-		}
-
-		~FScopedFlockRetrySettings()
-		{
-			FlockSettings->RetryMaxRetries = SavedRetryMaxRetries;
-			FlockSettings->bRetryUseJitter = bSavedRetryUseJitter;
-		}
-	};
-
 	FScopedPlaytestSettings Settings(true, UsableUrl);
 	FScopedFlockRetrySettings RetrySettings(1, false);
 	// No retry policy is handed in, so the subsystem has to read the Flock SDK's own settings, as a game does.
@@ -518,20 +381,20 @@ bool FFlockPlaytestSubsystemNoRequestUntilAllowedTest::RunTest(const FString& Pa
 		Fixture.Flock->InitializeWithConfig(MakeFlockConfig());
 		Fixture.Flock->ShutdownSdk();
 		Fixture.Flock->InitializeWithConfig(MakeFlockConfig());
-		TestEqual(TEXT("Turned off: no request"), Fixture.ConfigRequests(), 0);
+		TestEqual(TEXT("Turned off: no request of any kind"), Fixture.Transport->Requests.Num(), 0);
 	}
 	{
 		FScopedPlaytestSettings Settings(true, TEXT("localhost:8020"));
 		FPlaytestFixture Fixture;
 		Fixture.Playtest->FollowFlockLifecycleForTesting(Fixture.Flock);
 		Fixture.Flock->InitializeWithConfig(MakeFlockConfig());
-		TestEqual(TEXT("Unusable URL: no request"), Fixture.ConfigRequests(), 0);
+		TestEqual(TEXT("Unusable URL: no request of any kind"), Fixture.Transport->Requests.Num(), 0);
 	}
 	{
 		FScopedPlaytestSettings Settings(true, UsableUrl);
 		FPlaytestFixture Fixture;
 		Fixture.Playtest->FollowFlockLifecycleForTesting(Fixture.Flock);
-		TestEqual(TEXT("Flock SDK not initialized: no request"), Fixture.ConfigRequests(), 0);
+		TestEqual(TEXT("Flock SDK not initialized: no request of any kind"), Fixture.Transport->Requests.Num(), 0);
 	}
 	return true;
 }
@@ -640,6 +503,11 @@ bool FFlockPlaytestSubsystemFeaturesAreOnOnlyWhileReadyTest::RunTest(const FStri
 {
 	FScopedPlaytestSettings Settings(true, UsableUrl);
 	FPlaytestFixture Fixture;
+	// The config turns video recording on, so the switch followed here is one the config really turns on. No game viewport
+	// is ever found, so nothing is recorded.
+	Fixture.AnswerConfig(FFlockPlaytestFakeTransport::Status(200,
+		FlockPlaytestFixtures::ConfigBody(FlockPlaytestFixtures::GameVersionId, /*bHeavyAnalytics*/ false, /*bVideoRecording*/ true)));
+	Fixture.Playtest->SetVideoFrameSourceFactoryForTesting([](FIntPoint, FString&) -> TSharedPtr<IFlockPlaytestVideoFrameSource> { return nullptr; });
 	Fixture.Transport->bHoldReplies = true;
 
 	Fixture.Playtest->FollowFlockLifecycleForTesting(Fixture.Flock);
@@ -754,6 +622,8 @@ bool FFlockPlaytestSubsystemGameInstanceFollowsItsFlockTest::RunTest(const FStri
 		{
 			TestTrue(TEXT("The playtest subsystem follows its own game instance's Flock subsystem"),
 				Playtest->GetFollowedFlockForTesting() == Flock);
+			TestTrue(TEXT("It listens for its Flock sessions reaching the server, which start the Protokite session"),
+				Flock->GetEvents()->OnSessionRegistered.Contains(Playtest, TEXT("HandleFlockSessionRegistered")));
 		}
 	}
 	TestTrue(TEXT("A running game instance was found to check"), GameInstancesChecked > 0);
