@@ -245,7 +245,14 @@ bool FFlockAnalyticsLaunchesRunningGameHoldsItsFolderTest::RunTest(const FString
 	{
 		return true;
 	}
-	TestTrue(TEXT("Precondition: Flock is initialized with analytics on"), Flock->IsInitialized() && Flock->GetAnalyticsProvider() != nullptr);
+	// A project with no Flock settings of its own -- a studio's, before they fill them in -- starts no SDK, so there is
+	// no launch folder to check and nothing is wrong. Said out loud rather than failed: a failure here reads as the SDK
+	// being broken in a project that has simply not been set up yet.
+	if (!Flock->IsInitialized() || Flock->GetAnalyticsProvider() == nullptr)
+	{
+		AddInfo(TEXT("Skipped: the running game's Flock SDK is not initialized with analytics on, so it holds no launch folder. Fill in the Flock settings (API URL, API Key, Game Name, Game Version) to check this."));
+		return true;
+	}
 
 	const FString LaunchesFolder = FPaths::Combine(FFlockAnalyticsLaunches::DefaultFolder(), FFlockAnalyticsLaunches::LaunchesFolderName);
 	int32 HeldFolders = 0;

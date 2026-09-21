@@ -82,6 +82,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestUploadsWhenAskedToStopTest,
 
 bool FFlockPlaytestUploadsWhenAskedToStopTest::RunTest(const FString& Parameters)
 {
+	// The settings a ready playtest needs, set by the test itself: read from the project's own ini, this passes in a
+	// project that happens to have playtesting on and fails in every other, which is what a studio's project is.
+	FScopedPlaytestSettings Settings(true, UsableUrl);
 	FPlaytestFixture Fixture;
 	const TSharedRef<FFlockPlaytestFakeFileUploader> Uploader = StartRecordingPlaytest(*this, Fixture);
 
@@ -108,6 +111,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestDoesNotUploadAtTeardownTest,
 
 bool FFlockPlaytestDoesNotUploadAtTeardownTest::RunTest(const FString& Parameters)
 {
+	// The settings a ready playtest needs, set by the test itself: read from the project's own ini, this passes in a
+	// project that happens to have playtesting on and fails in every other, which is what a studio's project is.
+	FScopedPlaytestSettings Settings(true, UsableUrl);
 	FPlaytestFixture Fixture;
 	const TSharedRef<FFlockPlaytestFakeFileUploader> Uploader = StartRecordingPlaytest(*this, Fixture);
 
@@ -139,6 +145,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestTakingVideoBackDeletesItTest,
 
 bool FFlockPlaytestTakingVideoBackDeletesItTest::RunTest(const FString& Parameters)
 {
+	// The settings a ready playtest needs, set by the test itself: read from the project's own ini, this passes in a
+	// project that happens to have playtesting on and fails in every other, which is what a studio's project is.
+	FScopedPlaytestSettings Settings(true, UsableUrl);
 	FPlaytestFixture Fixture;
 	const TSharedRef<FFlockPlaytestFakeFileUploader> Uploader = StartRecordingPlaytest(*this, Fixture);
 

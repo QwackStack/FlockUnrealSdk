@@ -129,4 +129,49 @@ bool FFlockPlaytestFixtureIsTheOnlyWayTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * A test that builds a fixture says what the playtest settings are, rather than reading the project's own.
+ *
+ * **Measured 2026-09-21** by installing the release zips into a project that had never seen them: five tests passed
+ * here and failed there, because they wanted a ready playtest and took Enable Playtesting from the harness project's
+ * DefaultGame.ini. The shipped default is off, so a studio running this suite in their own project saw failures that
+ * were not defects. Every file that builds a fixture now declares its own settings, and this keeps it that way.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestFixtureSettingsAreTheTestsOwnTest,
+	"Flock.Playtest.Fixture.EveryTestSaysWhatItsSettingsAre",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestFixtureSettingsAreTheTestsOwnTest::RunTest(const FString& Parameters)
+{
+	const FString TestsFolder = FPaths::ConvertRelativePathToFull(FPaths::GetPath(FString(ANSI_TO_TCHAR(__FILE__))));
+	// Put together here so this file's own mention does not count.
+	const FString BuildingAFixture = FString(TEXT("FPlaytestFixture ")) + TEXT("Fixture");
+	const FString SayingTheSettings = FString(TEXT("FScopedPlaytest")) + TEXT("Settings");
+
+	int32 FilesRead = 0;
+	TArray<FString> FilesTakingTheProjectsSettings;
+	TArray<FString> Files;
+	IFileManager::Get().FindFilesRecursive(Files, *TestsFolder, TEXT("*.cpp"), /*Files*/ true, /*Directories*/ false);
+	for (const FString& File : Files)
+	{
+		FString Text;
+		if (!FFileHelper::LoadFileToString(Text, *File))
+		{
+			continue;
+		}
+		++FilesRead;
+		if (Text.Contains(BuildingAFixture, ESearchCase::CaseSensitive)
+			&& !Text.Contains(SayingTheSettings, ESearchCase::CaseSensitive))
+		{
+			FilesTakingTheProjectsSettings.Add(FPaths::GetCleanFilename(File));
+		}
+	}
+	FilesTakingTheProjectsSettings.Sort();
+
+	TestTrue(TEXT("Precondition: the playtest test sources were read"), FilesRead > 20);
+	TestEqualSensitive(TEXT("No test file leaves its playtest settings to the project it runs in"),
+		FString::Join(FilesTakingTheProjectsSettings, TEXT(", ")), TEXT(""));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

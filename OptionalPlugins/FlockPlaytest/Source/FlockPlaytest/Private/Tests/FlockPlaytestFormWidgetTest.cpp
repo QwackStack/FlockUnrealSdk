@@ -145,6 +145,9 @@ bool FFlockPlaytestFormNoFormNoOpenTest::RunTest(const FString& Parameters)
 		TEXT("{\"session_started_event\":\"session_started\",\"test_id\":\"%s\",\"flock_game_version_id\":\"%s\",")
 		TEXT("\"features\":{},\"form\":null}"), TestId, GameVersionId));
 
+	// The settings a ready playtest needs, set by the test itself: read from the project's own ini, this passes in a
+	// project that happens to have playtesting on and fails in every other, which is what a studio's project is.
+	FScopedPlaytestSettings Settings(true, UsableUrl);
 	FPlaytestFixture Fixture;
 	Fixture.AnswerConfig(FFlockPlaytestFakeTransport::Status(200, NoFormBody));
 	Fixture.StartFlock();
@@ -164,6 +167,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestFormWithAFormOffersOneTest,
 
 bool FFlockPlaytestFormWithAFormOffersOneTest::RunTest(const FString& Parameters)
 {
+	// The settings a ready playtest needs, set by the test itself: read from the project's own ini, this passes in a
+	// project that happens to have playtesting on and fails in every other, which is what a studio's project is.
+	FScopedPlaytestSettings Settings(true, UsableUrl);
 	FPlaytestFixture Fixture;
 	Fixture.StartFlock();
 
