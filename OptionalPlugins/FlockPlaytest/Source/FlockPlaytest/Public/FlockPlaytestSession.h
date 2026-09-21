@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
+#include "FlockPlaytestConsent.h"
 #include "FlockPlaytestIdentity.h"
 #include "FlockPlaytestSession.generated.h"
 
@@ -91,7 +92,13 @@ struct FLOCKPLAYTEST_API FFlockPlaytestSessionStartRequest
 };
 
 /**
- * The extra_debug facts a session start sends: engine_version, build_configuration, gpu, map and sdk_version. The GPU
- * and the map are left out when they are not known.
+ * The extra_debug facts a session start sends: engine_version, build_configuration, gpu, map and sdk_version, plus
+ * what the player let the playtest collect. The GPU and the map are left out when they are not known.
+ *
+ * **The consent facts ride here as two extra parameters** rather than as members of their own: extra_debug is already
+ * the session's free-form bag, so a session says what it was allowed to collect with nothing to change on the server.
+ * playtest_consent is the answer's wire spelling, and playtest_consent_asked says whether the player was asked at all
+ * -- without it, a build that asks nobody and one whose player allowed everything look the same on the session.
  */
-FLOCKPLAYTEST_API TMap<FString, FString> MakePlaytestSessionDebugInfo(const FString& MapName);
+FLOCKPLAYTEST_API TMap<FString, FString> MakePlaytestSessionDebugInfo(const FString& MapName,
+	EFlockPlaytestConsentChoice PlayerConsent, bool bAskedThePlayer);

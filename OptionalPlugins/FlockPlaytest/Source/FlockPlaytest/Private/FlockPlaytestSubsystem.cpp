@@ -19,6 +19,7 @@
 #include "FlockPlaytestRecordingUploads.h"
 #include "FlockPlaytestSampleAnswers.h"
 #include "FlockPlaytestFormSpool.h"
+#include "SFlockPlaytestConsentWidget.h"
 #include "SFlockPlaytestFormWidget.h"
 #include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
@@ -114,6 +115,8 @@ void UFlockPlaytestSubsystem::Deinitialize()
 
 	// Nothing this subsystem put on screen, or had listening to the keyboard, outlives it.
 	CloseFeedbackForm();
+	StopWaitingForAViewportToAskIn();
+	CloseConsentQuestion();
 	if (WaitingToUploadEarlierRecordings.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(WaitingToUploadEarlierRecordings);
@@ -146,7 +149,88 @@ void UFlockPlaytestSubsystem::Deinitialize()
 
 bool UFlockPlaytestSubsystem::IsPlaytestFeatureEnabled(const FString& FeatureName) const
 {
-	return Status == EFlockPlaytestStatus::Ready && PlaytestConfig.IsFeatureEnabled(FeatureName);
+	// Three answers, all of which have to be yes: the build is in a state to do playtest work, the player allowed this
+	// half of it, and the playtest asked for it.
+	return Status == EFlockPlaytestStatus::Ready
+		&& FlockPlaytestConsent::AllowsFeature(GetPlaytestConsent(), FeatureName)
+		&& PlaytestConfig.IsFeatureEnabled(FeatureName);
+}
+
+EFlockPlaytestConsentChoice UFlockPlaytestSubsystem::GetPlaytestConsent() const
+{
+	const EFlockPlaytestConsentChoice Answer = GetPlayersConsentAnswer();
+	if (FlockPlaytestConsent::IsAnswered(Answer))
+	{
+		return Answer;
+	}
+	// Nobody has answered. A build that asks collects nothing until someone does; one that does not ask collects what
+	// the playtest turns on, and its sessions say that nobody was asked.
+	return DoesThisBuildAskForPlaytestConsent()
+		? EFlockPlaytestConsentChoice::NotAnswered
+		: EFlockPlaytestConsentChoice::VideoAndPlayData;
+}
+
+EFlockPlaytestConsentChoice UFlockPlaytestSubsystem::GetPlayersConsentAnswer() const
+{
+	// Read once and kept: every feature check asks for it, and a file read per frame would be silly.
+	if (!SavedConsentChoice.IsSet())
+	{
+		SavedConsentChoice = FFlockPlaytestConsentFile(GetConsentFilePath()).Read();
+	}
+	return SavedConsentChoice.GetValue();
+}
+
+bool UFlockPlaytestSubsystem::DoesThisBuildAskForPlaytestConsent() const
+{
+	return GetDefault<UFlockPlaytestSettings>()->bAskThePlayerForPlaytestConsent;
+}
+
+FString UFlockPlaytestSubsystem::GetConsentFilePath() const
+{
+	return TestConsentFilePath.IsEmpty() ? FFlockPlaytestConsentFile::GetDefaultPath() : TestConsentFilePath;
+}
+
+bool UFlockPlaytestSubsystem::SetPlaytestConsent(EFlockPlaytestConsentChoice Choice)
+{
+	const FFlockPlaytestConsentFile File(GetConsentFilePath());
+	if (!File.Save(Choice))
+	{
+		UE_LOG(LogFlockPlaytest, Warning, TEXT("The player's answer about what this playtest may collect could not be saved to %s, so they are asked again next launch. Nothing is collected until it can be saved."),
+			*File.GetPath());
+		SavedConsentChoice = EFlockPlaytestConsentChoice::NotAnswered;
+		RefreshStatus();
+		return false;
+	}
+
+	SavedConsentChoice = Choice;
+	// The question has been answered however it was put, so nothing is waiting for it any more.
+	bAskedToChangeConsent = false;
+	UE_LOG(LogFlockPlaytest, Log, TEXT("%s The answer is kept in %s."), *FlockPlaytestConsent::Describe(Choice), *File.GetPath());
+
+	// Applies it at once: the status is decided again, which starts or stops the recording, the performance windows and
+	// the launch's session.
+	RefreshStatus();
+	return true;
+}
+
+bool UFlockPlaytestSubsystem::AskForPlaytestConsent()
+{
+	if (!IsThePlaytestLoaded())
+	{
+		UE_LOG(LogFlockPlaytest, Log, TEXT("There is nothing to ask the player about: no playtest is loaded. %s"),
+			*DescribePlaytestStatus(Status));
+		return false;
+	}
+	if (FormWidget.IsValid())
+	{
+		// One panel at a time, and nothing is remembered to be done afterwards: a game that means to ask asks again
+		// once its player has finished with the form.
+		UE_LOG(LogFlockPlaytest, Log, TEXT("The playtest's consent question cannot be put while the feedback form is open."));
+		return false;
+	}
+	bAskedToChangeConsent = true;
+	UpdateConsentQuestion();
+	return IsConsentQuestionOpen();
 }
 
 bool UFlockPlaytestSubsystem::EndPlaytestSession(TFunction<void(bool bEnded, const FString& WhyNot)> OnEnded)
@@ -239,7 +323,9 @@ void UFlockPlaytestSubsystem::RefreshStatus()
 	ApplyStatus(DecideCurrentStatus(), GetDefault<UFlockPlaytestSettings>()->ProtokiteApiUrl,
 		Flock.IsValid() ? Flock->GetGameVersionId() : FString());
 
-	// After the status is applied, because all three need Ready.
+	// After the status is applied, because all four read it. The question comes first: while it is unanswered the other
+	// three have nothing to start, and the moment it is answered they are the ones that act on it.
+	UpdateConsentQuestion();
 	UpdatePerformanceTimeline();
 	UpdateVideoRecording();
 	StartPlaytestSessionWhenAllowed();
@@ -255,6 +341,7 @@ EFlockPlaytestStatus UFlockPlaytestSubsystem::DecideCurrentStatus() const
 	Inputs.bFlockInitialized = Flock.IsValid() && Flock->IsInitialized();
 	Inputs.ConfigState = ConfigState;
 	Inputs.bPlaytestNoLongerCollecting = bPlaytestNoLongerCollecting;
+	Inputs.PlayerConsent = GetPlaytestConsent();
 	return DecidePlaytestStatus(Inputs);
 }
 
@@ -375,7 +462,10 @@ void UFlockPlaytestSubsystem::StartPlaytestSessionWhenAllowed()
 			*FirstFlockServerSessionId, FlockPlaytestSessionLimits::FlockSessionIdLength);
 	}
 	const UGameInstance* GameInstance = GetGameInstance();
-	Request.DebugInfo = MakePlaytestSessionDebugInfo(MapNameOf(GameInstance != nullptr ? GameInstance->GetWorld() : nullptr));
+	// What the player allowed rides along as extra parameters, so the session says what it was collected under: a
+	// session with no recording is then a player who asked for none rather than a build that went wrong.
+	Request.DebugInfo = MakePlaytestSessionDebugInfo(MapNameOf(GameInstance != nullptr ? GameInstance->GetWorld() : nullptr),
+		GetPlaytestConsent(), DoesThisBuildAskForPlaytestConsent());
 
 	WarnIfExceptionsAreNotCaptured();
 
@@ -510,6 +600,11 @@ void UFlockPlaytestSubsystem::ApplyStatus(EFlockPlaytestStatus NewStatus, const 
 		break;
 	case EFlockPlaytestStatus::FetchingPlaytestConfig:
 	case EFlockPlaytestStatus::WaitingForFlock:
+	case EFlockPlaytestStatus::WaitingForPlayerConsent:
+		UE_LOG(LogFlockPlaytest, Log, TEXT("%s"), *Description);
+		break;
+	case EFlockPlaytestStatus::PlayerRefusedPlaytest:
+		// Not a warning: nothing is wrong, and the answer is the player's to give.
 		UE_LOG(LogFlockPlaytest, Log, TEXT("%s"), *Description);
 		break;
 	case EFlockPlaytestStatus::PlaytestNotLinked:
@@ -532,8 +627,11 @@ void UFlockPlaytestSubsystem::ApplyStatus(EFlockPlaytestStatus NewStatus, const 
 		}
 		FeaturesOn.Sort();
 		const FString FeatureList = FeaturesOn.Num() > 0 ? FString::Join(FeaturesOn, TEXT(", ")) : FString(TEXT("none"));
-		UE_LOG(LogFlockPlaytest, Log, TEXT("%s Playtest: %s. Features on: %s. Protokite API URL: %s. Game Version ID: %s."),
-			*Description, *PlaytestConfig.TestId, *FeatureList, *ProtokiteApiUrl, *GameVersionId);
+		// What the playtest asks for and what the player allowed are both named: a feature listed here still collects
+		// nothing when their answer leaves it out, and that is the first thing to look at when it does not.
+		UE_LOG(LogFlockPlaytest, Log, TEXT("%s Playtest: %s. Features on: %s. Player consent: %s%s. Protokite API URL: %s. Game Version ID: %s."),
+			*Description, *PlaytestConfig.TestId, *FeatureList, *FlockPlaytestConsent::ToWire(GetPlaytestConsent()),
+			DoesThisBuildAskForPlaytestConsent() ? TEXT("") : TEXT(" (the player was not asked)"), *ProtokiteApiUrl, *GameVersionId);
 		break;
 	}
 	}
@@ -1134,6 +1232,33 @@ void UFlockPlaytestSubsystem::UploadThisLaunchsRecording()
 	{
 		OnRecordingUploadFinished.Broadcast(false, WhyNot);
 	};
+
+	// Checked before the game is closing, not after: a recording kept through a shutdown is one a later launch sends,
+	// and the session saved beside it is what tells that launch where. Only deleting it now honours the answer.
+	if (!FlockPlaytestConsent::AllowsVideoRecording(GetPlaytestConsent()))
+	{
+		TArray<FString> FilesLeft;
+		const bool bDeleted = VideoRecordingRun->DeleteEverything(FilesLeft);
+		FinishedVideoRecordingPath.Empty();
+		if (bDeleted)
+		{
+			VideoRecordingRun.Reset();
+			UE_LOG(LogFlockPlaytest, Log, TEXT("The player asked for the screen not to be recorded, so what had been recorded this launch was deleted instead of uploaded."));
+		}
+		else
+		{
+			UE_LOG(LogFlockPlaytest, Warning, TEXT("The player asked for the screen not to be recorded, and what had been recorded this launch could not all be deleted: %s. It is not uploaded."),
+				*FString::Join(FilesLeft, TEXT(", ")));
+		}
+		if (!bDeinitializing)
+		{
+			// Same rule as every other way out: not raised while the game is closing, because its handlers would run
+			// against objects being torn down.
+			NotUploadedNow(TEXT("The player asked for the screen not to be recorded, so the recording was deleted."));
+		}
+		return;
+	}
+
 	if (bDeinitializing)
 	{
 		// A whole recording cannot be sent inside a shutdown, and the run is about to be let go of. It stays on disk
@@ -1216,8 +1341,33 @@ void UFlockPlaytestSubsystem::StartUploadingWhatEarlierLaunchesLeft()
 				return true;
 			}
 
-			// Forms kept from an earlier launch go out with the recordings: both need Flock running for the key.
+			// Forms kept from an earlier launch go out first, and go whatever the player's answer is: a form was typed
+			// and sent by the player themselves, which is what they are told when they answer -- the consent question
+			// covers what the playtest collects on its own, never what somebody chose to send.
 			Self->SendFormsKeptFromEarlierLaunches();
+
+			// **Nothing of an earlier launch's goes out while this launch's question is still on screen.** The answer is
+			// seconds away, and sending first would mean a player who then asks for nothing had their last session's
+			// video uploaded while they were reading the question. Only that one status waits: a build with playtesting
+			// switched off, or one that asks nobody, never reaches it, and stranding those recordings is exactly what
+			// pushing them exists to prevent.
+			if (Self->Status == EFlockPlaytestStatus::WaitingForPlayerConsent)
+			{
+				return true;
+			}
+
+			// A player who has asked for nothing to be collected is not sent what earlier launches left, although those
+			// launches recorded it with their permission. It keeps waiting rather than giving up for the launch, so a
+			// player who changes their mind from their own menu has them sent then instead of a launch later.
+			if (Self->GetPlaytestConsent() == EFlockPlaytestConsentChoice::Nothing)
+			{
+				if (!Self->bLoggedNotPushingWhatEarlierLaunchesLeft)
+				{
+					Self->bLoggedNotPushingWhatEarlierLaunchesLeft = true;
+					UE_LOG(LogFlockPlaytest, Log, TEXT("Nothing an earlier launch left is being sent: the player has asked this playtest to collect nothing. What is waiting stays on disk, and goes only if they change that answer."));
+				}
+				return true;
+			}
 
 			Self->bStartedUploadingWhatEarlierLaunchesLeft = true;
 			Self->WaitingToUploadEarlierRecordings.Reset();
@@ -1301,6 +1451,14 @@ bool UFlockPlaytestSubsystem::OpenFeedbackForm()
 	{
 		return false;
 	}
+	if (ConsentWidget.IsValid())
+	{
+		// One panel at a time. The player is being asked what the playtest may collect, which is the question the form
+		// itself depends on the answer to.
+		UE_LOG(LogFlockPlaytest, Log, TEXT("The feedback form cannot be opened while the playtest's consent question is on screen."));
+		return false;
+	}
+
 	UGameInstance* GameInstance = GetGameInstance();
 	UGameViewportClient* Viewport = GameInstance != nullptr ? GameInstance->GetGameViewportClient() : nullptr;
 	if (Viewport == nullptr)
@@ -1329,20 +1487,8 @@ bool UFlockPlaytestSubsystem::OpenFeedbackForm()
 			return StopVideoRecordingAndUploadIt();
 		});
 
-	// High enough to sit over the game's own HUD widgets.
-	Viewport->AddViewportWidgetContent(Widget, /*ZOrder*/ 1000);
 	FormWidget = Widget;
-
-	if (APlayerController* Controller = GameInstance->GetFirstLocalPlayerController())
-	{
-		// Remembered rather than assumed: a game that already showed a cursor must still have one afterwards.
-		bCursorWasShownBeforeTheForm = Controller->bShowMouseCursor;
-		Controller->bShowMouseCursor = true;
-		FInputModeUIOnly Mode;
-		Mode.SetWidgetToFocus(Widget);
-		Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
-		Controller->SetInputMode(Mode);
-	}
+	ShowPanelOverTheGame(Widget);
 
 	const UFlockPlaytestSettings* Settings = GetDefault<UFlockPlaytestSettings>();
 	if (Settings->bPauseWhileFeedbackFormIsOpen && !UGameplayStatics::IsGamePaused(this))
@@ -1350,7 +1496,6 @@ bool UFlockPlaytestSubsystem::OpenFeedbackForm()
 		bPausedForTheForm = UGameplayStatics::SetGamePaused(this, true);
 	}
 
-	FSlateApplication::Get().SetKeyboardFocus(Widget);
 	UE_LOG(LogFlockPlaytest, Log, TEXT("The playtest feedback form is open."));
 	return true;
 }
@@ -1362,19 +1507,9 @@ bool UFlockPlaytestSubsystem::CloseFeedbackForm()
 		return false;
 	}
 
-	UGameInstance* GameInstance = GetGameInstance();
-	if (UGameViewportClient* Viewport = GameInstance != nullptr ? GameInstance->GetGameViewportClient() : nullptr)
-	{
-		Viewport->RemoveViewportWidgetContent(FormWidget.ToSharedRef());
-	}
+	const TSharedRef<SFlockPlaytestFormWidget> Widget = FormWidget.ToSharedRef();
 	FormWidget.Reset();
-
-	if (APlayerController* Controller = GameInstance != nullptr ? GameInstance->GetFirstLocalPlayerController() : nullptr)
-	{
-		// Put back exactly what was there, or a game that never had a cursor keeps one and its input stays on the UI.
-		Controller->bShowMouseCursor = bCursorWasShownBeforeTheForm;
-		Controller->SetInputMode(FInputModeGameOnly());
-	}
+	HidePanelOverTheGame(Widget);
 
 	if (bPausedForTheForm)
 	{
@@ -1531,6 +1666,164 @@ void UFlockPlaytestSubsystem::SendFormsKeptFromEarlierLaunches()
 	}
 }
 
+bool UFlockPlaytestSubsystem::IsThePlaytestLoaded() const
+{
+	// The three statuses a loaded playtest can be in: waiting for the answer, refused, or running.
+	return Status == EFlockPlaytestStatus::WaitingForPlayerConsent
+		|| Status == EFlockPlaytestStatus::PlayerRefusedPlaytest
+		|| Status == EFlockPlaytestStatus::Ready;
+}
+
+void UFlockPlaytestSubsystem::UpdateConsentQuestion()
+{
+	// Two reasons to have it up: the playtest is waiting for a first answer, or a game asked for it to be put again.
+	const bool bWanted = !bDeinitializing && IsThePlaytestLoaded()
+		&& (Status == EFlockPlaytestStatus::WaitingForPlayerConsent || bAskedToChangeConsent);
+	if (!bWanted)
+	{
+		StopWaitingForAViewportToAskIn();
+		CloseConsentQuestion();
+		return;
+	}
+	if (ConsentWidget.IsValid())
+	{
+		return;
+	}
+	if (OpenConsentQuestion())
+	{
+		StopWaitingForAViewportToAskIn();
+		return;
+	}
+	// There is nowhere to draw it yet. A game instance gets its viewport when it gets one, so this keeps trying rather
+	// than deciding once that the player cannot be asked.
+	WaitForAViewportToAskIn();
+}
+
+bool UFlockPlaytestSubsystem::OpenConsentQuestion()
+{
+	// One panel at a time, and the form is the player's own doing, so it is never taken away from under them. Nothing
+	// is said here: whoever asked has already been told.
+	if (FormWidget.IsValid())
+	{
+		return false;
+	}
+
+	UGameInstance* GameInstance = GetGameInstance();
+	UGameViewportClient* Viewport = GameInstance != nullptr ? GameInstance->GetGameViewportClient() : nullptr;
+	if (Viewport == nullptr || !FSlateApplication::IsInitialized())
+	{
+		if (!bLoggedNowhereToAskForConsent)
+		{
+			bLoggedNowhereToAskForConsent = true;
+			// Both reasons are named, because a run with a viewport and no Slate application would otherwise be sent
+			// looking for a rendering fault that is not there.
+			UE_LOG(LogFlockPlaytest, Warning, TEXT("This build's playtest is loaded, but the consent question cannot be drawn yet: this game instance has %s. Nothing is collected until it is answered, and a run that draws nothing (a dedicated server, -nullrhi) never can answer it. Such a run can be given an answer with Flock Set Playtest Consent or the console command FlockPlaytest.AnswerConsent, or can turn Ask The Player For Playtest Consent off."),
+				Viewport == nullptr ? TEXT("no viewport") : TEXT("no Slate application to draw with"));
+		}
+		return false;
+	}
+
+	const TSharedRef<SFlockPlaytestConsentWidget> Widget = SNew(SFlockPlaytestConsentWidget)
+		.OnChosen_Lambda([this](EFlockPlaytestConsentChoice Choice)
+		{
+			// Saving decides the status again, which is what takes the question away and starts or stops everything.
+			SetPlaytestConsent(Choice);
+		});
+
+	ConsentWidget = Widget;
+	ShowPanelOverTheGame(Widget);
+	UE_LOG(LogFlockPlaytest, Log, TEXT("The playtest's consent question is on screen. Nothing is collected until the player answers it."));
+	return true;
+}
+
+void UFlockPlaytestSubsystem::CloseConsentQuestion()
+{
+	if (!ConsentWidget.IsValid())
+	{
+		return;
+	}
+	const TSharedRef<SFlockPlaytestConsentWidget> Widget = ConsentWidget.ToSharedRef();
+	ConsentWidget.Reset();
+	HidePanelOverTheGame(Widget);
+	UE_LOG(LogFlockPlaytest, Verbose, TEXT("The playtest's consent question is closed."));
+}
+
+void UFlockPlaytestSubsystem::WaitForAViewportToAskIn()
+{
+	if (WaitingToAskForConsent.IsValid())
+	{
+		return;
+	}
+	const TWeakObjectPtr<UFlockPlaytestSubsystem> WeakThis(this);
+	WaitingToAskForConsent = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+		[WeakThis](float) -> bool
+		{
+			UFlockPlaytestSubsystem* Self = WeakThis.Get();
+			if (Self == nullptr || Self->bDeinitializing)
+			{
+				return false;
+			}
+			Self->UpdateConsentQuestion();
+			// The question being up, or no longer wanted, clears the handle: this then stops with it.
+			return Self->WaitingToAskForConsent.IsValid();
+		}), 0.5f);
+}
+
+void UFlockPlaytestSubsystem::StopWaitingForAViewportToAskIn()
+{
+	if (!WaitingToAskForConsent.IsValid())
+	{
+		return;
+	}
+	FTSTicker::GetCoreTicker().RemoveTicker(WaitingToAskForConsent);
+	WaitingToAskForConsent.Reset();
+}
+
+void UFlockPlaytestSubsystem::ShowPanelOverTheGame(const TSharedRef<SWidget>& Panel)
+{
+	UGameInstance* GameInstance = GetGameInstance();
+	UGameViewportClient* Viewport = GameInstance != nullptr ? GameInstance->GetGameViewportClient() : nullptr;
+	if (Viewport == nullptr)
+	{
+		return;
+	}
+
+	// High enough to sit over the game's own HUD widgets.
+	Viewport->AddViewportWidgetContent(Panel, /*ZOrder*/ 1000);
+
+	if (APlayerController* Controller = GameInstance->GetFirstLocalPlayerController())
+	{
+		// Remembered rather than assumed: a game that already showed a cursor must still have one afterwards.
+		bCursorWasShownBeforeThePanel = Controller->bShowMouseCursor;
+		Controller->bShowMouseCursor = true;
+		FInputModeUIOnly Mode;
+		Mode.SetWidgetToFocus(Panel);
+		Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		Controller->SetInputMode(Mode);
+	}
+
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().SetKeyboardFocus(Panel);
+	}
+}
+
+void UFlockPlaytestSubsystem::HidePanelOverTheGame(const TSharedRef<SWidget>& Panel)
+{
+	UGameInstance* GameInstance = GetGameInstance();
+	if (UGameViewportClient* Viewport = GameInstance != nullptr ? GameInstance->GetGameViewportClient() : nullptr)
+	{
+		Viewport->RemoveViewportWidgetContent(Panel);
+	}
+
+	if (APlayerController* Controller = GameInstance != nullptr ? GameInstance->GetFirstLocalPlayerController() : nullptr)
+	{
+		// Put back exactly what was there, or a game that never had a cursor keeps one and its input stays on the UI.
+		Controller->bShowMouseCursor = bCursorWasShownBeforeThePanel;
+		Controller->SetInputMode(FInputModeGameOnly());
+	}
+}
+
 void UFlockPlaytestSubsystem::UpdateFeedbackFormKeyWatcher()
 {
 	const UFlockPlaytestSettings* Settings = GetDefault<UFlockPlaytestSettings>();
@@ -1582,6 +1875,35 @@ namespace
 				return;
 			}
 			Playtest->StartTestVideoRecording(Seconds);
+		}));
+
+	FAutoConsoleCommandWithWorldArgsAndOutputDevice AnswerConsentCommand(
+		TEXT("FlockPlaytest.AnswerConsent"),
+		TEXT("Answers the playtest's consent question as a player would, for a run with nobody at the keyboard: "
+			"FlockPlaytest.AnswerConsent video_and_play_data | video_only | play_data_only | nothing | not_answered. "
+			"The answer is kept for later launches, and not_answered forgets it so the question is put again. A build "
+			"that should never ask turns off Ask The Player For Playtest Consent instead."),
+		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World, FOutputDevice& Output)
+		{
+			// Lower-cased first, so a console answer is not refused over letter case; the saved answer and what a
+			// session sends are the spellings the table holds either way.
+			const EFlockPlaytestConsentChoice Choice = Args.Num() == 1
+				? FlockPlaytestConsent::FromWire(Args[0].ToLower())
+				: EFlockPlaytestConsentChoice::NotAnswered;
+			const bool bReadTheAnswer = Args.Num() == 1
+				&& (FlockPlaytestConsent::IsAnswered(Choice) || Args[0].ToLower() == FlockPlaytestConsent::ToWire(EFlockPlaytestConsentChoice::NotAnswered));
+			if (!bReadTheAnswer)
+			{
+				Output.Log(TEXT("Usage: FlockPlaytest.AnswerConsent <video_and_play_data|video_only|play_data_only|nothing|not_answered>."));
+				return;
+			}
+			UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystemOfWorld(World);
+			if (Playtest == nullptr)
+			{
+				Output.Log(TEXT("No Flock Playtest subsystem runs in this world's game instance."));
+				return;
+			}
+			Playtest->SetPlaytestConsent(Choice);
 		}));
 
 	FAutoConsoleCommandWithWorldArgsAndOutputDevice StopVideoRecordingCommand(

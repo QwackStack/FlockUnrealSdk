@@ -16,6 +16,7 @@ FFlockPlaytestSetupInput FFlockPlaytestSetupInput::FromProjectSettings()
 	FFlockPlaytestSetupInput Input;
 	Input.bPlaytestingEnabled = Playtest->bPlaytestingEnabled;
 	Input.ProtokiteApiUrl = Playtest->ProtokiteApiUrl;
+	Input.bAskThePlayerForPlaytestConsent = Playtest->bAskThePlayerForPlaytestConsent;
 	Input.FlockGameVersion = Flock->GameVersion;
 	Input.bFlockAnalyticsEnabled = Flock->bAnalyticsEnabled;
 	Input.bFlockAnalyticsAutoStartSession = Flock->bAnalyticsAutoStartSession;
@@ -84,12 +85,24 @@ TArray<FFlockPlaytestSetupFinding> FFlockPlaytestSetupStatus::Evaluate(const FFl
 	}
 	if (Input.bFlockAnalyticsEnabled && Input.bFlockAnalyticsRequireExplicitConsent)
 	{
+		// Named for whose consent it is. This build can be waiting on two different answers from the same player, and
+		// telling a developer that "consent" is missing without saying which one sends them to the wrong settings page.
 		FFlockPlaytestSetupFinding Finding;
-		Finding.Id = TEXT("Playtest.WaitsForConsent");
+		Finding.Id = TEXT("Playtest.WaitsForFlockAnalyticsConsent");
 		Finding.Severity = EFlockPlaytestSetupSeverity::Info;
-		Finding.Title = LOCTEXT("WaitsForConsent", "Playtest sessions wait for analytics consent");
-		Finding.Detail = LOCTEXT("WaitsForConsentDetail", "Analytics Require Explicit Consent is on, so no Flock session, and no playtest session, starts until the player grants consent.");
+		Finding.Title = LOCTEXT("WaitsForConsent", "Playtest sessions wait for the Flock SDK's analytics consent");
+		Finding.Detail = LOCTEXT("WaitsForConsentDetail", "Analytics Require Explicit Consent is on, so no Flock session, and no playtest session, starts until the game grants the Flock SDK's analytics consent. That is the game's own consent and a separate question from the playtest's, which the playtest plugin asks itself.");
 		Finding.Fix = EFlockPlaytestSetupFix::OpenFlockSettings;
+		Findings.Add(Finding);
+	}
+	if (Input.bAskThePlayerForPlaytestConsent)
+	{
+		FFlockPlaytestSetupFinding Finding;
+		Finding.Id = TEXT("Playtest.AsksThePlayerWhatToCollect");
+		Finding.Severity = EFlockPlaytestSetupSeverity::Info;
+		Finding.Title = LOCTEXT("AsksThePlayer", "The playtest asks the player what it may collect");
+		Finding.Detail = LOCTEXT("AsksThePlayerDetail", "Ask The Player For Playtest Consent is on, so this launch collects nothing until the player answers the playtest's own question, drawn over the game once the playtest loads: the screen and play data, either one on its own, or nothing at all. Answer it in a Development build's console with FlockPlaytest.AnswerConsent video_and_play_data, or turn the setting off for a build whose players are asked another way.");
+		Finding.Fix = EFlockPlaytestSetupFix::OpenPlaytestSettings;
 		Findings.Add(Finding);
 	}
 

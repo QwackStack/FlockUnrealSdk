@@ -39,6 +39,9 @@ struct FLOCKPLAYTESTEDITOR_API FFlockPlaytestSetupInput
 	bool bPlaytestingEnabled = false;
 	FString ProtokiteApiUrl;
 
+	/** Whether this build puts the playtest's own consent question to its players before collecting anything. */
+	bool bAskThePlayerForPlaytestConsent = true;
+
 	/** The Flock SDK's Game Version: the version's name, which the Flock SDK resolves to the ID it sends. */
 	FString FlockGameVersion;
 	bool bFlockAnalyticsEnabled = true;

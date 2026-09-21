@@ -418,6 +418,17 @@ void FFlockPlaytestSelfTest::CheckPlaytestLoaded()
 				FinishBecauseTheGameShutDown();
 				return;
 			}
+			if (PlaytestNow->GetStatus() == EFlockPlaytestStatus::WaitingForPlayerConsent
+				|| PlaytestNow->GetStatus() == EFlockPlaytestStatus::PlayerRefusedPlaytest)
+			{
+				// Not a failure: this build's playtest loaded, which is what the step checks. Nobody has allowed it to
+				// collect anything, and a run with no one at the keyboard cannot answer a question drawn over the game.
+				Finish(EFlockPlaytestSelfTestOutcome::Skipped, FString::Printf(TEXT("%s Answer it with "
+					"'FlockPlaytest.AnswerConsent video_and_play_data' before this self-test, or turn off Ask The Player "
+					"For Playtest Consent in Project Settings > Plugins > Flock Playtest Settings."),
+					*FlockPlaytestConsent::Describe(PlaytestNow->GetPlaytestConsent())));
+				return;
+			}
 			if (PlaytestNow->GetStatus() != EFlockPlaytestStatus::Ready)
 			{
 				Finish(EFlockPlaytestSelfTestOutcome::Failed, FString::Printf(TEXT("the playtest status is %s; the log above says "

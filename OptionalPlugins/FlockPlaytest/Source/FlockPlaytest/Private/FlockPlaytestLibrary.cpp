@@ -37,6 +37,42 @@ FString UFlockPlaytestLibrary::DescribePlaytestStatus(EFlockPlaytestStatus Statu
 	return ::DescribePlaytestStatus(Status);
 }
 
+EFlockPlaytestConsentChoice UFlockPlaytestLibrary::GetPlaytestConsent(const UObject* WorldContextObject)
+{
+	const UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);
+	// With no playtest subsystem nothing collects anything, which is what an unanswered question means too.
+	return Playtest != nullptr ? Playtest->GetPlaytestConsent() : EFlockPlaytestConsentChoice::NotAnswered;
+}
+
+EFlockPlaytestConsentChoice UFlockPlaytestLibrary::GetPlayersConsentAnswer(const UObject* WorldContextObject)
+{
+	const UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);
+	return Playtest != nullptr ? Playtest->GetPlayersConsentAnswer() : EFlockPlaytestConsentChoice::NotAnswered;
+}
+
+FString UFlockPlaytestLibrary::DescribePlaytestConsent(EFlockPlaytestConsentChoice Choice)
+{
+	return FlockPlaytestConsent::Describe(Choice);
+}
+
+bool UFlockPlaytestLibrary::SetPlaytestConsent(const UObject* WorldContextObject, EFlockPlaytestConsentChoice Choice)
+{
+	UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);
+	return Playtest != nullptr && Playtest->SetPlaytestConsent(Choice);
+}
+
+bool UFlockPlaytestLibrary::AskForPlaytestConsent(const UObject* WorldContextObject)
+{
+	UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);
+	return Playtest != nullptr && Playtest->AskForPlaytestConsent();
+}
+
+bool UFlockPlaytestLibrary::IsConsentQuestionOpen(const UObject* WorldContextObject)
+{
+	const UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);
+	return Playtest != nullptr && Playtest->IsConsentQuestionOpen();
+}
+
 bool UFlockPlaytestLibrary::IsPlaytestFeatureEnabled(const UObject* WorldContextObject, const FString& FeatureName)
 {
 	const UFlockPlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);

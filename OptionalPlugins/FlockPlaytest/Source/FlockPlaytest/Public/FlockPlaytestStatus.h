@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "FlockPlaytestConfig.h"
+#include "FlockPlaytestConsent.h"
 #include "Http/FlockResult.h"
 #include "FlockPlaytestStatus.generated.h"
 
@@ -49,9 +50,22 @@ enum class EFlockPlaytestStatus : uint8
 	PlaytestNoLongerCollecting,
 
 	/**
-	 * Playtest work may run: the settings are complete, the Flock SDK is initialized and this build's playtest
-	 * config is loaded. It does not mean a player is signed in or a Flock session exists: the Flock SDK
-	 * announces that it is initialized before it restores a session.
+	 * This build's playtest is loaded and the player has not yet said what it may collect. Nothing is recorded, nothing
+	 * is sent and no session is started while this is the answer.
+	 */
+	WaitingForPlayerConsent,
+
+	/**
+	 * The player asked this playtest to collect nothing. The build then does exactly what one with Enable Playtesting
+	 * turned off does: nothing is recorded, nothing is sent, and no session is started.
+	 */
+	PlayerRefusedPlaytest,
+
+	/**
+	 * Playtest work may run: the settings are complete, the Flock SDK is initialized, this build's playtest
+	 * config is loaded and the player has allowed at least one of the two things a playtest collects. It does not mean
+	 * a player is signed in or a Flock session exists: the Flock SDK announces that it is initialized before it
+	 * restores a session. What the player allowed is then honoured feature by feature: see IsPlaytestFeatureEnabled.
 	 */
 	Ready,
 
@@ -81,14 +95,23 @@ struct FFlockPlaytestStatusInputs
 
 	/** Protokite refused this launch's session because the playtest has closed. */
 	bool bPlaytestNoLongerCollecting = false;
+
+	/**
+	 * What the player let this playtest collect. A build that does not ask hands in VideoAndPlayData, since nobody was
+	 * given a chance to narrow it.
+	 */
+	EFlockPlaytestConsentChoice PlayerConsent = EFlockPlaytestConsentChoice::NotAnswered;
 };
 
 /**
  * Decides the playtest status from its inputs.
  *
- * The order is the switch, then the URL, then a closed playtest, then the Flock SDK, then the playtest config. A
- * build with playtesting turned off says nothing about its URL, a URL mistake is reported straight away rather than
- * hidden until the Flock SDK initializes, and a closed playtest stays closed whatever the Flock SDK does next.
+ * The order is the switch, then the URL, then a closed playtest, then the Flock SDK, then the playtest config, and
+ * last what the player allowed. A build with playtesting turned off says nothing about its URL, a URL mistake is
+ * reported straight away rather than hidden until the Flock SDK initializes, and a closed playtest stays closed
+ * whatever the Flock SDK does next. **The player is asked last on purpose**: only a build with a playtest actually
+ * loaded has anything to ask about, so one that is misconfigured, or that no playtest is linked to, never puts a
+ * question in front of a player.
  */
 FLOCKPLAYTEST_API EFlockPlaytestStatus DecidePlaytestStatus(const FFlockPlaytestStatusInputs& Inputs);
 

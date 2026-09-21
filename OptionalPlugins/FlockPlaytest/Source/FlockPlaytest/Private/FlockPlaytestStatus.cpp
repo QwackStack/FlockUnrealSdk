@@ -29,6 +29,14 @@ EFlockPlaytestStatus DecidePlaytestStatus(const FFlockPlaytestStatusInputs& Inpu
 	switch (Inputs.ConfigState)
 	{
 	case EFlockPlaytestConfigState::Loaded:
+		if (!FlockPlaytestConsent::IsAnswered(Inputs.PlayerConsent))
+		{
+			return EFlockPlaytestStatus::WaitingForPlayerConsent;
+		}
+		if (!FlockPlaytestConsent::CollectsAnything(Inputs.PlayerConsent))
+		{
+			return EFlockPlaytestStatus::PlayerRefusedPlaytest;
+		}
 		return EFlockPlaytestStatus::Ready;
 	case EFlockPlaytestConfigState::PlaytestNotLinked:
 		return EFlockPlaytestStatus::PlaytestNotLinked;
@@ -124,6 +132,10 @@ FString DescribePlaytestStatus(EFlockPlaytestStatus Status)
 		return TEXT("Protokite answered with the playtest of a different Game Version ID than this build sent, so playtesting stays off. A proxy that drops the X-Game-Version-ID header causes this.");
 	case EFlockPlaytestStatus::PlaytestNoLongerCollecting:
 		return TEXT("This playtest has closed and takes no more sessions (Protokite answered HTTP 400), so playtesting is off until the game is launched again. Reopen the playtest in Protokite, or point Game Version at a playtest that is still running.");
+	case EFlockPlaytestStatus::WaitingForPlayerConsent:
+		return TEXT("This build's playtest is loaded, and nothing is collected until the player says what it may collect. The question is put to them once the game has a viewport; a game can ask it itself with Flock Ask For Playtest Consent, or answer it with Flock Set Playtest Consent. Turn off Ask The Player For Playtest Consent in Project Settings > Plugins > Flock Playtest Settings to collect without asking.");
+	case EFlockPlaytestStatus::PlayerRefusedPlaytest:
+		return TEXT("The player asked this playtest to collect nothing, so nothing is recorded, nothing is sent and no session is started, exactly as if Enable Playtesting were off. They can be asked again with Flock Ask For Playtest Consent.");
 	case EFlockPlaytestStatus::Ready:
 		return TEXT("Playtesting is ready: this build's playtest is loaded.");
 	case EFlockPlaytestStatus::Stopped:

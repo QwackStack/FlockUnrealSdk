@@ -65,7 +65,44 @@ needs no account.
 A playtest build with no sign-in screen of its own can sign in from the console in Development builds:
 `Flock.LoginWithDevice`.
 
-## 4. Play
+## 4. What the player is asked
+
+**A playtest build asks its player what it may collect, and collects nothing until they answer.** The question is drawn
+over the game as soon as this build's playtest is loaded, and offers four answers:
+
+| Answer | What the playtest then collects |
+|---|---|
+| Record my screen and collect play data | Everything the playtest turns on |
+| Record my screen only | The recording; no performance windows, level loads, playtest events or exceptions |
+| Collect play data only | Those; no recording |
+| Collect nothing | Nothing at all: no recording, nothing sent, and no session for the launch -- exactly what this build does with **Enable Playtesting** off |
+
+**It is the playtest's own question and its words say so.** The Flock SDK's **Analytics Require Explicit Consent** is a
+different question, asked by your game in your game's words about your game's analytics; neither answer moves the other.
+The playtest's answer is kept in `Saved/FlockPlaytest/playtest_consent.json` and used by every later launch of that
+build. Nothing an earlier launch left waiting is sent while the question is still on screen, and nothing is sent at all
+while the answer is *collect nothing* -- a player who changes their mind has it sent in the same launch. The feedback form is not covered by it either way: it is sent only when a player fills it in and presses Send.
+
+What a playtest asks for and what the player allowed are both named in the log when playtesting becomes ready, and
+`playtest_consent` and `playtest_consent_asked` ride along with every session start, so a session with no recording
+reads as a player who asked for none rather than a build that went wrong.
+
+Your game can take this over: **Flock Get Playtest Consent** and **Flock Get Players Consent Answer** read it,
+**Flock Set Playtest Consent** records an answer from your own screens, and **Flock Ask For Playtest Consent** puts the
+question again -- what a "change what this playtest collects" entry in your menu calls. Setting it to **Not Answered**
+forgets the answer, so the question is asked again.
+
+While the question is up the player's input goes to it and the game keeps running, so a game that asks during play
+pauses first if being unable to act would cost the player something. The plugin never pauses for it: your game knows
+when its player can be interrupted, and pausing does nothing in a multiplayer match.
+
+Turn **Ask The Player For Playtest Consent** off in *Flock Playtest Settings* only where your players have been asked
+another way, for an internal test on your own machines, or for an automated run with nobody there to answer. The build
+then collects what the playtest turns on, and each session says the player was never asked. **An answer a player has
+already given is still honoured** in such a build: the setting decides whether the question is put, not whether an
+answer counts.
+
+## 5. Play
 
 The log, under `LogFlockPlaytest`, says what the playtest is doing:
 
@@ -89,6 +126,8 @@ When something stops the playtest, the log says why and names the setting, once,
 | Protokite refused API key | Protokite turned down the Flock API key | Check **API Key** in the Flock SDK's settings |
 | Playtest config unavailable | Protokite or the network kept failing | Nothing: it is fetched again when the next Flock session starts |
 | Playtest no longer collecting | The playtest has closed | Reopen it in Protokite, or point Game Version at a running one |
+| Waiting for player consent | The playtest is loaded and the player has not said what it may collect | Nothing: it is asked over the game. A console can answer with `FlockPlaytest.AnswerConsent` |
+| Player refused playtest | The player asked for nothing to be collected | Nothing: it is their answer. **Flock Ask For Playtest Consent** puts the question again |
 
 In Blueprint, **Flock Get Playtest Status** answers the same question, and **Flock Describe Playtest Status** turns it
 into the sentence the log uses.
@@ -178,6 +217,8 @@ playtest running it answers false, empty or Turned Off and changes nothing.
 |---|---|
 | Flock Get Playtest Status, Flock Is Playtest Ready, Flock Describe Playtest Status | Whether playtest work may run, and why not |
 | Flock Is Playtest Feature Enabled, with Flock Playtest Feature Video Recording / Exception Capturing / Heavy Analytics | Whether the playtest turns a feature on |
+| Flock Get Playtest Consent, Flock Get Players Consent Answer, Flock Describe Playtest Consent | What the player let the playtest collect |
+| Flock Set Playtest Consent, Flock Ask For Playtest Consent, Flock Is Consent Question Open | Answering it from your own screens, and asking it again |
 | Flock Get Playtest Session Id, Flock End Playtest Session | The launch's Protokite session |
 | Flock Record Playtest Event | Records one of your own playtest events |
 | Flock Is Recording Video, Flock Stop Video Recording | The launch's recording |
@@ -194,6 +235,7 @@ playtest running it answers false, empty or Turned Off and changes nothing.
 
 | Console command (Development builds) | Does |
 |---|---|
+| `FlockPlaytest.AnswerConsent <answer>` | Answers what the playtest may collect: `video_and_play_data`, `video_only`, `play_data_only`, `nothing`, or `not_answered` to be asked again |
 | `FlockPlaytest.OpenFeedbackForm [seconds]` | Opens the form, after a wait if given |
 | `FlockPlaytest.SendTestFeedback [seconds]` | Fills in the published form and sends it, to check answers reach Protokite |
 | `FlockPlaytest.StopVideoRecordingAndUploadIt [seconds]` | Stops the recording and uploads it |
@@ -247,6 +289,10 @@ feedback form. Tell your testers before they play: what is recorded, that it goe
 playtest, and how to reach you to have it removed. Nothing is collected unless **Enable Playtesting** is on in the build
 and the playtest in Protokite turns the feature on, and a build without the plugin collects none of it.
 
+The build asks them too, before collecting anything, and does what they answer -- see [What the player is
+asked](#4-what-the-player-is-asked). That question is about this playtest alone; anything your game collects of its own
+is still yours to ask about.
+
 ## What stays on the player's machine
 
 | Folder under `Saved/FlockPlaytest/` | Holds | Until |
@@ -255,3 +301,4 @@ and the playtest in Protokite turns the feature on, and a build without the plug
 | `Recordings/TestVideos/` | Test videos | Deleted for disk room, oldest first |
 | `FeedbackForms/` | Answers that could not be sent | Sent, or refused by the server |
 | `device_id.txt` | This install's device id, when no Steam id is available | Kept, so one install stays one player |
+| `playtest_consent.json` | What the player let this playtest collect | Kept, so they are asked once rather than every launch |

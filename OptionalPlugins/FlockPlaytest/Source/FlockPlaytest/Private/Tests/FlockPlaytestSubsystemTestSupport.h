@@ -14,6 +14,7 @@
 #include "Engine/World.h"
 #include "FlockEvents.h"
 #include "FlockInitConfig.h"
+#include "FlockPlaytestConsent.h"
 #include "FlockPlaytestPerformanceTimeline.h"
 #include "FlockPlaytestSettings.h"
 #include "FlockPlaytestSubsystem.h"
@@ -42,20 +43,25 @@ namespace FlockPlaytestSubsystemTesting
 		UFlockPlaytestSettings* Settings;
 		bool bSavedPlaytestingEnabled;
 		FString SavedProtokiteApiUrl;
+		bool bSavedAskThePlayerForPlaytestConsent;
 
-		FScopedPlaytestSettings(bool bPlaytestingEnabled, const FString& ProtokiteApiUrl)
+		FScopedPlaytestSettings(bool bPlaytestingEnabled, const FString& ProtokiteApiUrl,
+			bool bAskThePlayerForPlaytestConsent = true)
 			: Settings(GetMutableDefault<UFlockPlaytestSettings>())
 			, bSavedPlaytestingEnabled(Settings->bPlaytestingEnabled)
 			, SavedProtokiteApiUrl(Settings->ProtokiteApiUrl)
+			, bSavedAskThePlayerForPlaytestConsent(Settings->bAskThePlayerForPlaytestConsent)
 		{
 			Settings->bPlaytestingEnabled = bPlaytestingEnabled;
 			Settings->ProtokiteApiUrl = ProtokiteApiUrl;
+			Settings->bAskThePlayerForPlaytestConsent = bAskThePlayerForPlaytestConsent;
 		}
 
 		~FScopedPlaytestSettings()
 		{
 			Settings->bPlaytestingEnabled = bSavedPlaytestingEnabled;
 			Settings->ProtokiteApiUrl = SavedProtokiteApiUrl;
+			Settings->bAskThePlayerForPlaytestConsent = bSavedAskThePlayerForPlaytestConsent;
 		}
 	};
 
@@ -207,6 +213,9 @@ namespace FlockPlaytestSubsystemTesting
 			FGuid::NewGuid().ToString(EGuidFormats::Digits));
 		FString DeviceIdFilePath = FPaths::Combine(Folder, TEXT("device_id.txt"));
 
+		/** The player's consent answer, in this fixture's folder so no test reads or writes the project's own. */
+		FString ConsentFilePath = FPaths::Combine(Folder, TEXT("playtest_consent.json"));
+
 		/** The account the Steam reader answers with, and how many times it was asked. */
 		TSharedRef<FFlockRunningSteamAccount> SteamAccount = MakeShared<FFlockRunningSteamAccount>();
 		TSharedRef<int32> SteamReads = MakeShared<int32>(0);
@@ -214,8 +223,16 @@ namespace FlockPlaytestSubsystemTesting
 		/** The engine frame number the playtest subsystem reads. Tests move it on the way the engine does, once per frame. */
 		TSharedRef<uint64> EngineFrameNumber = MakeShared<uint64>(0);
 
-		explicit FPlaytestFixture(bool bTurnRetriesOff = true, bool bUseTestIdentitySources = true)
+		explicit FPlaytestFixture(bool bTurnRetriesOff = true, bool bUseTestIdentitySources = true,
+			EFlockPlaytestConsentChoice PlayersConsent = EFlockPlaytestConsentChoice::VideoAndPlayData)
 		{
+			// The fixture stands in for a player who has already said what this playtest may collect, so a test that is
+			// not about that question sees the playtest run. A test about it hands in another answer, NotAnswered
+			// included, which is a player who has not been asked yet. Written straight to the file rather than through
+			// the subsystem, which would decide and log a status before the test had begun.
+			Playtest->SetConsentFilePathForTesting(ConsentFilePath);
+			FFlockPlaytestConsentFile(ConsentFilePath).Save(PlayersConsent);
+
 			AnswerConfig(FFlockPlaytestFakeTransport::Status(200, FlockPlaytestFixtures::ConfigBody()));
 			Transport->Answer(FlockPlaytestFixtures::PlaytestSessionStartRoute,
 				FFlockPlaytestFakeTransport::Status(200, FlockPlaytestFixtures::SessionStartBody()));

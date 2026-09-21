@@ -20,6 +20,9 @@ namespace
 		Input.bFlockAnalyticsEnabled = true;
 		Input.bFlockAnalyticsAutoStartSession = true;
 		Input.bFlockAnalyticsRequireExplicitConsent = false;
+		// A build that asks its players another way, so these tests are about what is set up wrongly. The question this
+		// plugin asks has a test of its own below.
+		Input.bAskThePlayerForPlaytestConsent = false;
 		return Input;
 	}
 
@@ -140,7 +143,7 @@ bool FFlockPlaytestSetupFlockSettingsTest::RunTest(const FString& Parameters)
 	Waits.FlockGameVersion = TEXT("1.0.0");
 	const TArray<FFlockPlaytestSetupFinding> WaitFindings = FFlockPlaytestSetupStatus::Evaluate(Waits);
 	const FFlockPlaytestSetupFinding* StartSession = FindSetupFinding(WaitFindings, TEXT("Playtest.WaitsForStartSession"));
-	const FFlockPlaytestSetupFinding* Consent = FindSetupFinding(WaitFindings, TEXT("Playtest.WaitsForConsent"));
+	const FFlockPlaytestSetupFinding* Consent = FindSetupFinding(WaitFindings, TEXT("Playtest.WaitsForFlockAnalyticsConsent"));
 	TestTrue(TEXT("Both waits are named"), StartSession != nullptr && Consent != nullptr);
 	if (StartSession != nullptr && Consent != nullptr)
 	{
@@ -150,6 +153,47 @@ bool FFlockPlaytestSetupFlockSettingsTest::RunTest(const FString& Parameters)
 	if (TestEqual(TEXT("Three findings"), WaitFindings.Num(), 3))
 	{
 		TestEqual(TEXT("The most serious first"), WaitFindings[0].Id, FName(TEXT("Playtest.NotAPlaytestVersion")));
+	}
+	return true;
+}
+
+/**
+ * The playtest's own consent question is named, and named apart from the Flock SDK's analytics consent. A build can be
+ * waiting on both at once, and "consent is missing" without saying whose sends a developer to the wrong settings page.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSetupAsksThePlayerTest,
+	"Flock.Playtest.Editor.Setup.NamesThePlaytestsOwnConsentQuestion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestSetupAsksThePlayerTest::RunTest(const FString& Parameters)
+{
+	FFlockPlaytestSetupInput Asks = PlaytestReadyInput();
+	Asks.bAskThePlayerForPlaytestConsent = true;
+	const TArray<FFlockPlaytestSetupFinding> Findings = FFlockPlaytestSetupStatus::Evaluate(Asks);
+	const FFlockPlaytestSetupFinding* Question = FindSetupFinding(Findings, TEXT("Playtest.AsksThePlayerWhatToCollect"));
+	if (TestNotNull(TEXT("The question is named"), Question))
+	{
+		TestEqual(TEXT("As information, since nothing is set up wrongly"), static_cast<int32>(Question->Severity),
+			static_cast<int32>(EFlockPlaytestSetupSeverity::Info));
+		TestTrue(TEXT("Naming the setting that stops it being asked"),
+			Question->Detail.ToString().Contains(TEXT("Ask The Player For Playtest Consent"), ESearchCase::CaseSensitive));
+		TestEqual(TEXT("Fixed on the playtest's own settings page"), static_cast<int32>(Question->Fix),
+			static_cast<int32>(EFlockPlaytestSetupFix::OpenPlaytestSettings));
+	}
+	TestEqual(TEXT("And it is the only thing said about a project that is otherwise set up"), Findings.Num(), 1);
+
+	// Both questions at once, each naming whose it is.
+	FFlockPlaytestSetupInput Both = Asks;
+	Both.bFlockAnalyticsRequireExplicitConsent = true;
+	const TArray<FFlockPlaytestSetupFinding> BothFindings = FFlockPlaytestSetupStatus::Evaluate(Both);
+	const FFlockPlaytestSetupFinding* FlockConsent = FindSetupFinding(BothFindings, TEXT("Playtest.WaitsForFlockAnalyticsConsent"));
+	const FFlockPlaytestSetupFinding* PlaytestConsent = FindSetupFinding(BothFindings, TEXT("Playtest.AsksThePlayerWhatToCollect"));
+	if (TestTrue(TEXT("Both are named"), FlockConsent != nullptr && PlaytestConsent != nullptr))
+	{
+		TestTrue(TEXT("The Flock SDK's says it is the game's own"),
+			FlockConsent->Title.ToString().Contains(TEXT("Flock SDK's analytics consent"), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("And the playtest's says it is the playtest's"),
+			PlaytestConsent->Title.ToString().Contains(TEXT("playtest asks the player"), ESearchCase::CaseSensitive));
 	}
 	return true;
 }

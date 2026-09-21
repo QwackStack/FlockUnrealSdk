@@ -9,14 +9,20 @@
 
 namespace
 {
+	/**
+	 * Inputs with a player who has already said the playtest may collect everything, so each test below is about the
+	 * one thing it varies. The answer has a band of its own, which the test at the end of this file covers.
+	 */
 	FFlockPlaytestStatusInputs MakeInputs(bool bPlaytestingEnabled, const FString& ProtokiteApiUrl, bool bFlockInitialized,
-		EFlockPlaytestConfigState ConfigState = EFlockPlaytestConfigState::Loaded)
+		EFlockPlaytestConfigState ConfigState = EFlockPlaytestConfigState::Loaded,
+		EFlockPlaytestConsentChoice PlayerConsent = EFlockPlaytestConsentChoice::VideoAndPlayData)
 	{
 		FFlockPlaytestStatusInputs Inputs;
 		Inputs.bPlaytestingEnabled = bPlaytestingEnabled;
 		Inputs.ProtokiteApiUrl = ProtokiteApiUrl;
 		Inputs.bFlockInitialized = bFlockInitialized;
 		Inputs.ConfigState = ConfigState;
+		Inputs.PlayerConsent = PlayerConsent;
 		return Inputs;
 	}
 
@@ -219,6 +225,50 @@ bool FFlockPlaytestStatusClosedPlaytestOutranksFlockAndConfigTest::RunTest(const
 	ExpectPlaytestStatus(*this, TEXT("A missing URL is still reported first"), Closed(true, TEXT(""), true, EFlockPlaytestConfigState::Loaded),
 		EFlockPlaytestStatus::ProtokiteApiUrlMissing);
 	TestFalse(TEXT("It has a description"), DescribePlaytestStatus(EFlockPlaytestStatus::PlaytestNoLongerCollecting).IsEmpty());
+	return true;
+}
+
+/**
+ * What the player allowed is read last, once a playtest is actually loaded. Asking earlier would put a question in
+ * front of a player in a build that is misconfigured, or that no playtest is linked to, with nothing to ask about.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestStatusPlayerConsentDecidesLastTest,
+	"Flock.Playtest.Status.WhatThePlayerAllowedIsReadLast",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestStatusPlayerConsentDecidesLastTest::RunTest(const FString& Parameters)
+{
+	const FString Url = TEXT("http://localhost:8020");
+	const auto With = [&Url](EFlockPlaytestConsentChoice Choice, EFlockPlaytestConfigState ConfigState = EFlockPlaytestConfigState::Loaded)
+	{
+		return DecidePlaytestStatus(MakeInputs(true, Url, true, ConfigState, Choice));
+	};
+
+	ExpectPlaytestStatus(*this, TEXT("Nobody has answered"), With(EFlockPlaytestConsentChoice::NotAnswered),
+		EFlockPlaytestStatus::WaitingForPlayerConsent);
+	ExpectPlaytestStatus(*this, TEXT("They asked for nothing to be collected"), With(EFlockPlaytestConsentChoice::Nothing),
+		EFlockPlaytestStatus::PlayerRefusedPlaytest);
+
+	// Either half on its own is still a playtest that runs: which half is honoured feature by feature, not here.
+	ExpectPlaytestStatus(*this, TEXT("The screen only"), With(EFlockPlaytestConsentChoice::VideoOnly), EFlockPlaytestStatus::Ready);
+	ExpectPlaytestStatus(*this, TEXT("Play data only"), With(EFlockPlaytestConsentChoice::PlayDataOnly), EFlockPlaytestStatus::Ready);
+	ExpectPlaytestStatus(*this, TEXT("Everything"), With(EFlockPlaytestConsentChoice::VideoAndPlayData), EFlockPlaytestStatus::Ready);
+
+	// Nothing before a loaded config is about the player: there is no playtest to ask about yet.
+	ExpectPlaytestStatus(*this, TEXT("No answer, and the config still on its way"),
+		With(EFlockPlaytestConsentChoice::NotAnswered, EFlockPlaytestConfigState::Fetching),
+		EFlockPlaytestStatus::FetchingPlaytestConfig);
+	ExpectPlaytestStatus(*this, TEXT("No answer, and no playtest linked to this build"),
+		With(EFlockPlaytestConsentChoice::NotAnswered, EFlockPlaytestConfigState::PlaytestNotLinked),
+		EFlockPlaytestStatus::PlaytestNotLinked);
+	ExpectPlaytestStatus(*this, TEXT("Nothing allowed, and the key refused"),
+		With(EFlockPlaytestConsentChoice::Nothing, EFlockPlaytestConfigState::ApiKeyRefused),
+		EFlockPlaytestStatus::ProtokiteRefusedApiKey);
+
+	for (const EFlockPlaytestStatus Status : { EFlockPlaytestStatus::WaitingForPlayerConsent, EFlockPlaytestStatus::PlayerRefusedPlaytest })
+	{
+		TestFalse(TEXT("It has a description"), DescribePlaytestStatus(Status).IsEmpty());
+	}
 	return true;
 }
 

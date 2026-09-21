@@ -66,9 +66,13 @@ FString FFlockPlaytestSessionStartRequest::ToJson() const
 	return Json;
 }
 
-TMap<FString, FString> MakePlaytestSessionDebugInfo(const FString& MapName)
+TMap<FString, FString> MakePlaytestSessionDebugInfo(const FString& MapName, EFlockPlaytestConsentChoice PlayerConsent,
+	bool bAskedThePlayer)
 {
 	TMap<FString, FString> Facts;
+	// First, because it is what says whether the rest of this session was allowed to hold anything at all.
+	Facts.Add(TEXT("playtest_consent"), FlockPlaytestConsent::ToWire(PlayerConsent));
+	Facts.Add(TEXT("playtest_consent_asked"), bAskedThePlayer ? TEXT("true") : TEXT("false"));
 	Facts.Add(TEXT("engine_version"), FEngineVersion::Current().ToString());
 	Facts.Add(TEXT("build_configuration"), LexToString(FApp::GetBuildConfiguration()));
 	const FString Gpu = FPlatformMisc::GetPrimaryGPUBrand();

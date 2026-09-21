@@ -5,6 +5,49 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.20.0] - 2026-09-21
+
+### Added
+
+- **A playtest build asks its player what it may collect, and collects nothing until they answer.** The question is
+  drawn over the game once this build's playtest is loaded, and offers four answers: the screen and play data, the
+  screen only, play data only, or nothing at all. It is the playtest's own question and its words say so -- a game's
+  own privacy or analytics choices are asked separately, and neither answer moves the other. The answer is kept on the
+  player's machine and used by every later launch.
+- **Choosing nothing leaves the build behaving exactly as one with Enable Playtesting off**: nothing is recorded,
+  nothing is sent, and no Protokite session is started for the launch.
+- **Each half of the answer is honoured feature by feature.** Video recording follows the screen half, and the
+  performance windows, level loads, the game's own playtest events and the exceptions a playtest asks for follow the
+  play-data half. A feature name this build does not know needs the answer that allows everything.
+- **The session start carries two extra parameters**, in the `extra_debug` it already sends: `playtest_consent`, the
+  answer the launch collected under, and `playtest_consent_asked`, whether the player was asked at all. A session with
+  no recording then reads as a player who asked for none rather than a build that went wrong.
+- **Blueprint nodes for it**: Flock Get Playtest Consent, Flock Get Players Consent Answer, Flock Describe Playtest
+  Consent, Flock Set Playtest Consent (for a game that asks in its own screens), Flock Ask For Playtest Consent (a
+  "change what this playtest collects" entry), and Flock Is Consent Question Open.
+- **Two new statuses**, Waiting For Player Consent and Player Refused Playtest, each with the sentence that explains it.
+- **Ask The Player For Playtest Consent** (Project Settings > Plugins > Flock Playtest Settings), on by default. Turn
+  it off where players are asked another way, for an internal test, or for an automated run with nobody there to
+  answer; the build then collects what the playtest turns on and says so in what each session sends. An answer a player
+  has already given is still honoured in such a build.
+- **`FlockPlaytest.AnswerConsent <video_and_play_data|video_only|play_data_only|nothing|not_answered>`**, a
+  Development-build console command, for a run with nobody at the keyboard.
+- **A setup finding when Play starts** naming the playtest's own consent question, beside the existing one for the
+  Flock SDK's analytics consent -- each saying whose consent it is, since a build can wait on both.
+
+### Changed
+
+- **A recording is deleted, not uploaded, when the player takes the screen back after it started.** Keeping it would
+  send it a launch later, since the session it belongs to is saved beside it.
+- **Nothing an earlier launch left goes out while this launch's question is still on screen**, and none of it is pushed
+  while the player's answer is nothing -- it waits instead, so a player who changes their mind has it sent in the same
+  launch. Feedback forms kept from an earlier launch are still sent whatever the answer: a form is something the player
+  filled in and sent themselves.
+- **An answer that could not be saved takes the older answer with it**, so the next launch asks again rather than
+  collecting under an answer the player has replaced. Forgetting an answer removes its temporary files too.
+- **The playtest self-test skips, rather than fails, when nobody has answered the consent question**, naming the
+  console command that answers it.
+
 ## [1.19.0] - 2026-09-18
 
 ### Added

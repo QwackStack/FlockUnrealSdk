@@ -5,9 +5,12 @@
 // Both need a recording, which only a build with video can make.
 #if WITH_AUTOMATION_TESTS && WITH_FLOCK_PLAYTEST_VIDEO
 
+#include "FlockPlaytestConsent.h"
+#include "FlockPlaytestSelfTest.h"
 #include "FlockPlaytestSubsystem.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
+#include "UObject/StrongObjectPtr.h"
 #include "Tests/FlockPlaytestFakeFileUploader.h"
 #include "Tests/FlockPlaytestSubsystemTestSupport.h"
 #include "Tests/FlockPlaytestVideoTestSupport.h"
@@ -121,6 +124,52 @@ bool FFlockPlaytestDoesNotUploadAtTeardownTest::RunTest(const FString& Parameter
 	{
 		TestTrue(TEXT("Its file is on disk"), IFileManager::Get().FileExists(*Waiting[0].VideoFilePath));
 		TestFalse(TEXT("And it knows which session to go to"), Waiting[0].Session.IsEmpty());
+	}
+	return true;
+}
+
+/**
+ * A player who takes the screen recording back after it has started gets what was recorded deleted, not uploaded -- and
+ * not kept either. Keeping it would be the same as sending it a launch later, because the session it belongs to is
+ * saved beside it, which is the whole point of D10.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestTakingVideoBackDeletesItTest,
+	"Flock.Playtest.RecordingUpload.TakingTheScreenBackDeletesTheRecording",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestTakingVideoBackDeletesItTest::RunTest(const FString& Parameters)
+{
+	FPlaytestFixture Fixture;
+	const TSharedRef<FFlockPlaytestFakeFileUploader> Uploader = StartRecordingPlaytest(*this, Fixture);
+
+	// Whoever is waiting to hear about the recording hears why it did not go, the same as every other way out.
+	const TStrongObjectPtr<UFlockPlaytestSelfTestListener> Listener(NewObject<UFlockPlaytestSelfTestListener>());
+	TArray<FString> WhyNot;
+	Listener->OnUploadFinished = [&WhyNot](bool bUploaded, const FString& Reason)
+	{
+		WhyNot.Add(bUploaded ? FString(TEXT("uploaded")) : Reason);
+	};
+	Fixture.Playtest->OnRecordingUploadFinished.AddDynamic(Listener.Get(), &UFlockPlaytestSelfTestListener::HandleRecordingUploadFinished);
+
+	// The player changes their mind: play data, but no screen recording.
+	Fixture.Playtest->SetPlaytestConsent(EFlockPlaytestConsentChoice::PlayDataOnly);
+	TestFalse(TEXT("Capture stopped"), Fixture.Playtest->IsRecordingVideo());
+
+	// The file is finished on the writer thread, and the next video frame is what applies a finished recording.
+	Fixture.Playtest->WaitUntilVideoWrittenForTesting();
+	Fixture.Playtest->TickVideoRecordingForTesting(1.f / 60.f);
+
+	TestEqual(TEXT("No link was asked for"), Fixture.Transport->CountRequestsEndingWith(UploadLinkRoute), 0);
+	TestEqual(TEXT("And nothing was uploaded"), Uploader->Uploads.Num(), 0);
+
+	const TArray<FFlockPlaytestRecordingWaitingToUpload> Waiting =
+		FFlockPlaytestRecordingsFolder::FindRecordingsWaitingToUpload(FPaths::Combine(Fixture.Folder, TEXT("Recordings")));
+	TestEqual(TEXT("Nothing is left for a later launch to send"), Waiting.Num(), 0);
+	TestTrue(TEXT("The recording's own file is gone"), Fixture.Playtest->GetFinishedVideoRecordingPath().IsEmpty());
+
+	if (TestEqual(TEXT("It was reported once"), WhyNot.Num(), 1))
+	{
+		TestTrue(TEXT("Saying it was the player's doing"), WhyNot[0].Contains(TEXT("not to be recorded")));
 	}
 	return true;
 }

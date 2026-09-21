@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "FlockPlaytestConfig.h"
+#include "FlockPlaytestConsent.h"
 #include "FlockPlaytestFormAnswers.h"
 #include "FlockPlaytestStatus.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
@@ -59,6 +60,45 @@ public:
 	/** The playtest feature that sends performance windows, level loads and the game's own playtest events. */
 	UFUNCTION(BlueprintPure, Category = "Flock|Playtest", meta = (DisplayName = "Flock Playtest Feature Heavy Analytics"))
 	static FString PlaytestFeatureHeavyAnalytics() { return FlockPlaytestFeatures::HeavyAnalytics; }
+
+	// ── What the player let the playtest collect ──
+
+	/**
+	 * What this build collects under: the player's own answer when they have given one, everything in a build that does
+	 * not ask, and nothing in one that does and has not been answered yet.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Flock Get Playtest Consent"))
+	static EFlockPlaytestConsentChoice GetPlaytestConsent(const UObject* WorldContextObject);
+
+	/** What the player answered, and Not Answered when they have not been asked or have not answered. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Flock Get Players Consent Answer"))
+	static EFlockPlaytestConsentChoice GetPlayersConsentAnswer(const UObject* WorldContextObject);
+
+	/** One sentence saying what an answer lets the playtest collect, in the words the player was shown. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Playtest", meta = (DisplayName = "Flock Describe Playtest Consent"))
+	static FString DescribePlaytestConsent(EFlockPlaytestConsentChoice Choice);
+
+	/**
+	 * Records the player's answer, for a game that asks in its own screens. It is kept on this machine, used by every
+	 * later launch, and takes effect at once. Not Answered forgets it, so the question is put again.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Flock Set Playtest Consent"))
+	static bool SetPlaytestConsent(const UObject* WorldContextObject, EFlockPlaytestConsentChoice Choice);
+
+	/**
+	 * Puts the playtest's consent question to the player now -- what a "change what this playtest collects" entry in a
+	 * game's menu calls. It is asked by itself once the playtest is loaded, so this is for changing an answer. False
+	 * when no playtest is loaded, the feedback form is open, or there is no viewport to draw it in.
+	 *
+	 * While it is up the player's input goes to the question and the game keeps running: pause first if asking during
+	 * play would leave them unable to act.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Flock Ask For Playtest Consent"))
+	static bool AskForPlaytestConsent(const UObject* WorldContextObject);
+
+	/** True while the playtest's consent question is on screen. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Flock Is Consent Question Open"))
+	static bool IsConsentQuestionOpen(const UObject* WorldContextObject);
 
 	// ── Session ──
 

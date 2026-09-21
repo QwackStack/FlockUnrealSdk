@@ -441,6 +441,47 @@ bool FFlockPlaytestSelfTestAcceptedRefusalsFailTest::RunTest(const FString& Para
 	return true;
 }
 
+/**
+ * A run where nobody has said what the playtest may collect is SKIPPED, not FAILED: this build's playtest loaded, which
+ * is what the step checks, and a harness run has nobody at the keyboard to answer a question drawn over the game.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSelfTestSkipsWithoutConsentTest,
+	"Flock.Playtest.SelfTest.SkipsWhenNobodyHasSaidWhatItMayCollect",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPlaytestSelfTestSkipsWithoutConsentTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FScopedFlockAnalyticsSettings FlockAnalytics(true);
+	FPlaytestFixture Fixture(/*bTurnRetriesOff*/ true, /*bUseTestIdentitySources*/ true,
+		EFlockPlaytestConsentChoice::NotAnswered);
+	Fixture.SignInToFlockOnStart();
+	Fixture.StartFlock();
+	AnswerEveryCounterCase(Fixture);
+
+	const TSharedRef<FFlockPlaytestSelfTest> Run = FFlockPlaytestSelfTest::Start(Fixture.Playtest, Fixture.Flock, SelfTestOptions(Fixture));
+	TestTrue(TEXT("The run finishes"), TickUntilTheSelfTestFinishes(Run, 10.f));
+
+	using namespace FlockPlaytestSelfTestSteps;
+	const TArray<FFlockPlaytestSelfTestStep>& Steps = Run->GetSteps();
+	// Not a failure, and it names the command a run with nobody there answers with.
+	ExpectSelfTestStep(*this, Steps, PlaytestLoaded, EOutcome::Skipped, TEXT("FlockPlaytest.AnswerConsent"));
+	ExpectSelfTestStep(*this, Steps, SessionStarted, EOutcome::Skipped);
+	TestEqual(TEXT("And nothing of this launch's was sent"), Fixture.SessionStarts(), 0);
+
+	// The counter-case, in the same test: with an answer, the same run finds the playtest.
+	FPlaytestFixture Answered(/*bTurnRetriesOff*/ true, /*bUseTestIdentitySources*/ true,
+		EFlockPlaytestConsentChoice::VideoAndPlayData);
+	Answered.SignInToFlockOnStart();
+	Answered.StartFlock();
+	AnswerEveryCounterCase(Answered);
+	const TSharedRef<FFlockPlaytestSelfTest> AnsweredRun =
+		FFlockPlaytestSelfTest::Start(Answered.Playtest, Answered.Flock, SelfTestOptions(Answered));
+	TestTrue(TEXT("That run finishes too"), TickUntilTheSelfTestFinishes(AnsweredRun, 10.f));
+	ExpectSelfTestStep(*this, AnsweredRun->GetSteps(), PlaytestLoaded, EOutcome::Passed);
+	return true;
+}
+
 /** A step whose feature the playtest does not turn on is skipped, saying so, and sends nothing. */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPlaytestSelfTestSkipsWhatIsOffTest,
 	"Flock.Playtest.SelfTest.SkipsWhatThePlaytestDoesNotTurnOn",

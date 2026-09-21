@@ -7,6 +7,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "FlockPlaytestConsent.h"
 #include "FlockPlaytestLibrary.h"
 #include "FlockPlaytestSubsystem.h"
 #include "Http/FlockJsonUtils.h"
@@ -121,6 +122,14 @@ bool FFlockPlaytestLibraryRunningGameTest::RunTest(const FString& Parameters)
 			TestEqual(*(Which + TEXT(": feature ") + Feature), UFlockPlaytestLibrary::IsPlaytestFeatureEnabled(Context, Feature),
 				Playtest->IsPlaytestFeatureEnabled(Feature));
 		}
+		TestEqual(*(Which + TEXT(": what the player let it collect")),
+			static_cast<int32>(UFlockPlaytestLibrary::GetPlaytestConsent(Context)),
+			static_cast<int32>(Playtest->GetPlaytestConsent()));
+		TestEqual(*(Which + TEXT(": what the player answered")),
+			static_cast<int32>(UFlockPlaytestLibrary::GetPlayersConsentAnswer(Context)),
+			static_cast<int32>(Playtest->GetPlayersConsentAnswer()));
+		TestEqual(*(Which + TEXT(": the consent question open")), UFlockPlaytestLibrary::IsConsentQuestionOpen(Context),
+			Playtest->IsConsentQuestionOpen());
 		TestEqual(*(Which + TEXT(": session id")), UFlockPlaytestLibrary::GetPlaytestSessionId(Context), Playtest->GetPlaytestSessionId());
 		TestEqual(*(Which + TEXT(": recording")), UFlockPlaytestLibrary::IsRecordingVideo(Context), Playtest->IsRecordingVideo());
 		TestEqual(*(Which + TEXT(": recording to send")), UFlockPlaytestLibrary::CanSendPlaytestRecording(Context), Playtest->CanSendTheRecording());
@@ -129,6 +138,15 @@ bool FFlockPlaytestLibraryRunningGameTest::RunTest(const FString& Parameters)
 		FFlockPlaytestForm Form;
 		TestEqual(*(Which + TEXT(": form to read")), UFlockPlaytestLibrary::GetFeedbackForm(Context, Form), Playtest->CanOpenFeedbackForm());
 		TestEqual(*(Which + TEXT(": the form read")), Form.Id, Playtest->CanOpenFeedbackForm() ? Playtest->GetPlaytestConfig().Form.Id : FString());
+	}
+
+	// Describing an answer is the plugin's own sentence, whatever this game is running.
+	for (const EFlockPlaytestConsentChoice Choice : { EFlockPlaytestConsentChoice::NotAnswered,
+		EFlockPlaytestConsentChoice::VideoAndPlayData, EFlockPlaytestConsentChoice::VideoOnly,
+		EFlockPlaytestConsentChoice::PlayDataOnly, EFlockPlaytestConsentChoice::Nothing })
+	{
+		TestEqual(TEXT("Describe playtest consent says what the rules say"),
+			UFlockPlaytestLibrary::DescribePlaytestConsent(Choice), FlockPlaytestConsent::Describe(Choice));
 	}
 	return true;
 }

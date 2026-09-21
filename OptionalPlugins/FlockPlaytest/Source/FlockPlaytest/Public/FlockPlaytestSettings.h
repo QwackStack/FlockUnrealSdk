@@ -39,6 +39,21 @@ public:
 	FString ProtokiteApiUrl;
 
 	/**
+	 * Ask the player what this playtest may collect, and collect nothing until they answer.
+	 *
+	 * On by default. The question is the playtest's own and says so: it is asked once this build's playtest is loaded,
+	 * in wording that keeps it apart from any privacy or analytics choice the game asks about, and the answer -- the
+	 * screen and play data, one of the two, or nothing -- is kept on the player's machine and used by every later
+	 * launch. Choosing nothing leaves the build behaving exactly as one with Enable Playtesting off.
+	 *
+	 * Turn it off only where the players have already been asked another way, for an internal test the team is running
+	 * on its own machines, or for an automated run with nobody there to answer; the build then collects everything the
+	 * playtest turns on, and says so in what each session sends.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Player Consent", meta = (DisplayName = "Ask The Player For Playtest Consent"))
+	bool bAskThePlayerForPlaytestConsent = true;
+
+	/**
 	 * The widest the recorded video is, in pixels. The video keeps the shape of the game's screen and fits inside
 	 * Video Width by Video Height; a smaller window is recorded at its own size.
 	 */

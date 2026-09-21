@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Analytics/FlockLifecyclePump.h"
 #include "FlockPlaytestConfig.h"
+#include "FlockPlaytestConsent.h"
 #include "FlockPlaytestFormAnswers.h"
 #include "FlockPlaytestIdentity.h"
 #include "FlockPlaytestPerformanceTimeline.h"
@@ -21,6 +22,7 @@ class FFlockPlaytestRecordingRun;
 class FFlockPlaytestVideoRecording;
 class FFlockPlaytestFormKeyWatcher;
 class FFlockPlaytestRecordingUploads;
+class SFlockPlaytestConsentWidget;
 class SFlockPlaytestFormWidget;
 class FFlockProtokiteClient;
 class IFlockFileUploader;
@@ -50,6 +52,13 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPlaytestRecordingUploadFinish
  * neither does the Flock SDK initializing again with another API key or Game Version ID: the session keeps the
  * address and headers it started with. It ends when the game instance shuts down, or when EndPlaytestSession is
  * called.
+ *
+ * Before any of that, it asks the player what this playtest may collect, and collects nothing until they answer: the
+ * screen and play data, either one on its own, or nothing at all, which leaves the build behaving exactly like one with
+ * Enable Playtesting off. The question is the playtest's own and is worded to stay apart from whatever the game asks
+ * its players about privacy or analytics. Their answer is kept on the machine and used by every later launch, a game
+ * can ask it again or answer it itself, and the session start says which answer it was collected under. A build whose
+ * Ask The Player For Playtest Consent is off never asks, and collects everything the playtest turns on.
  *
  * When the playtest turns heavy analytics on, it also sends the Flock SDK a performance window for every ten seconds
  * of play and an event for every level this game instance loads, under the playtest category, and takes the game's
@@ -93,10 +102,68 @@ public:
 	const FFlockPlaytestConfig& GetPlaytestConfig() const { return PlaytestConfig; }
 
 	/**
-	 * True only while GetStatus() is Ready and the playtest's config turns FeatureName on (see
-	 * FlockPlaytestFeatures). A feature the config does not mention is off.
+	 * True only while GetStatus() is Ready, the player's consent allows FeatureName, and the playtest's config turns it
+	 * on (see FlockPlaytestFeatures). A feature the config does not mention is off.
+	 *
+	 * **This is where the player's answer is honoured feature by feature**, and it is the one place: everything the
+	 * playtest collects -- the recording, the performance windows, the level loads, the game's own playtest events --
+	 * asks this first, so an answer that allows only one of the two halves silences the other everywhere at once.
 	 */
 	bool IsPlaytestFeatureEnabled(const FString& FeatureName) const;
+
+	/**
+	 * What this build collects under: the player's own answer when they have given one, otherwise everything in a build
+	 * that does not ask, and nothing in one that does and has not been answered yet.
+	 *
+	 * **An answer a player gave is honoured even in a build that no longer asks**, because it was a person's decision
+	 * and the setting only decides whether the question is put.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock|Playtest")
+	EFlockPlaytestConsentChoice GetPlaytestConsent() const;
+
+	/** What the player answered, and NotAnswered when they have not. Unlike GetPlaytestConsent, it never stands in for them. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Playtest")
+	EFlockPlaytestConsentChoice GetPlayersConsentAnswer() const;
+
+	/** Whether this build puts the playtest's consent question to its players (Ask The Player For Playtest Consent). */
+	UFUNCTION(BlueprintPure, Category = "Flock|Playtest")
+	bool DoesThisBuildAskForPlaytestConsent() const;
+
+	/**
+	 * Records the player's answer, for a game that asks in its own screens rather than letting the plugin ask. It is
+	 * kept on this machine and used by every later launch, and takes effect at once: choosing nothing stops a recording
+	 * that is running and leaves the build collecting nothing at all.
+	 *
+	 * NotAnswered forgets the answer, which is how a game offers "ask me again". Returns whether the answer was saved.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Playtest")
+	bool SetPlaytestConsent(EFlockPlaytestConsentChoice Choice);
+
+	/**
+	 * Puts the playtest's consent question to the player now, over the game -- what a "change what this playtest
+	 * collects" entry in a game's own menu calls.
+	 *
+	 * The question is asked by itself once this build's playtest is loaded, so this is for changing an answer rather
+	 * than for getting the first one. Returns false, and changes nothing, when no playtest is loaded, when the feedback
+	 * form is open, or when this game instance has no viewport to draw it in.
+	 *
+	 * **While it is up the player's input goes to the question and the game keeps running**, so a game asking during
+	 * play pauses first if being unable to act would cost the player something. The plugin never pauses for it: the
+	 * game knows when its player can be interrupted, and pausing does nothing in a multiplayer match anyway.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Playtest")
+	bool AskForPlaytestConsent();
+
+	/** True while the playtest's consent question is on screen. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Playtest")
+	bool IsConsentQuestionOpen() const { return ConsentWidget.IsValid(); }
+
+	/**
+	 * True while the question is wanted and waiting for somewhere to draw it, which is what a run with no viewport --
+	 * every headless test among them -- gets instead of the question itself. It is how a test sees that the question
+	 * was asked for at all.
+	 */
+	bool IsWaitingToAskForConsentForTesting() const { return WaitingToAskForConsent.IsValid(); }
 
 	/** Where this launch's Protokite session is. Reading it changes nothing. */
 	EFlockPlaytestSessionState GetPlaytestSessionState() const { return SessionState; }
@@ -246,6 +313,13 @@ public:
 
 	/** Keeps the device id in the given file instead of the default one under Saved. Call before following. */
 	void SetDeviceIdFilePathForTesting(const FString& Path) { TestDeviceIdFilePath = Path; }
+
+	/** Keeps the player's consent answer in the given file instead of the default one under Saved. Call before following. */
+	void SetConsentFilePathForTesting(const FString& Path)
+	{
+		TestConsentFilePath = Path;
+		SavedConsentChoice.Reset();
+	}
 
 	/** Hands the performance timeline one frame through the same ticker path the engine drives, background pause included. */
 	void TickPerformanceTimelineForTesting(float FrameSeconds) { PerformancePump.TickForTesting(FrameSeconds); }
@@ -403,6 +477,37 @@ private:
 
 	/** Starts or stops watching for the form key, following whether there is a form to open. */
 	void UpdateFeedbackFormKeyWatcher();
+
+	/**
+	 * Puts the consent question on screen when it is wanted and takes it away when it is not. The one place it opens or
+	 * closes. Called from RefreshStatus, so the question follows the status: it appears as soon as this build's
+	 * playtest is loaded, and goes when the playtest does.
+	 */
+	void UpdateConsentQuestion();
+
+	/** Draws the question over the game. False when there is no viewport yet, which is what the waiting ticker is for. */
+	bool OpenConsentQuestion();
+
+	void CloseConsentQuestion();
+
+	/** Ticks until this game instance has a viewport to ask in, or until the question is no longer wanted. */
+	void WaitForAViewportToAskIn();
+	void StopWaitingForAViewportToAskIn();
+
+	/** Whether a playtest is loaded at all, so there is something to ask the player about. */
+	bool IsThePlaytestLoaded() const;
+
+	/** The file the player's answer is kept in: Saved/FlockPlaytest/playtest_consent.json, or the testing one. */
+	FString GetConsentFilePath() const;
+
+	/**
+	 * Draws Panel over the game, shows the mouse and sends input to it, remembering what was there before. One panel at
+	 * a time: the form and the consent question share this, so neither can put back a cursor state the other saved.
+	 */
+	void ShowPanelOverTheGame(const TSharedRef<SWidget>& Panel);
+
+	/** Takes Panel away and puts the mouse and input back exactly as they were. */
+	void HidePanelOverTheGame(const TSharedRef<SWidget>& Panel);
 
 	/** The uploader, built on first use so a launch that never records never makes one. */
 	TSharedRef<FFlockPlaytestRecordingUploads> GetOrCreateRecordingUploads();
@@ -565,8 +670,29 @@ private:
 	/** Watches for the key that opens the form. Only alive while there is a form to open. */
 	TSharedPtr<FFlockPlaytestFormKeyWatcher> FormKeyWatcher;
 
-	/** Whether the mouse was already being shown before the form opened, so closing it can put that back. */
-	bool bCursorWasShownBeforeTheForm = false;
+	/** Whether the mouse was already being shown before a panel opened, so closing it can put that back. */
+	bool bCursorWasShownBeforeThePanel = false;
+
+	/** The consent question while it is on screen; null when it is not. */
+	TSharedPtr<SFlockPlaytestConsentWidget> ConsentWidget;
+
+	/** The player's saved answer, read from its file the first time it is asked for. */
+	mutable TOptional<EFlockPlaytestConsentChoice> SavedConsentChoice;
+
+	/** Set while a game has asked for the question to be put again, so it stays up although the status is settled. */
+	bool bAskedToChangeConsent = false;
+
+	/** Waits for a viewport to put the consent question in. */
+	FTSTicker::FDelegateHandle WaitingToAskForConsent;
+
+	/** Whether having nowhere to draw the consent question has been said this launch. */
+	bool bLoggedNowhereToAskForConsent = false;
+
+	/** Whether skipping what earlier launches left, because the player wants nothing collected, has been said this launch. */
+	bool bLoggedNotPushingWhatEarlierLaunchesLeft = false;
+
+	/** Keeps the player's answer here instead of under Saved; a test points this at a folder of its own. */
+	FString TestConsentFilePath;
 
 	/** Whether this subsystem is the one that paused the game, so it only unpauses a pause of its own. */
 	bool bPausedForTheForm = false;
