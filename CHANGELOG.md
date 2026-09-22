@@ -5,6 +5,56 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.21.0] - 2026-09-22
+
+### Changed
+
+- **The playtest plugin is now called Protokite Playtest, in its name as well as its wording.** It ships as
+  `ProtokitePlaytest-<version>.zip` and installs to `Plugins/ProtokitePlaytest/`, its two modules are
+  `ProtokitePlaytest` and `ProtokitePlaytestEditor`, and its types, headers, log category, console commands,
+  Blueprint nodes and settings carry the same name. Only the plugin changed: the Flock SDK is untouched, and a
+  project that does not install the playtest plugin has nothing to do.
+- **What to change in a project that already uses it**, all of it mechanical:
+  - Replace the plugin folder, and change the `.uproject` entry from `FlockPlaytest` to `ProtokitePlaytest`.
+  - In `DefaultGame.ini`, rename the section `[/Script/FlockPlaytest.FlockPlaytestSettings]` to
+    `[/Script/ProtokitePlaytest.ProtokitePlaytestSettings]`, and `FlockPlaytestLocalSettings` likewise in
+    `EditorPerProjectUserSettings`. **A settings section left under the old name is read by nothing**, so the
+    build falls back to the shipped defaults, which means playtesting off.
+  - C++: `FlockPlaytest*` headers and types are `ProtokitePlaytest*`, `FFlockProtokiteClient` is
+    `FProtokiteClient`, `FFlockRunningSteamAccount` is `FProtokitePlaytestRunningSteamAccount`,
+    `EFlockDeviceIdFileResult` is `EProtokitePlaytestDeviceIdFileResult`, `FLOCKPLAYTEST_API` is
+    `PROTOKITEPLAYTEST_API` and `WITH_FLOCK_PLAYTEST_VIDEO` is `WITH_PROTOKITE_PLAYTEST_VIDEO`.
+  - Blueprint: the nodes read **Protokite ...** rather than **Flock ...** and sit under the **Protokite | Playtest**
+    category. A graph that called one has to be repointed at the renamed node.
+  - Console commands are `ProtokitePlaytest.<command>`, and the log category is `LogProtokitePlaytest`.
+  - Files the plugin saves move from `Saved/FlockPlaytest/` to `Saved/ProtokitePlaytest/`: the device id, the
+    player's consent answer, recordings waiting to upload and feedback forms waiting to send. **Nothing is
+    migrated** -- a machine that had answered the consent question is asked again, and recordings an earlier
+    launch left behind are no longer found. Copy the folder across to keep them.
+  - Automation tests are named `Protokite.Playtest.*`, so a run that filtered on `Flock.` now needs
+    `Automation RunTests Flock.+Protokite.`.
+
+- **The two things a game reports are no longer one drawer with one prefix.** Analytics answers what players
+  did and is read on the Game Metrics dashboards; log events answer what went wrong and are read under
+  Diagnostics. Both had lived under a single `Flock|Analytics` Blueprint category, and the diagnostics calls
+  were named for the other surface, so the node closest to hand for "record a level completion" was the one
+  that files it where nobody building a retention chart will look.
+  - **`Flock Log Diagnostic Event`, `Flock Log Diagnostic Error` and `Flock Log Diagnostic Exception`**
+    (`LogDiagnosticEvent`, `LogDiagnosticError`, `LogDiagnosticException`) replace `Flock Log Event`,
+    `Flock Log Error` and `Flock Log Exception` (`LogAnalyticsEvent`, `LogAnalyticsError`,
+    `LogAnalyticsException`). **The old names still work**, forward to the new ones and are marked deprecated,
+    so existing graphs and code keep running and the editor names their replacement.
+  - **The diagnostics calls, the metadata builders and the exception-capture coverage read now sit under
+    *Flock | Diagnostics***; *Flock | Analytics* keeps Track Event, Record Screen View, the sessions, consent
+    and flush. A test fails a call whose Blueprint category disagrees with the surface its doc comment
+    declares, so the split cannot quietly close again.
+- **Event properties have nodes of their own**: **Make Flock Event Properties** and **Flock Event Property
+  (Integer / Float / String / Boolean / String Array)**. They build the same struct the game-commands
+  *Set Command …* nodes build and are pinned against the C++ setters, so nothing can drift — a graph
+  recording gameplay simply no longer has to reach for a node named for a different surface to say what
+  happened. Which container each call takes is now a row in the comparison table on both guide pages:
+  properties keep their type and can be charted, a diagnostic entry's Extra Data is a map of strings.
+
 ## [1.20.0] - 2026-09-21
 
 ### Added

@@ -18,7 +18,7 @@ section is the only record that any of this was executed.
 
   Editor context — every Flock test:
     "<UE>\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "<path>\<YourProject>.uproject" ^
-      -ExecCmds="Automation RunTests Flock.; Quit" -unattended -nullrhi -NoSplash -log
+      -ExecCmds="Automation RunTests Flock.+Protokite.; Quit" -unattended -nullrhi -NoSplash -log
 
   Non-editor context — the same command with -game added. Only tests declaring ClientContext run
   there, so a lower count than the editor pass is expected; zero is a failure, not a pass. Editor-only

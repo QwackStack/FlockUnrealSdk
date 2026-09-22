@@ -6,6 +6,8 @@
 
 #include "Analytics/FlockAnalyticsLibrary.h"
 #include "Analytics/FlockMetadata.h"
+#include "Dom/JsonObject.h"
+#include "Models/FlockCommandModels.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsLibraryChainTest, "Flock.Analytics.Library.MetadataChain",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -85,6 +87,100 @@ bool FFlockAnalyticsLibraryParityTest::RunTest(const FString& Parameters)
 	{
 		TestEqualSensitive(*FString::Printf(TEXT("'%s' matches C++"), *Pair.Key),
 			FromBlueprint.FindRef(Pair.Key), Pair.Value);
+	}
+	return true;
+}
+
+/**
+ * The event-property chain a graph builds for Flock Track Event. It is a different container from the
+ * metadata chain above on purpose: a diagnostic entry's extra data is text, while an event property keeps
+ * its type so the dashboards can chart it. The values are read back as the JSON that goes on the wire for
+ * exactly that reason — a number that arrived quoted would still read as the right value as a string.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsLibraryEventPropertyChainTest, "Flock.Analytics.Library.EventPropertyChain",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsLibraryEventPropertyChainTest::RunTest(const FString& Parameters)
+{
+	FFlockCommandData Built = UFlockAnalyticsLibrary::MakeEventProperties();
+	TestTrue(TEXT("seed is empty"), Built.IsEmpty());
+
+	Built = UFlockAnalyticsLibrary::AddEventPropertyInt(Built, TEXT("level"), 3);
+	Built = UFlockAnalyticsLibrary::AddEventPropertyBool(Built, TEXT("flawless"), true);
+	Built = UFlockAnalyticsLibrary::AddEventPropertyString(Built, TEXT("zone"), TEXT("cavern"));
+	Built = UFlockAnalyticsLibrary::AddEventPropertyFloat(Built, TEXT("elapsed"), 12.5f);
+	Built = UFlockAnalyticsLibrary::AddEventPropertyStringArray(Built, TEXT("tags"), { TEXT("beta"), TEXT("tutorial") });
+
+	TestEqual(TEXT("five properties"), Built.GetFieldNames().Num(), 5);
+
+	const TSharedRef<FJsonObject> Fields = Built.ToJsonObject();
+	// Each value is checked by the JSON type it kept, because that is the whole difference from metadata:
+	// a level that reached the dashboards as "3" cannot be charted.
+	TestTrue(TEXT("an integer stays a number"),
+		Fields->HasTypedField<EJson::Number>(TEXT("level")) && Fields->GetNumberField(TEXT("level")) == 3.0);
+	TestTrue(TEXT("a flag stays a boolean"),
+		Fields->HasTypedField<EJson::Boolean>(TEXT("flawless")) && Fields->GetBoolField(TEXT("flawless")));
+	TestTrue(TEXT("a string stays a string"), Fields->HasTypedField<EJson::String>(TEXT("zone")));
+	TestEqualSensitive(TEXT("the string's value"), Fields->GetStringField(TEXT("zone")), TEXT("cavern"));
+	TestTrue(TEXT("a float stays a number"),
+		Fields->HasTypedField<EJson::Number>(TEXT("elapsed")) && Fields->GetNumberField(TEXT("elapsed")) == 12.5);
+	TestTrue(TEXT("a string array stays an array"), Fields->HasTypedField<EJson::Array>(TEXT("tags")));
+
+	// Each link copies rather than mutating, so a graph can branch a chain without surprises.
+	const FFlockCommandData Base = UFlockAnalyticsLibrary::AddEventPropertyInt(
+		UFlockAnalyticsLibrary::MakeEventProperties(), TEXT("shared"), 1);
+	const FFlockCommandData BranchA = UFlockAnalyticsLibrary::AddEventPropertyInt(Base, TEXT("a"), 1);
+	const FFlockCommandData BranchB = UFlockAnalyticsLibrary::AddEventPropertyInt(Base, TEXT("b"), 2);
+	TestEqual(TEXT("base untouched by branching"), Base.GetFieldNames().Num(), 1);
+	TestFalse(TEXT("branch A has no B"), BranchA.ToJsonObject()->HasField(TEXT("b")));
+	TestFalse(TEXT("branch B has no A"), BranchB.ToJsonObject()->HasField(TEXT("a")));
+
+	// Keys reach the dashboards exactly as they were written, so a chain must not case-fold them.
+	const FFlockCommandData Spelled = UFlockAnalyticsLibrary::AddEventPropertyInt(
+		UFlockAnalyticsLibrary::MakeEventProperties(), TEXT("MaxHealth"), 1);
+	TestTrue(TEXT("the key keeps its letter case"),
+		Spelled.ToJsonString().Contains(TEXT("\"MaxHealth\""), ESearchCase::CaseSensitive));
+	return true;
+}
+
+/**
+ * The event-property nodes are the analytics surface's name for the struct the game-commands nodes write,
+ * so the two must produce the same thing — a property set in a graph and the same property set in C++ have
+ * to reach the dashboards identically. The nodes delegate to FFlockCommandData::Set for that reason; this
+ * is what stops a reimplementation creeping in.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsLibraryEventPropertyParityTest, "Flock.Analytics.Library.EventPropertyCppParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsLibraryEventPropertyParityTest::RunTest(const FString& Parameters)
+{
+	FFlockCommandData FromCpp;
+	FromCpp.Set(TEXT("level"), 3)
+		.Set(TEXT("flawless"), true)
+		.Set(TEXT("zone"), TEXT("cavern"))
+		.Set(TEXT("elapsed"), 12.5f);
+
+	FFlockCommandData FromBlueprint = UFlockAnalyticsLibrary::MakeEventProperties();
+	FromBlueprint = UFlockAnalyticsLibrary::AddEventPropertyInt(FromBlueprint, TEXT("level"), 3);
+	FromBlueprint = UFlockAnalyticsLibrary::AddEventPropertyBool(FromBlueprint, TEXT("flawless"), true);
+	FromBlueprint = UFlockAnalyticsLibrary::AddEventPropertyString(FromBlueprint, TEXT("zone"), TEXT("cavern"));
+	FromBlueprint = UFlockAnalyticsLibrary::AddEventPropertyFloat(FromBlueprint, TEXT("elapsed"), 12.5f);
+
+	const TArray<FString> Names = FromCpp.GetFieldNames();
+	TestEqual(TEXT("same property count"), FromBlueprint.GetFieldNames().Num(), Names.Num());
+
+	const TSharedRef<FJsonObject> Cpp = FromCpp.ToJsonObject();
+	const TSharedRef<FJsonObject> Graph = FromBlueprint.ToJsonObject();
+	for (const FString& Name : Names)
+	{
+		const TSharedPtr<FJsonValue> CppValue = Cpp->TryGetField(Name);
+		const TSharedPtr<FJsonValue> GraphValue = Graph->TryGetField(Name);
+		if (TestNotNull(*FString::Printf(TEXT("'%s' was set from the graph"), *Name), GraphValue.Get())
+			&& TestNotNull(*FString::Printf(TEXT("'%s' was set from C++"), *Name), CppValue.Get()))
+		{
+			TestTrue(*FString::Printf(TEXT("'%s' matches C++"), *Name),
+				FJsonValue::CompareEqual(*CppValue, *GraphValue));
+		}
 	}
 	return true;
 }

@@ -31,28 +31,64 @@ public:
 	 * Records a diagnostic message (spooled, delivered on the next flush). Ignored without consent. Not for
 	 * gameplay — use Flock Track Event.
 	 *
+	 * Build Extra Data with the Flock Metadata nodes, which turn a number or a flag into the string the
+	 * diagnostics wire stores.
+	 *
 	 * Surface: log_event — read on Diagnostics → Events.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
-		AutoCreateRefTerm = "ExtraData", DisplayName = "Flock Log Event"))
-	static void LogEvent(const UObject* WorldContextObject, const FString& Message, const TMap<FString, FString>& ExtraData);
+	UFUNCTION(BlueprintCallable, Category = "Flock|Diagnostics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "ExtraData", DisplayName = "Flock Log Diagnostic Event"))
+	static void LogDiagnosticEvent(const UObject* WorldContextObject, const FString& Message,
+		const TMap<FString, FString>& ExtraData);
 
 	/**
 	 * Records a recoverable logic fault. Leave Details at its default if you have nothing to add.
 	 *
 	 * Surface: log_event — read on Diagnostics → Errors.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
-		AutoCreateRefTerm = "Details", DisplayName = "Flock Log Error"))
-	static void LogError(const UObject* WorldContextObject, const FString& Message, const FFlockLogDetails& Details);
+	UFUNCTION(BlueprintCallable, Category = "Flock|Diagnostics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "Details", DisplayName = "Flock Log Diagnostic Error"))
+	static void LogDiagnosticError(const UObject* WorldContextObject, const FString& Message, const FFlockLogDetails& Details);
 
 	/**
 	 * Records an exception you report yourself. Leave Stack Trace empty to have the callstack captured for you.
 	 *
 	 * Surface: log_event — read on Diagnostics → Errors.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
-		AutoCreateRefTerm = "Details", DisplayName = "Flock Log Exception"))
+	UFUNCTION(BlueprintCallable, Category = "Flock|Diagnostics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "Details", DisplayName = "Flock Log Diagnostic Exception"))
+	static void LogDiagnosticException(const UObject* WorldContextObject, const FString& Message, const FString& StackTrace,
+		const FFlockLogDetails& Details);
+
+	/**
+	 * The former name of Flock Log Diagnostic Event, kept so existing graphs keep working. It sat beside the
+	 * analytics nodes under one category and read like the way to record gameplay, which it never was.
+	 *
+	 * Surface: log_event — read on Diagnostics → Events.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Diagnostics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "ExtraData", DisplayName = "Flock Log Event", DeprecatedFunction,
+		DeprecationMessage = "Renamed to Flock Log Diagnostic Event, which is the surface it writes to. Flock Track Event is the one the Game Metrics dashboards read."))
+	static void LogEvent(const UObject* WorldContextObject, const FString& Message, const TMap<FString, FString>& ExtraData);
+
+	/**
+	 * The former name of Flock Log Diagnostic Error, kept so existing graphs keep working.
+	 *
+	 * Surface: log_event — read on Diagnostics → Errors.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Diagnostics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "Details", DisplayName = "Flock Log Error", DeprecatedFunction,
+		DeprecationMessage = "Renamed to Flock Log Diagnostic Error, which is the surface it writes to."))
+	static void LogError(const UObject* WorldContextObject, const FString& Message, const FFlockLogDetails& Details);
+
+	/**
+	 * The former name of Flock Log Diagnostic Exception, kept so existing graphs keep working.
+	 *
+	 * Surface: log_event — read on Diagnostics → Errors.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Diagnostics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "Details", DisplayName = "Flock Log Exception", DeprecatedFunction,
+		DeprecationMessage = "Renamed to Flock Log Diagnostic Exception, which is the surface it writes to."))
 	static void LogException(const UObject* WorldContextObject, const FString& Message, const FString& StackTrace,
 		const FFlockLogDetails& Details);
 
@@ -66,9 +102,9 @@ public:
 	static void RecordScreenView(const UObject* WorldContextObject, const FString& ScreenName);
 
 	/**
-	 * Records a gameplay event for the Game Metrics dashboards — not Flock Log Event, which writes a diagnostic
-	 * entry. Build Properties with the Set Command nodes. Returns false when refused (analytics off, no consent,
-	 * an empty name, or the reserved session_started).
+	 * Records a gameplay event for the Game Metrics dashboards — not Flock Log Diagnostic Event, which writes an
+	 * engineering entry. Build Properties with the Flock Event Property nodes, which keep a number a number.
+	 * Returns false when refused (analytics off, no consent, an empty name, or the reserved session_started).
 	 *
 	 * Surface: analytics — read on Dashboards → Game Metrics.
 	 */
@@ -78,7 +114,7 @@ public:
 		const FString& EventCategory);
 
 	/** What automatic exception capture can see in this build (Shipping and Test lose error log lines and ensures). */
-	UFUNCTION(BlueprintPure, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
+	UFUNCTION(BlueprintPure, Category = "Flock|Diagnostics", meta = (WorldContext = "WorldContextObject",
 		DisplayName = "Flock Get Exception Capture Coverage"))
 	static FFlockExceptionCaptureCoverage GetExceptionCaptureCoverage(const UObject* WorldContextObject);
 

@@ -122,18 +122,18 @@ Then, either way:
 Each release is built from the tagged source, so it contains no compiled binaries: you build it once with
 your project, against your engine version and toolchain.
 
-**Optional: Flock Playtest (beta).** Releases also carry `FlockPlaytest-<version>.zip`, a separate plugin for
-Protokite playtests. Extract it next to the Flock SDK, so that `Plugins/FlockPlaytest/` sits beside
+**Optional: Protokite Playtest (beta).** Releases also carry `ProtokitePlaytest-<version>.zip`, a separate plugin for
+Protokite playtests. Extract it next to the Flock SDK, so that `Plugins/ProtokitePlaytest/` sits beside
 `Plugins/FlockUnrealSdk/`, then enable it under **Edit → Plugins**. It stays off until **Enable Playtesting** is
-turned on in *Project Settings > Plugins > Flock Playtest Settings*. If you cloned the repository, copy or link
-`Plugins/FlockUnrealSdk/OptionalPlugins/FlockPlaytest/` to `Plugins/FlockPlaytest/`: Unreal does not load it
+turned on in *Project Settings > Plugins > Protokite Playtest Settings*. If you cloned the repository, copy or link
+`Plugins/FlockUnrealSdk/OptionalPlugins/ProtokitePlaytest/` to `Plugins/ProtokitePlaytest/`: Unreal does not load it
 where it sits. Leave it out of projects that are not running playtests. [Playtesting with Protokite](Documentation/playtesting.md)
 walks through the rest, from pointing the build at a playtest to a session on Protokite's Sessions page.
 
 To see what a playtest recording looks like before any playtest exists, tick **Record Video In Play In Editor** in
-*Project Settings > Plugins > Flock Playtest Local Settings* and press Play, or type `FlockPlaytest.RecordTestVideo 30`
-in the console of a Development build. The video is saved under `Saved/FlockPlaytest/Recordings/TestVideos/`, and the
-log names the file, which is a WebM video a browser plays. Video is recorded on 64-bit Windows, with the **Video Recording** settings in *Flock
+*Project Settings > Plugins > Protokite Playtest Local Settings* and press Play, or type `ProtokitePlaytest.RecordTestVideo 30`
+in the console of a Development build. The video is saved under `Saved/ProtokitePlaytest/Recordings/TestVideos/`, and the
+log names the file, which is a WebM video a browser plays. Video is recorded on 64-bit Windows, with the **Video Recording** settings in *Protokite
 Playtest Settings*. Recordings are kept inside **Recordings Disk Budget**, and the oldest test videos make room first.
 
 ### Blueprint-only projects
@@ -398,7 +398,7 @@ graph it's called in, so a call is one node with no Target pin to wire:
 - **Provider calls** are async nodes with success/failure pins — `Flock Login With Email`,
   `Flock Get Config By Name`, `Flock Get Shop Items`, `Flock Get My Data By Tag`, `Flock Purchase`, … .
   Each fires exactly one pin, and fails with a Validation error if the SDK isn't initialized.
-- **Fire-and-forget calls and state reads** are plain nodes — `Flock Log Event`, `Flock Record Screen
+- **Fire-and-forget calls and state reads** are plain nodes — `Flock Log Diagnostic Event`, `Flock Record Screen
   View`, `Flock Set Analytics Consent`, `Flock Is Authenticated`, `Flock Get Player Id`, `Flock Logout`,
   `Flock Is Initialized`, `Flock Get Events`, … . All are safe no-ops (or return defaults) before init,
   so they never need an "is ready" guard.
@@ -427,7 +427,7 @@ so you can read only the half you work in.
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, screen views, gameplay events, transactions, consent — what players did (Dashboards → Game Metrics) |
 | [Diagnostics](Documentation/diagnostics.md) | Log entries, automatic exception and Blueprint exception capture, crash reporting — what went wrong (Diagnostics → Errors / Events) |
-| [Playtesting with Protokite](Documentation/playtesting.md) | The optional Flock Playtest plugin: setup, the session per launch, video, heavy analytics, exceptions, the feedback form and its Blueprint nodes, what to tell players |
+| [Playtesting with Protokite](Documentation/playtesting.md) | The optional Protokite Playtest plugin: setup, the session per launch, video, heavy analytics, exceptions, the feedback form and its Blueprint nodes, what to tell players |
 | [SDK events](Documentation/events.md) | The event hub — lifecycle, auth, and session events |
 | [Errors](Documentation/errors.md) | What an `FFlockError` carries, branching on codes, the hint that names the fix, field-error validation failures |
 | [Logging & debugging](Documentation/logging.md) | The SDK's own log output, the network call trace, the self-test |
@@ -477,11 +477,12 @@ server-side at any moment. Player data rows are cached per player and dropped on
 
 ## Testing
 
-Automation tests live beside each feature and are grouped under the `Flock.` prefix. Run them from
-**Tools → Session Frontend → Automation** (filter `Flock.`), or headless:
+Automation tests live beside each feature: the SDK's under the `Flock.` prefix, and the optional playtest plugin's
+under `Protokite.`. Run them from **Tools → Session Frontend → Automation** (filter `Flock.`, or `Protokite.` for the
+playtest plugin), or headless:
 
 ```
-UnrealEditor-Cmd.exe <YourProject>.uproject -ExecCmds="Automation RunTests Flock." -unattended -nullrhi -log
+UnrealEditor-Cmd.exe <YourProject>.uproject -ExecCmds="Automation RunTests Flock.+Protokite." -unattended -nullrhi -log
 ```
 
 ## Status
@@ -505,7 +506,7 @@ alongside the inventory row, which changes its result type. **1.8.0 makes failur
 carries the call that failed and a next step, and a request the server rejects for a bad field names that field.
 **1.9.0 keeps a player's queued offline writes** when a build ships with a new Game Version. **1.10.0 adds
 gameplay events** (`Flock Track Event`) and captures Blueprint script errors such as Accessed None
-automatically, counting repeats of the same error instead of sending each one. **1.11.0 adds Flock Playtest**,
+automatically, counting repeats of the same error instead of sending each one. **1.11.0 adds Protokite Playtest**,
 an optional plugin for Protokite playtests, in beta and shipped as its own download: its settings, and a status
 that says whether playtest work may run. **1.12.0 has it fetch the build's playtest from Protokite**, with the
 playtest's feature switches and feedback form, and say why when it cannot. **1.13.0 starts one Protokite session
@@ -514,7 +515,7 @@ ends it when the game shuts down; it also adds `OnSessionRegistered` and the **S
 Flock SDK. **1.14.0 sends heavy analytics** when a playtest turns it on: a performance window for every ten seconds
 of play, each level load, and the game's own playtest events, all through the Flock SDK's analytics. **1.15.0 records
 the game's screen** when a playtest turns video recording on, saving VP9 video on disk on 64-bit Windows, and lets a
-developer try it in Play In Editor or with the `FlockPlaytest.RecordTestVideo` console command. **1.16.0 keeps a
+developer try it in Play In Editor or with the `ProtokitePlaytest.RecordTestVideo` console command. **1.16.0 keeps a
 playtest recording that was not uploaded** for a later launch, with the session it belongs to, finishes a recording cut
 off when its game ended, and keeps recordings inside a disk budget. **1.17.0 uploads playtest recordings** to the
 session they belong to, and pushes what earlier launches left. **1.18.0 adds the playtest's feedback form**, built from
@@ -532,7 +533,7 @@ Deliberate omissions and known gaps:
   which is what most graphs want. Provider cache clearing is also C++-only.
 - **Asset uploads are not included.** The SDK reads and downloads assets; publishing them is a dashboard
   operation.
-- **Leave `framegrabber.framelatency` at 0 while Flock Playtest records video.** Changing that engine console
+- **Leave `framegrabber.framelatency` at 0 while Protokite Playtest records video.** Changing that engine console
   variable while a frame is on its way to be captured stops a Development build: the engine's frame grabber then
   flushes rendering commands from the render thread. The plugin asks for no frame while it is not 0, but cannot
   stop the change itself.

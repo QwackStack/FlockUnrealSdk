@@ -1,7 +1,7 @@
 name: Playtest plugin
 
-# FlockPlaytest lives in this repository but installs as a separate, optional plugin
-# (OptionalPlugins/FlockPlaytest/, released as its own zip). Four rules keep it optional, and the compiler
+# ProtokitePlaytest lives in this repository but installs as a separate, optional plugin
+# (OptionalPlugins/ProtokitePlaytest/, released as its own zip). Four rules keep it optional, and the compiler
 # enforces none of them:
 #
 #   - Flock never names it. A Flock file that includes a playtest header compiles here, where the two sit
@@ -44,17 +44,19 @@ jobs:
             fi
           done
 
-          HITS=$(grep -rniI 'FlockPlaytest' Source Config Flock.uplugin || true)
+          # The plugin's former name is searched for too, so a reference left behind by the 1.21.0 rename is
+          # caught here rather than found by a studio whose project does not have the plugin.
+          HITS=$(grep -rniIE 'ProtokitePlaytest|FlockPlaytest' Source Config Flock.uplugin || true)
           if [ -n "$HITS" ]; then
-            echo "::error::Flock refers to the optional playtest plugin, so a project that installed Flock alone would fail to build or load. Keep the code in OptionalPlugins/FlockPlaytest/, and if the playtest plugin needs something from Flock, add it to Flock without naming the plugin:"
+            echo "::error::Flock refers to the optional playtest plugin, so a project that installed Flock alone would fail to build or load. Keep the code in OptionalPlugins/ProtokitePlaytest/, and if the playtest plugin needs something from Flock, add it to Flock without naming the plugin:"
             echo "$HITS"
             exit 1
           fi
 
-          # Assets are binary, but an asset that uses a playtest type stores its /Script/FlockPlaytest import as
+          # Assets are binary, but an asset that uses a playtest type stores its /Script/ProtokitePlaytest import as
           # plain text, so Content/ is searched as text too (-a), whenever Flock has one.
           if [ -d Content ]; then
-            ASSET_HITS=$(grep -rlia 'FlockPlaytest' Content || true)
+            ASSET_HITS=$(grep -rliaE 'ProtokitePlaytest|FlockPlaytest' Content || true)
             if [ -n "$ASSET_HITS" ]; then
               echo "::error::Flock content refers to the optional playtest plugin, so it would fail to load in a project that installed Flock alone:"
               echo "$ASSET_HITS"
@@ -62,31 +64,31 @@ jobs:
             fi
           fi
 
-          echo "Nothing in Source/, Config/, Content/ or Flock.uplugin refers to FlockPlaytest."
+          echo "Nothing in Source/, Config/, Content/ or Flock.uplugin refers to the playtest plugin, under either name."
 
       - name: Every optional plugin is one these checks and the release know about
         run: |
           set -euo pipefail
 
           # OptionalPlugins/ is left out of Flock's zip as a whole, but the rules in this workflow and the second
-          # archive in release.yml name FlockPlaytest only. A new plugin folder would pass every check here and
+          # archive in release.yml name ProtokitePlaytest only. A new plugin folder would pass every check here and
           # then be missing from every release, so an unknown folder fails until both cover it.
           for DIR in OptionalPlugins/*/; do
             NAME=$(basename "$DIR")
-            if [ "$NAME" != "FlockPlaytest" ]; then
+            if [ "$NAME" != "ProtokitePlaytest" ]; then
               echo "::error::OptionalPlugins/$NAME is not covered by playtest-plugin.yml or release.yml. Give it the same rules and an archive of its own before adding it."
               exit 1
             fi
           done
 
-          echo "OptionalPlugins/ holds only FlockPlaytest."
+          echo "OptionalPlugins/ holds only ProtokitePlaytest."
 
       - name: The playtest plugin stays off until a project turns it on
         run: |
           set -euo pipefail
 
-          MANIFEST=OptionalPlugins/FlockPlaytest/FlockPlaytest.uplugin
-          SETTINGS=OptionalPlugins/FlockPlaytest/Source/FlockPlaytest/Public/FlockPlaytestSettings.h
+          MANIFEST=OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin
+          SETTINGS=OptionalPlugins/ProtokitePlaytest/Source/ProtokitePlaytest/Public/ProtokitePlaytestSettings.h
 
           for f in "$MANIFEST" "$SETTINGS"; do
             if [ ! -f "$f" ]; then
@@ -119,7 +121,7 @@ jobs:
           fi
 
           # And no config file shipped inside the plugin may turn it back on.
-          SHIPPED_ON=$(grep -rniI --include='*.ini' 'bPlaytestingEnabled[[:space:]]*=[[:space:]]*true' OptionalPlugins/FlockPlaytest || true)
+          SHIPPED_ON=$(grep -rniI --include='*.ini' 'bPlaytestingEnabled[[:space:]]*=[[:space:]]*true' OptionalPlugins/ProtokitePlaytest || true)
           if [ -n "$SHIPPED_ON" ]; then
             echo "::error::A config file inside the playtest plugin turns Enable Playtesting on for every project that installs it:"
             echo "$SHIPPED_ON"
@@ -132,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          MANIFEST=OptionalPlugins/FlockPlaytest/FlockPlaytest.uplugin
+          MANIFEST=OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin
           if [ ! -f "$MANIFEST" ]; then
             echo "::error::$MANIFEST is missing. This check reads it; if it moved, update this workflow with it."
             exit 1
@@ -160,7 +162,7 @@ jobs:
           set -euo pipefail
 
           FLOCK=Flock.uplugin
-          PLAYTEST=OptionalPlugins/FlockPlaytest/FlockPlaytest.uplugin
+          PLAYTEST=OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin
 
           for f in "$FLOCK" "$PLAYTEST"; do
             if [ ! -f "$f" ]; then

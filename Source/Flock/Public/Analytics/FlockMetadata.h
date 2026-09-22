@@ -5,13 +5,16 @@
 #include "CoreMinimal.h"
 
 /**
- * Builds the string map the analytics wire wants, without an FString::FromInt at every call site.
+ * Builds the string map a diagnostic entry's Extra Data wants, without an FString::FromInt at every call site.
  *
- * The backend stores metadata as strings, but the things games actually attach — levels, counts,
- * durations, flags — are not strings. Converting by hand at each call is noise that adds up:
+ * The backend stores that surface's extra data as strings, but the things games actually attach — levels,
+ * counts, durations, flags — are not strings. Converting by hand at each call is noise that adds up:
  *
- *   Sdk->LogAnalyticsEvent(TEXT("level_complete"),
- *       FFlockMetadata().Add(TEXT("level"), 7).Add(TEXT("deaths"), 2).Add(TEXT("flawless"), true));
+ *   Sdk->LogDiagnosticEvent(TEXT("matchmaking started"),
+ *       FFlockMetadata().Add(TEXT("queue"), TEXT("ranked")).Add(TEXT("party_size"), 3).Add(TEXT("ranked"), true));
+ *
+ * This is the diagnostics container. A gameplay event's properties are FFlockCommandData, where a number
+ * stays a number so the Game Metrics dashboards can chart it — see TrackAnalyticsEvent.
  *
  * Converts implicitly to the map, so it drops into any call taking metadata. Blueprint gets the same
  * builders as chainable nodes on UFlockAnalyticsLibrary.

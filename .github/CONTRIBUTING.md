@@ -49,7 +49,7 @@ Editor context — every Flock test:
 
 ```
 "<UE>\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "<path>\<YourProject>.uproject" ^
-  -ExecCmds="Automation RunTests Flock.; Quit" -unattended -nullrhi -NoSplash -log
+  -ExecCmds="Automation RunTests Flock.+Protokite.; Quit" -unattended -nullrhi -NoSplash -log
 ```
 
 Non-editor context — **the same command with `-game` added**. Only tests declaring

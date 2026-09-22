@@ -70,11 +70,16 @@ bool FFlockAnalyticsSubsystemGuardTest::RunTest(const FString& Parameters)
 	TestNull(TEXT("no provider before initialization"), Sdk->GetAnalyticsProvider());
 
 	// None of these may crash.
-	Sdk->LogAnalyticsEvent(TEXT("early"), TMap<FString, FString>());
-	Sdk->LogAnalyticsError(TEXT("early"), FFlockLogDetails());
-	Sdk->LogAnalyticsException(TEXT("early"), TEXT("trace"), FFlockLogDetails());
+	Sdk->LogDiagnosticEvent(TEXT("early"), TMap<FString, FString>());
+	Sdk->LogDiagnosticError(TEXT("early"), FFlockLogDetails());
+	Sdk->LogDiagnosticException(TEXT("early"), TEXT("trace"), FFlockLogDetails());
 	// No trace supplied: must stay a safe no-op and must not walk a stack for a dropped entry.
-	Sdk->LogAnalyticsException(TEXT("early, no trace"), FString(), FFlockLogDetails());
+	Sdk->LogDiagnosticException(TEXT("early, no trace"), FString(), FFlockLogDetails());
+	// The former names are forwarders, and a forwarder to a dead provider is the case a game upgrading
+	// from an older build actually runs.
+	Sdk->LogAnalyticsEvent(TEXT("early, former name"), TMap<FString, FString>());
+	Sdk->LogAnalyticsError(TEXT("early, former name"), FFlockLogDetails());
+	Sdk->LogAnalyticsException(TEXT("early, former name"), FString(), FFlockLogDetails());
 	Sdk->RecordAnalyticsScreenView(TEXT("Screen"));
 	Sdk->SetAnalyticsConsent(true);
 	Sdk->EraseLocalAnalyticsData();
