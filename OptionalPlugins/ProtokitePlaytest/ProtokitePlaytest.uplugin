@@ -1,0 +1,40 @@
+{
+	"FileVersion": 3,
+	"Version": 39,
+	"VersionName": "1.21.0",
+	"FriendlyName": "Protokite Playtest",
+	"Description": "Protokite playtesting for the Flock SDK, in beta: one session per launch, screen recording, play data and a feedback form. Installed separately, and off until you turn it on.",
+	"Category": "Online Platform",
+	"CreatedBy": "Qwacks",
+	"CreatedByURL": "https://flock.qwacks.com",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "mailto:support@qwacks.com",
+	"EnabledByDefault": false,
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "ProtokitePlaytest",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "ProtokitePlaytestEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "Flock",
+			"Enabled": true
+		},
+		{
+			"Name": "OnlineSubsystem",
+			"Enabled": true
+		}
+	]
+}

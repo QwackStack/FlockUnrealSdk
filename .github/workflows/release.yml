@@ -9,7 +9,7 @@ name: Release
 # is what makes the zip drop straight into a project: it nests everything under FlockUnrealSdk/, so
 # extracting into `YourProject/Plugins/` lands the plugin where Unreal expects it.
 #
-# The optional playtest plugin ships from the same tag as a second zip, nested under FlockPlaytest/ so it
+# The optional playtest plugin ships from the same tag as a second zip, nested under ProtokitePlaytest/ so it
 # extracts beside Flock rather than inside it. Unreal stops looking for plugins below the first .uplugin it
 # finds, which is why it cannot ride along inside Flock's archive.
 #
@@ -60,11 +60,11 @@ jobs:
 
           git archive --format=zip --prefix=FlockUnrealSdk/ -o "FlockUnrealSdk-${GITHUB_REF_NAME}.zip" HEAD
 
-          # The playtest plugin is archived from its own folder, so its zip holds FlockPlaytest/ and nothing
+          # The playtest plugin is archived from its own folder, so its zip holds ProtokitePlaytest/ and nothing
           # else. That leaves the repository's LICENSE.md behind, and every source file's header points at
           # it, so it is added back at the plugin's root.
-          git archive --format=zip --prefix=FlockPlaytest/ --add-file=LICENSE.md \
-            -o "FlockPlaytest-${GITHUB_REF_NAME}.zip" HEAD:OptionalPlugins/FlockPlaytest
+          git archive --format=zip --prefix=ProtokitePlaytest/ --add-file=LICENSE.md \
+            -o "ProtokitePlaytest-${GITHUB_REF_NAME}.zip" HEAD:OptionalPlugins/ProtokitePlaytest
 
       # Checked rather than assumed, in both directions. Flock's zip is built from the whole repository, so
       # without the export-ignore in .gitattributes it would carry OptionalPlugins/: a second plugin nested
@@ -75,7 +75,7 @@ jobs:
           set -euo pipefail
 
           FLOCK_ZIP="FlockUnrealSdk-${GITHUB_REF_NAME}.zip"
-          PLAYTEST_ZIP="FlockPlaytest-${GITHUB_REF_NAME}.zip"
+          PLAYTEST_ZIP="ProtokitePlaytest-${GITHUB_REF_NAME}.zip"
           unzip -Z1 "$FLOCK_ZIP" > flock-entries.txt
           unzip -Z1 "$PLAYTEST_ZIP" > playtest-entries.txt
 
@@ -88,17 +88,17 @@ jobs:
           }
 
           require_entry flock-entries.txt FlockUnrealSdk/Flock.uplugin
-          if grep -E '(^|/)OptionalPlugins/|FlockPlaytest' flock-entries.txt; then
+          if grep -E '(^|/)OptionalPlugins/|ProtokitePlaytest' flock-entries.txt; then
             echo "::error::Flock's archive contains the playtest plugin (entries above). Keep OptionalPlugins/ export-ignored in .gitattributes."
             FAILED=1
           fi
 
-          require_entry playtest-entries.txt FlockPlaytest/FlockPlaytest.uplugin
-          require_entry playtest-entries.txt FlockPlaytest/LICENSE.md
-          require_entry playtest-entries.txt FlockPlaytest/Source/FlockPlaytest/FlockPlaytest.Build.cs
-          require_entry playtest-entries.txt FlockPlaytest/Source/FlockPlaytestEditor/FlockPlaytestEditor.Build.cs
-          if grep -v '^FlockPlaytest/' playtest-entries.txt; then
-            echo "::error::The playtest archive has entries outside FlockPlaytest/ (above)."
+          require_entry playtest-entries.txt ProtokitePlaytest/ProtokitePlaytest.uplugin
+          require_entry playtest-entries.txt ProtokitePlaytest/LICENSE.md
+          require_entry playtest-entries.txt ProtokitePlaytest/Source/ProtokitePlaytest/ProtokitePlaytest.Build.cs
+          require_entry playtest-entries.txt ProtokitePlaytest/Source/ProtokitePlaytestEditor/ProtokitePlaytestEditor.Build.cs
+          if grep -v '^ProtokitePlaytest/' playtest-entries.txt; then
+            echo "::error::The playtest archive has entries outside ProtokitePlaytest/ (above)."
             FAILED=1
           fi
           MANIFESTS=$(grep -c '\.uplugin$' playtest-entries.txt || true)
@@ -182,7 +182,7 @@ jobs:
             # folder, where Unreal never loads it.
             printf '## Downloads\n\n'
             printf -- '- `FlockUnrealSdk-%s.zip`: the Flock SDK. Extract it into the `Plugins/` folder of your project.\n' "$GITHUB_REF_NAME"
-            printf -- '- `FlockPlaytest-%s.zip`: the optional Protokite playtesting plugin, in beta. Extract it next to the Flock SDK, so that `Plugins/FlockPlaytest/` sits beside `Plugins/FlockUnrealSdk/`, then enable it in your project. It stays off until **Enable Playtesting** is turned on; leave it out of projects that are not running playtests.\n\n' "$GITHUB_REF_NAME"
+            printf -- '- `ProtokitePlaytest-%s.zip`: the optional Protokite playtesting plugin, in beta. Extract it next to the Flock SDK, so that `Plugins/ProtokitePlaytest/` sits beside `Plugins/FlockUnrealSdk/`, then enable it in your project. It stays off until **Enable Playtesting** is turned on; leave it out of projects that are not running playtests.\n\n' "$GITHUB_REF_NAME"
             printf '## Supported Unreal Engine versions\n\n'
             printf '%s\n\n' "$SUPPORT"
             printf 'Below UE %s the plugin refuses to compile, so landing on an unsupported engine is one clear error rather than a cascade of unknown symbols. Above UE %s it still compiles and emits a notice — untested, and deliberately not blocked, so a newly released engine never breaks a project on day one.\n' "$FLOOR" "$CEILING"
@@ -196,7 +196,7 @@ jobs:
         with:
           files: |
             FlockUnrealSdk-*.zip
-            FlockPlaytest-*.zip
+            ProtokitePlaytest-*.zip
           body_path: release-notes.md
           # Off, deliberately: the body above is complete, and leaving this on is what duplicated the
           # notes. `append_body: false` keeps an existing body from being combined with ours, so a re-run

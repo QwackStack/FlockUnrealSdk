@@ -12,7 +12,9 @@ log files is a third thing again: see [Logging & debugging](logging.md).
 | Read by | Design, product, LiveOps | Engineering |
 | Routes | `/v1/analytics/*` | `/v1/log_event` |
 | Dashboard | **Dashboards → Game Metrics** | **Diagnostics → Events** / **Diagnostics → Errors** |
-| Calls | `Flock Track Event`, `Flock Record Screen View`, sessions, purchase transactions | `Flock Log Event`, `Flock Log Error`, `Flock Log Exception`, automatic exception capture |
+| Calls | `Flock Track Event`, `Flock Record Screen View`, sessions, purchase transactions | `Flock Log Diagnostic Event`, `Flock Log Diagnostic Error`, `Flock Log Diagnostic Exception`, automatic exception capture |
+| Blueprint category | *Flock \| Analytics* | *Flock \| Diagnostics* |
+| Custom data | **Event Properties** — a number stays a number | **Extra Data** — a map of strings |
 
 **Do not use these to record gameplay.** A level-complete written as a log entry lands in the engineering
 diagnostics stream, where nobody building a retention chart will ever find it, and it does not appear in
@@ -24,16 +26,22 @@ Which one you pick decides where the entry appears.
 
 | Node | C++ | Recorded as | Appears on | Use for |
 |---|---|---|---|---|
-| `Flock Log Event` | `LogAnalyticsEvent` | `debug` | **Diagnostics → Events** | Trace and context — things that are not faults |
-| `Flock Log Error` | `LogAnalyticsError` | `logic_error` | **Diagnostics → Errors** | Something wrong that did not raise |
-| `Flock Log Exception` | `LogAnalyticsException` | `exception` | **Diagnostics → Errors** | A failure you caught, with its callstack |
+| `Flock Log Diagnostic Event` | `LogDiagnosticEvent` | `debug` | **Diagnostics → Events** | Trace and context — things that are not faults |
+| `Flock Log Diagnostic Error` | `LogDiagnosticError` | `logic_error` | **Diagnostics → Errors** | Something wrong that did not raise |
+| `Flock Log Diagnostic Exception` | `LogDiagnosticException` | `exception` | **Diagnostics → Errors** | A failure you caught, with its callstack |
+
+These three were called `Flock Log Event`, `Flock Log Error` and `Flock Log Exception` (`LogAnalyticsEvent`,
+`LogAnalyticsError`, `LogAnalyticsException`) until 1.21.0. The old nodes and methods still work and do exactly
+the same thing, and the editor marks them deprecated with the new name; they were renamed because a call named
+for analytics is the one thing on this page that must not be mistaken for it.
 
 ## Blueprint
 
-The nodes live under *Flock | Analytics* and need no subsystem wired in. All are safe no-ops before the SDK
-has initialized.
+The nodes live under *Flock | Diagnostics* and need no subsystem wired in. All are safe no-ops before the SDK
+has initialized. The analytics nodes are in a drawer of their own, *Flock | Analytics*, so the two surfaces are
+no longer one list to pick the wrong entry from.
 
-![A graph showing Flock Log Event with an Event Name filled in and its Extra Data pin fed by two chained Flock Metadata builder nodes](images/analytics-log-event.png)
+![A graph showing Flock Log Diagnostic Event with an Event Name filled in and its Extra Data pin fed by two chained Flock Metadata builder nodes](images/analytics-log-event.png)
 
 Build the **Extra Data** map by dragging off that pin — the same builders the C++ side uses appear as
 chainable nodes: *Flock Metadata (Integer)*, *(Float)*, *(Boolean)*, *(String)*. Add one per field and chain
@@ -48,7 +56,7 @@ single field is a single node. Each node copies the map coming in and adds its o
 left to right and mixes types freely. Keys are a map, so order doesn't matter — but if two nodes use the
 same key, the **last one wins**. Leaving an *Extra Data* pin unconnected is fine.
 
-On *Flock Log Error*, right-click the **Details** pin and choose **Split Struct Pin** to get Logical
+On *Flock Log Diagnostic Error*, right-click the **Details** pin and choose **Split Struct Pin** to get Logical
 Expression, Error Code, Error Data and Extra Data as separate pins.
 
 ## C++
@@ -56,15 +64,15 @@ Expression, Error Code, Error Data and Extra Data as separate pins.
 ```cpp
 UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
 
-Sdk->LogAnalyticsEvent(TEXT("matchmaking started"),
+Sdk->LogDiagnosticEvent(TEXT("matchmaking started"),
     FFlockMetadata().Add(TEXT("queue"), TEXT("ranked")).Add(TEXT("party_size"), 3));
 
 FFlockLogDetails Details;
 Details.LogicalExpression = TEXT("ItemCount >= 0");
 Details.ErrorCode = TEXT("INV_DESYNC");
-Sdk->LogAnalyticsError(TEXT("Inventory desynced"), Details);
+Sdk->LogDiagnosticError(TEXT("Inventory desynced"), Details);
 
-Sdk->LogAnalyticsException(TEXT("Save failed"));   // callstack captured for you
+Sdk->LogDiagnosticException(TEXT("Save failed"));   // callstack captured for you
 ```
 
 ## Things worth knowing
@@ -102,7 +110,7 @@ With **Analytics Capture Exceptions** on (the default), the SDK reports faults a
 
 Each report carries `category` and `exception_source` (`log`, `blueprint` or `crash`); a Blueprint exception
 also carries `blueprint_exception_type` (`access_violation`, `infinite_loop`, `non_fatal_error`,
-`fatal_error` or `abort_execution`). A manual `Flock Log Exception` is recorded whatever this setting says.
+`fatal_error` or `abort_execution`). A manual `Flock Log Diagnostic Exception` is recorded whatever this setting says.
 
 **Categories that are never reported.** The SDK's own categories are always excluded, so a failed upload
 cannot report itself in a loop. **Analytics Exception Excluded Categories** adds more; it starts with the

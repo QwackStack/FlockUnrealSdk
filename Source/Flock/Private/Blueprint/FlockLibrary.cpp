@@ -8,29 +8,48 @@
 // Every node resolves the subsystem from the calling graph's world context and forwards. A missing SDK
 // (no context, or before init) is a safe no-op / default, matching the subsystem methods themselves.
 
-void UFlockLibrary::LogEvent(const UObject* WorldContextObject, const FString& Message, const TMap<FString, FString>& ExtraData)
+void UFlockLibrary::LogDiagnosticEvent(const UObject* WorldContextObject, const FString& Message,
+	const TMap<FString, FString>& ExtraData)
 {
 	if (UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject))
 	{
-		Sdk->LogAnalyticsEvent(Message, ExtraData);
+		Sdk->LogDiagnosticEvent(Message, ExtraData);
 	}
+}
+
+void UFlockLibrary::LogDiagnosticError(const UObject* WorldContextObject, const FString& Message, const FFlockLogDetails& Details)
+{
+	if (UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject))
+	{
+		Sdk->LogDiagnosticError(Message, Details);
+	}
+}
+
+void UFlockLibrary::LogDiagnosticException(const UObject* WorldContextObject, const FString& Message, const FString& StackTrace,
+	const FFlockLogDetails& Details)
+{
+	if (UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject))
+	{
+		Sdk->LogDiagnosticException(Message, StackTrace, Details);
+	}
+}
+
+// The former names forward to the new ones rather than to the subsystem, so a graph still calling one
+// takes exactly the path the renamed node takes.
+void UFlockLibrary::LogEvent(const UObject* WorldContextObject, const FString& Message, const TMap<FString, FString>& ExtraData)
+{
+	LogDiagnosticEvent(WorldContextObject, Message, ExtraData);
 }
 
 void UFlockLibrary::LogError(const UObject* WorldContextObject, const FString& Message, const FFlockLogDetails& Details)
 {
-	if (UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject))
-	{
-		Sdk->LogAnalyticsError(Message, Details);
-	}
+	LogDiagnosticError(WorldContextObject, Message, Details);
 }
 
 void UFlockLibrary::LogException(const UObject* WorldContextObject, const FString& Message, const FString& StackTrace,
 	const FFlockLogDetails& Details)
 {
-	if (UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject))
-	{
-		Sdk->LogAnalyticsException(Message, StackTrace, Details);
-	}
+	LogDiagnosticException(WorldContextObject, Message, StackTrace, Details);
 }
 
 void UFlockLibrary::RecordScreenView(const UObject* WorldContextObject, const FString& ScreenName)

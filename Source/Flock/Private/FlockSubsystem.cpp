@@ -14,7 +14,7 @@
 #include "Http/FlockHttpShutdown.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.20.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.21.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -353,7 +353,7 @@ void UFlockSubsystem::HandleAnalyticsLoggedOut()
 	}
 }
 
-void UFlockSubsystem::LogAnalyticsEvent(const FString& Message, const TMap<FString, FString>& ExtraData)
+void UFlockSubsystem::LogDiagnosticEvent(const FString& Message, const TMap<FString, FString>& ExtraData)
 {
 	if (AnalyticsProvider.IsValid())
 	{
@@ -361,7 +361,7 @@ void UFlockSubsystem::LogAnalyticsEvent(const FString& Message, const TMap<FStri
 	}
 }
 
-void UFlockSubsystem::LogAnalyticsError(const FString& Message, const FFlockLogDetails& Details)
+void UFlockSubsystem::LogDiagnosticError(const FString& Message, const FFlockLogDetails& Details)
 {
 	if (AnalyticsProvider.IsValid())
 	{
@@ -369,13 +369,30 @@ void UFlockSubsystem::LogAnalyticsError(const FString& Message, const FFlockLogD
 	}
 }
 
-void UFlockSubsystem::LogAnalyticsException(const FString& Message, const FString& StackTrace,
+void UFlockSubsystem::LogDiagnosticException(const FString& Message, const FString& StackTrace,
 	const FFlockLogDetails& Details)
 {
 	if (AnalyticsProvider.IsValid())
 	{
 		AnalyticsProvider->LogException(Message, StackTrace, Details);
 	}
+}
+
+// The former names forward rather than repeat the work, so the two cannot answer differently while both exist.
+void UFlockSubsystem::LogAnalyticsEvent(const FString& Message, const TMap<FString, FString>& ExtraData)
+{
+	LogDiagnosticEvent(Message, ExtraData);
+}
+
+void UFlockSubsystem::LogAnalyticsError(const FString& Message, const FFlockLogDetails& Details)
+{
+	LogDiagnosticError(Message, Details);
+}
+
+void UFlockSubsystem::LogAnalyticsException(const FString& Message, const FString& StackTrace,
+	const FFlockLogDetails& Details)
+{
+	LogDiagnosticException(Message, StackTrace, Details);
 }
 
 void UFlockSubsystem::RecordAnalyticsScreenView(const FString& ScreenName)

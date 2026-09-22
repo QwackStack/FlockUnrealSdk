@@ -267,9 +267,9 @@ function Invoke-FlockTests {
     $PrevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     if ($GameContext) {
-        & $EditorCmd $Project -game '-ExecCmds=Automation RunTests Flock.; Quit' -unattended -nullrhi -NoSplash -log *> $ConsoleOut
+        & $EditorCmd $Project -game '-ExecCmds=Automation RunTests Flock.+Protokite.; Quit' -unattended -nullrhi -NoSplash -log *> $ConsoleOut
     } else {
-        & $EditorCmd $Project '-ExecCmds=Automation RunTests Flock.; Quit' -unattended -nullrhi -NoSplash -log *> $ConsoleOut
+        & $EditorCmd $Project '-ExecCmds=Automation RunTests Flock.+Protokite.; Quit' -unattended -nullrhi -NoSplash -log *> $ConsoleOut
     }
     $ErrorActionPreference = $PrevEap
 

@@ -13,7 +13,9 @@ somewhere else entirely.
 | Read by | Design, product, LiveOps | Engineering |
 | Routes | `/v1/analytics/*` | `/v1/log_event` |
 | Dashboard | **Dashboards → Game Metrics** | **Diagnostics → Events** / **Diagnostics → Errors** |
-| Calls | `Flock Track Event`, `Flock Record Screen View`, sessions, purchase transactions | `Flock Log Event`, `Flock Log Error`, `Flock Log Exception`, automatic exception capture |
+| Calls | `Flock Track Event`, `Flock Record Screen View`, sessions, purchase transactions | `Flock Log Diagnostic Event`, `Flock Log Diagnostic Error`, `Flock Log Diagnostic Exception`, automatic exception capture |
+| Blueprint category | *Flock \| Analytics* | *Flock \| Diagnostics* |
+| Custom data | **Event Properties** — a number stays a number | **Extra Data** — a map of strings |
 
 A crash is not a funnel step. A level-complete written as a log entry is accepted, stored and shown under
 Diagnostics, where nobody building a retention chart will look — and it never reaches Game Metrics. Pick
@@ -25,9 +27,14 @@ The nodes live under *Flock | Analytics* and **none of them needs the subsystem 
 it from the calling graph: `Flock Track Event`, `Flock Record Screen View`, `Flock Set Analytics Consent`,
 `Flock Flush Analytics`, plus the session nodes. All are safe no-ops before the SDK has initialized.
 
-Build a gameplay event's **Properties** with the *Flock Command Data Set* nodes — *(Int)*, *(Float)*,
-*(String)*, *(Bool)* and *(String Array)* — chained left to right. Keys reach the dashboard exactly as you
-write them, and a number stays a number, so it can be charted.
+Build a gameplay event's **Properties** with the *Flock Event Property* nodes — *(Integer)*, *(Float)*,
+*(String)*, *(Boolean)* and *(String Array)* — chained left to right, starting from *Make Flock Event
+Properties* or straight off the Properties pin. Keys reach the dashboard exactly as you write them, and a
+number stays a number, so it can be charted.
+
+The same struct also backs the game-commands *Set Command …* nodes, and those still work here — the event
+nodes are the analytics surface's name for it, so a graph recording a level completion never has to reach
+for a node called *Set Command Int* to say what happened.
 
 ## C++
 

@@ -20,6 +20,8 @@ namespace FlockAnalyticsDocsTestHelpers
 	{
 		FString Name;
 		FString DocComment;
+		/** The UFUNCTION macro above it, if any: what a graph reads is in there, not in the doc comment. */
+		FString FunctionMacro;
 	};
 
 	/** Every function a header declares, with the doc comment directly above it. A UFUNCTION macro may sit between the two. */
@@ -30,6 +32,7 @@ namespace FlockAnalyticsDocsTestHelpers
 
 		TArray<FDeclaredFunction> Out;
 		FString Comment;
+		FString Macro;
 		bool bInsideComment = false;
 		int32 OpenMacroParentheses = 0;
 		for (const FString& RawLine : Lines)
@@ -43,6 +46,7 @@ namespace FlockAnalyticsDocsTestHelpers
 			}
 			if (OpenMacroParentheses > 0 || Line.StartsWith(TEXT("UFUNCTION(")))
 			{
+				Macro += Line;
 				for (const TCHAR Character : Line)
 				{
 					OpenMacroParentheses += Character == TEXT('(') ? 1 : (Character == TEXT(')') ? -1 : 0);
@@ -66,10 +70,11 @@ namespace FlockAnalyticsDocsTestHelpers
 				const FString BeforeParenthesis = Line.Left(OpenParenthesis).TrimEnd();
 				const int32 NameStart = BeforeParenthesis.FindLastCharByPredicate(
 					[](TCHAR Character) { return Character == TEXT(' ') || Character == TEXT('*') || Character == TEXT('&'); });
-				Out.Add({ BeforeParenthesis.Mid(NameStart + 1), Comment });
+				Out.Add({ BeforeParenthesis.Mid(NameStart + 1), Comment, Macro });
 			}
-			// A member, a declaration or a function: the comment above belonged to it either way.
+			// A member, a declaration or a function: the comment and macro above belonged to it either way.
 			Comment.Reset();
+			Macro.Reset();
 		}
 		return Out;
 	}
@@ -130,9 +135,10 @@ namespace FlockAnalyticsDocsTestHelpers
 }
 
 /**
- * Every call that records something says which dashboard reads it. The surface is derived from the call's name, so a
- * new Log…, Track… or Record… call cannot ship unlabelled; a call that records nothing must carry no label, which is
- * the control that stops a scan labelling everything from passing.
+ * Every call that records something says which dashboard reads it, in its doc comment and in the Blueprint category a
+ * graph picks it from. The surface is derived from the call's name, so a new Log…, Track… or Record… call cannot ship
+ * unlabelled or in the wrong drawer; a call that records nothing must carry no label, which is the control that stops a
+ * scan labelling everything from passing.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSurfaceLabelTest, "Flock.Analytics.Docs.SurfaceLabels",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -168,17 +174,26 @@ bool FFlockAnalyticsSurfaceLabelTest::RunTest(const FString& Parameters)
 			const bool bLabelledAnalytics = Function.DocComment.Contains(TEXT("Surface: analytics"));
 			const bool bLabelledLogEvent = Function.DocComment.Contains(TEXT("Surface: log_event"));
 			const FString Surface = SurfaceForName(Function.Name);
+			const bool bInDiagnosticsDrawer = Function.FunctionMacro.Contains(TEXT("Category = \"Flock|Diagnostics\""));
+			const bool bInAnalyticsDrawer = Function.FunctionMacro.Contains(TEXT("Category = \"Flock|Analytics\""));
 			if (Surface == TEXT("log_event"))
 			{
 				++RecordingCalls;
 				TestTrue(FString::Printf(TEXT("%s is labelled log_event, and only that"), *Function.Name),
 					bLabelledLogEvent && !bLabelledAnalytics);
+				// The label is a doc comment, which nobody reading a graph's context menu ever sees. The
+				// category is what they do see, so a diagnostics call sitting in the analytics drawer is the
+				// same mislabelling in the place it actually misleads.
+				TestFalse(FString::Printf(TEXT("%s is not offered in the analytics drawer"), *Function.Name),
+					bInAnalyticsDrawer);
 			}
 			else if (Surface == TEXT("analytics"))
 			{
 				++RecordingCalls;
 				TestTrue(FString::Printf(TEXT("%s is labelled analytics, and only that"), *Function.Name),
 					bLabelledAnalytics && !bLabelledLogEvent);
+				TestFalse(FString::Printf(TEXT("%s is not offered in the diagnostics drawer"), *Function.Name),
+					bInDiagnosticsDrawer);
 			}
 			else
 			{
@@ -217,7 +232,8 @@ bool FFlockAnalyticsDocsComparisonTableTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	for (const TCHAR* Label : { TEXT("Answers"), TEXT("Read by"), TEXT("Routes"), TEXT("Dashboard"), TEXT("Calls") })
+	for (const TCHAR* Label : { TEXT("Answers"), TEXT("Read by"), TEXT("Routes"), TEXT("Dashboard"), TEXT("Calls"),
+		TEXT("Blueprint category"), TEXT("Custom data") })
 	{
 		const FString AnalyticsRow = TableRow(Analytics, Label);
 		TestFalse(FString::Printf(TEXT("analytics.md has the %s row"), Label), AnalyticsRow.IsEmpty());

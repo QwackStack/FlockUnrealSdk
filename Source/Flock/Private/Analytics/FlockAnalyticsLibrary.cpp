@@ -49,3 +49,49 @@ TMap<FString, FString> UFlockAnalyticsLibrary::AddMetadataBool(const TMap<FStrin
 {
 	return AddThrough(Metadata, Key, Value);
 }
+
+// The event-property nodes write through FFlockCommandData's own setters, for the same reason the metadata
+// nodes write through FFlockMetadata: one place decides how a value reaches the wire, so a property set in a
+// graph and the same property set in C++ cannot arrive as different types.
+template <typename T>
+static FFlockCommandData SetEventPropertyThrough(const FFlockCommandData& Properties, const FString& Key, T Value)
+{
+	FFlockCommandData Copy = Properties;
+	Copy.Set(Key, Value);
+	return Copy;
+}
+
+FFlockCommandData UFlockAnalyticsLibrary::MakeEventProperties()
+{
+	return FFlockCommandData();
+}
+
+FFlockCommandData UFlockAnalyticsLibrary::AddEventPropertyString(const FFlockCommandData& Properties,
+	const FString& Key, const FString& Value)
+{
+	return SetEventPropertyThrough(Properties, Key, Value);
+}
+
+FFlockCommandData UFlockAnalyticsLibrary::AddEventPropertyInt(const FFlockCommandData& Properties,
+	const FString& Key, int32 Value)
+{
+	return SetEventPropertyThrough(Properties, Key, Value);
+}
+
+FFlockCommandData UFlockAnalyticsLibrary::AddEventPropertyFloat(const FFlockCommandData& Properties,
+	const FString& Key, float Value)
+{
+	return SetEventPropertyThrough(Properties, Key, Value);
+}
+
+FFlockCommandData UFlockAnalyticsLibrary::AddEventPropertyBool(const FFlockCommandData& Properties,
+	const FString& Key, bool Value)
+{
+	return SetEventPropertyThrough(Properties, Key, Value);
+}
+
+FFlockCommandData UFlockAnalyticsLibrary::AddEventPropertyStringArray(const FFlockCommandData& Properties,
+	const FString& Key, const TArray<FString>& Value)
+{
+	return SetEventPropertyThrough(Properties, Key, Value);
+}

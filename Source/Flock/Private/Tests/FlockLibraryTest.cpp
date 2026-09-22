@@ -31,6 +31,10 @@ bool FFlockLibrarySafeWithoutSdkTest::RunTest(const FString& Parameters)
 	// Fire-and-forget calls must not crash without an SDK.
 	const TMap<FString, FString> Empty;
 	const FFlockLogDetails Details;
+	UFlockLibrary::LogDiagnosticEvent(nullptr, TEXT("m"), Empty);
+	UFlockLibrary::LogDiagnosticError(nullptr, TEXT("e"), Details);
+	UFlockLibrary::LogDiagnosticException(nullptr, TEXT("x"), FString(), Details);
+	// The former names forward to those three, so they have to survive the same missing SDK.
 	UFlockLibrary::LogEvent(nullptr, TEXT("m"), Empty);
 	UFlockLibrary::LogError(nullptr, TEXT("e"), Details);
 	UFlockLibrary::LogException(nullptr, TEXT("x"), FString(), Details);

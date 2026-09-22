@@ -158,19 +158,21 @@ public:
 	 * Records a diagnostic message. Spooled to disk and delivered on the next flush, so it costs
 	 * nothing at the call site and survives a crash. Silently ignored without consent.
 	 *
+	 * Custom data is a map of strings: build it with FFlockMetadata, which converts every value for you.
+	 *
 	 * Surface: log_event — read on Diagnostics → Events. Not for gameplay: a level completed or an item
 	 * bought is Track Analytics Event, which the Game Metrics dashboards read.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "ExtraData"))
-	void LogAnalyticsEvent(const FString& Message, const TMap<FString, FString>& ExtraData);
+	UFUNCTION(BlueprintCallable, Category = "Flock|Diagnostics", meta = (AutoCreateRefTerm = "ExtraData"))
+	void LogDiagnosticEvent(const FString& Message, const TMap<FString, FString>& ExtraData);
 
 	/**
 	 * Records a recoverable logic fault. Leave Details at its default if you have nothing to add.
 	 *
 	 * Surface: log_event — read on Diagnostics → Errors.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "Details"))
-	void LogAnalyticsError(const FString& Message, const FFlockLogDetails& Details);
+	UFUNCTION(BlueprintCallable, Category = "Flock|Diagnostics", meta = (AutoCreateRefTerm = "Details"))
+	void LogDiagnosticError(const FString& Message, const FFlockLogDetails& Details);
 
 	/**
 	 * Records an exception. Unhandled engine errors are captured automatically; this is for ones you
@@ -178,7 +180,38 @@ public:
 	 *
 	 * Surface: log_event — read on Diagnostics → Errors.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "Details"))
+	UFUNCTION(BlueprintCallable, Category = "Flock|Diagnostics", meta = (AutoCreateRefTerm = "Details"))
+	void LogDiagnosticException(const FString& Message, const FString& StackTrace,
+		const FFlockLogDetails& Details);
+
+	/**
+	 * The former name of Log Diagnostic Event, kept so existing graphs and code keep working.
+	 *
+	 * It was named for the wrong surface: everything it writes is read on Diagnostics → Events, never on the
+	 * Game Metrics dashboards, and the name sent people to it for gameplay.
+	 *
+	 * Surface: log_event — read on Diagnostics → Events.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Diagnostics", meta = (AutoCreateRefTerm = "ExtraData",
+		DeprecatedFunction, DeprecationMessage = "Renamed to Log Diagnostic Event, which is the surface it writes to. Track Analytics Event is the one the Game Metrics dashboards read."))
+	void LogAnalyticsEvent(const FString& Message, const TMap<FString, FString>& ExtraData);
+
+	/**
+	 * The former name of Log Diagnostic Error, kept so existing graphs and code keep working.
+	 *
+	 * Surface: log_event — read on Diagnostics → Errors.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Diagnostics", meta = (AutoCreateRefTerm = "Details",
+		DeprecatedFunction, DeprecationMessage = "Renamed to Log Diagnostic Error, which is the surface it writes to."))
+	void LogAnalyticsError(const FString& Message, const FFlockLogDetails& Details);
+
+	/**
+	 * The former name of Log Diagnostic Exception, kept so existing graphs and code keep working.
+	 *
+	 * Surface: log_event — read on Diagnostics → Errors.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Diagnostics", meta = (AutoCreateRefTerm = "Details",
+		DeprecatedFunction, DeprecationMessage = "Renamed to Log Diagnostic Exception, which is the surface it writes to."))
 	void LogAnalyticsException(const FString& Message, const FString& StackTrace,
 		const FFlockLogDetails& Details);
 
@@ -207,7 +240,7 @@ public:
 	 * What automatic exception capture can see in this build. The engine compiles error log lines and ensures out
 	 * of Shipping and Test, so those builds report crashes and Blueprint exceptions only.
 	 */
-	UFUNCTION(BlueprintPure, Category = "Flock|Analytics")
+	UFUNCTION(BlueprintPure, Category = "Flock|Diagnostics")
 	FFlockExceptionCaptureCoverage GetExceptionCaptureCoverage() const;
 
 	/**

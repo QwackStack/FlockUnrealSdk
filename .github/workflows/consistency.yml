@@ -281,7 +281,7 @@ jobs:
           echo "this branch: $VERSION   main: $BASE_VERSION"
 
           if [ "$VERSION" = "$BASE_VERSION" ]; then
-            echo "::error file=$MANIFEST::This pull request changes code (under Source/ or OptionalPlugins/*/Source/) but leaves VersionName at $BASE_VERSION, the version main already shipped. Bump it, bump UFlockSubsystem::SdkVersion and CHANGELOG.md with it, and give OptionalPlugins/FlockPlaytest/FlockPlaytest.uplugin the same VersionName and Version."
+            echo "::error file=$MANIFEST::This pull request changes code (under Source/ or OptionalPlugins/*/Source/) but leaves VersionName at $BASE_VERSION, the version main already shipped. Bump it, bump UFlockSubsystem::SdkVersion and CHANGELOG.md with it, and give OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin the same VersionName and Version."
             exit 1
           fi
 
