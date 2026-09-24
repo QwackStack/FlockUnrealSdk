@@ -65,7 +65,8 @@ bool FFlockHttpClient::IsLikelyOffline() const
 	return (FPlatformTime::Seconds() - OfflineSinceSeconds) < OfflineLatchSeconds;
 }
 
-bool FFlockHttpClient::ClassifyResponse(const FFlockHttpResponse& Response, FFlockError& OutError, FString& OutSuccessBody) const
+bool FFlockHttpClient::ClassifyResponse(const FFlockHttpResponse& Response, FFlockError& OutError, FString& OutSuccessBody,
+	bool bBodyRequired) const
 {
 	switch (Response.Result)
 	{
@@ -119,7 +120,8 @@ bool FFlockHttpClient::ClassifyResponse(const FFlockHttpResponse& Response, FFlo
 		return false;
 	}
 
-	if (Response.Body.IsEmpty())
+	// A read exists for its body, so a 2xx without one still fails it; a send has nothing to read.
+	if (bBodyRequired && Response.Body.IsEmpty())
 	{
 		OutError = FFlockError::Make(EFlockErrorType::Serialization, TEXT("Empty response from server"), Code);
 		return false;

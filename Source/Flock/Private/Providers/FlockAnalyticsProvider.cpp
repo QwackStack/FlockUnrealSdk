@@ -414,7 +414,7 @@ void FFlockAnalyticsProvider::QueueLogEvent(FFlockLogEventRequest&& Event)
 	Execute<FFlockAnalyticsAck>(
 		[ClientRef, SessionRef, Url, Payload](TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnAttempt)
 		{
-			return ClientRef->PostJsonRaw<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Payload, MoveTemp(OnAttempt));
+			return ClientRef->PostJsonAcceptingNoContent<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Payload, MoveTemp(OnAttempt));
 		},
 		nullptr, TEXT("Log event"));
 }
@@ -570,7 +570,7 @@ bool FFlockAnalyticsProvider::TrackEvent(const FString& EventName, const FFlockC
 	Execute<FFlockAnalyticsAck>(
 		[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnAttempt)
 		{
-			return ClientRef->PostJsonRaw<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
+			return ClientRef->PostJsonAcceptingNoContent<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
 		},
 		nullptr, TEXT("Track event"), /*bIdempotent*/ false);
 	return true;
@@ -751,7 +751,7 @@ void FFlockAnalyticsProvider::RecordTransaction(const FFlockAnalyticsTransaction
 	Execute<FFlockAnalyticsAck>(
 		[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnAttempt)
 		{
-			return ClientRef->PostJsonRaw<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
+			return ClientRef->PostJsonAcceptingNoContent<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
 		},
 		MoveTemp(OnComplete), TEXT("Record transaction"));
 }
@@ -1101,7 +1101,7 @@ void FFlockAnalyticsProvider::PatchSessionEnd(const FString& ServerSessionId,
 	Execute<FFlockAnalyticsAck>(
 		[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnAttempt)
 		{
-			return ClientRef->PatchJsonRaw<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
+			return ClientRef->PatchJsonAcceptingNoContent<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
 		},
 		MoveTemp(OnComplete), TEXT("End session"), /*bIdempotent*/ true, /*MaxRetriesOverride*/ -1,
 		/*bAllowAuthRetry*/ true, MoveTemp(IsExpectedFailure));
@@ -1266,10 +1266,14 @@ void FFlockAnalyticsProvider::HandleEndFailure(const FString& Handle, const FStr
 {
 	// "The retry handler gave up" is the same question, so it is asked in one place rather than
 	// restated here — a permanence table that exists twice drifts the moment an error type is added.
-	// Two carve-outs, both meaning "we learned nothing, so keep the record": Auth is a wait for the
-	// next sign-in, and Cancelled never reached the server at all.
+	// Three carve-outs, all meaning "we learned nothing, so keep the record": Auth is a wait for the
+	// next sign-in, Cancelled never reached the server at all, and a 2xx that could not be read was not
+	// the server's answer (a captive portal's page).
+	const bool bUnreadableSuccess = Error.Type == EFlockErrorType::Serialization
+		&& Error.StatusCode >= 200 && Error.StatusCode < 300;
 	const bool bFinal = Error.Type != EFlockErrorType::Auth
 		&& Error.Type != EFlockErrorType::Cancelled
+		&& !bUnreadableSuccess
 		&& !FFlockRetryHandler::ShouldRetry(Error, /*bIdempotent*/ true);
 
 	if (bFinal)
@@ -1397,7 +1401,7 @@ void FFlockAnalyticsProvider::SendNextBatch(const TSharedRef<FDeliveryPass>& Pas
 	Execute<FFlockAnalyticsAck>(
 		[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnAttempt)
 		{
-			return ClientRef->PostJsonRaw<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
+			return ClientRef->PostJsonAcceptingNoContent<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
 		},
 		[WeakSelf, Pass, SentHandles, SentPayloads, OnComplete](TFlockResult<FFlockAnalyticsAck> Result)
 		{
@@ -1592,7 +1596,7 @@ void FFlockAnalyticsProvider::SendNextEventBatch(const TSharedRef<FDeliveryPass>
 	Execute<FFlockAnalyticsAck>(
 		[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnAttempt)
 		{
-			return ClientRef->PostJsonRaw<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
+			return ClientRef->PostJsonAcceptingNoContent<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
 		},
 		[WeakSelf, Pass, Handles, Entries, BatchPlayer, OnComplete](TFlockResult<FFlockAnalyticsAck> Result)
 		{

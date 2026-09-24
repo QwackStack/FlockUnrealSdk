@@ -11,17 +11,6 @@ namespace
 	{
 		return true;
 	}
-
-	/**
-	 * Protokite answers a finished end with 204 and no body. The Flock SDK's HTTP client expects a body on every
-	 * success, so it reports that answer as an empty one; only this case is turned back into the success it is. A 2xx
-	 * with a body that cannot be read still fails.
-	 */
-	bool IsSuccessWithNoContent(const TFlockResult<FProtokitePlaytestSessionEndResult>& Result)
-	{
-		return !Result.bSuccess && Result.Error.Type == EFlockErrorType::Serialization
-			&& Result.Error.StatusCode >= 200 && Result.Error.StatusCode < 300 && Result.Error.Body.IsEmpty();
-	}
 }
 
 FString FProtokiteClient::JoinProtokiteUrl(const FString& ProtokiteApiUrl, const FString& Route)
@@ -144,14 +133,10 @@ FFlockRequestHandle FProtokiteClient::EndPlaytestSession(const FString& Protokit
 	return Execute<FProtokitePlaytestSessionEndResult>(
 		[HttpClient, Url, RequestHeaders](TFunction<void(TFlockResult<FProtokitePlaytestSessionEndResult>)> Done)
 		{
-			// The route takes no body; an empty object keeps the POST well formed.
-			return HttpClient->PostJsonRaw<FProtokitePlaytestSessionEndResult>(Url, RequestHeaders, TEXT("{}"),
-				[Done](TFlockResult<FProtokitePlaytestSessionEndResult> Result)
-				{
-					Done(IsSuccessWithNoContent(Result)
-						? TFlockResult<FProtokitePlaytestSessionEndResult>::Ok(FProtokitePlaytestSessionEndResult())
-						: Result);
-				});
+			// The route takes no body; an empty object keeps the POST well formed. Protokite answers a finished
+			// end with 204 and no body.
+			return HttpClient->PostJsonAcceptingNoContent<FProtokitePlaytestSessionEndResult>(Url, RequestHeaders, TEXT("{}"),
+				MoveTemp(Done));
 		},
 		MoveTemp(OnComplete), TEXT("Playtest session end"), /*bIdempotent*/ true, /*MaxRetriesOverride*/ -1,
 		/*bAllowAuthRetry*/ false, &LeaveReportingToTheCaller);

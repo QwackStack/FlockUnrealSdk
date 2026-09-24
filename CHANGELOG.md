@@ -36,6 +36,21 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - The Protokite playtest build rules said the engine ships libvpx on 5.5 to 5.8. **5.4 ships it too**, with a
   Win64 library, so video recording works there as well.
 
+### Fixed
+
+- **A success with no body is a success on every route that has nothing to read.** The HTTP client refused any
+  2xx with an empty body as "Empty response from server", so a 204 on a log event, a gameplay event, a transaction
+  or a session end read as a failure. A spooled session end answered that way was dropped with a warning that it
+  had been rejected, and a transaction reported failing though the server had recorded it. The six analytics sends
+  now use `PostJsonAcceptingNoContent` / `PatchJsonAcceptingNoContent`: a 2xx with no body or with any JSON body
+  is a success and nothing in it is read, while a 200 that is not JSON (a captive portal's page) still fails.
+  Reads keep refusing an empty body, since a read exists for what the body carries.
+- **A session end answered by something other than the server is kept.** A 2xx whose body could not be read was
+  treated as a final refusal and the spooled end deleted, though the server never saw it. It now stays spooled
+  and goes out on the next trigger, the same as a batch of events already did.
+- **The Protokite playtest's session end uses the same verb.** Its own special case for a 204, which existed
+  only because the SDK's client did not accept one, is gone.
+
 ## [1.21.0] - 2026-09-22
 
 ### Changed
