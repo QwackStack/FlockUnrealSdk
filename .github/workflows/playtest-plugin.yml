@@ -48,7 +48,7 @@ jobs:
           # caught here rather than found by a studio whose project does not have the plugin.
           HITS=$(grep -rniIE 'ProtokitePlaytest|FlockPlaytest' Source Config Flock.uplugin || true)
           if [ -n "$HITS" ]; then
-            echo "::error::Flock refers to the optional playtest plugin, so a project that installed Flock alone would fail to build or load. Keep the code in OptionalPlugins/ProtokitePlaytest/, and if the playtest plugin needs something from Flock, add it to Flock without naming the plugin:"
+            echo "::error::Flock names the optional playtest plugin, so a project that installed Flock alone would fail to build or load. This is a plain text scan and cannot tell an include from a comment, deliberately -- a comment that names it fails too, and the fix there is to reword it ('the optional playtest plugin'). Keep the code in OptionalPlugins/ProtokitePlaytest/, and if the playtest plugin needs something from Flock, add it to Flock without naming the plugin:"
             echo "$HITS"
             exit 1
           fi

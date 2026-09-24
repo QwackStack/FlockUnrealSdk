@@ -12,7 +12,9 @@ public class Flock : ModuleRules
 		// open that namespace with a file-scope `using namespace`. A unity build pastes those files into
 		// one translation unit, so every one of those using-directives is in scope at once and the names
 		// they share go ambiguous -- FFixture, Cleanup, Env, TempRoot, NoRetry and about fifteen more.
-		// Measured on UE 5.4, 2026-09-22: 535 errors across Flock, FlockEditor and ProtokitePlaytest.
+		// Measured on UE 5.4, 2026-09-22: 535 errors across Flock, FlockEditor and the optional playtest
+		// plugin. (That plugin is not named here on purpose: nothing Flock ships may name it, comments
+		// included, and CI enforces that with a plain text scan.)
 		//
 		// This is easy to miss locally, which is why it survived to here: UBT's adaptive unity build
 		// reads `git status` to pick its working set, so while the plugin is untracked or modified in a

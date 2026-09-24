@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.12.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.21.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
