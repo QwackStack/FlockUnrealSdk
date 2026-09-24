@@ -655,6 +655,104 @@ bool FFlockAnalyticsFlushFailureTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * None of the analytics routes answers with anything the SDK reads, so a 204 with no body is a delivery. A 200 whose
+ * body is not JSON (a captive portal's page) is not, and whatever it answered for stays spooled.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsAcceptsNoContentTest, "Flock.Analytics.Provider.AcceptsNoContent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsAcceptsNoContentTest::RunTest(const FString& Parameters)
+{
+	const FFlockHttpResponse NoContent = FFlockFakeTransport::Status(204, TEXT(""));
+	const FFlockHttpResponse NotTheServer = FFlockFakeTransport::Ok(TEXT("<html>captive portal</html>"));
+
+	for (const bool bDelivered : { true, false })
+	{
+		const FFlockHttpResponse Answer = bDelivered ? NoContent : NotTheServer;
+		const FString Label = bDelivered ? TEXT("204") : TEXT("a page that is not JSON");
+
+		// The spooled log entries and gameplay events, sent in batches.
+		{
+			FFixture Fix;
+			Fix.Provider->Initialize();
+			Fix.Fake->On(TEXT("log_event"), Answer);
+			Fix.Fake->On(TEXT("analytics/events"), Answer);
+			Fix.Provider->LogEvent(TEXT("diagnostic"));
+			TestTrue(Label + TEXT(": precondition: an event was accepted"), Fix.Provider->TrackEvent(TEXT("level_complete")));
+
+			bool bFlushed = false;
+			Fix.Provider->Flush([&bFlushed](TFlockResult<FFlockAnalyticsAck> Result) { bFlushed = Result.bSuccess; });
+			TestTrue(Label + TEXT(": both batches were sent"),
+				Fix.Fake->CountTo(TEXT("log_event")) == 1 && Fix.Fake->CountTo(TEXT("analytics/events")) == 1);
+			TestEqual(Label + TEXT(": flush succeeded"), bFlushed, bDelivered);
+			TestEqual(Label + TEXT(": log entries left spooled"), Fix.Provider->GetPendingEventCount(), bDelivered ? 0 : 1);
+			TestEqual(Label + TEXT(": gameplay events left spooled"), Fix.Provider->GetPendingAnalyticsEventCount(), bDelivered ? 0 : 1);
+		}
+
+		// With nowhere to spool, each entry and event is sent at once, and only a failure is logged.
+		{
+			FFlockAnalyticsConfig Config;
+			Config.MaxCachedEvents = 0;
+			FFixture Fix(Config);
+			const TSharedRef<FFlockRecordingLogger> Logger = MakeShared<FFlockRecordingLogger>();
+			Fix.Provider = MakeShared<FFlockAnalyticsProvider>(Fix.Client, NoRetryPolicy(), Logger, Fix.Session, Fix.Events,
+				TEXT("http://x/v1"), Config, Fix.Deps, TEXT("gv-1"), TEXT("0.7.0"));
+			Fix.Provider->Initialize();
+			Fix.Fake->On(TEXT("log_event"), Answer);
+			Fix.Fake->On(TEXT("analytics/events"), Answer);
+
+			// A failure is logged as "<call> [<origin>] failed: <why>".
+			auto Failed = [&Logger](const TCHAR* Call)
+			{
+				return Logger->Errors.ContainsByPredicate([Call](const FString& Line)
+				{
+					return Line.StartsWith(Call, ESearchCase::CaseSensitive) && Line.Contains(TEXT(" failed: "), ESearchCase::CaseSensitive);
+				});
+			};
+			Fix.Provider->LogEvent(TEXT("unspoolable diagnostic"));
+			Fix.Provider->TrackEvent(TEXT("unspoolable_event"));
+			TestTrue(Label + TEXT(": both were sent at once"),
+				Fix.Fake->CountTo(TEXT("log_event")) == 1 && Fix.Fake->CountTo(TEXT("analytics/events")) == 1);
+			TestEqual(Label + TEXT(": the log entry's send failed"),
+				Failed(TEXT("Log event [")), !bDelivered);
+			TestEqual(Label + TEXT(": the event's send failed"),
+				Failed(TEXT("Track event [")), !bDelivered);
+		}
+
+		// A transaction.
+		{
+			FFixture Fix;
+			Fix.Provider->Initialize();
+			Fix.Fake->On(TEXT("analytics/transactions"), Answer);
+			FFlockAnalyticsTransactionRequest Request;
+			Request.Amount = 5.0;
+			TOptional<bool> bRecorded;
+			Fix.Provider->RecordTransaction(Request, [&bRecorded](TFlockResult<FFlockAnalyticsAck> Result) { bRecorded = Result.bSuccess; });
+			TestEqual(Label + TEXT(": transaction sent"), Fix.Fake->CountTo(TEXT("analytics/transactions")), 1);
+			TestTrue(Label + TEXT(": transaction answered"), bRecorded.IsSet());
+			TestEqual(Label + TEXT(": transaction recorded"), bRecorded.Get(!bDelivered), bDelivered);
+		}
+
+		// A session end.
+		{
+			FFixture Fix;
+			Fix.OnClose(TEXT("srv-1"), Answer);
+			Fix.Provider->Initialize();
+			Fix.Provider->StartSession(TEXT("p-1"));
+			TestEqual(Label + TEXT(": precondition: the session registered"), Fix.Provider->GetCurrentSessionId(), TEXT("srv-1"));
+
+			bool bEnded = false;
+			Fix.Provider->EndSession(EFlockSessionEndReason::Manual,
+				[&bEnded](TFlockResult<FFlockAnalyticsAck> Result) { bEnded = Result.bSuccess; });
+			TestEqual(Label + TEXT(": end sent"), Fix.CountMethod(TEXT("PATCH"), TEXT("analytics/sessions/srv-1")), 1);
+			TestEqual(Label + TEXT(": end delivered"), bEnded, bDelivered);
+			TestEqual(Label + TEXT(": end left spooled"), Fix.EndCache->PendingCount(), bDelivered ? 0 : 1);
+		}
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsSessionTest, "Flock.Analytics.Provider.Session",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 

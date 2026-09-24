@@ -166,6 +166,15 @@ bool FFlockJsonUtils::TryParseObject(const FString& Json, TSharedPtr<FJsonObject
 	return FJsonSerializer::Deserialize(Reader, OutObject) && OutObject.IsValid();
 }
 
+bool FFlockJsonUtils::IsJson(const FString& Text)
+{
+	// The engine's reader takes only an object or an array at the top, so a lone null, number or string is read as the
+	// single element of an array.
+	TArray<TSharedPtr<FJsonValue>> Values;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(TEXT("[") + Text + TEXT("]"));
+	return FJsonSerializer::Deserialize(Reader, Values) && Values.Num() == 1;
+}
+
 TArray<FString> FFlockJsonUtils::GetFieldNames(const TSharedPtr<FJsonObject>& Object)
 {
 	TArray<FString> Names;

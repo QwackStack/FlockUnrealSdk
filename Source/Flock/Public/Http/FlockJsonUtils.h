@@ -35,6 +35,9 @@ public:
 	/** Parses a JSON object string; returns false on malformed input. */
 	static bool TryParseObject(const FString& Json, TSharedPtr<FJsonObject>& OutObject);
 
+	/** True when Text is one JSON value: an object, array, string, number, true, false or null. */
+	static bool IsJson(const FString& Text);
+
 	/**
 	 * The field names of a JSON object, in author spelling, in map order.
 	 *

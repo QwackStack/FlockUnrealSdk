@@ -75,8 +75,97 @@ bool FFlockHttpClientDeserializeTest::RunTest(const FString& Parameters)
 
 	Fake->On(TEXT("game_version"), FFlockFakeTransport::Ok(TEXT("")));
 	EFlockErrorType EmptyType = EFlockErrorType::None;
-	Client->Get<FFlockGameVersionSchema>(Url, {}, [&](TFlockResult<FFlockGameVersionSchema> R) { EmptyType = R.Error.Type; });
+	FString EmptyMessage;
+	Client->Get<FFlockGameVersionSchema>(Url, {}, [&](TFlockResult<FFlockGameVersionSchema> R) { EmptyType = R.Error.Type; EmptyMessage = R.Error.Message; });
 	TestEqual(TEXT("empty body -> Serialization"), static_cast<int32>(EmptyType), static_cast<int32>(EFlockErrorType::Serialization));
+	// The message says what happened, rather than reporting a parse error for a body that was never there.
+	TestTrue(TEXT("empty body -> named as empty"), EmptyMessage.Contains(TEXT("Empty response from server"), ESearchCase::CaseSensitive));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientAcceptsNoContentTest, "Flock.Http.Client.AcceptsNoContent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientAcceptsNoContentTest::RunTest(const FString& Parameters)
+{
+	struct FCase
+	{
+		FFlockHttpResponse Response;
+		EFlockErrorType Expected;
+		const TCHAR* ExpectedId;
+		const TCHAR* What;
+	};
+	const FCase Cases[] = {
+		{ FFlockFakeTransport::Status(204, TEXT("")), EFlockErrorType::None, TEXT(""), TEXT("204 with no body") },
+		{ FFlockFakeTransport::Status(200, TEXT("")), EFlockErrorType::None, TEXT(""), TEXT("200 with no body") },
+		{ FFlockFakeTransport::Status(202, TEXT("")), EFlockErrorType::None, TEXT(""), TEXT("202 with no body") },
+		{ FFlockFakeTransport::Status(200, TEXT(" \r\n")), EFlockErrorType::None, TEXT(""), TEXT("200 with only whitespace") },
+		// A JSON body is accepted and nothing in it is read.
+		{ FFlockFakeTransport::Ok(TEXT("{\"id\":\"ver-1\"}")), EFlockErrorType::None, TEXT(""), TEXT("200 with an object") },
+		{ FFlockFakeTransport::Ok(TEXT("null")), EFlockErrorType::None, TEXT(""), TEXT("200 with null") },
+		{ FFlockFakeTransport::Ok(TEXT("[]")), EFlockErrorType::None, TEXT(""), TEXT("200 with an array") },
+		// A captive portal's page is not the server's answer, so nothing may count as delivered.
+		{ FFlockFakeTransport::Ok(TEXT("<html>captive portal</html>")), EFlockErrorType::Serialization, TEXT(""), TEXT("200 that is not JSON") },
+		{ FFlockFakeTransport::Status(401, TEXT("")), EFlockErrorType::Auth, TEXT(""), TEXT("401") },
+		{ FFlockFakeTransport::Status(422, TEXT("")), EFlockErrorType::Validation, TEXT(""), TEXT("422") },
+		{ FFlockFakeTransport::Status(500, TEXT("")), EFlockErrorType::Network, TEXT(""), TEXT("500") },
+		{ FFlockFakeTransport::Offline(), EFlockErrorType::Connection, TEXT(""), TEXT("offline") },
+	};
+	const TCHAR* const Methods[] = { TEXT("POST"), TEXT("PATCH") };
+
+	for (const TCHAR* Method : Methods)
+	{
+		for (const FCase& Case : Cases)
+		{
+			const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+			const TSharedRef<FFlockHttpClient> Client = MakeClient(Fake);
+			Fake->On(TEXT("test"), Case.Response);
+
+			TOptional<TFlockResult<FFlockGameVersionSchema>> Outcome;
+			auto Record = [&Outcome](TFlockResult<FFlockGameVersionSchema> R) { Outcome = R; };
+			if (FCString::Strcmp(Method, TEXT("POST")) == 0)
+			{
+				Client->PostJsonAcceptingNoContent<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, TEXT("{}"), Record);
+			}
+			else
+			{
+				Client->PatchJsonAcceptingNoContent<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, TEXT("{}"), Record);
+			}
+
+			const FString Label = FString::Printf(TEXT("%s, %s"), Method, Case.What);
+			if (!TestTrue(Label + TEXT(": answered"), Outcome.IsSet()))
+			{
+				continue;
+			}
+			TestEqual(Label + TEXT(": succeeded"), Outcome->bSuccess, Case.Expected == EFlockErrorType::None);
+			TestEqual(Label + TEXT(": error type"), static_cast<int32>(Outcome->Error.Type), static_cast<int32>(Case.Expected));
+			TestEqualSensitive(Label + TEXT(": value"), Outcome->Value.Id, FString(Case.ExpectedId));
+			if (Fake->Requests.Num() == 1)
+			{
+				TestEqualSensitive(Label + TEXT(": method"), Fake->Requests[0].Method, FString(Method));
+			}
+			else
+			{
+				AddError(Label + TEXT(": expected one request"));
+			}
+		}
+	}
+
+	// The reads keep refusing a success with no body: a read exists for what the body carries.
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockHttpClient> Client = MakeClient(Fake);
+	Fake->On(TEXT("test"), FFlockFakeTransport::Status(204, TEXT("")));
+	EFlockErrorType RawType = EFlockErrorType::None;
+	FString RawMessage;
+	Client->PostJsonRaw<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, TEXT("{}"),
+		[&RawType, &RawMessage](TFlockResult<FFlockGameVersionSchema> R) { RawType = R.Error.Type; RawMessage = R.Error.Message; });
+	TestEqual(TEXT("bare read, 204 -> Serialization"), static_cast<int32>(RawType), static_cast<int32>(EFlockErrorType::Serialization));
+	TestTrue(TEXT("bare read, 204 -> named as empty"), RawMessage.Contains(TEXT("Empty response from server"), ESearchCase::CaseSensitive));
+	EFlockErrorType PatchRawType = EFlockErrorType::None;
+	Client->PatchJsonRaw<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, TEXT("{}"),
+		[&PatchRawType](TFlockResult<FFlockGameVersionSchema> R) { PatchRawType = R.Error.Type; });
+	TestEqual(TEXT("bare PATCH read, 204 -> Serialization"), static_cast<int32>(PatchRawType), static_cast<int32>(EFlockErrorType::Serialization));
 
 	return true;
 }

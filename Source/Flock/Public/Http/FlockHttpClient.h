@@ -63,13 +63,13 @@ public:
 	template <typename T>
 	FFlockRequestHandle Get(const FString& Url, const TMap<FString, FString>& Headers, TFunction<void(TFlockResult<T>)> OnComplete)
 	{
-		return Send<T>(TEXT("GET"), Url, Headers, FString(), /*bHasBody*/ false, /*bUnwrap*/ true, MoveTemp(OnComplete));
+		return Send<T>(TEXT("GET"), Url, Headers, FString(), /*bHasBody*/ false, EBodyReading::Envelope, MoveTemp(OnComplete));
 	}
 
 	template <typename TResp, typename TBody>
 	FFlockRequestHandle Post(const FString& Url, const TMap<FString, FString>& Headers, const TBody& Body, TFunction<void(TFlockResult<TResp>)> OnComplete)
 	{
-		return SendWithBody<TResp, TBody>(TEXT("POST"), Url, Headers, Body, /*bUnwrap*/ true, MoveTemp(OnComplete));
+		return SendWithBody<TResp, TBody>(TEXT("POST"), Url, Headers, Body, EBodyReading::Envelope, MoveTemp(OnComplete));
 	}
 
 	/**
@@ -80,25 +80,25 @@ public:
 	FFlockRequestHandle PostJson(const FString& Url, const TMap<FString, FString>& Headers, const FString& JsonBody,
 		TFunction<void(TFlockResult<T>)> OnComplete)
 	{
-		return Send<T>(TEXT("POST"), Url, Headers, JsonBody, /*bHasBody*/ true, /*bUnwrap*/ true, MoveTemp(OnComplete));
+		return Send<T>(TEXT("POST"), Url, Headers, JsonBody, /*bHasBody*/ true, EBodyReading::Envelope, MoveTemp(OnComplete));
 	}
 
 	template <typename TResp, typename TBody>
 	FFlockRequestHandle Put(const FString& Url, const TMap<FString, FString>& Headers, const TBody& Body, TFunction<void(TFlockResult<TResp>)> OnComplete)
 	{
-		return SendWithBody<TResp, TBody>(TEXT("PUT"), Url, Headers, Body, /*bUnwrap*/ true, MoveTemp(OnComplete));
+		return SendWithBody<TResp, TBody>(TEXT("PUT"), Url, Headers, Body, EBodyReading::Envelope, MoveTemp(OnComplete));
 	}
 
 	template <typename TResp, typename TBody>
 	FFlockRequestHandle Patch(const FString& Url, const TMap<FString, FString>& Headers, const TBody& Body, TFunction<void(TFlockResult<TResp>)> OnComplete)
 	{
-		return SendWithBody<TResp, TBody>(TEXT("PATCH"), Url, Headers, Body, /*bUnwrap*/ true, MoveTemp(OnComplete));
+		return SendWithBody<TResp, TBody>(TEXT("PATCH"), Url, Headers, Body, EBodyReading::Envelope, MoveTemp(OnComplete));
 	}
 
 	template <typename T>
 	FFlockRequestHandle Delete(const FString& Url, const TMap<FString, FString>& Headers, TFunction<void(TFlockResult<T>)> OnComplete)
 	{
-		return Send<T>(TEXT("DELETE"), Url, Headers, FString(), /*bHasBody*/ false, /*bUnwrap*/ true, MoveTemp(OnComplete));
+		return Send<T>(TEXT("DELETE"), Url, Headers, FString(), /*bHasBody*/ false, EBodyReading::Envelope, MoveTemp(OnComplete));
 	}
 
 	/**
@@ -144,7 +144,7 @@ public:
 	template <typename T>
 	FFlockRequestHandle GetRaw(const FString& Url, const TMap<FString, FString>& Headers, TFunction<void(TFlockResult<T>)> OnComplete)
 	{
-		return Send<T>(TEXT("GET"), Url, Headers, FString(), /*bHasBody*/ false, /*bUnwrap*/ false, MoveTemp(OnComplete));
+		return Send<T>(TEXT("GET"), Url, Headers, FString(), /*bHasBody*/ false, EBodyReading::Whole, MoveTemp(OnComplete));
 	}
 
 	/**
@@ -155,15 +155,35 @@ public:
 	FFlockRequestHandle PostJsonRaw(const FString& Url, const TMap<FString, FString>& Headers, const FString& JsonBody,
 		TFunction<void(TFlockResult<T>)> OnComplete)
 	{
-		return Send<T>(TEXT("POST"), Url, Headers, JsonBody, /*bHasBody*/ true, /*bUnwrap*/ false, MoveTemp(OnComplete));
+		return Send<T>(TEXT("POST"), Url, Headers, JsonBody, /*bHasBody*/ true, EBodyReading::Whole, MoveTemp(OnComplete));
 	}
 
-	/** Bare PATCH with a caller-serialized JSON body — the shape the session-end route answers with. */
+	/** Bare PATCH with a caller-serialized JSON body. */
 	template <typename T>
 	FFlockRequestHandle PatchJsonRaw(const FString& Url, const TMap<FString, FString>& Headers, const FString& JsonBody,
 		TFunction<void(TFlockResult<T>)> OnComplete)
 	{
-		return Send<T>(TEXT("PATCH"), Url, Headers, JsonBody, /*bHasBody*/ true, /*bUnwrap*/ false, MoveTemp(OnComplete));
+		return Send<T>(TEXT("PATCH"), Url, Headers, JsonBody, /*bHasBody*/ true, EBodyReading::Whole, MoveTemp(OnComplete));
+	}
+
+	// ── Verbs for routes with nothing to read ──
+	//
+	// For routes whose answer carries nothing the caller uses: a 2xx with no body (a 204) or with any JSON body
+	// is a success, and the caller receives a default T. A body that is not JSON still fails, since a captive
+	// portal's 200 page is not the server's answer. Every refusal is mapped as above.
+
+	template <typename T>
+	FFlockRequestHandle PostJsonAcceptingNoContent(const FString& Url, const TMap<FString, FString>& Headers, const FString& JsonBody,
+		TFunction<void(TFlockResult<T>)> OnComplete)
+	{
+		return Send<T>(TEXT("POST"), Url, Headers, JsonBody, /*bHasBody*/ true, EBodyReading::OnlyCheckIsJson, MoveTemp(OnComplete));
+	}
+
+	template <typename T>
+	FFlockRequestHandle PatchJsonAcceptingNoContent(const FString& Url, const TMap<FString, FString>& Headers, const FString& JsonBody,
+		TFunction<void(TFlockResult<T>)> OnComplete)
+	{
+		return Send<T>(TEXT("PATCH"), Url, Headers, JsonBody, /*bHasBody*/ true, EBodyReading::OnlyCheckIsJson, MoveTemp(OnComplete));
 	}
 
 	// ── Paginated GET ({items, total, page, limit}) ──
@@ -216,8 +236,20 @@ private:
 		return Request;
 	}
 
-	/** Transport + status mapping + coded-error/Retry-After parse. Returns true on 2xx (OutSuccessBody set). */
-	bool ClassifyResponse(const FFlockHttpResponse& Response, FFlockError& OutError, FString& OutSuccessBody) const;
+	/** How a 2xx body is read: the `result` of an envelope, the whole body, or not at all beyond checking it is JSON. */
+	enum class EBodyReading : uint8
+	{
+		Envelope,
+		Whole,
+		OnlyCheckIsJson,
+	};
+
+	/**
+	 * Transport + status mapping + coded-error/Retry-After parse. Returns true on 2xx (OutSuccessBody set).
+	 * With bBodyRequired, a 2xx with an empty body fails as a serialization error.
+	 */
+	bool ClassifyResponse(const FFlockHttpResponse& Response, FFlockError& OutError, FString& OutSuccessBody,
+		bool bBodyRequired = true) const;
 
 	/**
 	 * Folds one completion into the offline latch. Called from each of the three send sites, alongside the
@@ -235,18 +267,27 @@ private:
 	void NoteReachability(const FFlockHttpResponse& Response);
 
 	template <typename T>
-	TFlockResult<T> ParseInto(const FFlockHttpResponse& Response, bool bUnwrap) const
+	TFlockResult<T> ParseInto(const FFlockHttpResponse& Response, EBodyReading Reading) const
 	{
 		FFlockError Error;
 		FString SuccessBody;
-		if (!ClassifyResponse(Response, Error, SuccessBody))
+		if (!ClassifyResponse(Response, Error, SuccessBody, /*bBodyRequired*/ Reading != EBodyReading::OnlyCheckIsJson))
 		{
 			return TFlockResult<T>::Fail(Error);
+		}
+		if (Reading == EBodyReading::OnlyCheckIsJson)
+		{
+			if (SuccessBody.TrimStartAndEnd().IsEmpty() || FFlockJsonUtils::IsJson(SuccessBody))
+			{
+				return TFlockResult<T>::Ok(T());
+			}
+			return TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Serialization, TEXT("Malformed response body"),
+				Response.StatusCode, SuccessBody));
 		}
 
 		T Out;
 		FString ParseError;
-		const bool bOk = bUnwrap
+		const bool bOk = Reading == EBodyReading::Envelope
 			? FFlockJsonUtils::UnwrapResultToStruct(SuccessBody, Out, ParseError)
 			: FFlockJsonUtils::WireJsonToStruct(SuccessBody, Out, ParseError);
 		if (!bOk)
@@ -258,7 +299,7 @@ private:
 
 	template <typename T>
 	FFlockRequestHandle Send(const FString& Method, const FString& Url, const TMap<FString, FString>& Headers,
-		const FString& Body, bool bHasBody, bool bUnwrap, TFunction<void(TFlockResult<T>)> OnComplete)
+		const FString& Body, bool bHasBody, EBodyReading Reading, TFunction<void(TFlockResult<T>)> OnComplete)
 	{
 		FFlockHttpRequest Request = MakeRequest(Method, Url, Headers, Body, bHasBody);
 		const FString Origin = LogRequest(Method, Url);
@@ -267,7 +308,7 @@ private:
 		const double StartedAt = FPlatformTime::Seconds();
 		// Method, Url and Origin are captured by value: they are references into the caller's frame (and,
 		// for the origin, ambient state that moves on), while this completion runs long after both.
-		return Adapter->SendAsync(Request, [Self, bUnwrap, OnComplete, Method, Url, StartedAt, Origin](FFlockHttpResponse Response)
+		return Adapter->SendAsync(Request, [Self, Reading, OnComplete, Method, Url, StartedAt, Origin](FFlockHttpResponse Response)
 		{
 			Self->NoteReachability(Response);
 			Self->LogResponse(Method, Url, Response, StartedAt, Origin);
@@ -275,13 +316,13 @@ private:
 			{
 				return;
 			}
-			OnComplete(Self->ParseInto<T>(Response, bUnwrap));
+			OnComplete(Self->ParseInto<T>(Response, Reading));
 		});
 	}
 
 	template <typename TResp, typename TBody>
 	FFlockRequestHandle SendWithBody(const FString& Method, const FString& Url, const TMap<FString, FString>& Headers,
-		const TBody& Body, bool bUnwrap, TFunction<void(TFlockResult<TResp>)> OnComplete)
+		const TBody& Body, EBodyReading Reading, TFunction<void(TFlockResult<TResp>)> OnComplete)
 	{
 		FString Json;
 		if (!FFlockJsonUtils::StructToWireJson(Body, Json))
@@ -292,7 +333,7 @@ private:
 			}
 			return FFlockRequestHandle();
 		}
-		return Send<TResp>(Method, Url, Headers, Json, /*bHasBody*/ true, bUnwrap, MoveTemp(OnComplete));
+		return Send<TResp>(Method, Url, Headers, Json, /*bHasBody*/ true, Reading, MoveTemp(OnComplete));
 	}
 
 	// ── Call tracing ──
