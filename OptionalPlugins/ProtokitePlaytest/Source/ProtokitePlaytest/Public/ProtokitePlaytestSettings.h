@@ -31,12 +31,15 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Playtesting", meta = (DisplayName = "Enable Playtesting"))
 	bool bPlaytestingEnabled = false;
 
+	/** The Protokite API a project reports to until its settings say otherwise: production. */
+	static constexpr const TCHAR* DefaultProtokiteApiUrl = TEXT("https://api-protokite.qwacks.com");
+
 	/**
-	 * Base URL of the Protokite API, for example http://localhost:8020 on a local stack.
-	 * Must start with http:// or https:// and contain no spaces or line breaks.
+	 * Base URL of the Protokite API. Filled in with production, so a studio only changes it to point at a local stack
+	 * such as http://localhost:8020. Must start with http:// or https:// and contain no spaces or line breaks.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Playtesting", meta = (DisplayName = "Protokite API URL"))
-	FString ProtokiteApiUrl;
+	FString ProtokiteApiUrl = DefaultProtokiteApiUrl;
 
 	/**
 	 * Ask the player what this playtest may collect, and collect nothing until they answer.
