@@ -4,6 +4,9 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "ProtokitePlaytestSettings.h"
 #include "ProtokitePlaytestStatus.h"
 #include "Tests/ProtokitePlaytestTestSupport.h"
 
@@ -269,6 +272,30 @@ bool FProtokitePlaytestStatusPlayerConsentDecidesLastTest::RunTest(const FString
 	{
 		TestFalse(TEXT("It has a description"), DescribePlaytestStatus(Status).IsEmpty());
 	}
+	return true;
+}
+
+// The compiled default, not the project's value: a project's config overrides it (this harness points at a local stack),
+// so the setting is read from its declaration.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSettingsApiUrlDefaultsToProductionTest,
+	"Protokite.Playtest.Settings.ProtokiteApiUrlDefaultsToProduction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSettingsApiUrlDefaultsToProductionTest::RunTest(const FString& Parameters)
+{
+	TestEqualSensitive(TEXT("The default is production"), FString(UProtokitePlaytestSettings::DefaultProtokiteApiUrl),
+		FString(TEXT("https://api-protokite.qwacks.com")));
+	TestTrue(TEXT("The default is usable as it is"), IsUsableProtokiteApiUrl(UProtokitePlaytestSettings::DefaultProtokiteApiUrl));
+
+	const FString SettingsHeader = FPaths::ConvertRelativePathToFull(FPaths::Combine(
+		FPaths::GetPath(FString(ANSI_TO_TCHAR(__FILE__))), TEXT("../../Public/ProtokitePlaytestSettings.h")));
+	FString HeaderText;
+	if (!TestTrue(TEXT("The settings header is readable next to this test"), FFileHelper::LoadFileToString(HeaderText, *SettingsHeader)))
+	{
+		return true;
+	}
+	TestTrue(TEXT("The setting starts at that default, so a studio never types it"),
+		HeaderText.Contains(TEXT("FString ProtokiteApiUrl = DefaultProtokiteApiUrl;"), ESearchCase::CaseSensitive));
 	return true;
 }
 

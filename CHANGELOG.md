@@ -5,6 +5,15 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.23.0] - 2026-09-24
+
+### Changed
+
+- **The Protokite Playtest plugin's Protokite API URL now defaults to production, `https://api-protokite.qwacks.com`.** A
+  studio no longer types it: turning on **Enable Playtesting** is enough. A project that already set the URL keeps its
+  own value; set `http://localhost:8020` (or your own address) to point at a local Protokite. The default is
+  `UProtokitePlaytestSettings::DefaultProtokiteApiUrl`.
+
 ## [1.22.0] - 2026-09-24
 
 ### Added

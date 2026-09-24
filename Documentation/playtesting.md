@@ -46,8 +46,9 @@ Protokite finds the playtest from the Flock game version the build sends.
    followed by the test's id (for example `pt-01JABCDEFGHJKMNPQRSTVWXYZ0`). The Flock SDK resolves the name to the ID
    Protokite showed. Do not paste the ID into the settings file instead: the Flock SDK resolves Game Version again
    whenever Game Version, API URL or API Key changes, and replaces an ID written by hand.
-3. In *Project Settings > Plugins > Protokite Playtest Settings*, set **Protokite API URL** and turn on
-   **Enable Playtesting**. The URL must start with `http://` or `https://` and contain no spaces; one that does not is
+3. In *Project Settings > Plugins > Protokite Playtest Settings*, turn on **Enable Playtesting**. **Protokite API URL**
+   is already set to production, `https://api-protokite.qwacks.com`; change it only to point at a local Protokite such as
+   `http://localhost:8020`. The URL must start with `http://` or `https://` and contain no spaces; one that does not is
    refused rather than tidied up.
 
 Pressing **Play** now says in the Play message log whatever in these settings would stop the playtest or change it,
@@ -120,7 +121,7 @@ When something stops the playtest, the log says why and names the setting, once,
 
 | Status | Meaning | Fix |
 |---|---|---|
-| Protokite API URL missing | **Enable Playtesting** is on and the URL is empty | Set **Protokite API URL** |
+| Protokite API URL missing | **Enable Playtesting** is on and the URL is empty | Set **Protokite API URL** (production is `https://api-protokite.qwacks.com`) |
 | Protokite API URL unusable | No `http://` or `https://`, no host, or a space or line break in it | Correct the URL; it is never trimmed for you |
 | Playtest not linked | Protokite has no playtest for this build's Game Version ID | Point **Game Version** at the playtest's `pt-` version |
 | Protokite refused API key | Protokite turned down the Flock API key | Check **API Key** in the Flock SDK's settings |
