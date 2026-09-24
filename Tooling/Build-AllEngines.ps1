@@ -123,30 +123,70 @@ function Get-TreeState {
 
         # Only the paths a build actually reads. Editing a doc, a plan or this script during a sweep changes
         # nothing the compiler sees, and voiding a 44-minute run over it would only teach people to work
-        # around the guard. Each path's tree object covers its committed content, so HEAD moving for a
-        # docs-only commit is correctly ignored while a source change is not.
+        # around the guard.
         $Watched = @('Source', 'OptionalPlugins', 'Flock.uplugin')
-        $Parts = [System.Collections.Generic.List[string]]::new()
-        foreach ($Path in $Watched) {
-            $Tree = & git rev-parse "HEAD:$Path" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $Tree) {
-                $Parts.Add("$Path=" + $Tree.Trim())
-            }
+
+        # git lists the files; their own bytes are what is hashed, and both halves matter.
+        #
+        # git, because a build input is exactly what git tracks or would track: the playtest plugin's
+        # Binaries/ and Intermediate/ sit inside a watched path and are rewritten by every engine, so a
+        # plain directory walk would void every run at the first build.
+        #
+        # The bytes, because what a compiler reads is the file, not git's opinion of it. This used to hash
+        # each path's committed tree object plus `git status`, and committing work already on disk flips
+        # both of those while changing nothing a build reads -- so an ordinary commit mid-sweep read as a
+        # source change. Measured 2026-09-24: that false void threw away two runs that had already
+        # measured clean, which is exactly the "guard people work around" this one is meant not to be.
+        $Files = [System.Collections.Generic.List[string]]::new()
+        $Tracked = (& git ls-files -z -- $Watched 2>$null) -join ''
+        foreach ($Tracked_Path in ($Tracked -split "`0")) {
+            if ($Tracked_Path) { $Files.Add($Tracked_Path) }
         }
-        # Uncommitted edits count as much as commits do: the compiler reads the bytes on disk either way.
-        $Parts.Add((& git status --porcelain -- $Watched 2>$null) -join "`n")
+        # Untracked but not ignored counts too: a new .cpp is compiled the moment it exists.
+        $Status = (& git status --porcelain -z --untracked-files=all -- $Watched 2>$null) -join ''
+        foreach ($Entry in ($Status -split "`0")) {
+            if ($Entry.Length -gt 3) { $Files.Add($Entry.Substring(3)) }
+        }
 
         $Sha = [System.Security.Cryptography.SHA1]::Create()
         try {
-            $Bytes = [System.Text.Encoding]::UTF8.GetBytes(($Parts -join "`n"))
-            $Print = [System.BitConverter]::ToString($Sha.ComputeHash($Bytes)).Replace('-', '')
+            $PerFile = [ordered]@{}
+            foreach ($File in ($Files | Sort-Object -Unique)) {
+                if (Test-Path -LiteralPath $File -PathType Leaf) {
+                    $PerFile[$File] = [System.BitConverter]::ToString(
+                        $Sha.ComputeHash([System.IO.File]::ReadAllBytes($File))).Replace('-', '')
+                } else {
+                    # A file git knows about that is not on disk is a change in its own right: a delete, or
+                    # a checkout caught part-way through.
+                    $PerFile[$File] = 'absent'
+                }
+            }
+            $Joined = (($PerFile.Keys | ForEach-Object { "$_=" + $PerFile[$_] }) -join "`n")
+            $Print = [System.BitConverter]::ToString(
+                $Sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Joined))).Replace('-', '')
         } finally {
             $Sha.Dispose()
         }
-        return [PSCustomObject]@{ Head = $Head.Trim(); Fingerprint = $Print }
+        return [PSCustomObject]@{ Head = $Head.Trim(); Fingerprint = $Print; Files = $PerFile }
     } finally {
         Pop-Location
     }
+}
+
+# The files whose bytes differ between two readings of the tree, so a void can name them.
+function Get-ChangedFiles {
+    param($Before, $Now)
+
+    $Changed = [System.Collections.Generic.List[string]]::new()
+    if (-not $Before -or -not $Now -or -not $Before.Files -or -not $Now.Files) { return $Changed }
+    foreach ($File in $Before.Files.Keys) {
+        if (-not $Now.Files.Contains($File)) { $Changed.Add("$File (no longer a build input)") }
+        elseif ($Now.Files[$File] -ne $Before.Files[$File]) { $Changed.Add($File) }
+    }
+    foreach ($File in $Now.Files.Keys) {
+        if (-not $Before.Files.Contains($File)) { $Changed.Add("$File (new)") }
+    }
+    return $Changed
 }
 
 # True while the tree still matches what the sweep started on. A checkout that cannot be read by git at all
@@ -162,6 +202,15 @@ function Test-TreeUnchanged {
     Write-Host 'THE SOURCE TREE CHANGED WHILE THE SWEEP WAS RUNNING.' -ForegroundColor Red
     Write-Host ("  started on: " + $Before.Head) -ForegroundColor Red
     Write-Host ("  $When`: " + $Now.Head) -ForegroundColor Red
+
+    # Which files, not only that some did: the first thing anyone asks is what moved, and answering it
+    # here saves the reflog-and-line-numbers hunt that disproving the 2026-09-16 void took.
+    $Changed = Get-ChangedFiles $Before $Now
+    if ($Changed.Count) {
+        $Shown = @($Changed | Select-Object -First 10)
+        Write-Host ("  changed:    " + ($Shown -join "`n              ")) -ForegroundColor Red
+        if ($Changed.Count -gt 10) { Write-Host ("              (and " + ($Changed.Count - 10) + " more)") -ForegroundColor Red }
+    }
     Write-Host '  Engines built either side of that change measured different source, so nothing in this' -ForegroundColor Red
     Write-Host '  report means what it says -- a pass as much as a failure. Leave git alone for the length' -ForegroundColor Red
     Write-Host '  of a sweep, then run it again.' -ForegroundColor Red
