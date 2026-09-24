@@ -4,6 +4,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Misc/FlockEngineCompat.h"
+
 #include "Containers/Ticker.h"
 #include "ProtokitePlaytestSelfTest.h"
 #include "ProtokitePlaytestVideoEncoder.h"

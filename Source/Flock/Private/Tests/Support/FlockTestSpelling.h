@@ -7,6 +7,8 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Dom/JsonObject.h"
+// Brings TestEqualSensitive with it on engines whose FAutomationTestBase has no such check of its own.
+#include "Misc/FlockEngineCompat.h"
 
 /**
  * Checks that read a spelling letter for letter.

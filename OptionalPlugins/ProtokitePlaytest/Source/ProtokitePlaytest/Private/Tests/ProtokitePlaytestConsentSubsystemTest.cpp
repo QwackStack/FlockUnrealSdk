@@ -4,6 +4,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Misc/FlockEngineCompat.h"
+
 #include "ProtokitePlaytestConsent.h"
 #include "ProtokitePlaytestRecordingsFolder.h"
 #include "HAL/FileManager.h"

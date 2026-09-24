@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.12.0.** Everything documented below ships today. Requires Unreal Engine 5.5 to 5.8;
+> **1.12.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -186,11 +186,15 @@ announced on the releases page.
 
 ## Requirements
 
-- **Unreal Engine 5.5 to 5.8.** Every version in that range is built *and* run against the full test
-  suite before a release — the range is what has been verified, not what is expected to work. Older
-  engines are refused with a single clear error. Newer ones compile and emit a warning saying they are
-  past what has been verified: a new engine usually breaks nothing, so the SDK does not block you on the
-  day one ships. See [CHANGELOG.md](CHANGELOG.md) for how the range moves.
+- **Unreal Engine 5.4 to 5.8.** Every version from 5.5 up is built *and* run against the full test
+  suite before a release — that part of the range is what has been verified, not what is expected to
+  work. **5.4 is newer to the range and is not there yet:** it has been built and linked in a real 5.4
+  project, all modules, with no errors or warnings, but the test suite has not been run on it. Treat a
+  first run on 5.4 as something to check rather than assume, and please report what you find — that is
+  how this sentence gets shorter. Older engines are refused with a single clear error. Newer ones
+  compile and emit a warning saying they are past what has been verified: a new engine usually breaks
+  nothing, so the SDK does not block you on the day one ships. See [CHANGELOG.md](CHANGELOG.md) for how
+  the range moves.
 - **Platforms: verified on Windows (Win64).** The SDK is written against portable engine APIs and uses
   no platform-specific code, so other targets are expected to work — but expected is not verified, and
   this project states only what it has actually run. Windows is where the test suite has been executed;

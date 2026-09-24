@@ -4,6 +4,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Misc/FlockEngineCompat.h"
+
 #include "Analytics/FlockAnalyticsJson.h"
 #include "Http/FlockEndpoints.h"
 #include "Http/FlockJsonUtils.h"

@@ -4,6 +4,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Misc/FlockEngineCompat.h"
+
 #include "Blueprint/FlockNotificationAsyncActions.h"
 #include "Blueprint/FlockNotificationLibrary.h"
 #include "Providers/FlockNotificationProvider.h"

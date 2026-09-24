@@ -36,7 +36,7 @@ host project.
    Prefer a full rebuild over Live Coding whenever a change alters a C++ class layout:
    Live Coding patches functions but leaves already-constructed instances on the old one.
 
-Supported engines are **UE 5.5 to 5.8**. Below the floor the plugin refuses to compile
+Supported engines are **UE 5.4 to 5.8**. Below the floor the plugin refuses to compile
 with a single clear error; above the ceiling it compiles and emits a notice.
 
 ## Running the tests

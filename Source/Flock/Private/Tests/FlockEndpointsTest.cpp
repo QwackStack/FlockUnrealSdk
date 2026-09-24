@@ -4,6 +4,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Misc/FlockEngineCompat.h"
+
 #include "Http/FlockEndpoints.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockEndpointsBuildTest, "Flock.Http.Endpoints.Build",

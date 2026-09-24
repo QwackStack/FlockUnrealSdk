@@ -5,6 +5,37 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Unreal Engine 5.4 is supported.** The range is now 5.4 to 5.8. A 5.4 project can install the SDK and the
+  Protokite playtest plugin without changing either, and nothing a game calls changed -- this widens the floor,
+  it does not move any API.
+  - **5.4 is verified to a lower bar than the rest of the range, and says so in README.md.** It has been built
+    and linked in a real 5.4 project -- all four modules, editor target, no errors and no warnings -- but
+    `Tooling/Build-AllEngines.ps1` has not been run on it, so there are no test counts for 5.4 the way there are
+    for 5.5 to 5.8. Run the sweep before a release states 5.4 the way it states the others.
+- Two engine differences needed a guard, and both live in `Source/Flock/Public/Misc/FlockEngineCompat.h` with the
+  rest of the version claim:
+  - **`UUserDefinedStruct`'s header has no portable spelling.** It moved from `Engine/` to `StructUtils/` in 5.5,
+    and the old path is not a fallback: from 5.6 the `Engine/` header forwards only under
+    `UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_5`, which a module on the latest include order does not have. The
+    seven codegen and codegen-test files now include `FLOCK_USER_DEFINED_STRUCT_HEADER` instead of either path.
+  - **`FAutomationTestBase::TestEqualSensitive` arrived in 5.5.** Below that the SDK supplies its own, so the
+    same test source reads letter case the same way on every engine in the range. Test-only: nothing a game
+    compiles depends on it.
+
+### Changed
+
+- The compat header no longer claims nothing in the SDK is version-conditional, and its list of version-sensitive
+  APIs gains `UUserDefinedStruct`'s header, `TestEqualSensitive` and `EAutomationTestFlags` (a struct-scoped enum
+  before 5.5, an enum class from it -- the spellings the tests use compile as both, and nothing stores the type).
+- The note about `FJsonObject::Values` now says what the code actually does: ten places loop over it directly and
+  eight name the pair `TPair<FString, ...>`, which is what would break first if a later engine interns the key.
+- The Protokite playtest build rules said the engine ships libvpx on 5.5 to 5.8. **5.4 ships it too**, with a
+  Win64 library, so video recording works there as well.
+
 ## [1.21.0] - 2026-09-22
 
 ### Changed

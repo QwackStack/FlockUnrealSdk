@@ -4,6 +4,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Misc/FlockEngineCompat.h"
+
 #include "Codegen/FlockEnumEmitter.h"
 #include "Engine/UserDefinedEnum.h"
 #include "UObject/Package.h"

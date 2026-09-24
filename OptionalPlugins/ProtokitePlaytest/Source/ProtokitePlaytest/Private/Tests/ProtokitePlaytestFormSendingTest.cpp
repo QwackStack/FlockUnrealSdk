@@ -4,6 +4,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Misc/FlockEngineCompat.h"
+
 #include "ProtokitePlaytestFormSpool.h"
 #include "ProtokitePlaytestFormSubmission.h"
 #include "Serialization/JsonReader.h"

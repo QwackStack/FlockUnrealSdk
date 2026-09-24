@@ -11,7 +11,8 @@
 #include "Models/FlockJsonData.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
-#include "StructUtils/UserDefinedStruct.h"
+#include "Misc/FlockEngineCompat.h"
+#include FLOCK_USER_DEFINED_STRUCT_HEADER
 #include "UObject/Package.h"
 #include "UserDefinedStructure/UserDefinedStructEditorData.h"
 

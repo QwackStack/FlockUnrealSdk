@@ -23,7 +23,8 @@
 #include "Models/FlockPlayerModels.h"
 #include "Models/FlockShopModels.h"
 #include "Models/FlockStructuredData.h"
-#include "StructUtils/UserDefinedStruct.h"
+#include "Misc/FlockEngineCompat.h"
+#include FLOCK_USER_DEFINED_STRUCT_HEADER
 #include "UObject/Package.h"
 
 const TCHAR* const FFlockMacroLibraryEmitter::LibraryAssetName = TEXT("FlockGeneratedMacros");

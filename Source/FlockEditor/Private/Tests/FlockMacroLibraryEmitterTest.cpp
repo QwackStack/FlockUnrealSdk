@@ -20,7 +20,8 @@
 #include "K2Node_MacroInstance.h"
 #include "K2Node_Tunnel.h"
 #include "Kismet2/KismetEditorUtilities.h"
-#include "StructUtils/UserDefinedStruct.h"
+#include "Misc/FlockEngineCompat.h"
+#include FLOCK_USER_DEFINED_STRUCT_HEADER
 #include "UObject/Package.h"
 
 /**

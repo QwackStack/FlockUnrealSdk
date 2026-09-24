@@ -4,6 +4,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Misc/FlockEngineCompat.h"
+
 #include "Analytics/FlockAnalyticsLaunches.h"
 #include "Analytics/FlockConsentStore.h"
 #include "Auth/FlockFileTokenStore.h"

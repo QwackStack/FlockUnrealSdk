@@ -13,7 +13,8 @@
 #include "Engine/UserDefinedEnum.h"
 #include "Models/FlockCommandModels.h"
 #include "Models/FlockStructuredData.h"
-#include "StructUtils/UserDefinedStruct.h"
+#include "Misc/FlockEngineCompat.h"
+#include FLOCK_USER_DEFINED_STRUCT_HEADER
 #include "UObject/Package.h"
 
 namespace FlockFunctionLibraryEmitterTestHelpers

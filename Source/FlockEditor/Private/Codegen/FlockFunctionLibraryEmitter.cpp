@@ -16,7 +16,8 @@
 #include "K2Node_Select.h"
 #include "Models/FlockCommandModels.h"
 #include "Models/FlockStructuredData.h"
-#include "StructUtils/UserDefinedStruct.h"
+#include "Misc/FlockEngineCompat.h"
+#include FLOCK_USER_DEFINED_STRUCT_HEADER
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"

@@ -13,11 +13,21 @@
  * here, the whole of the SDK's engine-compatibility surface is one file you can read in a minute. The
  * CI consistency job enforces it.
  *
- * As it stands **nothing in the SDK is version-conditional** - the supported range is spanned entirely
- * by spellings that compile unchanged on every engine in it. That is a deliberate outcome, not an
- * accident: where an engine API moved, the SDK was moved onto the portable API rather than given a
- * guard, because a guard is a thing somebody must re-audit every time the range changes. So read this
- * file as *the claim*, not as a pile of conditionals. If a guard ever has to be added, it is added here.
+ * Almost all of the SDK is spanned by spellings that compile unchanged on every engine in the range,
+ * and that is deliberate: where an engine API moved, the SDK was moved onto the portable API rather
+ * than given a guard, because a guard is a thing somebody must re-audit every time the range changes.
+ * **Two things have no portable spelling**, and both live at the bottom of this file:
+ *
+ *   - `UUserDefinedStruct`'s header. It moved from `Engine/` to `StructUtils/` in 5.5, and the old
+ *     path is not a fallback: from 5.6 the `Engine/` header forwards only under
+ *     `UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_5`, which a module on the latest include order does
+ *     not have. So 5.4 can use only one spelling and 5.6+ can use only the other.
+ *   - `FAutomationTestBase::TestEqualSensitive`, which arrived in 5.5. Below that the SDK supplies its
+ *     own, so the tests read the same on every engine. Test-only: nothing a game compiles depends on it.
+ *
+ * Everything else is still portable by construction, and a new guard belongs here rather than beside
+ * the code that needs it - the CI job in .github/workflows/engine-claim.yml fails on one found
+ * anywhere else.
  *
  * The supported range
  * -------------------
@@ -41,17 +51,25 @@
  *   - `IHttpRequest::SetResponseBodyReceiveStream`       (5.0+)
  *   - `FTSTicker`, `TObjectPtr`                          (5.0+)
  *   - `FJsonObject::Values` key type                     (FString, then an interned shared string)
+ *   - `UUserDefinedStruct`'s header                      (Engine/ below 5.5, StructUtils/ from 5.5)
+ *   - `FAutomationTestBase::TestEqualSensitive`          (5.5+; stood in for below that)
+ *   - `EAutomationTestFlags`                             (a struct-scoped enum, then an enum class in
+ *     5.5 - the spellings the tests use compile as both, and nothing stores or returns the type)
  *
- * That last one is the reason this SDK never touches `FJsonObject::Values` directly except in
- * `FFlockJsonUtils::GetFieldNames`. `HasField` / `TryGetField` / `SetField` have stable signatures
- * across the range; the container behind them does not.
+ * The `FJsonObject::Values` entry is why the SDK reaches for `HasField` / `TryGetField` / `SetField`
+ * wherever it can: those have stable signatures across the range, and the container behind them does
+ * not. Ten places do loop over `Values` directly, and eight of them name the pair
+ * `TPair<FString, TSharedPtr<FJsonValue>>`. That compiles on 5.4 through 5.8, where the key really is
+ * an FString, and it is what would break first if a later engine interns the key - so whoever moves
+ * the ceiling should spell those `auto` and read the key as `FString(*Pair.Key)`, the way
+ * `FlockTestSpelling::HasMemberSpelled` and `FFlockJsonUtils::GetFieldNames` already do.
  *
  * ASCII only in this file. Tooling on both sides reads it - a PowerShell script and a shell script in
  * CI - and a BOM-less round trip through Windows PowerShell turns non-ASCII into mojibake.
  */
 
 #define FLOCK_ENGINE_FLOOR_MAJOR 5
-#define FLOCK_ENGINE_FLOOR_MINOR 5
+#define FLOCK_ENGINE_FLOOR_MINOR 4
 
 #define FLOCK_ENGINE_CEILING_MAJOR 5
 #define FLOCK_ENGINE_CEILING_MINOR 8
@@ -59,7 +77,7 @@
 // A plugin compiled against an engine below the floor produces a cascade of unknown-symbol errors that
 // name everything except the actual problem. This turns that into one line.
 static_assert(!UE_VERSION_OLDER_THAN(FLOCK_ENGINE_FLOOR_MAJOR, FLOCK_ENGINE_FLOOR_MINOR, 0),
-	"The Flock SDK requires Unreal Engine 5.5 or newer. Older engines are not a supported configuration - "
+	"The Flock SDK requires Unreal Engine 5.4 or newer. Older engines are not a supported configuration - "
 	"see Source/Flock/Public/Misc/FlockEngineCompat.h.");
 
 // Deliberately a warning rather than an error - see "The supported range" above. Anyone hitting this is
@@ -76,3 +94,47 @@ static_assert(!UE_VERSION_OLDER_THAN(FLOCK_ENGINE_FLOOR_MAJOR, FLOCK_ENGINE_FLOO
 		"unverified. Run Tooling/Build-AllEngines.ps1 to confirm, then move the ceiling here, in " \
 		"Flock.uplugin and in README.md together.")
 #endif
+
+// UUserDefinedStruct moved from Engine/ to StructUtils/ in UE 5.5, and NEITHER spelling is portable across the
+// range: 5.4 has only the Engine/ one, and from 5.6 the Engine/ header forwards to StructUtils/ only under
+// UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_5, which a module on the latest include order does not have. So the path
+// is named here and the codegen files include this macro rather than either spelling.
+#if UE_VERSION_OLDER_THAN(5, 5, 0)
+	#define FLOCK_USER_DEFINED_STRUCT_HEADER "Engine/UserDefinedStruct.h"
+#else
+	#define FLOCK_USER_DEFINED_STRUCT_HEADER "StructUtils/UserDefinedStruct.h"
+#endif
+
+// FAutomationTestBase::TestEqualSensitive - the string check that reads letter case - arrived in UE 5.5. Below that
+// the SDK supplies its own, so the same test source reads the same on every engine in the range.
+#define FLOCK_ENGINE_HAS_TEST_EQUAL_SENSITIVE (!UE_VERSION_OLDER_THAN(5, 5, 0))
+
+#if WITH_AUTOMATION_TESTS && !FLOCK_ENGINE_HAS_TEST_EQUAL_SENSITIVE
+
+#include "Misc/AutomationTest.h"
+
+namespace FlockEngineCompat
+{
+	/**
+	 * What TestEqualSensitive does on the engines that have it: fails the check unless the two strings are the same
+	 * letter for letter. It lives here, rather than beside the other spelling checks in the Flock module's private
+	 * test support, because FlockEditor and the playtest plugin call it too and neither can reach that folder.
+	 */
+	inline bool CheckEqualSpelledExactly(FAutomationTestBase& Test, const FString& What, const FString& Actual,
+		const FString& Expected)
+	{
+		if (Actual.Equals(Expected, ESearchCase::CaseSensitive))
+		{
+			return true;
+		}
+		Test.AddError(FString::Printf(TEXT("Expected '%s' to be '%s', but it was '%s'."), *What, *Expected, *Actual), 1);
+		return false;
+	}
+}
+
+// A macro, because the call sites name it the way the engine's own is named: unqualified, inside a test's RunTest,
+// where `this` is the test. On UE 5.5 and newer this is not defined at all and the engine's member is what runs.
+#define TestEqualSensitive(What, Actual, Expected) \
+	FlockEngineCompat::CheckEqualSpelledExactly(*this, What, Actual, Expected)
+
+#endif // WITH_AUTOMATION_TESTS && !FLOCK_ENGINE_HAS_TEST_EQUAL_SENSITIVE

@@ -8,6 +8,11 @@ public class FlockEditor : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
+		// Not unity-safe, for the reason spelled out in Flock.Build.cs: the tests open a per-file helper
+		// namespace with a file-scope `using namespace`, and a unity build brings all of them into scope
+		// together. Remove this only together with that one, once the helpers are qualified or renamed.
+		bUseUnity = false;
+
 		// Editor-only module: version resolve/bake, the play-mode setup guard, and the build
 		// validation guard. Depends on the runtime Flock module for UFlockConfig / UFlockSubsystem
 		// and the shared ApiVersion constant.

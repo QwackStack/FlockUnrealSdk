@@ -4,6 +4,8 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Misc/FlockEngineCompat.h"
+
 #include "Blueprint/FlockLeaderboardAsyncActions.h"
 #include "Blueprint/FlockLeaderboardLibrary.h"
 #include "Tests/Support/FlockLeaderboardNodeTestListener.h"

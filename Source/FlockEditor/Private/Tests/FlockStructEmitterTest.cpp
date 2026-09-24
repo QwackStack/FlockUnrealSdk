@@ -10,7 +10,8 @@
 #include "Models/FlockCommandModels.h"
 #include "Models/FlockJsonData.h"
 #include "Models/FlockStructuredData.h"
-#include "StructUtils/UserDefinedStruct.h"
+#include "Misc/FlockEngineCompat.h"
+#include FLOCK_USER_DEFINED_STRUCT_HEADER
 #include "UObject/Package.h"
 #include "UObject/StructOnScope.h"
 

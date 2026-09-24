@@ -11,6 +11,12 @@ public class ProtokitePlaytest : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
+		// Not unity-safe, for the reason spelled out in Flock.Build.cs: the tests open a per-file helper
+		// namespace with a file-scope `using namespace`, and a unity build brings all of them into scope
+		// together. This module has seventeen such files, the most of the three. Remove this only
+		// together with the others, once the helpers are qualified or renamed.
+		bUseUnity = false;
+
 		// Flock is Public: the subsystem's public header takes a UFlockSubsystem, so a module that includes
 		// it needs Flock's headers too. The dependency only ever points this way. Flock never names this
 		// module, because a project can install Flock without it.
@@ -48,7 +54,7 @@ public class ProtokitePlaytest : ModuleRules
 			);
 
 		// Video is encoded with the engine's own libvpx, whose installed engines ship a library for 64-bit Windows only
-		// (UE 5.5 to 5.8). Every other platform builds without it and records no video; everything else still runs.
+		// (UE 5.4 to 5.8). Every other platform builds without it and records no video; everything else still runs.
 		bool bBuildWithVideo = Target.Platform == UnrealTargetPlatform.Win64 && Target.Architecture == UnrealArch.X64;
 		if (bBuildWithVideo)
 		{
