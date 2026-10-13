@@ -5,6 +5,23 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.24.0] - 2026-10-13
+
+### Added
+
+- **Matchmaking, party and session error codes.** `EFlockErrorCode` gains 29 members, each with a hint: 9 `matchmaking.`,
+  12 `multiplayer.` and 8 `party.` codes, so a refusal from those services reads as its own code instead of `Unknown`.
+  Four of them (`MatchmakingNotPartyLeader`, `MatchmakingPlayerNotEligible`, `MultiplayerNotHost`, `PartyNotPartyLeader`)
+  arrive as HTTP 403 and mean "not allowed", not "signed out"; their hints never send the player to sign in. A 404 from
+  these services usually means "not yours, or no longer live". Members are named after their wire codes, so
+  `matchmaking.not_party_leader` and `party.not_party_leader` are two members. No multiplayer call ships yet.
+
+### Changed
+
+- `EFlockErrorCode` members are grouped by namespace, so the new groups sit between existing ones and every member after
+  `LogEventGameNotFound` has a new number. Blueprint pins and C++ refer to members by name and are unaffected; anything
+  that stored the raw number needs it re-mapped.
+
 ## [1.23.0] - 2026-09-24
 
 ### Changed

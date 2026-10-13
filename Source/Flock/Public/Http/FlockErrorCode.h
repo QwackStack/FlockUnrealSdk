@@ -9,7 +9,7 @@
  * Typed view of the backend's coded-error contract (the `detail.code` string). Member name = wire code
  * PascalCased, e.g. "player.email_already_registered" -> PlayerEmailAlreadyRegistered. Unknown = no
  * code, or one this SDK version predates (read FFlockError::Code for the raw string). Keep in sync with
- * the backend OpenAPI spec when it adds codes.
+ * Tooling/WireErrorCodes.txt, whose header says how to refresh it from the backend.
  */
 UENUM(BlueprintType)
 enum class EFlockErrorCode : uint8
@@ -67,12 +67,47 @@ enum class EFlockErrorCode : uint8
 	// log_event.*
 	LogEventGameNotFound,
 
+	// matchmaking.* (NotPartyLeader and PlayerNotEligible arrive as 403s that mean "not allowed", never "signed out")
+	MatchmakingAlreadyQueued,
+	MatchmakingMatchNotFound,
+	MatchmakingNotPartyLeader,
+	MatchmakingPartyTooLarge,
+	MatchmakingPlayerNotEligible,
+	MatchmakingQueueNotFound,
+	MatchmakingTicketNotCancelable,
+	MatchmakingTicketNotFound,
+	MatchmakingVersionMismatch,
+
+	// multiplayer.* (sessions and the relay; NotHost is a 403 that means "not allowed")
+	MultiplayerAlreadyInSession,
+	MultiplayerInvalidJoinCode,
+	MultiplayerInvalidJoinToken,
+	MultiplayerJoinCodeUnavailable,
+	MultiplayerMintRateLimited,
+	MultiplayerNotAParticipant,
+	MultiplayerNotHost,
+	MultiplayerSeatMintLimit,
+	MultiplayerSessionFull,
+	MultiplayerSessionNotFound,
+	MultiplayerTargetNotAParticipant,
+	MultiplayerVersionMismatch,
+
 	// notification_template.*
 	//
 	// The wire code is `notification_template.not_found`, so the PascalCased name collapses to this —
 	// it is not `notification.template_not_found`. The inbox and schedule routes raise no code of their
 	// own; an unknown template is the only coded failure in the notification family.
 	NotificationTemplateNotFound,
+
+	// party.* (NotPartyLeader is a 403 that means "not allowed")
+	PartyAlreadyInParty,
+	PartyCannotKickLeader,
+	PartyFull,
+	PartyInvalidInviteCode,
+	PartyNotAMember,
+	PartyNotFound,
+	PartyNotPartyLeader,
+	PartyTargetNotAMember,
 
 	// player.*
 	PlayerAccountAlreadyLinked,

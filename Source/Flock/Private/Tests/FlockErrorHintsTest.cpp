@@ -26,7 +26,7 @@ bool FFlockErrorHintsCoverageTest::RunTest(const FString& Parameters)
 
 	// A tripwire on the hand-maintained half. The enum mirrors the backend's detail.code set, so growing
 	// it is a decision — this line makes that decision pass through here instead of past it.
-	TestEqual(TEXT("EFlockErrorCode declares 71 members"), Count, 71);
+	TestEqual(TEXT("EFlockErrorCode declares 100 members"), Count, 100);
 
 	int32 Waived = 0;
 	for (int32 Index = 0; Index < Count; ++Index)

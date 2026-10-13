@@ -106,7 +106,9 @@ retries Auth, Validation, Serialization or Cancelled. What is left for you:
 
 - **`EFlockErrorType::Connection`** — the request never reached the server. Reads backed by the offline
   cache serve their last good copy instead; a write that cannot be queued fails here.
-- **`EFlockErrorType::Auth` after a refresh** — the session is gone. Send the player back to sign-in.
+- **`EFlockErrorType::Auth` after a refresh** — the session is gone. Send the player back to sign-in. Check
+  `ErrorCode` first: a 403 carrying `MatchmakingNotPartyLeader`, `MatchmakingPlayerNotEligible`, `MultiplayerNotHost`
+  or `PartyNotPartyLeader` means the player is not allowed to do that, and signing in again changes nothing.
 - **Money mutations** (a purchase, a consume, a funds grant) — an ambiguous failure is surfaced rather
   than re-sent, because a timed-out request may already have committed. Re-send only on a deliberate
   player action, never automatically.
