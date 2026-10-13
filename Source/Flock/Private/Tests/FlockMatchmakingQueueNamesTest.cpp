@@ -112,7 +112,8 @@ namespace FlockMatchmakingQueueNamesTestHelpers
 			: Client(MakeShared<FFlockHttpClient>(Fake, MakeShared<FFlockNullLogger>()))
 			, Session(MakeShared<FFlockAuthSession>(Client, MakeShared<FFlockMemoryTokenStore>(), MakeShared<FFlockNullLogger>(),
 				TEXT("http://x/v1"), TMap<FString, FString>{ { TEXT("X-Flock-API-Key"), TEXT("k") }, { TEXT("X-Game-Version-ID"), TEXT("ver-1") } }))
-			, Provider(MakeShared<FFlockMultiplayerProvider>(Client, NoRetries(), MakeShared<FFlockNullLogger>(), Session, TEXT("http://x/v1")))
+			, Provider(MakeShared<FFlockMultiplayerProvider>(Client, NoRetries(), MakeShared<FFlockNullLogger>(), Session, TEXT("http://x/v1"),
+				/*PartyRefreshSeconds*/ 10.0))
 		{
 		}
 

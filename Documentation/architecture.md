@@ -68,7 +68,8 @@ area names on both sides:
 |---|---|
 | `Http/` | Transport seam, client, retry, errors, JSON helpers, snapshot store, provider base |
 | `Auth/` | Token store seam and its file implementation, JWT parsing, the auth session |
-| `Providers/` | One file per feature: auth, config, game, shop, player, command, leaderboard, notification, asset, analytics |
+| `Providers/` | One file per feature: auth, config, game, shop, player, command, leaderboard, notification, asset, analytics, multiplayer |
+| `Multiplayer/` | The multiplayer parts: the party object and its owner, the calls the SDK repeats, queue lookup by name |
 | `Models/` | Wire structs, one file per feature |
 | `Analytics/` | The independently-testable analytics parts: consent, spool, session, lifecycle pump, termination tracker |
 | `Assets/` | The binary half: the download seam and the on-disk cache |

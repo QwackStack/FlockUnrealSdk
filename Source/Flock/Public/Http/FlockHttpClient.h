@@ -98,6 +98,14 @@ public:
 		return SendWithBody<TResp, TBody>(TEXT("PATCH"), Url, Headers, Body, EBodyReading::Envelope, MoveTemp(OnComplete));
 	}
 
+	/** Enveloped PATCH with a caller-serialized JSON body, as PostJson: for a body holding the game's own data, kept as sent. */
+	template <typename T>
+	FFlockRequestHandle PatchJson(const FString& Url, const TMap<FString, FString>& Headers, const FString& JsonBody,
+		TFunction<void(TFlockResult<T>)> OnComplete)
+	{
+		return Send<T>(TEXT("PATCH"), Url, Headers, JsonBody, /*bHasBody*/ true, EBodyReading::Envelope, MoveTemp(OnComplete));
+	}
+
 	template <typename T>
 	FFlockRequestHandle Delete(const FString& Url, const TMap<FString, FString>& Headers, TFunction<void(TFlockResult<T>)> OnComplete)
 	{

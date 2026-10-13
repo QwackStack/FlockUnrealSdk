@@ -5,6 +5,39 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.26.0] - 2026-10-13
+
+### Added
+
+- **Parties.** Players group up by invite code before they search for a match together.
+  - `FFlockMultiplayerProvider::CreateParty(MaxSize, Settings, OnComplete)` makes a party with the signed-in player as its
+    leader and only member. Leave the size unset for the server's default (4); it takes 2 to 64 players. The settings are
+    the game's own data on the party, such as a mode, kept with their keys exactly as written.
+  - `JoinParty(InviteCode, OnComplete)` joins by code, in any letter case. Joining the party the player is already in returns
+    it.
+  - `GetMyParty(OnComplete)` reads the player's party, or null when the player is in none. A party lasts until the player
+    leaves it, across launches, so call it after signing in. It returns the same object while the party lasts.
+  - Each completes with a `UFlockParty` (Blueprint type): its id, invite code, leader, members in the order they joined, size,
+    settings (`FFlockJsonData`), and why it ended (`EFlockPartyEndReason`). Its calls are `Leave`, `Kick`, `MakeLeader`,
+    `Update` and `Disband`, each completing with the party as it stands afterwards, and each call returns a handle that
+    cancels the request on its way.
+  - Its events, assignable from Blueprint: `OnMembersChanged`, `OnLeaderChanged` and `OnEnded`, raised once with
+    `Left`, `Disbanded`, `Removed` (the server no longer lists the player in it) or `SignedOut` (the player signed out or
+    another signed in; raised on the next frame, while the party reads as ended at once). Flock shutting down ends it
+    without raising anything.
+  - The SDK reads a held party again every **Party Refresh Seconds** (Project Settings > Flock > Multiplayer, 10 by
+    default, 0 turns it off), after each change this game makes, and on `GetMyParty`. Only the newest reading changes the
+    party: a reading sent before another one landed, or before a change this game made finished, changes nothing.
+  - The game's own leave reads as `Left` even when a refresh sees it first or the server says the player is already out.
+    A change answered `party.not_found` ends the party as `Removed`. A refresh never takes up another party; only a call
+    the game makes does.
+  - Create, kick, make leader and disband are never sent twice after a lost answer. Every party call is sent only for the
+    sign-in it was made under.
+
+### Changed
+
+- The party error hints name the calls that fix them (`GetMyParty`, `Leave`, `MakeLeader`, `Disband`).
+
 ## [1.25.0] - 2026-10-13
 
 ### Added

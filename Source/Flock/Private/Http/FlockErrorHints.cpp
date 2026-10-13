@@ -90,13 +90,13 @@ namespace
 			{ EFlockErrorCode::MultiplayerSessionNotFound, TEXT("The session does not exist, has ended, or the signed-in player no longer holds a seat in it. A game that stops sending heartbeats (paused, or in the background) loses its seat after the game's seat timeout; join again with the session's join code.") },
 			{ EFlockErrorCode::MultiplayerTargetNotAParticipant, TEXT("That player holds no seat in this session, so hosting cannot be handed to them.") },
 			{ EFlockErrorCode::MultiplayerVersionMismatch, TEXT("The session keeps its players to one Game Version: it was opened on another build, or, for a session made for a party, a party member is on another build. Players join sessions of their own build; a host lets any build join by hosting with \"same version only\" turned off.") },
-			{ EFlockErrorCode::PartyAlreadyInParty, TEXT("The signed-in player is already in a party in this game, and a player can be in one at a time. Leave it before creating or joining another.") },
-			{ EFlockErrorCode::PartyCannotKickLeader, TEXT("The leader cannot remove themselves. Hand leadership to another member first, or disband the party.") },
+			{ EFlockErrorCode::PartyAlreadyInParty, TEXT("The signed-in player is already in a party in this game, and a player can be in one at a time. GetMyParty returns it; leave it with the party's Leave before creating or joining another.") },
+			{ EFlockErrorCode::PartyCannotKickLeader, TEXT("The leader cannot remove themselves. Hand leadership to another member with MakeLeader and then leave, or disband the party with Disband.") },
 			{ EFlockErrorCode::PartyFull, TEXT("The party has no free places, or its size was set below the number of players already in it.") },
 			{ EFlockErrorCode::PartyInvalidInviteCode, TEXT("No open party has that invite code. Ask the party leader for the current code.") },
 			{ EFlockErrorCode::PartyNotAMember, TEXT("The signed-in player is not in that party, so there is nothing to leave.") },
-			{ EFlockErrorCode::PartyNotFound, TEXT("No party by that id that the signed-in player belongs to. It may have been disbanded, or the player removed from it.") },
-			{ EFlockErrorCode::PartyNotPartyLeader, TEXT("Only the party leader can do this. Leadership may have moved to another member; read the party again to see who leads now.") },
+			{ EFlockErrorCode::PartyNotFound, TEXT("No party by that id that the signed-in player belongs to. It may have been disbanded, or the player removed from it; a party the SDK held for the player ends as Removed, and GetMyParty reads the player's current party.") },
+			{ EFlockErrorCode::PartyNotPartyLeader, TEXT("Only the party leader can do this. Leadership may have moved to another member; GetMyParty reads the party again to show who leads now.") },
 			{ EFlockErrorCode::PartyTargetNotAMember, TEXT("That player is not in the party, so they cannot be removed or made leader.") },
 
 			// Auth — signing in never creates an account, which is the most common first-run mistake.

@@ -14,7 +14,7 @@
 #include "Http/FlockHttpShutdown.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.25.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.26.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -302,7 +302,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 
 	// Its repeating calls run from the core ticker until ShutdownSdk stops them; nothing above depends on it.
 	MultiplayerProvider = MakeShared<FFlockMultiplayerProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
-		AuthSession.ToSharedRef(), GetVersionedApiUrl());
+		AuthSession.ToSharedRef(), GetVersionedApiUrl(), static_cast<double>(Settings->PartyRefreshSeconds));
 	MultiplayerProvider->Start();
 
 	// Supply the reachability probe every snapshot-backed provider has always had a seam for and never a

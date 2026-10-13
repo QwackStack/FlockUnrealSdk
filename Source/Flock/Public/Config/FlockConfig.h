@@ -264,6 +264,16 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "HTTP", meta = (ClampMin = "0.0", Units = "s"))
 	float HttpTimeoutSeconds = 30.f;
 
+	// ────────────────────────────── Multiplayer ────────────────────────────────
+
+	/**
+	 * How often, in seconds, the player's party is read again while the game holds it, to see who joined, left or leads. Each
+	 * read is one request per player (about 6 a minute at 10). 0 turns it off: the party then changes only when the game calls
+	 * Get My Party or changes it.
+	 */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Multiplayer", meta = (ClampMin = "0.0", Units = "s"))
+	float PartyRefreshSeconds = 10.f;
+
 	// ────────────────────────────── Initialization ────────────────────────────
 
 	/**

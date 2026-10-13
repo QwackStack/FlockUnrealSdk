@@ -158,6 +158,13 @@ public:
 	/** The calls this holds, stopped ones included until their next due time; for tests. */
 	int32 GetCallCountForTesting() const { return Calls.Num(); }
 
+	/** Replaces the clock and the jitter's roll, for every call and every wait from now on; for tests that move time by hand. */
+	void SetClockForTesting(TFunction<double()> InNow, TFunction<double()> InNextRoll)
+	{
+		Shared->Now = MoveTemp(InNow);
+		Shared->NextRoll = MoveTemp(InNextRoll);
+	}
+
 	/** The wait before a call's next request: its interval, from three quarters to one and a quarter of it. */
 	static double JitteredWait(double IntervalSeconds, double Roll) { return IntervalSeconds * (0.75 + Roll * 0.5); }
 

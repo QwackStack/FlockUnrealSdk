@@ -183,4 +183,13 @@ namespace FlockEndpoints
 
 	// Matchmaking — the queue list needs only the API key; queues are found by name from it, since no by-name route exists.
 	inline constexpr const TCHAR* MatchmakingQueues = TEXT("matchmaking/queues");
+
+	// Parties — every route acts as the signed-in player.
+	inline constexpr const TCHAR* Party = TEXT("party");
+	inline constexpr const TCHAR* PartyJoin = TEXT("party/join");
+	inline constexpr const TCHAR* PartyMine = TEXT("party/me");
+	inline FString PartyById(const FString& PartyId) { return FString::Printf(TEXT("party/%s"), *Encode(PartyId)); }
+	inline FString PartyLeave(const FString& PartyId) { return PartyById(PartyId) + TEXT("/leave"); }
+	inline FString PartyKick(const FString& PartyId) { return PartyById(PartyId) + TEXT("/kick"); }
+	inline FString PartyTransfer(const FString& PartyId) { return PartyById(PartyId) + TEXT("/transfer"); }
 }

@@ -2,13 +2,19 @@
 
 #include "Providers/FlockMultiplayerProvider.h"
 #include "Http/FlockEndpoints.h"
+#include "Multiplayer/FlockParties.h"
+#include "Multiplayer/FlockPartyRequests.h"
 
 FFlockMultiplayerProvider::FFlockMultiplayerProvider(const TSharedRef<FFlockHttpClient>& InClient, const FFlockRetryPolicy& InPolicy,
-	const TSharedRef<IFlockLogger>& InLogger, const TSharedRef<FFlockAuthSession>& InSession, const FString& InVersionedApiUrl)
+	const TSharedRef<IFlockLogger>& InLogger, const TSharedRef<FFlockAuthSession>& InSession, const FString& InVersionedApiUrl,
+	double InPartyRefreshSeconds)
 	: FFlockProviderBase(InClient, InPolicy, InLogger)
 	, Session(InSession)
 	, VersionedApiUrl(InVersionedApiUrl)
-	, RepeatingCalls([InSession]() { return InSession->GetSignInNumber(); }, InLogger)
+	, RepeatingCalls(MakeShared<FFlockRepeatingCalls>([InSession]() { return InSession->GetSignInNumber(); }, InLogger))
+	, Parties(MakeShared<FFlockParties>(
+		MakeShared<FFlockPartyRequests>(InClient, InPolicy, InLogger, InSession, InVersionedApiUrl),
+		RepeatingCalls, InSession, InLogger, InPartyRefreshSeconds))
 {
 	SetAuthSession(InSession);
 }
@@ -34,7 +40,8 @@ void FFlockMultiplayerProvider::Shutdown()
 		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 		TickerHandle.Reset();
 	}
-	RepeatingCalls.StopAll();
+	Parties->StopForShutdown();
+	RepeatingCalls->StopAll();
 	// A read on its way is answered into a provider about to go, so whoever waits on it is told now.
 	if (QueueNames.IsValid())
 	{
@@ -44,8 +51,24 @@ void FFlockMultiplayerProvider::Shutdown()
 
 bool FFlockMultiplayerProvider::Tick(float DeltaSeconds)
 {
-	RepeatingCalls.SendThoseDue();
+	Parties->EndIfSignInEnded();
+	RepeatingCalls->SendThoseDue();
 	return true;
+}
+
+FFlockRequestHandle FFlockMultiplayerProvider::CreateParty(TOptional<int32> MaxSize, const FFlockCommandData& Settings, FFlockOnParty OnComplete)
+{
+	return Parties->Create(MaxSize, Settings, MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockMultiplayerProvider::JoinParty(const FString& InviteCode, FFlockOnParty OnComplete)
+{
+	return Parties->Join(InviteCode, MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockMultiplayerProvider::GetMyParty(FFlockOnParty OnComplete)
+{
+	return Parties->GetMine(MoveTemp(OnComplete));
 }
 
 FFlockRequestHandle FFlockMultiplayerProvider::FindQueueId(const FString& QueueName, TFunction<void(TFlockResult<FString>)> OnComplete)
