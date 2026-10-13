@@ -209,6 +209,14 @@ announced on the releases page.
   compile and emit a warning saying they are past what has been verified: a new engine usually breaks
   nothing, so the SDK does not block you on the day one ships. See [CHANGELOG.md](CHANGELOG.md) for how
   the range moves.
+- **Known engine issue on 5.4 and 5.5: a Development package ends with an access violation (`0xC0000005`)
+  about 60 seconds after it quits.** The game has already closed by then, and its log is complete. This is
+  an engine bug, not this plugin's: as a packaged game shuts down, the engine releases Nanite's resources
+  after a lock they use has been destroyed, and its crash handler then waits 60 seconds before the process
+  ends. It happens whether or not any Flock feature ran. Epic fixed it in 5.6. It was measured on 5.5
+  Development packages; 5.4 has the same engine code. Shipping packages leave out the part involved, so
+  they should not be affected, though that has not been measured. If a script judges a packaged run on
+  these engines, read the game's own exit lines in its log rather than the process's exit code.
 - **Platforms: verified on Windows (Win64).** The SDK is written against portable engine APIs and uses
   no platform-specific code, so other targets are expected to work — but expected is not verified, and
   this project states only what it has actually run. Windows is where the test suite has been executed;

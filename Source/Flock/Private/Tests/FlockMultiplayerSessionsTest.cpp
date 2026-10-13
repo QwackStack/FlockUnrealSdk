@@ -1905,6 +1905,31 @@ bool FFlockSessionHeartbeatSeatGoneTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+FLOCK_SESSION_TEST(FFlockSessionUnreadableWhileLeavingTest, "ASessionNoLongerReadableWhileThisGamesLeaveIsOnItsWayEndsAsLeft")
+bool FFlockSessionUnreadableWhileLeavingTest::RunTest(const FString& Parameters)
+{
+	FSessionsFixture F;
+	F.SignIn(SessionPlayerA);
+	UFlockMultiplayerSession* Session = F.Hosted(*this);
+	if (Session == nullptr)
+	{
+		return false;
+	}
+	F.Server->Joins(F.Server->Sessions[0], SessionPlayerB);
+	UFlockSessionTestListener* Listener = F.Listen(Session);
+	const TSharedRef<FFlockFakePartyServer::FHeld> LeaveAnswer = F.Server->HoldNext(ERoute::Leave);
+	F.Leave(Session);
+	TestTrue(TEXT("precondition: the leave is on its way"), LeaveAnswer->bArrived && !LeaveAnswer->bDelivered);
+	// The next heartbeat finds the seat gone, and the read that would say why is refused.
+	F.Server->AnswerNext(ERoute::Read, FFlockFakeSessionServer::Refused(404, TEXT("multiplayer.session_not_found")));
+	F.Advance(20.0);
+	TestEqual(TEXT("precondition: a heartbeat was refused and the read that followed it too"), F.Server->Count(ERoute::Read), 1);
+	TestEqualSensitive(TEXT("gone because this game left it"), Listener->EndedAs(), FString(FlockMultiplayerSessionEndReasons::Left));
+	LeaveAnswer->Release();
+	TestEqualSensitive(TEXT("ended once"), Listener->EndedAs(), FString(FlockMultiplayerSessionEndReasons::Left));
+	return true;
+}
+
 FLOCK_SESSION_TEST(FFlockSessionOlderHeartbeatTest, "AnOlderHeartbeatAnswerChangesNothing")
 bool FFlockSessionOlderHeartbeatTest::RunTest(const FString& Parameters)
 {

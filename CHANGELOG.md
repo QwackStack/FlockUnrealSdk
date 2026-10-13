@@ -5,6 +5,21 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A party or session this game is leaving ends as `Left`, however the SDK learns it is gone.** Three ways ignored a leave
+  still on its way: a party replaced by creating or joining another ended `Removed`; a party call answered `party.not_found`
+  ended `Removed` (a disband answered so now ends `Disbanded`); and a session that could not be read to learn why it ended
+  ended `dropped`.
+
+### Documentation
+
+- **README names a known engine issue on UE 5.4 and 5.5**: a Development package ends with an access violation
+  (`0xC0000005`) about 60 seconds after it quits. It is the engine's, fixed by Epic in 5.6, and happens whether or not
+  any Flock feature ran.
+
 ## [1.27.0] - 2026-10-13
 
 ### Added

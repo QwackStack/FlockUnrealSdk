@@ -402,8 +402,8 @@ void FFlockMultiplayerSessions::LearnWhyItEnded(UFlockMultiplayerSession* Sessio
 				}
 				else if (UFlockMultiplayerSession* Gone = WeakSession.Get())
 				{
-					// Not even readable any more, or the caller gave up: the seat was given up without a word.
-					Self->MarkEnded(Gone, FlockMultiplayerSessionEndReasons::Dropped);
+					// Not even readable any more, or the caller gave up: the seat was given up without a word, unless this game left it.
+					Self->MarkEnded(Gone, Self->EndingOf(Gone, FlockMultiplayerSessionEndReasons::Dropped));
 				}
 			}
 			Then();
@@ -564,8 +564,7 @@ UFlockMultiplayerSession* FFlockMultiplayerSessions::Take(const FFlockMultiplaye
 		else
 		{
 			HeldNow->TakeFinalReading(Reading);
-			const bool bLeftByThisGame = HeldNow->Id.Equals(LeavingSessionId, ESearchCase::CaseSensitive);
-			MarkEnded(HeldNow, bLeftByThisGame ? FString(FlockMultiplayerSessionEndReasons::Left) : Ending);
+			MarkEnded(HeldNow, EndingOf(HeldNow, Ending));
 		}
 		return HeldNow;
 	}
@@ -620,6 +619,11 @@ void FFlockMultiplayerSessions::ForgetLeaveOf(const FString& SessionId)
 	{
 		LeavingSessionId.Reset();
 	}
+}
+
+FString FFlockMultiplayerSessions::EndingOf(const UFlockMultiplayerSession* Session, const FString& Found) const
+{
+	return Session->Id.Equals(LeavingSessionId, ESearchCase::CaseSensitive) ? FString(FlockMultiplayerSessionEndReasons::Left) : Found;
 }
 
 void FFlockMultiplayerSessions::MarkEnded(UFlockMultiplayerSession* Session, const FString& Reason, bool bRaise)

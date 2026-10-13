@@ -1393,6 +1393,7 @@ bool FFlockPartyEarlierLeaveAnsweredTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
+	const TStrongObjectPtr<UFlockParty> KeepFirst(First);
 	const TSharedRef<FFlockFakePartyServer::FHeld> LeaveAnswer = F.Server->HoldNext(ERoute::Leave);
 	const FPartyAnswerRef Left = MakeShared<FPartyAnswer>();
 	First->Leave(Into(Left));
@@ -1401,6 +1402,7 @@ bool FFlockPartyEarlierLeaveAnsweredTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
+	TestEqual(TEXT("a party replaced while this game's leave of it is on its way was left, not removed"), First->GetEndReason(), EFlockPartyEndReason::Left);
 	const TStrongObjectPtr<UFlockParty> KeepSecond(Second);
 	UFlockPartyTestListener* Listener = F.Listen(Second);
 	const TSharedRef<FFlockFakePartyServer::FHeld> DisbandAnswer = F.Server->HoldNext(ERoute::Disband);
@@ -1434,6 +1436,52 @@ bool FFlockPartyGoneTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("the refusal says what to do"), Kicked->Result.Error.Hint.IsEmpty());
 	TestEqual(TEXT("ended as removed"), Party->GetEndReason(), EFlockPartyEndReason::Removed);
 	TestNull(TEXT("nothing held"), F.Held());
+	return true;
+}
+
+FLOCK_PARTY_TEST(FFlockPartyDisbandGoneTest, "ADisbandAnsweredPartyNotFoundEndsThePartyAsDisbanded")
+bool FFlockPartyDisbandGoneTest::RunTest(const FString& Parameters)
+{
+	FPartiesFixture F;
+	F.SignIn(PlayerA);
+	UFlockParty* Party = F.MadeParty(*this);
+	if (Party == nullptr)
+	{
+		return false;
+	}
+	const TStrongObjectPtr<UFlockParty> KeepParty(Party);
+	UFlockPartyTestListener* Listener = F.Listen(Party);
+	F.Server->AnswerNext(ERoute::Disband, FFlockFakePartyServer::Refused(404, TEXT("party.not_found")));
+	const FPartyAnswerRef Disbanded = MakeShared<FPartyAnswer>();
+	Party->Disband(Into(Disbanded));
+	TestEqual(TEXT("the call says the party was gone"), Disbanded->Result.Error.ErrorCode, EFlockErrorCode::PartyNotFound);
+	TestEqualSensitive(TEXT("gone already is what disbanding asks for"), F.EndedAs(Listener), FString(TEXT("Disbanded")));
+	return true;
+}
+
+FLOCK_PARTY_TEST(FFlockPartyGoneWhileLeavingTest, "AChangeAnsweredPartyNotFoundWhileThisGamesLeaveIsOnItsWayEndsThePartyAsLeft")
+bool FFlockPartyGoneWhileLeavingTest::RunTest(const FString& Parameters)
+{
+	FPartiesFixture F;
+	F.SignIn(PlayerA);
+	UFlockParty* Party = F.MadeParty(*this);
+	if (Party == nullptr)
+	{
+		return false;
+	}
+	const TStrongObjectPtr<UFlockParty> KeepParty(Party);
+	UFlockPartyTestListener* Listener = F.Listen(Party);
+	const TSharedRef<FFlockFakePartyServer::FHeld> LeaveAnswer = F.Server->HoldNext(ERoute::Leave);
+	const FPartyAnswerRef Left = MakeShared<FPartyAnswer>();
+	Party->Leave(Into(Left));
+	// The party is gone by the time a change the game sent meanwhile reaches the server.
+	F.Server->AnswerNext(ERoute::Kick, FFlockFakePartyServer::Refused(404, TEXT("party.not_found")));
+	const FPartyAnswerRef Kicked = MakeShared<FPartyAnswer>();
+	Party->Kick(PlayerB, Into(Kicked));
+	TestEqual(TEXT("precondition: refused as gone"), Kicked->Result.Error.ErrorCode, EFlockErrorCode::PartyNotFound);
+	TestEqualSensitive(TEXT("gone because this game left it"), F.EndedAs(Listener), FString(TEXT("Left")));
+	LeaveAnswer->Release();
+	TestEqualSensitive(TEXT("ended once"), F.EndedAs(Listener), FString(TEXT("Left")));
 	return true;
 }
 

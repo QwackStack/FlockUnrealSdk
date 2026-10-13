@@ -268,8 +268,10 @@ FFlockRequestHandle FFlockParties::Disband(UFlockParty* Party, FFlockOnParty OnC
 			Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(ShutDownError()));
 			return;
 		}
+		// Forgotten after the answer is taken, so a disband answered party.not_found ends as this game's disband.
+		const bool bTaken = Self->TakeChangeAnswer(WeakParty.Get(), SignInNumber, Answered, OnComplete);
 		Self->ForgetEndingOf(PartyId);
-		if (!Self->TakeChangeAnswer(WeakParty.Get(), SignInNumber, Answered, OnComplete))
+		if (!bTaken)
 		{
 			return;
 		}
@@ -363,7 +365,7 @@ bool FFlockParties::TakeChangeAnswer(UFlockParty* Party, int32 SignInNumber, con
 		// A party the server no longer has for this player is over here too, whichever call found out.
 		if (Answered.Error.ErrorCode == EFlockErrorCode::PartyNotFound && Party != nullptr)
 		{
-			End(Party, EFlockPartyEndReason::Removed);
+			End(Party, EndingOf(Party));
 		}
 		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(Answered.Error));
 		return false;
@@ -462,8 +464,7 @@ UFlockParty* FFlockParties::Apply(const FFlockPartyRead& Read, const FString& Pl
 	// In no party now, or in another one than the one held.
 	if (Party != nullptr)
 	{
-		const bool bEndedByThisGame = EndingByThisGame != EFlockPartyEndReason::None && Party->Id.Equals(EndingPartyId, ESearchCase::CaseSensitive);
-		End(Party, bEndedByThisGame ? EndingByThisGame : EFlockPartyEndReason::Removed);
+		End(Party, EndingOf(Party));
 	}
 	// A refresh never takes up another party: only a call the game made does.
 	if (!Read.bInParty || PlayerId.IsEmpty())
@@ -478,9 +479,10 @@ UFlockParty* FFlockParties::Hold(int32 SignInNumber, const FString& PlayerId, co
 {
 	// A reading of the party already held is taken by Apply; anything held here is another party, which this one replaces.
 	EndIfSignInEnded();
+	// A party replaced while this game's leave of it is on its way was left, not removed.
 	if (UFlockParty* Replaced = Held.Get())
 	{
-		End(Replaced, EFlockPartyEndReason::Removed);
+		End(Replaced, EndingOf(Replaced));
 	}
 	UFlockParty* Party = NewObject<UFlockParty>(GetTransientPackage());
 	Party->Begin(AsShared(), Session, SignInNumber, PlayerId, Reading, MemberIds);
@@ -495,6 +497,12 @@ void FFlockParties::SettleReadsSentSoFar(int32 SignInNumber)
 	{
 		ReadsSettledThrough = ReadsSent;
 	}
+}
+
+EFlockPartyEndReason FFlockParties::EndingOf(const UFlockParty* Party) const
+{
+	const bool bEndedByThisGame = EndingByThisGame != EFlockPartyEndReason::None && Party->Id.Equals(EndingPartyId, ESearchCase::CaseSensitive);
+	return bEndedByThisGame ? EndingByThisGame : EFlockPartyEndReason::Removed;
 }
 
 void FFlockParties::ForgetEndingOf(const FString& PartyId)

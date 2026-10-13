@@ -110,6 +110,9 @@ private:
 	/** The leave of this session has its answer; a leave of another session started since stays remembered. */
 	void ForgetLeaveOf(const FString& SessionId);
 
+	/** Why a session the player is found out of ended: this game's own leave of that session, else what was found. */
+	FString EndingOf(const UFlockMultiplayerSession* Session, const FString& Found) const;
+
 	/** Why a reading says the session is no longer the player's, or empty while they hold a seat in it. */
 	static FString EndingIn(const FFlockMultiplayerSessionReading& Reading, const FString& PlayerId);
 	static bool IsOutOfTheSession(const FFlockError& Failure);

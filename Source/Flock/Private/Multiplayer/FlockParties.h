@@ -89,6 +89,9 @@ private:
 	/** The leave or disband of this party has its answer; one of another party started since stays remembered. */
 	void ForgetEndingOf(const FString& PartyId);
 
+	/** Why a party the player is found out of ended: this game's own leave or disband of that party, else a removal. */
+	EFlockPartyEndReason EndingOf(const UFlockParty* Party) const;
+
 	/** Also restarts a refresh a failure stopped, whenever the game asks for its party again. */
 	void KeepRefreshing();
 	void StopRefreshing();
