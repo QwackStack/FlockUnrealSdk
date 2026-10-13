@@ -63,13 +63,14 @@ struct FLOCK_API FFlockJsonData
 	template <typename T>
 	bool GetAs(T& OutStruct) const
 	{
-		const TSharedPtr<FJsonObject> Object = ResolveObject();
-		if (!Object.IsValid())
-		{
-			return false;
-		}
-		return FJsonObjectConverter::JsonObjectToUStruct(Object.ToSharedRef(), T::StaticStruct(), &OutStruct, 0, 0);
+		return GetAsStruct(T::StaticStruct(), &OutStruct);
 	}
+
+	/**
+	 * GetAs for a struct type known at run time: fills OutStruct, a StructType, by reflection. False when there is no data,
+	 * or no type or target. The conversion runs inside Flock, so a game module needs no JSON module of its own to call it.
+	 */
+	bool GetAsStruct(const UScriptStruct* StructType, void* OutStruct) const;
 
 private:
 	/** Parses Json on first use and caches it. Null when Json is empty or unparseable. */

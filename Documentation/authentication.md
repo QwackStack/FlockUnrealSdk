@@ -2,7 +2,8 @@
 
 Sign players in with email, device id, Google, Apple, Steam, Facebook, or Discord. Tokens are stored
 encrypted between launches and the session is restored automatically on startup; expired access tokens
-refresh silently, including a one-shot retry for an authenticated call that raced the expiry.
+refresh silently, including a one-shot retry for an authenticated call that raced the expiry. Only a 401 is
+refreshed: a 403 means the player is not allowed to do that, and a new token would not change it.
 
 ## Providers at a glance
 
@@ -176,6 +177,13 @@ Four coded errors are worth handling in-game:
   `IFlockTokenStore` to plug in platform keychain storage instead.
 - **The email-verification routes need a bearer.** It rides along automatically when a player is signed
   in, and the server requires it — so those calls fail with a 401 when signed out.
+- **A call made for a player stays that player's.** A call that acts as the signed-in player (the inbox, a
+  rank, linking, a purchase and the like) sends its retries only while that sign-in lasts. If the player
+  signs out, or another player signs in, while it is waiting to retry, the retry is not sent and the call
+  fails with `EFlockErrorType::Cancelled`. A call that looks something up first (a purchase reads its item,
+  scheduling by name looks up the template, cancelling every schedule reads the list) is not sent at all if
+  the sign-in changed meanwhile. A token refresh that comes back after the sign-in it was for has ended is
+  dropped: it does not sign the new player out or replace their token.
 
 ---
 

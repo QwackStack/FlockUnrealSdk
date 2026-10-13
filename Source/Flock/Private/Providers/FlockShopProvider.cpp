@@ -293,11 +293,13 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 	}
 
 	TWeakPtr<FFlockShopProvider> WeakSelf = AsShared();
+	// The purchase acts for the sign-in current now: sent only while it lasts, and its records go to it alone.
+	const int32 PurchaseSignIn = Session->GetSignInNumber();
 
 	// The item is fetched first — the transaction record needs its price/currency, and a failed fetch
 	// fails the purchase: without the item there is nothing to charge for and nothing to record.
 	GetItem(ShopItemId,
-		[WeakSelf, ShopItemId, ResolvedPlayerId, OnComplete](TFlockResult<FFlockShopItem> ItemResult)
+		[WeakSelf, ShopItemId, ResolvedPlayerId, PurchaseSignIn, OnComplete](TFlockResult<FFlockShopItem> ItemResult)
 		{
 			const TSharedPtr<FFlockShopProvider> Self = WeakSelf.Pin();
 			if (!Self.IsValid())
@@ -335,26 +337,34 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 			}
 
 			// Fire the Started record and move straight on — the purchase never waits on telemetry.
-			Self->RecordPurchaseStatus(TEXT("Started"), Item);
+			if (Self->Session->GetSignInNumber() == PurchaseSignIn)
+			{
+				Self->RecordPurchaseStatus(TEXT("Started"), Item);
+			}
 
 			const TSharedRef<FFlockHttpClient> ClientRef = Self->Client;
+			const TSharedRef<FFlockAuthSession> SessionRef = Self->Session;
 			const FString Url = Self->MakeUrl(FlockEndpoints::ShopTransaction);
-			const TMap<FString, FString> Headers = Self->HeadersNow();
+			FFlockRetryHandler::FOperation<FFlockPurchaseResult> SendPurchase = ForSignInOnly<FFlockPurchaseResult>(SessionRef, PurchaseSignIn,
+				[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnAttempt)
+				{
+					return ClientRef->PostJsonRaw<FFlockPurchaseResult>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
+				});
 
 			// Non-idempotent (money): an ambiguous failure may mean the charge cleared, so it surfaces
 			// rather than being re-sent. Bare response — PostJsonRaw reads the model at the root.
-			Self->Execute<FFlockPurchaseResult>(
-				[ClientRef, Url, Headers, Body](TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnAttempt)
-				{
-					return ClientRef->PostJsonRaw<FFlockPurchaseResult>(Url, Headers, Body, MoveTemp(OnAttempt));
-				},
-				[WeakSelf, Item, OnComplete](TFlockResult<FFlockPurchaseResult> PurchaseResult)
+			Self->Execute<FFlockPurchaseResult>(MoveTemp(SendPurchase),
+				[WeakSelf, Item, PurchaseSignIn, OnComplete](TFlockResult<FFlockPurchaseResult> PurchaseResult)
 				{
 					// Fire the outcome record (best-effort) and deliver the result immediately — neither
-					// waits on the other. If the provider is gone, the record is simply skipped.
+					// waits on the other. If the provider is gone, or the purchase's sign-in has ended, the record
+					// is skipped: it would otherwise go to whoever is signed in now.
 					if (const TSharedPtr<FFlockShopProvider> Self2 = WeakSelf.Pin())
 					{
-						Self2->RecordPurchaseStatus(PurchaseResult.bSuccess ? TEXT("Purchased") : TEXT("Failed"), Item);
+						if (Self2->Session->GetSignInNumber() == PurchaseSignIn)
+						{
+							Self2->RecordPurchaseStatus(PurchaseResult.bSuccess ? TEXT("Purchased") : TEXT("Failed"), Item);
+						}
 						if (PurchaseResult.bSuccess)
 						{
 							// Applied before the caller is told, so a handler that reads player data straight

@@ -20,6 +20,9 @@
  *
  * Enveloped verbs (Get/Post/...) unwrap {error, response, result} and return the bare model; *Raw verbs
  * deserialize the whole body for the endpoints that aren't enveloped.
+ *
+ * Its request templates read JSON in the caller's module: a module outside Flock that calls them adds "Json" and
+ * "JsonUtilities" to its own dependencies, or its editor build fails to link.
  */
 class FLOCK_API FFlockHttpClient : public TSharedFromThis<FFlockHttpClient>
 {

@@ -158,17 +158,18 @@ void FFlockLeaderboardProvider::GetMyRank(const FString& LeaderboardName, const 
 	AppendParam(Query, TEXT("country"), Country);
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(FlockEndpoints::LeaderboardMe(LeaderboardName) + Query);
 
+	// Acts as the signed-in player through the token, so every attempt is this sign-in's, with its token as it is then.
 	FetchWithSnapshot<FFlockPlayerRank>(SnapshotCategory,
 		PlayerScopedKey(FString::Printf(TEXT("me_%s_%s_%s"), *LeaderboardName, *WindowKey, *Country)),
-		TranslatingUnknownBoard<FFlockPlayerRank>(
-			[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockPlayerRank>)> OnAttempt)
+		ForTheCurrentSignInOnly<FFlockPlayerRank>(TranslatingUnknownBoard<FFlockPlayerRank>(
+			[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerRank>)> OnAttempt)
 			{
-				return ClientRef->Get<FFlockPlayerRank>(Url, Headers, MoveTemp(OnAttempt));
+				return ClientRef->Get<FFlockPlayerRank>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 			},
-			LeaderboardName),
+			LeaderboardName)),
 		TEXT("Fetch player rank"), MoveTemp(OnComplete));
 }
 
@@ -198,18 +199,18 @@ void FFlockLeaderboardProvider::GetAroundMe(const FString& LeaderboardName, int3
 	Query += FString::Printf(TEXT("n=%d"), Neighbours);
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(FlockEndpoints::LeaderboardAroundMe(LeaderboardName) + Query);
 
 	FetchWithSnapshot<FFlockStandings>(SnapshotCategory,
 		PlayerScopedKey(FString::Printf(TEXT("around_%s_%s_%s_n%d"),
 			*LeaderboardName, *WindowKey, *Country, Neighbours)),
-		TranslatingUnknownBoard<FFlockStandings>(
-			[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockStandings>)> OnAttempt)
+		ForTheCurrentSignInOnly<FFlockStandings>(TranslatingUnknownBoard<FFlockStandings>(
+			[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockStandings>)> OnAttempt)
 			{
-				return ClientRef->Get<FFlockStandings>(Url, Headers, MoveTemp(OnAttempt));
+				return ClientRef->Get<FFlockStandings>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 			},
-			LeaderboardName),
+			LeaderboardName)),
 		TEXT("Fetch standings around player"), MoveTemp(OnComplete));
 }
 

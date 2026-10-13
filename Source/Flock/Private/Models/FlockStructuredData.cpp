@@ -160,6 +160,16 @@ void FFlockStructuredData::OverlayFields(const TSharedRef<FJsonObject>& Fields)
 	CachedObject.Reset();
 }
 
+bool FFlockStructuredData::GetDataAsStruct(const UScriptStruct* StructType, void* OutStruct) const
+{
+	const TSharedPtr<FJsonObject> Object = ResolveObject();
+	if (!Object.IsValid() || StructType == nullptr || OutStruct == nullptr)
+	{
+		return false;
+	}
+	return FJsonObjectConverter::JsonObjectToUStruct(Object.ToSharedRef(), StructType, OutStruct, 0, 0);
+}
+
 TSharedPtr<FJsonObject> FFlockStructuredData::ResolveObject() const
 {
 	if (!bParsed)

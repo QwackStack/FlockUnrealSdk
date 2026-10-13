@@ -1080,4 +1080,58 @@ bool FFlockShopNoPlayerProviderTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── A purchase acts for the sign-in it started under: a switch while its item is read sends nothing and records nothing ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopPurchaseKeepsItsSignInTest, "Flock.Shop.Provider.PurchaseIsNotSentAfterItsSignInEnds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopPurchaseKeepsItsSignInTest::RunTest(const FString& Parameters)
+{
+	auto RunPurchase = [this](bool bSwitchPlayerMeanwhile, int32& OutPurchasePosts, int32& OutRecords, EFlockErrorType& OutErrorType)
+	{
+		FFixture Fx;
+		Fx.SignIn(TEXT("player-a"));
+		Fx.WireAnalytics();
+		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(PurchaseResultBody()));
+		Fx.Fake->On(TEXT("analytics/transactions"), FFlockFakeTransport::Ok(TEXT("{}")));
+
+		// The item read is held, so another player signs in between the purchase and its send.
+		Fx.Fake->bDeferred = true;
+		bool bDone = false;
+		Fx.Provider->Purchase(TEXT("item-1"), FString(), [&](TFlockResult<FFlockPurchaseResult> R)
+		{
+			bDone = true;
+			OutErrorType = R.bSuccess ? EFlockErrorType::None : R.Error.Type;
+		});
+		TestFalse(TEXT("the purchase waits for its item"), bDone);
+		if (bSwitchPlayerMeanwhile)
+		{
+			Fx.SignIn(TEXT("player-b"));
+		}
+		Fx.Fake->bDeferred = false;
+		Fx.Fake->FlushPending();
+
+		TestTrue(TEXT("the purchase answered"), bDone);
+		OutPurchasePosts = Fx.Fake->CountTo(TEXT("shop/transaction"));
+		OutRecords = Fx.Fake->CountTo(TEXT("analytics/transactions"));
+		Cleanup(Fx.Dir);
+	};
+
+	int32 Posts = -1;
+	int32 Records = -1;
+	EFlockErrorType Type = EFlockErrorType::None;
+
+	// Control: the same sign-in all along sends the purchase and records Started and Purchased.
+	RunPurchase(false, Posts, Records, Type);
+	TestEqual(TEXT("control: one purchase POST"), Posts, 1);
+	TestEqual(TEXT("control: Started + Purchased recorded"), Records, 2);
+	TestEqual(TEXT("control: succeeded"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::None));
+
+	RunPurchase(true, Posts, Records, Type);
+	TestEqual(TEXT("after the switch: no purchase POST as the next player"), Posts, 0);
+	TestEqual(TEXT("after the switch: nothing recorded for the next player"), Records, 0);
+	TestEqual(TEXT("after the switch: cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

@@ -22,6 +22,7 @@
 #include "Providers/FlockAssetProvider.h"
 #include "Providers/FlockLeaderboardProvider.h"
 #include "Providers/FlockNotificationProvider.h"
+#include "Providers/FlockMultiplayerProvider.h"
 #include "Providers/FlockShopProvider.h"
 #include "FlockSubsystem.generated.h"
 
@@ -318,6 +319,11 @@ public:
 	 */
 	FFlockNotificationProvider* GetNotificationProvider() const { return NotificationProvider.Get(); }
 
+	// ── Multiplayer ──
+
+	/** The entry point for multiplayer. Null before initialization and after shutdown. C++ API. */
+	FFlockMultiplayerProvider* GetMultiplayerProvider() const { return MultiplayerProvider.Get(); }
+
 	// ── Player ──
 
 	/**
@@ -425,6 +431,7 @@ private:
 	TSharedPtr<FFlockCommandProvider> CommandProvider;
 	TSharedPtr<FFlockLeaderboardProvider> LeaderboardProvider;
 	TSharedPtr<FFlockNotificationProvider> NotificationProvider;
+	TSharedPtr<FFlockMultiplayerProvider> MultiplayerProvider;
 
 	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
 	TSharedPtr<IFlockTokenStore> TestTokenStore;

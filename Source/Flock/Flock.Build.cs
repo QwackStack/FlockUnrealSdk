@@ -29,8 +29,11 @@ public class Flock : ModuleRules
 		// Public/Private layout: UBT auto-adds Public/ to public include paths and Private/
 		// to private include paths, so no manual include-path wiring is needed.
 
-		// Json/JsonUtilities are Public: response deserialization happens at the templated call site
-		// (FFlockHttpClient::Get<T>), so any module that includes the client header needs them.
+		// Json/JsonUtilities are Public so a module including Flock's HTTP headers finds their headers. That does not
+		// link them into it (measured 2026-10-13, UE 5.5 editor build, with Flock listed private and public): code that
+		// instantiates the HTTP layer's templates (FFlockHttpClient, FFlockProviderBase, FFlockJsonUtils) adds Json and
+		// JsonUtilities to its own module. Every game-facing call does its JSON work inside this module instead, so a game
+		// needs only Flock (pinned by Flock.Build.GameFacingHeadersCallNoJsonModuleInline).
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{

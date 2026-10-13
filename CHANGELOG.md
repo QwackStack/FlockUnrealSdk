@@ -5,6 +5,59 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.25.0] - 2026-10-13
+
+### Added
+
+- **Multiplayer setup.** `UFlockSubsystem::GetMultiplayerProvider()` returns `FFlockMultiplayerProvider`, built when the
+  SDK starts and torn down when it shuts down. It is where the multiplayer features will live; this release gives it two
+  things.
+  - **`FindQueueId(QueueName, OnComplete)`** finds a matchmaking queue's id by its exact name, letter case included. It
+    reads the game's queue list (`GET /v1/matchmaking/queues?limit=200`, API key only) once a launch, shares that read
+    with every caller asking at the same time, and reads again only for a name the list it kept does not have. Of two
+    queues with one name the older is used, with one warning. A missing name fails `Validation`, coded
+    `matchmaking.queue_not_found`, and its hint names a queue that differs only in letter case, or says when the list was
+    full (200 queues) and a newer queue may be missing from it. Cancelling the handle ends that caller's wait at once, and
+    a lookup still waiting when Flock shuts down is answered `Cancelled`.
+  - **Repeating calls** (`FFlockRepeatingCalls`), which the multiplayer features use for search checks, heartbeats and
+    party refreshes. One request at a time each, every 0.75 to 1.25 times its interval, sent from the core ticker (which
+    keeps ticking while a desktop game is minimized or covered), for the sign-in it started under. A server's
+    `Retry-After` is honoured. No answer, a timeout, a 5xx, 408, 429 or an unreadable answer keeps it going; any other
+    failure stops it and is reported once. The SDK's own features start them; a game does not.
+
+### Changed
+
+- **A 403 is never answered with a token refresh.** A 401 still refreshes the token and sends the call once more. A 403
+  means the player is not allowed (not the host, not the party leader), which a new token does not change, so the 403 is
+  the answer. Until now both refreshed.
+- **A call made for a player stays that player's.** The calls that act as the signed-in player through their token send
+  every attempt -- retries, and the replay after a token refresh -- only while that sign-in lasts. After a sign-out or
+  another sign-in they fail `Cancelled` and send nothing, so a retry never goes out as the next player; one made while
+  nobody was signed in stops the same way once someone signs in. Each attempt reads the token as it is then. These are
+  the inbox, unread count, summary, mark read and mark all read, scheduling, cancelling and listing schedules, device
+  token register and unregister, your leaderboard rank and the standings around you, sending and checking the
+  verification email, revoking the token, listing, linking and unlinking accounts, and a purchase. The calls that do
+  other work first keep the sign-in they were asked for under: a purchase (it reads its item first, and records its
+  analytics transactions only for that sign-in), scheduling by template name (it looks the template up first) and
+  cancelling every schedule (it reads the list first, and a sign-in change stops the walk with the rest still tracked).
+  Game-wide reads keep retrying as before.
+- **A token refresh answered after its sign-in ended changes nothing.** It is not saved, raises no event and signs nobody
+  out, and a player who signed in meanwhile gets a refresh of their own when one is needed.
+- **A cancelled call is no longer answered from the offline cache.** It fails `Cancelled`, as it does without a cache.
+- `FFlockAuthSession` gains `GetSignInNumber()` (a sign-in and a sign-out move it, a refresh does not), `GetBaseHeaders()`
+  and a `RefreshAccessToken(ForSignInNumber, OnComplete)` overload. `FFlockProviderBase` gains `ForTheCurrentSignInOnly`
+  and `ForSignInOnly`, which wrap an operation in the rule above.
+
+### Fixed
+
+- **A game module calling `FFlockStructuredData::GetDataAs<T>` or `FFlockJsonData::GetAs<T>` no longer fails to link.**
+  Both converted the data inline, in the game's own module, which links neither `Json` nor `JsonUtilities` through Flock
+  (measured in an editor build, with Flock listed private and public), so the editor build failed with an unresolved
+  `FJsonObjectConverter::JsonObjectToUStruct`. The conversion now runs inside Flock, through the new
+  `GetDataAsStruct(StructType, OutStruct)` and `GetAsStruct(StructType, OutStruct)`, which also take a struct type known
+  at run time. A game module needs only `"Flock"`; code that builds its own requests on Flock's HTTP layer adds `"Json"`
+  and `"JsonUtilities"` (README, Installation).
+
 ## [1.24.0] - 2026-10-13
 
 ### Added

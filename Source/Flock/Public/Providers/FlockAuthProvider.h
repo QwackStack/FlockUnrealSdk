@@ -182,9 +182,12 @@ private:
 	template <typename T>
 	bool RequireEmailAuth(const TFunction<void(TFlockResult<T>)>& OnComplete) const;
 
-	/** Shared account-flow POST: serialize (omitting empty optionals), per-attempt auth headers, run under Execute. */
+	/**
+	 * Shared account-flow POST: serialize (omitting empty optionals), per-attempt auth headers, run under Execute.
+	 * bActsForThePlayer: the route acts as the signed-in player through the token, so every attempt is that sign-in's.
+	 */
 	template <typename TReq, typename TResp>
-	FFlockRequestHandle PostAccount(const TReq& Request, const FString& Endpoint, const FString& Context,
+	FFlockRequestHandle PostAccount(const TReq& Request, const FString& Endpoint, const FString& Context, bool bActsForThePlayer,
 		TFunction<void(TFlockResult<TResp>)> OnComplete, bool bIdempotent = false);
 
 	/** Shared link POST: post non-idempotent, adopt the returned list, raise OnAccountLinked. */
@@ -395,7 +398,7 @@ FFlockRequestHandle FFlockAuthProvider::Link(const TReq& Request, const FString&
 	const TSharedRef<IFlockLogger> Log = Logger;
 	const TSharedRef<bool> HasEmailFlag = bHasEmailCredential;
 	const FString LoggedContext = DecorateContext(Context);
-	return PostAccount<TReq, FFlockPlayerAccountsResponse>(Request, Endpoint, Context,
+	return PostAccount<TReq, FFlockPlayerAccountsResponse>(Request, Endpoint, Context, /*bActsForThePlayer*/ true,
 		[SessionRef, EventsWeak, Log, HasEmailFlag, LoggedContext, Provider, OnComplete](TFlockResult<FFlockPlayerAccountsResponse> Result)
 		{
 			if (Result.bSuccess)
@@ -417,7 +420,7 @@ FFlockRequestHandle FFlockAuthProvider::Link(const TReq& Request, const FString&
 
 template <typename TReq, typename TResp>
 FFlockRequestHandle FFlockAuthProvider::PostAccount(const TReq& Request, const FString& Endpoint,
-	const FString& Context, TFunction<void(TFlockResult<TResp>)> OnComplete, bool bIdempotent)
+	const FString& Context, bool bActsForThePlayer, TFunction<void(TFlockResult<TResp>)> OnComplete, bool bIdempotent)
 {
 	FString Json;
 	if (!FFlockJsonUtils::StructToWireJson(Request, Json, /*bOmitEmptyStrings*/ true))
@@ -433,12 +436,12 @@ FFlockRequestHandle FFlockAuthProvider::PostAccount(const TReq& Request, const F
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = AuthUrl(Endpoint);
-	return Execute<TResp>(
-		[ClientRef, SessionRef, Url, Json](TFunction<void(TFlockResult<TResp>)> OnAttempt)
-		{
-			// Headers fetched per attempt so a silent-refresh replay carries the new bearer.
-			// Raw (non-enveloped): the player auth routes return the model at the root.
-			return ClientRef->PostJsonRaw<TResp>(Url, SessionRef->GetAuthHeaders(), Json, MoveTemp(OnAttempt));
-		},
+	FFlockRetryHandler::FOperation<TResp> Send = [ClientRef, SessionRef, Url, Json](TFunction<void(TFlockResult<TResp>)> OnAttempt)
+	{
+		// Headers fetched per attempt so a silent-refresh replay carries the new bearer.
+		// Raw (non-enveloped): the player auth routes return the model at the root.
+		return ClientRef->PostJsonRaw<TResp>(Url, SessionRef->GetAuthHeaders(), Json, MoveTemp(OnAttempt));
+	};
+	return Execute<TResp>(bActsForThePlayer ? ForTheCurrentSignInOnly<TResp>(MoveTemp(Send)) : MoveTemp(Send),
 		MoveTemp(OnComplete), Context, bIdempotent);
 }

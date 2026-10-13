@@ -14,7 +14,7 @@
 #include "Http/FlockHttpShutdown.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.24.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.25.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -300,6 +300,11 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	NotificationProvider = MakeShared<FFlockNotificationProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 		AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
 
+	// Its repeating calls run from the core ticker until ShutdownSdk stops them; nothing above depends on it.
+	MultiplayerProvider = MakeShared<FFlockMultiplayerProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
+		AuthSession.ToSharedRef(), GetVersionedApiUrl());
+	MultiplayerProvider->Start();
+
 	// Supply the reachability probe every snapshot-backed provider has always had a seam for and never a
 	// production value for — left null, IsServerReachable() answered "reachable" unconditionally, so the
 	// branch that serves cache *without* a call could only ever fire in a test. One shared latch on the
@@ -475,6 +480,12 @@ void UFlockSubsystem::ShutdownSdk()
 	{
 		CommandProvider->Shutdown();
 		CommandProvider.Reset();
+	}
+	// Every repeating call stops and its request on the way is cancelled, before the client it sends through goes.
+	if (MultiplayerProvider.IsValid())
+	{
+		MultiplayerProvider->Shutdown();
+		MultiplayerProvider.Reset();
 	}
 	if (Events != nullptr)
 	{

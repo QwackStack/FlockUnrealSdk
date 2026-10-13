@@ -341,7 +341,7 @@ private:
 	void UntrackPending(const FString& ScheduledId) const;
 
 	/** One step of CancelAllScheduled's sequential walk. Kept a member so the recursion never captures `this`. */
-	void CancelAllStep(TSharedRef<TArray<FString>> Ids, int32 Index, TSharedRef<int32> Cancelled,
+	void CancelAllStep(int32 SignInNumber, TSharedRef<TArray<FString>> Ids, int32 Index, TSharedRef<int32> Cancelled,
 		TFunction<void(TFlockResult<int32>)> OnComplete);
 
 	/**

@@ -246,8 +246,9 @@ FFlockRequestHandle FFlockAuthProvider::ForgotPassword(const FString& Email,
 	}
 	FFlockPlayerPasswordForgotRequest Request;
 	Request.Email = Email;
+	// The email in the body names the account; no token acts here.
 	return PostAccount<FFlockPlayerPasswordForgotRequest, FFlockAuthActionResponse>(
-		Request, FlockEndpoints::PlayerPasswordForgot, TEXT("Password forgot"), MoveTemp(OnComplete));
+		Request, FlockEndpoints::PlayerPasswordForgot, TEXT("Password forgot"), /*bActsForThePlayer*/ false, MoveTemp(OnComplete));
 }
 
 FFlockRequestHandle FFlockAuthProvider::ResetPassword(const FString& Email, const FString& Code,
@@ -264,8 +265,9 @@ FFlockRequestHandle FFlockAuthProvider::ResetPassword(const FString& Email, cons
 	Request.Email = Email;
 	Request.Code = Code;
 	Request.NewPassword = NewPassword;
+	// The email and code in the body name the account (the route takes no token), so a retry resets the same one.
 	return PostAccount<FFlockPlayerPasswordResetRequest, FFlockAuthActionResponse>(
-		Request, FlockEndpoints::PlayerPasswordReset, TEXT("Password reset"), MoveTemp(OnComplete));
+		Request, FlockEndpoints::PlayerPasswordReset, TEXT("Password reset"), /*bActsForThePlayer*/ false, MoveTemp(OnComplete));
 }
 
 FFlockRequestHandle FFlockAuthProvider::SendEmailVerification(TFunction<void(TFlockResult<FFlockAuthActionResponse>)> OnComplete)
@@ -273,11 +275,11 @@ FFlockRequestHandle FFlockAuthProvider::SendEmailVerification(TFunction<void(TFl
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = AuthUrl(FlockEndpoints::PlayerEmailSendVerification);
-	return Execute<FFlockAuthActionResponse>(
+	return Execute<FFlockAuthActionResponse>(ForTheCurrentSignInOnly<FFlockAuthActionResponse>(
 		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockAuthActionResponse>)> OnAttempt)
 		{
 			return ClientRef->PostJsonRaw<FFlockAuthActionResponse>(Url, SessionRef->GetAuthHeaders(), TEXT("{}"), MoveTemp(OnAttempt));
-		},
+		}),
 		MoveTemp(OnComplete), TEXT("Send email verification"), /*bIdempotent*/ false);
 }
 
@@ -291,7 +293,7 @@ FFlockRequestHandle FFlockAuthProvider::VerifyEmail(const FString& Code,
 	FFlockPlayerEmailVerifyRequest Request;
 	Request.Code = Code;
 	return PostAccount<FFlockPlayerEmailVerifyRequest, FFlockAuthActionResponse>(
-		Request, FlockEndpoints::PlayerEmailVerify, TEXT("Verify email"), MoveTemp(OnComplete));
+		Request, FlockEndpoints::PlayerEmailVerify, TEXT("Verify email"), /*bActsForThePlayer*/ true, MoveTemp(OnComplete));
 }
 
 FFlockRequestHandle FFlockAuthProvider::RevokeToken(TFunction<void(TFlockResult<FFlockTokenRevokeResponse>)> OnComplete)
@@ -303,11 +305,11 @@ FFlockRequestHandle FFlockAuthProvider::RevokeToken(TFunction<void(TFlockResult<
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = AuthUrl(FlockEndpoints::PlayerTokenRevoke);
-	return Execute<FFlockTokenRevokeResponse>(
+	return Execute<FFlockTokenRevokeResponse>(ForTheCurrentSignInOnly<FFlockTokenRevokeResponse>(
 		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockTokenRevokeResponse>)> OnAttempt)
 		{
 			return ClientRef->PostJsonRaw<FFlockTokenRevokeResponse>(Url, SessionRef->GetAuthHeaders(), TEXT("{}"), MoveTemp(OnAttempt));
-		},
+		}),
 		[OnComplete](TFlockResult<FFlockTokenRevokeResponse> Result)
 		{
 			if (Result.bSuccess && !Result.Value.Revoked)
@@ -373,12 +375,12 @@ FFlockRequestHandle FFlockAuthProvider::GetLinkedAccounts(
 	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const TSharedRef<bool> HasEmailFlag = bHasEmailCredential;
 	const FString Url = AuthUrl(FlockEndpoints::PlayerAccounts);
-	return Execute<FFlockPlayerAccountsResponse>(
+	return Execute<FFlockPlayerAccountsResponse>(ForTheCurrentSignInOnly<FFlockPlayerAccountsResponse>(
 		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnAttempt)
 		{
 			// Raw (non-enveloped): the player auth routes return the model at the root.
 			return ClientRef->GetRaw<FFlockPlayerAccountsResponse>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
-		},
+		}),
 		[HasEmailFlag, OnComplete](TFlockResult<FFlockPlayerAccountsResponse> Result)
 		{
 			if (Result.bSuccess)
@@ -505,11 +507,11 @@ FFlockRequestHandle FFlockAuthProvider::Unlink(EFlockCredentialProvider Provider
 	const FString LoggedContext = DecorateContext(Context);
 	const FString Url = AuthUrl(FlockEndpoints::PlayerUnlink(Wire));
 	// The route takes no body; an empty object keeps it a well-formed JSON POST.
-	return Execute<FFlockPlayerAccountsResponse>(
+	return Execute<FFlockPlayerAccountsResponse>(ForTheCurrentSignInOnly<FFlockPlayerAccountsResponse>(
 		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnAttempt)
 		{
 			return ClientRef->PostJsonRaw<FFlockPlayerAccountsResponse>(Url, SessionRef->GetAuthHeaders(), TEXT("{}"), MoveTemp(OnAttempt));
-		},
+		}),
 		[SessionRef, EventsWeak, Log, HasEmailFlag, LoggedContext, Provider, OnComplete](TFlockResult<FFlockPlayerAccountsResponse> Result)
 		{
 			if (Result.bSuccess)

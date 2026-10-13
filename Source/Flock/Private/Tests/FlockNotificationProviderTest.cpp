@@ -1872,4 +1872,182 @@ bool FFlockNotificationCancelAllEmptyServerListTest::RunTest(const FString& Para
 	return true;
 }
 
+// Every notification call acts as the signed-in player: a retry scheduled before another player signs in is never sent as them.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationKeepsItsSignInTest, "Flock.Notification.Provider.RetryIsNotSentAfterItsSignInEnds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationKeepsItsSignInTest::RunTest(const FString& Parameters)
+{
+	// bSignOut: a plain sign-out; otherwise another player signs in with no sign-out between.
+	auto RunMarkRead = [](bool bEndSignInMeanwhile, bool bSignOut, int32& OutRequests, EFlockErrorType& OutErrorType)
+	{
+		FFixture F(FString(), WithRetries());
+		F.SignIn(TEXT("player-a"));
+		F.Fake->On(TEXT("n-1/read"), FFlockFakeTransport::Status(503, TEXT("{}")));
+
+		bool bDone = false;
+		F.Provider->MarkRead(TEXT("n-1"), [&](TFlockResult<FFlockNotification> R)
+		{
+			bDone = true;
+			OutErrorType = R.bSuccess ? EFlockErrorType::None : R.Error.Type;
+		});
+		if (bEndSignInMeanwhile)
+		{
+			if (bSignOut)
+			{
+				F.Session->ClearTokens();
+			}
+			else
+			{
+				F.SignIn(TEXT("player-b"));
+			}
+		}
+		PumpRetries();
+		OutRequests = bDone ? F.Fake->CountTo(TEXT("n-1/read")) : -1;
+		Cleanup(F.Dir);
+	};
+
+	int32 Requests = 0;
+	EFlockErrorType Type = EFlockErrorType::None;
+	RunMarkRead(false, false, Requests, Type);
+	TestEqual(TEXT("control: every retry goes out for the same sign-in"), Requests, 3);
+
+	RunMarkRead(true, false, Requests, Type);
+	TestEqual(TEXT("another player signed in: only the first attempt was sent"), Requests, 1);
+	TestEqual(TEXT("another player signed in: cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
+
+	RunMarkRead(true, true, Requests, Type);
+	TestEqual(TEXT("signed out: only the first attempt was sent"), Requests, 1);
+	TestEqual(TEXT("signed out: cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationScheduleKeepsItsSignInTest, "Flock.Notification.Provider.ScheduleByNameIsNotSentAfterItsSignInEnds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationScheduleKeepsItsSignInTest::RunTest(const FString& Parameters)
+{
+	// The template lookup is held, so another player signs in between the call and its schedule POST.
+	auto Run = [](bool bSwitchPlayerMeanwhile, int32& OutSchedulePosts, int32& OutPlayerBPending, EFlockErrorType& OutErrorType)
+	{
+		FFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.Fake->bDeferred = true;
+		bool bDone = false;
+		F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2), FFlockCommandData(), {},
+			[&](TFlockResult<FFlockScheduledNotification> R)
+			{
+				bDone = true;
+				OutErrorType = R.bSuccess ? EFlockErrorType::None : R.Error.Type;
+			});
+		if (bSwitchPlayerMeanwhile)
+		{
+			F.SignIn(TEXT("player-b"));
+		}
+		F.Fake->bDeferred = false;
+		F.Fake->FlushPending();
+		OutSchedulePosts = bDone ? F.Fake->CountTo(TEXT("notification/schedule")) : -1;
+		OutPlayerBPending = F.Provider->GetPendingSchedules().Num();
+		Cleanup(F.Dir);
+	};
+
+	int32 Posts = 0;
+	int32 Pending = 0;
+	EFlockErrorType Type = EFlockErrorType::None;
+	Run(false, Posts, Pending, Type);
+	TestEqual(TEXT("control: the schedule is sent"), Posts, 1);
+	TestEqual(TEXT("control: succeeded"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::None));
+
+	Run(true, Posts, Pending, Type);
+	TestEqual(TEXT("after a switch: player A's reminder is not scheduled for player B"), Posts, 0);
+	TestEqual(TEXT("after a switch: cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
+	TestEqual(TEXT("after a switch: nothing tracked for player B"), Pending, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationCancelAllKeepsItsSignInTest, "Flock.Notification.Provider.CancelAllStopsWhenItsSignInEnds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationCancelAllKeepsItsSignInTest::RunTest(const FString& Parameters)
+{
+	// While the server's list is read: a failed read would fall back to the local list, which is player B's by then.
+	auto DuringTheRead = [](bool bSwitchPlayerMeanwhile, int32& OutCancels, int32& OutPlayerBPending, EFlockErrorType& OutErrorType)
+	{
+		FFixture F;
+		F.SignIn(TEXT("player-b"));
+		F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(2), FFlockCommandData(), {},
+			[](TFlockResult<FFlockScheduledNotification>) {});
+		if (bSwitchPlayerMeanwhile)
+		{
+			F.SignIn(TEXT("player-a"));
+		}
+		F.RouteScheduleListFailure(FFlockFakeTransport::Status(503, TEXT("{}")));
+		F.Fake->bDeferred = true;
+		bool bDone = false;
+		F.Provider->CancelAllScheduled([&](TFlockResult<int32> R)
+		{
+			bDone = true;
+			OutErrorType = R.bSuccess ? EFlockErrorType::None : R.Error.Type;
+		});
+		if (bSwitchPlayerMeanwhile)
+		{
+			F.SignIn(TEXT("player-b"));
+		}
+		F.Fake->bDeferred = false;
+		F.Fake->FlushPending();
+		OutCancels = bDone ? F.Fake->CountTo(TEXT("notification/schedule/sch-1")) : -1;
+		OutPlayerBPending = F.Provider->GetPendingSchedules().Num();
+		Cleanup(F.Dir);
+	};
+
+	int32 Cancels = 0;
+	int32 Pending = 0;
+	EFlockErrorType Type = EFlockErrorType::None;
+	DuringTheRead(false, Cancels, Pending, Type);
+	TestEqual(TEXT("control: a failed read cancels the player's own tracked reminder"), Cancels, 1);
+	TestEqual(TEXT("control: nothing left tracked"), Pending, 0);
+
+	DuringTheRead(true, Cancels, Pending, Type);
+	TestEqual(TEXT("player A's call does not cancel player B's tracked reminder"), Cancels, 0);
+	TestEqual(TEXT("player B's reminder is still tracked"), Pending, 1);
+	TestEqual(TEXT("player A's call is cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
+
+	// Partway through the walk: the cancel on its way lands, and the next one is not sent as player B.
+	auto MidWalk = [](bool bSwitchPlayerMeanwhile, int32& OutSecondCancels, EFlockErrorType& OutErrorType)
+	{
+		FFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.RouteScheduleList({ TEXT("sch-1"), TEXT("sch-2") });
+		F.RouteCancel(TEXT("sch-2"), FFlockFakeTransport::Ok(ScheduledBody(/*bCanceled*/ true, FString(), TEXT("sch-2"))));
+		F.RouteCancel(TEXT("sch-1"), FFlockFakeTransport::Ok(ScheduledBody(/*bCanceled*/ true)));
+		F.Fake->bDeferred = true;
+		bool bDone = false;
+		F.Provider->CancelAllScheduled([&](TFlockResult<int32> R)
+		{
+			bDone = true;
+			OutErrorType = R.bSuccess ? EFlockErrorType::None : R.Error.Type;
+		});
+		// The list's answer sends the first cancel, which is held.
+		F.Fake->FlushPending();
+		if (bSwitchPlayerMeanwhile)
+		{
+			F.SignIn(TEXT("player-b"));
+		}
+		F.Fake->bDeferred = false;
+		F.Fake->FlushPending();
+		OutSecondCancels = bDone ? F.Fake->CountTo(TEXT("notification/schedule/sch-2")) : -1;
+		Cleanup(F.Dir);
+	};
+
+	int32 SecondCancels = 0;
+	MidWalk(false, SecondCancels, Type);
+	TestEqual(TEXT("control: the walk cancels the second reminder too"), SecondCancels, 1);
+	TestEqual(TEXT("control: succeeded"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::None));
+
+	MidWalk(true, SecondCancels, Type);
+	TestEqual(TEXT("after a switch: the second cancel is not sent as player B"), SecondCancels, 0);
+	TestEqual(TEXT("after a switch: the walk is cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

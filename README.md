@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.24.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.25.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -121,6 +121,12 @@ Then, either way:
 
 Each release is built from the tagged source, so it contains no compiled binaries: you build it once with
 your project, against your engine version and toolchain.
+
+**Calling Flock from C++.** Add `"Flock"` to your game module's `Build.cs`; `PrivateDependencyModuleNames` is
+enough, and a Blueprint-only project needs nothing. That covers every call a game makes, the typed reads
+`GetDataAs<T>` and `GetAs<T>` included. Only a module that builds its own requests on Flock's HTTP layer (a
+subclass of `FFlockProviderBase`, or `FFlockHttpClient`'s request templates) also adds `"Json"` and
+`"JsonUtilities"`.
 
 **Optional: Protokite Playtest (beta).** Releases also carry `ProtokitePlaytest-<version>.zip`, a separate plugin for
 Protokite playtests. Extract it next to the Flock SDK, so that `Plugins/ProtokitePlaytest/` sits beside

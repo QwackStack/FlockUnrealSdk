@@ -7,6 +7,7 @@
 #include "Misc/FlockEngineCompat.h"
 
 #include "Auth/FlockAuthSession.h"
+#include "Containers/Ticker.h"
 #include "FlockEvents.h"
 #include "FlockLogger.h"
 #include "Http/FlockHttpClient.h"
@@ -66,7 +67,7 @@ namespace FlockAccountLinkingTestHelpers
 		TUniquePtr<FFlockAuthProvider> Provider;
 		TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
 
-		FFixture()
+		explicit FFixture(const FFlockRetryPolicy& Policy = NoRetryPolicy())
 			: Client(MakeShared<FFlockHttpClient>(Fake, MakeShared<FFlockNullLogger>()))
 			, Session(MakeShared<FFlockAuthSession>(Client, Store, MakeShared<FFlockNullLogger>(),
 				TEXT("http://x/v1"), TMap<FString, FString>{ { TEXT("X-Flock-API-Key"), TEXT("k") } }))
@@ -76,7 +77,7 @@ namespace FlockAccountLinkingTestHelpers
 			Events->OnAccountLinked.AddDynamic(Listener, &UFlockEventTestListener::HandleAccountLinked);
 			Events->OnAccountUnlinked.AddDynamic(Listener, &UFlockEventTestListener::HandleAccountUnlinked);
 			Session->SetEvents(Events);
-			Provider = MakeUnique<FFlockAuthProvider>(Client, NoRetryPolicy(), Log, Session, Events, TEXT("http://x/v1"));
+			Provider = MakeUnique<FFlockAuthProvider>(Client, Policy, Log, Session, Events, TEXT("http://x/v1"));
 		}
 
 		/** Signs in without going through the network, so linking tests start from a real bearer. */
@@ -494,6 +495,52 @@ bool FFlockAccountLinkingResetGateTest::RunTest(const FString& Parameters)
 			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
 		TestEqual(TEXT("gate cleared by restore"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAccountLinkingKeepsItsSignInTest, "Flock.Auth.Linking.RetryIsNotSentAfterItsSignInEnds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAccountLinkingKeepsItsSignInTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockAccountLinkingTestHelpers;
+
+	auto Run = [](bool bSwitchPlayerMeanwhile, int32& OutLinkPosts, EFlockErrorType& OutErrorType)
+	{
+		FFlockRetryPolicy Policy;
+		Policy.MaxRetries = 2;
+		Policy.InitialDelaySeconds = 0.f;
+		FFixture F(Policy);
+		F.SignIn(TEXT("player-a"));
+		// A 429 is retried even for a link, since the server refused it before acting on it.
+		F.Fake->OnSequence(TEXT("player/link/device"), { FFlockFakeTransport::Status(429, TEXT("{}")),
+			FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("device_id"), TEXT("dev-9")))) });
+		bool bDone = false;
+		F.Provider->LinkDevice(TEXT("dev-9"), [&](TFlockResult<FFlockPlayerAccountsResponse> R)
+		{
+			bDone = true;
+			OutErrorType = R.bSuccess ? EFlockErrorType::None : R.Error.Type;
+		});
+		if (bSwitchPlayerMeanwhile)
+		{
+			F.SignIn(TEXT("player-b"));
+		}
+		for (int32 Tick = 0; Tick < 8; ++Tick)
+		{
+			FTSTicker::GetCoreTicker().Tick(1.f);
+		}
+		OutLinkPosts = bDone ? F.Fake->CountTo(TEXT("player/link/device")) : -1;
+	};
+
+	int32 Posts = 0;
+	EFlockErrorType Type = EFlockErrorType::None;
+	Run(false, Posts, Type);
+	TestEqual(TEXT("control: the retry links the device"), Posts, 2);
+	TestEqual(TEXT("control: succeeded"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::None));
+
+	Run(true, Posts, Type);
+	TestEqual(TEXT("after a switch: the retry does not link the device to the next player"), Posts, 1);
+	TestEqual(TEXT("after a switch: cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
 	return true;
 }
 

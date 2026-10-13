@@ -180,4 +180,7 @@ namespace FlockEndpoints
 	inline constexpr const TCHAR* CommandUpdatePlayerDataKey = TEXT("game_command/update_player_data_key");
 	inline constexpr const TCHAR* CommandUnlockAchievement = TEXT("game_command/unlock_achievement");
 	inline constexpr const TCHAR* CommandAddGameFunds = TEXT("game_command/add_game_funds");
+
+	// Matchmaking — the queue list needs only the API key; queues are found by name from it, since no by-name route exists.
+	inline constexpr const TCHAR* MatchmakingQueues = TEXT("matchmaking/queues");
 }

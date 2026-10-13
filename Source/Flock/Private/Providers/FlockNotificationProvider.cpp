@@ -329,20 +329,23 @@ void FFlockNotificationProvider::GetNotifications(bool bUnreadOnly, int32 Page, 
 	}
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(FString::Printf(TEXT("%s%s"), FlockEndpoints::Notification, *Query));
-	const TMap<FString, FString> Headers = HeadersNow();
 	// The player is in the scope, not the key — see PlayerCacheScope(). RequireSignedIn above guarantees it
 	// is non-empty by the time we get here.
 	const FString Key = FString::Printf(TEXT("inbox_p%d_l%d_u%d"), Page, Limit, bUnreadOnly ? 1 : 0);
 	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
 
+	// Every notification call acts as the signed-in player through the token: each attempt is this sign-in's, with the
+	// token it has then, so a retry never goes out as the next player and a refresh's replay carries the new token.
 	FetchAtScope<FFlockNotificationPage>(PlayerCacheScope(), Key,
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockNotificationPage>)> OnAttempt)
+		ForTheCurrentSignInOnly<FFlockNotificationPage>(
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockNotificationPage>)> OnAttempt)
 		{
 			// **Bare** route: {items,total,page,limit} at the root, not under `result`. UnwrapPaginated
 			// starts at the root and only descends into `result` when present, so GetPaged serves both
 			// shapes and no raw verb is needed here.
-			return ClientRef->GetPaged<FFlockNotification>(Url, Headers,
+			return ClientRef->GetPaged<FFlockNotification>(Url, SessionRef->GetAuthHeaders(),
 				[OnAttempt](TFlockResult<TFlockPage<FFlockNotification>> Result)
 				{
 					if (!Result.bSuccess)
@@ -357,7 +360,7 @@ void FFlockNotificationProvider::GetNotifications(bool bUnreadOnly, int32 Page, 
 					Page.Limit = Result.Value.Limit;
 					OnAttempt(TFlockResult<FFlockNotificationPage>::Ok(Page));
 				});
-		},
+		}),
 		TEXT("Fetch notifications"),
 		[WeakSelf, OnComplete](TFlockResult<FFlockNotificationPage> Result)
 		{
@@ -386,16 +389,17 @@ void FFlockNotificationProvider::GetUnreadCount(TFunction<void(TFlockResult<int3
 	}
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(FlockEndpoints::NotificationUnreadCount);
-	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
 
 	FetchAtScope<FFlockUnreadCount>(PlayerCacheScope(), TEXT("unread_count"),
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockUnreadCount>)> OnAttempt)
+		ForTheCurrentSignInOnly<FFlockUnreadCount>(
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockUnreadCount>)> OnAttempt)
 		{
 			// Enveloped ({error,response,result}) — the enveloped verb unwraps `result`.
-			return ClientRef->Get<FFlockUnreadCount>(Url, Headers, MoveTemp(OnAttempt));
-		},
+			return ClientRef->Get<FFlockUnreadCount>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
+		}),
 		TEXT("Fetch unread count"),
 		[WeakSelf, OnComplete](TFlockResult<FFlockUnreadCount> Result)
 		{
@@ -425,16 +429,17 @@ void FFlockNotificationProvider::GetSummary(int32 Limit, TFunction<void(TFlockRe
 	}
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(FString::Printf(TEXT("%s?limit=%d"), FlockEndpoints::NotificationSummary, Limit));
-	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
 
 	FetchAtScope<FFlockNotificationSummary>(PlayerCacheScope(),
 		FString::Printf(TEXT("summary_l%d"), Limit),
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockNotificationSummary>)> OnAttempt)
+		ForTheCurrentSignInOnly<FFlockNotificationSummary>(
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockNotificationSummary>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockNotificationSummary>(Url, Headers, MoveTemp(OnAttempt));
-		},
+			return ClientRef->Get<FFlockNotificationSummary>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
+		}),
 		TEXT("Fetch notification summary"),
 		[WeakSelf, OnComplete](TFlockResult<FFlockNotificationSummary> Result)
 		{
@@ -474,13 +479,13 @@ void FFlockNotificationProvider::MarkRead(const FString& NotificationId,
 
 	// Never queued offline. A read-receipt replayed later marks messages the player never saw, which is
 	// strictly worse than losing the receipt — so this fails when unreachable rather than deferring.
-	Execute<FFlockNotification>(
+	Execute<FFlockNotification>(ForTheCurrentSignInOnly<FFlockNotification>(
 		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockNotification>)> OnAttempt)
 		{
 			// Headers are read inside the operation so a refresh-and-replay carries the new bearer. The
 			// session is captured as a shared ref, never `this` — teardown mid-flight must stay safe.
 			return ClientRef->PostJson<FFlockNotification>(Url, SessionRef->GetAuthHeaders(), TEXT("{}"), MoveTemp(OnAttempt));
-		},
+		}),
 		MoveTemp(OnComplete),
 		TEXT("Mark notification read"));
 }
@@ -497,11 +502,11 @@ void FFlockNotificationProvider::MarkAllRead(TFunction<void(TFlockResult<FFlockM
 	const FString Url = MakeUrl(FlockEndpoints::NotificationReadAll);
 	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
 
-	Execute<FFlockMarkAllReadResult>(
+	Execute<FFlockMarkAllReadResult>(ForTheCurrentSignInOnly<FFlockMarkAllReadResult>(
 		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockMarkAllReadResult>)> OnAttempt)
 		{
 			return ClientRef->PostJson<FFlockMarkAllReadResult>(Url, SessionRef->GetAuthHeaders(), TEXT("{}"), MoveTemp(OnAttempt));
-		},
+		}),
 		[WeakSelf, OnComplete](TFlockResult<FFlockMarkAllReadResult> Result)
 		{
 			// The server does not echo a count here, but a successful mark-all-read has exactly one
@@ -663,12 +668,22 @@ void FFlockNotificationProvider::ScheduleByTemplateName(const FString& TemplateN
 	const TArray<EFlockNotificationChannel> Chans = Channels;
 
 	const FString Name = TemplateName;
+	// The template is looked up first, so the schedule is sent only if this sign-in is still the current one by then.
+	const int32 ScheduleSignIn = Session->GetSignInNumber();
 
 	WithTemplateId(TemplateName,
-		[WeakSelf, Name, When, Vars, Chans, OnComplete](const FString& TemplateId)
+		[WeakSelf, Name, When, Vars, Chans, ScheduleSignIn, OnComplete](const FString& TemplateId)
 		{
 			if (const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin())
 			{
+				if (Self->Session->GetSignInNumber() != ScheduleSignIn)
+				{
+					if (OnComplete)
+					{
+						OnComplete(TFlockResult<FFlockScheduledNotification>::Fail(SignInEndedError()));
+					}
+					return;
+				}
 				// Straight to the internal path, carrying the name — that is the only thing this entry
 				// point knows that the by-id one does not, and it is what makes a tracked entry readable.
 				Self->ScheduleInternal(TemplateId, Name, When, Vars, Chans, OnComplete);
@@ -740,11 +755,11 @@ void FFlockNotificationProvider::ScheduleInternal(const FString& TemplateId, con
 	const FString TrackedName = TemplateName;
 	const FString TrackedId = TemplateId;
 
-	Execute<FFlockScheduledNotification>(
+	Execute<FFlockScheduledNotification>(ForTheCurrentSignInOnly<FFlockScheduledNotification>(
 		[ClientRef, SessionRef, Url, Json](TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnAttempt)
 		{
 			return ClientRef->PostJson<FFlockScheduledNotification>(Url, SessionRef->GetAuthHeaders(), Json, MoveTemp(OnAttempt));
-		},
+		}),
 		[WeakSelf, TrackedName, TrackedId, OnComplete](TFlockResult<FFlockScheduledNotification> Result)
 		{
 			// Tracked before the caller is told, so a handler that immediately reads GetPendingSchedules()
@@ -788,11 +803,11 @@ void FFlockNotificationProvider::CancelScheduled(const FString& ScheduledId,
 
 	// Idempotent, unlike the schedule call: cancelling twice lands on the same state, so a retry after an
 	// ambiguous failure is safe and is what the caller wants.
-	Execute<FFlockScheduledNotification>(
+	Execute<FFlockScheduledNotification>(ForTheCurrentSignInOnly<FFlockScheduledNotification>(
 		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockScheduledNotification>)> OnAttempt)
 		{
 			return ClientRef->Delete<FFlockScheduledNotification>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
-		},
+		}),
 		[WeakSelf, CancelledId, OnComplete](TFlockResult<FFlockScheduledNotification> Result)
 		{
 			if (Result.bSuccess)
@@ -826,20 +841,20 @@ void FFlockNotificationProvider::GetScheduled(const FString& Status, int32 Page,
 	AppendParam(Query, TEXT("status"), Status);
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(FString::Printf(TEXT("%s%s"), FlockEndpoints::NotificationSchedule, *Query));
-	const TMap<FString, FString> Headers = HeadersNow();
 
 	// Plain Execute, not FetchWithSnapshot: a schedule list is never cached. Delivery happens server-side
 	// with nothing to tell the client, so a stored page would report reminders as pending that have
 	// already fired — wrong rather than stale, which is the line this SDK draws for caching. The same call
 	// the inbox makes, and the reason GetPendingSchedules still exists for the offline case.
-	Execute<FFlockScheduledNotificationPage>(
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockScheduledNotificationPage>)> OnAttempt)
+	Execute<FFlockScheduledNotificationPage>(ForTheCurrentSignInOnly<FFlockScheduledNotificationPage>(
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockScheduledNotificationPage>)> OnAttempt)
 		{
 			// **Bare** route, like the inbox: {items,total,page,limit} at the root, not under `result`.
 			// UnwrapPaginated starts at the root and descends into `result` only when present, so GetPaged
 			// serves both shapes — but a fixture must still mirror the bare one, or it proves nothing.
-			return ClientRef->GetPaged<FFlockScheduledNotification>(Url, Headers,
+			return ClientRef->GetPaged<FFlockScheduledNotification>(Url, SessionRef->GetAuthHeaders(),
 				[OnAttempt](TFlockResult<TFlockPage<FFlockScheduledNotification>> Result)
 				{
 					if (!Result.bSuccess)
@@ -854,7 +869,7 @@ void FFlockNotificationProvider::GetScheduled(const FString& Status, int32 Page,
 					Page.Limit = Result.Value.Limit;
 					OnAttempt(TFlockResult<FFlockScheduledNotificationPage>::Ok(Page));
 				});
-		},
+		}),
 		MoveTemp(OnComplete), TEXT("List scheduled notifications"));
 }
 
@@ -923,8 +938,10 @@ void FFlockNotificationProvider::CancelAllScheduled(TFunction<void(TFlockResult<
 	}
 
 	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
+	// Every cancel of the walk is sent for this sign-in: one that ends partway stops the walk.
+	const int32 CancelSignIn = Session->GetSignInNumber();
 
-	ResolveCancellableScheduleIds([WeakSelf, OnComplete](TArray<FString> Resolved)
+	ResolveCancellableScheduleIds([WeakSelf, CancelSignIn, OnComplete](TArray<FString> Resolved)
 	{
 		const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin();
 		if (!Self.IsValid())
@@ -932,27 +949,27 @@ void FFlockNotificationProvider::CancelAllScheduled(TFunction<void(TFlockResult<
 			return;
 		}
 
-		if (Resolved.Num() == 0)
-		{
-			// Nothing pending is a success with zero cancelled, not a failure — the caller asked for an end
-			// state, and it already holds.
-			if (OnComplete)
-			{
-				OnComplete(TFlockResult<int32>::Ok(0));
-			}
-			return;
-		}
-
 		// The ids are snapshotted up front: every cancel rewrites the stored list, so walking the live list
-		// while mutating it would skip entries.
+		// while mutating it would skip entries. An empty list ends the walk at once with zero cancelled, a success
+		// (the caller asked for an end state and it already holds), after the sign-in check every step makes.
 		TSharedRef<TArray<FString>> Ids = MakeShared<TArray<FString>>(MoveTemp(Resolved));
-		Self->CancelAllStep(Ids, 0, MakeShared<int32>(0), OnComplete);
+		Self->CancelAllStep(CancelSignIn, Ids, 0, MakeShared<int32>(0), OnComplete);
 	});
 }
 
-void FFlockNotificationProvider::CancelAllStep(TSharedRef<TArray<FString>> Ids, int32 Index,
+void FFlockNotificationProvider::CancelAllStep(int32 SignInNumber, TSharedRef<TArray<FString>> Ids, int32 Index,
 	TSharedRef<int32> Cancelled, TFunction<void(TFlockResult<int32>)> OnComplete)
 {
+	// Another player signed in since the walk began (or since the list it walks was read, which may have fallen back to
+	// the new player's own list): nothing more is cancelled, and the rest stay tracked for the player they belong to.
+	if (Session->GetSignInNumber() != SignInNumber)
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<int32>::Fail(SignInEndedError()));
+		}
+		return;
+	}
 	if (!Ids->IsValidIndex(Index))
 	{
 		if (OnComplete)
@@ -967,7 +984,7 @@ void FFlockNotificationProvider::CancelAllStep(TSharedRef<TArray<FString>> Ids, 
 
 	// Sequential rather than parallel: each cancel rewrites the persisted list, so overlapping writes would
 	// race and the last one home would resurrect entries the others had removed.
-	CancelScheduled(Id, [WeakSelf, Ids, Index, Cancelled, Id, OnComplete](TFlockResult<FFlockScheduledNotification> Result)
+	CancelScheduled(Id, [WeakSelf, SignInNumber, Ids, Index, Cancelled, Id, OnComplete](TFlockResult<FFlockScheduledNotification> Result)
 	{
 		const TSharedPtr<FFlockNotificationProvider> Self = WeakSelf.Pin();
 		if (!Self.IsValid())
@@ -996,7 +1013,7 @@ void FFlockNotificationProvider::CancelAllStep(TSharedRef<TArray<FString>> Ids, 
 			return;
 		}
 
-		Self->CancelAllStep(Ids, Index + 1, Cancelled, OnComplete);
+		Self->CancelAllStep(SignInNumber, Ids, Index + 1, Cancelled, OnComplete);
 	});
 }
 
@@ -1030,11 +1047,11 @@ void FFlockNotificationProvider::RegisterDeviceToken(EFlockDevicePlatform Platfo
 
 	// Idempotent, unlike scheduling: the row is keyed by token, so re-sending after an ambiguous failure
 	// lands on the same state rather than creating a second registration.
-	Execute<FFlockDeviceToken>(
+	Execute<FFlockDeviceToken>(ForTheCurrentSignInOnly<FFlockDeviceToken>(
 		[ClientRef, SessionRef, Url, Json](TFunction<void(TFlockResult<FFlockDeviceToken>)> OnAttempt)
 		{
 			return ClientRef->PostJson<FFlockDeviceToken>(Url, SessionRef->GetAuthHeaders(), Json, MoveTemp(OnAttempt));
-		},
+		}),
 		MoveTemp(OnComplete),
 		TEXT("Register device token"));
 }
@@ -1079,11 +1096,11 @@ void FFlockNotificationProvider::UnregisterDeviceToken(const FString& Token,
 	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(FlockEndpoints::DeviceTokenUnregister);
 
-	Execute<FFlockUnregisterDeviceTokenResult>(
+	Execute<FFlockUnregisterDeviceTokenResult>(ForTheCurrentSignInOnly<FFlockUnregisterDeviceTokenResult>(
 		[ClientRef, SessionRef, Url, Json](TFunction<void(TFlockResult<FFlockUnregisterDeviceTokenResult>)> OnAttempt)
 		{
 			return ClientRef->PostJson<FFlockUnregisterDeviceTokenResult>(Url, SessionRef->GetAuthHeaders(), Json, MoveTemp(OnAttempt));
-		},
+		}),
 		MoveTemp(OnComplete),
 		TEXT("Unregister device token"));
 }
