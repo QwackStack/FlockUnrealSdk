@@ -92,3 +92,165 @@ struct FLOCK_API FFlockMyPartyReading
 	/** Reads the envelope: a null result is "in no party"; no result member at all is not the server's answer. */
 	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockMyPartyReading& OutStruct, FString& OutError);
 };
+
+/** Why a multiplayer session stopped being the player's. An open set: the server can add reasons, so compare with these and keep a default. */
+namespace FlockMultiplayerSessionEndReasons
+{
+	/** The host ended it. */
+	inline constexpr const TCHAR* EndedByHost = TEXT("ended_by_host");
+	/** The host left and nobody was left to take over. */
+	inline constexpr const TCHAR* HostLeft = TEXT("host_left");
+	/** It reached the game's longest session age. */
+	inline constexpr const TCHAR* Expired = TEXT("expired");
+	/** Every player left. */
+	inline constexpr const TCHAR* Empty = TEXT("empty");
+	/** The player left it, with Leave or from another device. */
+	inline constexpr const TCHAR* Left = TEXT("left");
+	/** The server stopped hearing from the player and gave the seat up. */
+	inline constexpr const TCHAR* Dropped = TEXT("dropped");
+	/** The player hosted or joined another session, which gives this seat up. */
+	inline constexpr const TCHAR* MovedToAnotherSession = TEXT("moved_to_another_session");
+	/** The sign-in the session belonged to ended: a sign-out, another player signing in, or Flock shutting down. */
+	inline constexpr const TCHAR* SignedOut = TEXT("signed_out");
+}
+
+/** One player seated in a multiplayer session. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockMultiplayerSessionPlayer
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FString PlayerId;
+};
+
+/** How to reach a session's host, as the host published it: a mode and whatever values that mode needs. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockMultiplayerSessionConnection
+{
+	GENERATED_BODY()
+
+	/** What kind of connection this is, such as "direct", or one the game names itself. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FString Mode;
+
+	/** Everything the host published, the mode included; keys as sent. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FFlockJsonData Values;
+};
+
+/** A short-lived proof that the player holds a seat, to show the host when connecting. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockMultiplayerSessionJoinToken
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FString Token;
+
+	/** How long the token is good for from when it was given (60 s). */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	int32 ExpiresInSeconds = 0;
+
+	/** Reads the token; an answer with no token is not one, and fails the read. */
+	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockMultiplayerSessionJoinToken& OutStruct, FString& OutError);
+};
+
+/** The player a join token belongs to, as the host's check answers it. */
+USTRUCT()
+struct FLOCK_API FFlockVerifiedJoinToken
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FString SessionId;
+
+	UPROPERTY()
+	FString PlayerId;
+
+	/** Reads the answer; one that names no player is not one, and fails the read. */
+	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockVerifiedJoinToken& OutStruct, FString& OutError);
+};
+
+/** The server's words for a seat held, a seat it gave up and a session that is over. */
+namespace FlockMultiplayerSessionWireValues
+{
+	inline constexpr const TCHAR* SeatJoined = TEXT("joined");
+	inline constexpr const TCHAR* SeatDropped = TEXT("dropped");
+	inline constexpr const TCHAR* SessionEnded = TEXT("ended");
+}
+
+/** One seat of a session, as the session's answer lists it; Status is the server's "joined", "left" or "dropped". */
+USTRUCT()
+struct FLOCK_API FFlockMultiplayerSessionSeat
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FString PlayerId;
+
+	UPROPERTY()
+	FString Status;
+};
+
+/**
+ * A multiplayer session as every session route answers it: the whole session, with every player who held a seat in it in
+ * seniority order (longest seated first). The two epochs only grow, so a reading with a lower one was taken earlier.
+ */
+USTRUCT()
+struct FLOCK_API FFlockMultiplayerSessionReading
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FString Id;
+
+	UPROPERTY()
+	FString Status;
+
+	/** Why the session ended; empty while it lasts. */
+	UPROPERTY()
+	FString EndedReason;
+
+	UPROPERTY()
+	FString HostPlayerId;
+
+	UPROPERTY()
+	int32 HostEpoch = 0;
+
+	UPROPERTY()
+	FString JoinCode;
+
+	UPROPERTY()
+	int32 MaxPlayers = 0;
+
+	/** True when the host published a connection the reader may see: the server blanks it for a player without a seat. */
+	UPROPERTY()
+	bool bHasConnection = false;
+
+	UPROPERTY()
+	FFlockMultiplayerSessionConnection Connection;
+
+	UPROPERTY()
+	int32 ConnectionEpoch = 0;
+
+	/** The game's own data on the session, keys as sent. */
+	UPROPERTY()
+	FFlockJsonData Data;
+
+	UPROPERTY()
+	TArray<FFlockMultiplayerSessionSeat> Seats;
+
+	/** How often to heartbeat for the game's timeouts; 0 when the answer gives none. */
+	UPROPERTY()
+	int32 HeartbeatIntervalSeconds = 0;
+
+	/** The players holding a seat now, in seniority order. */
+	TArray<FString> SeatedPlayerIds() const;
+
+	/** The seat the player holds or once held in this session, or null when they never held one. */
+	const FFlockMultiplayerSessionSeat* FindSeat(const FString& PlayerId) const;
+
+	/** Reads a session; one that names no session (no id), or a seat with no player, fails the read. */
+	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockMultiplayerSessionReading& OutStruct, FString& OutError);
+};

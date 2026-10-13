@@ -167,8 +167,10 @@ FFlockRequestHandle FFlockParties::Leave(UFlockParty* Party, FFlockOnParty OnCom
 	const int32 SignInNumber = Party->SignInNumber;
 	const TWeakObjectPtr<UFlockParty> WeakParty = Party;
 	const TWeakPtr<FFlockParties> WeakSelf = AsShared();
+	const FString PartyId = Party->Id;
 	EndingByThisGame = EFlockPartyEndReason::Left;
-	return Requests->Leave(SignInNumber, Party->Id, [WeakSelf, WeakParty, SignInNumber, OnComplete](TFlockResult<FFlockPartyReading> Answered)
+	EndingPartyId = PartyId;
+	return Requests->Leave(SignInNumber, PartyId, [WeakSelf, WeakParty, SignInNumber, PartyId, OnComplete](TFlockResult<FFlockPartyReading> Answered)
 	{
 		const TSharedPtr<FFlockParties> Self = WeakSelf.Pin();
 		if (!Self.IsValid())
@@ -176,7 +178,7 @@ FFlockRequestHandle FFlockParties::Leave(UFlockParty* Party, FFlockOnParty OnCom
 			Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(ShutDownError()));
 			return;
 		}
-		Self->EndingByThisGame = EFlockPartyEndReason::None;
+		Self->ForgetEndingOf(PartyId);
 		// Out of the party already is what leaving asks for; a retried leave whose first answer was lost lands here too.
 		const bool bAlreadyOut = !Answered.bSuccess && (Answered.Error.ErrorCode == EFlockErrorCode::PartyNotAMember
 			|| Answered.Error.ErrorCode == EFlockErrorCode::PartyNotFound);
@@ -255,8 +257,10 @@ FFlockRequestHandle FFlockParties::Disband(UFlockParty* Party, FFlockOnParty OnC
 	const int32 SignInNumber = Party->SignInNumber;
 	const TWeakObjectPtr<UFlockParty> WeakParty = Party;
 	const TWeakPtr<FFlockParties> WeakSelf = AsShared();
+	const FString PartyId = Party->Id;
 	EndingByThisGame = EFlockPartyEndReason::Disbanded;
-	return Requests->Disband(SignInNumber, Party->Id, [WeakSelf, WeakParty, SignInNumber, OnComplete](TFlockResult<FFlockPartyReading> Answered)
+	EndingPartyId = PartyId;
+	return Requests->Disband(SignInNumber, PartyId, [WeakSelf, WeakParty, SignInNumber, PartyId, OnComplete](TFlockResult<FFlockPartyReading> Answered)
 	{
 		const TSharedPtr<FFlockParties> Self = WeakSelf.Pin();
 		if (!Self.IsValid())
@@ -264,7 +268,7 @@ FFlockRequestHandle FFlockParties::Disband(UFlockParty* Party, FFlockOnParty OnC
 			Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(ShutDownError()));
 			return;
 		}
-		Self->EndingByThisGame = EFlockPartyEndReason::None;
+		Self->ForgetEndingOf(PartyId);
 		if (!Self->TakeChangeAnswer(WeakParty.Get(), SignInNumber, Answered, OnComplete))
 		{
 			return;
@@ -458,7 +462,8 @@ UFlockParty* FFlockParties::Apply(const FFlockPartyRead& Read, const FString& Pl
 	// In no party now, or in another one than the one held.
 	if (Party != nullptr)
 	{
-		End(Party, EndingByThisGame != EFlockPartyEndReason::None ? EndingByThisGame : EFlockPartyEndReason::Removed);
+		const bool bEndedByThisGame = EndingByThisGame != EFlockPartyEndReason::None && Party->Id.Equals(EndingPartyId, ESearchCase::CaseSensitive);
+		End(Party, bEndedByThisGame ? EndingByThisGame : EFlockPartyEndReason::Removed);
 	}
 	// A refresh never takes up another party: only a call the game made does.
 	if (!Read.bInParty || PlayerId.IsEmpty())
@@ -489,6 +494,15 @@ void FFlockParties::SettleReadsSentSoFar(int32 SignInNumber)
 	if (SignInNumber == CurrentSignInNumber())
 	{
 		ReadsSettledThrough = ReadsSent;
+	}
+}
+
+void FFlockParties::ForgetEndingOf(const FString& PartyId)
+{
+	if (EndingPartyId.Equals(PartyId, ESearchCase::CaseSensitive))
+	{
+		EndingByThisGame = EFlockPartyEndReason::None;
+		EndingPartyId.Reset();
 	}
 }
 

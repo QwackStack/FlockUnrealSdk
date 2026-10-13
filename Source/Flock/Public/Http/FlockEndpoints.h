@@ -192,4 +192,17 @@ namespace FlockEndpoints
 	inline FString PartyLeave(const FString& PartyId) { return PartyById(PartyId) + TEXT("/leave"); }
 	inline FString PartyKick(const FString& PartyId) { return PartyById(PartyId) + TEXT("/kick"); }
 	inline FString PartyTransfer(const FString& PartyId) { return PartyById(PartyId) + TEXT("/transfer"); }
+
+	// Multiplayer sessions — every route acts as the signed-in player and answers the whole session, but for the two join-token routes.
+	inline constexpr const TCHAR* Sessions = TEXT("multiplayer/sessions");
+	inline constexpr const TCHAR* SessionJoin = TEXT("multiplayer/sessions/join");
+	inline constexpr const TCHAR* SessionCurrent = TEXT("multiplayer/sessions/current");
+	inline FString SessionById(const FString& SessionId) { return FString::Printf(TEXT("multiplayer/sessions/%s"), *Encode(SessionId)); }
+	inline FString SessionHeartbeat(const FString& SessionId) { return SessionById(SessionId) + TEXT("/heartbeat"); }
+	inline FString SessionLeave(const FString& SessionId) { return SessionById(SessionId) + TEXT("/leave"); }
+	inline FString SessionEnd(const FString& SessionId) { return SessionById(SessionId) + TEXT("/end"); }
+	inline FString SessionHost(const FString& SessionId) { return SessionById(SessionId) + TEXT("/host"); }
+	inline FString SessionConnection(const FString& SessionId) { return SessionById(SessionId) + TEXT("/connection-info"); }
+	inline FString SessionJoinToken(const FString& SessionId) { return SessionById(SessionId) + TEXT("/join-token"); }
+	inline FString SessionVerifyJoinToken(const FString& SessionId) { return SessionById(SessionId) + TEXT("/verify-join-token"); }
 }

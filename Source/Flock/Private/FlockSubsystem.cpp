@@ -14,7 +14,7 @@
 #include "Http/FlockHttpShutdown.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.26.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.27.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -59,7 +59,7 @@ void UFlockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UFlockSubsystem::Deinitialize()
 {
-	ShutdownSdk();
+	ShutdownSdkFor(/*bGameEnding*/ true);
 	Super::Deinitialize();
 }
 
@@ -457,10 +457,19 @@ void UFlockSubsystem::EraseLocalAnalyticsData()
 
 void UFlockSubsystem::ShutdownSdk()
 {
+	ShutdownSdkFor(/*bGameEnding*/ false);
+}
+
+void UFlockSubsystem::ShutdownSdkFor(bool bGameEnding)
+{
 	if (!bInitialized)
 	{
 		return;
 	}
+
+	// The game is ending (it quits, or Play In Editor stops): the player's multiplayer seat is given up on the way out, before
+	// the wait below for requests on their way, which then covers the leave.
+	const bool bLeftSessionForQuit = bGameEnding && MultiplayerProvider.IsValid() && MultiplayerProvider->LeaveSessionForQuit();
 
 	// Shut the provider down while it is still alive — its destructor deliberately will not end a
 	// session, because that would dispatch HTTP from a destructor.
@@ -473,6 +482,10 @@ void UFlockSubsystem::ShutdownSdk()
 		// let go below.
 		FlockFinishRequestsBeforeShutdown();
 		AnalyticsProvider.Reset();
+	}
+	else if (bLeftSessionForQuit)
+	{
+		FlockFinishRequestsBeforeShutdown();
 	}
 	// Same reason: stop the pump while the provider is alive rather than leaving it to the destructor.
 	// Anything still queued stays on disk and replays next run.

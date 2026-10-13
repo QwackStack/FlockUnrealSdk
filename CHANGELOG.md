@@ -5,6 +5,47 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.27.0] - 2026-10-13
+
+### Added
+
+- **Sessions.** One player hosts a game the others join by code.
+  - `FFlockMultiplayerProvider::HostSession(MaxPlayers, Data, bSameVersionOnly, OnComplete)` makes a session with the
+    signed-in player as its host and only player. Leave the size unset for the game's own player count from the dashboard (8 unless changed there); it takes 2 to 16. The
+    data is the game's own, such as a map, kept with its keys as written. With `bSameVersionOnly` (the server's default,
+    so it is sent only when false) only players on the host's Game Version can join.
+  - `JoinSession(JoinCode, OnComplete)` takes a seat by code, in any letter case. `GetSession(SessionId, OnComplete)` reads
+    a session the player holds or once held a seat in; one the player is no longer seated in comes back ended and is not
+    held. `GetMySession(OnComplete)` finds the session the player is seated in without its id, or null when seated nowhere.
+  - Each completes with a `UFlockMultiplayerSession` (Blueprint type): its id, join code, host and whether the player hosts,
+    the players seated now (longest seated first), size, data (`FFlockJsonData`), the host's published connection
+    (`HasConnection`, `GetConnection`: a mode and its values) and why it ended. Its calls are `Leave`, `End`, `MakeHost`,
+    `PublishConnection`, `RequestJoinToken` and `VerifyJoinToken`.
+  - Its events, assignable from Blueprint: `OnPlayersChanged`, `OnHostChanged`, `OnConnectionChanged` (also raised when
+    hosting moves and the old host's address is cleared) and `OnEnded`, raised once with a reason string:
+    `FlockMultiplayerSessionEndReasons` names the server's (`ended_by_host`, `host_left`, `expired`, `empty`) and the
+    SDK's (`left`, `dropped`, `moved_to_another_session`, `signed_out`); the server can add more.
+  - **Heartbeats.** While a session is held the SDK keeps the seat with a heartbeat at the interval the server gives (20 s
+    at the defaults). Every session route answers the whole session, so each heartbeat's answer brings the session up to
+    date and raises its events with no read by the game. Only the newest reading changes the session: an older one, or one
+    whose host or connection epoch is lower than the one held, changes nothing.
+  - A call that finds the player out of the session reads it once to learn why and ends it with that reason (`dropped`
+    when it cannot be read). Hosting or joining another session ends the held one at once as `moved_to_another_session`.
+  - The game instance shutting down (the game quitting, or Play In Editor stopping) gives the seat up without waiting for
+    the answer; the session ends as `left`, raising nothing. `ShutdownSdk` keeps the seat.
+  - Host, end and make host are never sent twice after a lost answer. Every session call is sent only for the sign-in it was
+    made under.
+
+### Changed
+
+- The session error hints name the calls that fix them (`HostSession`, `JoinSession`, `GetSession`, `RequestJoinToken`).
+
+### Fixed
+
+- A party that another player removed the player from, or that ended some other way, while this game's leave or disband of
+  an earlier party was still on its way, ended as `Left` or `Disbanded`. Only the party the game itself left or disbanded
+  ends that way now; any other ends as `Removed`.
+
 ## [1.26.0] - 2026-10-13
 
 ### Added

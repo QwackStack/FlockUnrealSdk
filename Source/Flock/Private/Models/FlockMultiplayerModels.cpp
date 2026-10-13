@@ -63,3 +63,100 @@ bool FFlockMyPartyReading::FromWireObject(const TSharedRef<FJsonObject>& Object,
 	OutStruct.bInParty = true;
 	return true;
 }
+
+bool FFlockMultiplayerSessionJoinToken::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockMultiplayerSessionJoinToken& OutStruct,
+	FString& OutError)
+{
+	OutStruct = FFlockMultiplayerSessionJoinToken();
+	Object->TryGetStringField(TEXT("token"), OutStruct.Token);
+	if (OutStruct.Token.IsEmpty())
+	{
+		OutError = TEXT("Invalid response from server (the answer names no join token)");
+		return false;
+	}
+	Object->TryGetNumberField(TEXT("expires_in"), OutStruct.ExpiresInSeconds);
+	return true;
+}
+
+bool FFlockVerifiedJoinToken::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockVerifiedJoinToken& OutStruct, FString& OutError)
+{
+	OutStruct = FFlockVerifiedJoinToken();
+	Object->TryGetStringField(TEXT("session_id"), OutStruct.SessionId);
+	Object->TryGetStringField(TEXT("player_id"), OutStruct.PlayerId);
+	if (OutStruct.PlayerId.IsEmpty())
+	{
+		OutError = TEXT("Invalid response from server (the answer names no player)");
+		return false;
+	}
+	return true;
+}
+
+TArray<FString> FFlockMultiplayerSessionReading::SeatedPlayerIds() const
+{
+	TArray<FString> Seated;
+	for (const FFlockMultiplayerSessionSeat& Seat : Seats)
+	{
+		if (Seat.Status.Equals(FlockMultiplayerSessionWireValues::SeatJoined, ESearchCase::CaseSensitive))
+		{
+			Seated.Add(Seat.PlayerId);
+		}
+	}
+	return Seated;
+}
+
+const FFlockMultiplayerSessionSeat* FFlockMultiplayerSessionReading::FindSeat(const FString& PlayerId) const
+{
+	return Seats.FindByPredicate([&PlayerId](const FFlockMultiplayerSessionSeat& Seat) { return Seat.PlayerId.Equals(PlayerId, ESearchCase::CaseSensitive); });
+}
+
+bool FFlockMultiplayerSessionReading::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockMultiplayerSessionReading& OutStruct,
+	FString& OutError)
+{
+	OutStruct = FFlockMultiplayerSessionReading();
+	Object->TryGetStringField(TEXT("id"), OutStruct.Id);
+	if (OutStruct.Id.IsEmpty())
+	{
+		OutError = TEXT("Invalid response from server (the answer names no session)");
+		return false;
+	}
+	Object->TryGetStringField(TEXT("status"), OutStruct.Status);
+	Object->TryGetStringField(TEXT("ended_reason"), OutStruct.EndedReason);
+	Object->TryGetStringField(TEXT("host_player_id"), OutStruct.HostPlayerId);
+	Object->TryGetNumberField(TEXT("host_epoch"), OutStruct.HostEpoch);
+	Object->TryGetStringField(TEXT("join_code"), OutStruct.JoinCode);
+	Object->TryGetNumberField(TEXT("max_players"), OutStruct.MaxPlayers);
+	Object->TryGetNumberField(TEXT("connection_epoch"), OutStruct.ConnectionEpoch);
+	Object->TryGetNumberField(TEXT("heartbeat_interval_seconds"), OutStruct.HeartbeatIntervalSeconds);
+	// The game's own data, its keys exactly as the host sent them.
+	OutStruct.Data = FFlockJsonData::FromJson(Object->TryGetField(TEXT("data")));
+
+	// The server sends {} before the host first publishes, and to a player without a seat; a published one always has a mode.
+	const TSharedPtr<FJsonObject>* ConnectionObject = nullptr;
+	FString Mode;
+	if (Object->TryGetObjectField(TEXT("connection_info"), ConnectionObject) && ConnectionObject != nullptr && ConnectionObject->IsValid()
+		&& (*ConnectionObject)->TryGetStringField(TEXT("mode"), Mode) && !Mode.IsEmpty())
+	{
+		OutStruct.bHasConnection = true;
+		OutStruct.Connection.Mode = Mode;
+		OutStruct.Connection.Values = FFlockJsonData::FromJson(Object->TryGetField(TEXT("connection_info")));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Participants = nullptr;
+	if (Object->TryGetArrayField(TEXT("participants"), Participants) && Participants != nullptr)
+	{
+		for (const TSharedPtr<FJsonValue>& Participant : *Participants)
+		{
+			const TSharedPtr<FJsonObject>* ParticipantObject = nullptr;
+			FFlockMultiplayerSessionSeat Seat;
+			if (!Participant.IsValid() || !Participant->TryGetObject(ParticipantObject) || ParticipantObject == nullptr
+				|| !(*ParticipantObject)->TryGetStringField(TEXT("player_id"), Seat.PlayerId) || Seat.PlayerId.IsEmpty())
+			{
+				OutError = TEXT("Invalid response from server (a seat with no player id)");
+				return false;
+			}
+			(*ParticipantObject)->TryGetStringField(TEXT("status"), Seat.Status);
+			OutStruct.Seats.Add(Seat);
+		}
+	}
+	return true;
+}

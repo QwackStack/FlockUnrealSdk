@@ -11,7 +11,7 @@ EFlockPartyEndReason UFlockParty::GetEndReason() const
 		return EndReasonSet;
 	}
 	// A sign-in that ended reads as signed out at once; the party's end is raised on the next frame.
-	const TSharedPtr<FFlockAuthSession> Pinned = Session.Pin();
+	const TSharedPtr<FFlockAuthSession> Pinned = AuthSession.Pin();
 	if (!Pinned.IsValid() || Pinned->GetSignInNumber() != SignInNumber)
 	{
 		return EFlockPartyEndReason::SignedOut;
@@ -68,7 +68,7 @@ void UFlockParty::Begin(const TWeakPtr<FFlockParties>& InOwner, const TSharedRef
 	const FString& InPlayerId, const FFlockPartyReading& Reading, const TArray<FString>& MemberIds)
 {
 	Owner = InOwner;
-	Session = InSession;
+	AuthSession = InSession;
 	SignInNumber = InSignInNumber;
 	PlayerId = InPlayerId;
 	Id = Reading.Id;

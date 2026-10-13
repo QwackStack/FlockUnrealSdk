@@ -2,6 +2,8 @@
 
 #include "Providers/FlockMultiplayerProvider.h"
 #include "Http/FlockEndpoints.h"
+#include "Multiplayer/FlockMultiplayerSessionRequests.h"
+#include "Multiplayer/FlockMultiplayerSessions.h"
 #include "Multiplayer/FlockParties.h"
 #include "Multiplayer/FlockPartyRequests.h"
 
@@ -15,6 +17,9 @@ FFlockMultiplayerProvider::FFlockMultiplayerProvider(const TSharedRef<FFlockHttp
 	, Parties(MakeShared<FFlockParties>(
 		MakeShared<FFlockPartyRequests>(InClient, InPolicy, InLogger, InSession, InVersionedApiUrl),
 		RepeatingCalls, InSession, InLogger, InPartyRefreshSeconds))
+	, Sessions(MakeShared<FFlockMultiplayerSessions>(
+		MakeShared<FFlockMultiplayerSessionRequests>(InClient, InPolicy, InLogger, InSession, InVersionedApiUrl),
+		RepeatingCalls, InSession, InLogger))
 {
 	SetAuthSession(InSession);
 }
@@ -41,6 +46,7 @@ void FFlockMultiplayerProvider::Shutdown()
 		TickerHandle.Reset();
 	}
 	Parties->StopForShutdown();
+	Sessions->StopForShutdown();
 	RepeatingCalls->StopAll();
 	// A read on its way is answered into a provider about to go, so whoever waits on it is told now.
 	if (QueueNames.IsValid())
@@ -52,8 +58,35 @@ void FFlockMultiplayerProvider::Shutdown()
 bool FFlockMultiplayerProvider::Tick(float DeltaSeconds)
 {
 	Parties->EndIfSignInEnded();
+	Sessions->EndIfSignInEnded();
 	RepeatingCalls->SendThoseDue();
 	return true;
+}
+
+FFlockRequestHandle FFlockMultiplayerProvider::HostSession(TOptional<int32> MaxPlayers, const FFlockCommandData& Data, bool bSameVersionOnly,
+	FFlockOnMultiplayerSession OnComplete)
+{
+	return Sessions->Host(MaxPlayers, Data, bSameVersionOnly, MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockMultiplayerProvider::JoinSession(const FString& JoinCode, FFlockOnMultiplayerSession OnComplete)
+{
+	return Sessions->Join(JoinCode, MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockMultiplayerProvider::GetSession(const FString& SessionId, FFlockOnMultiplayerSession OnComplete)
+{
+	return Sessions->Get(SessionId, MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockMultiplayerProvider::GetMySession(FFlockOnMultiplayerSession OnComplete)
+{
+	return Sessions->GetMine(MoveTemp(OnComplete));
+}
+
+bool FFlockMultiplayerProvider::LeaveSessionForQuit()
+{
+	return Sessions->LeaveForQuit();
 }
 
 FFlockRequestHandle FFlockMultiplayerProvider::CreateParty(TOptional<int32> MaxSize, const FFlockCommandData& Settings, FFlockOnParty OnComplete)

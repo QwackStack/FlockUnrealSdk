@@ -1350,6 +1350,72 @@ bool FFlockPartyRefreshSeesLeaveTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+FLOCK_PARTY_TEST(FFlockPartyLeaveOfAnotherTest, "ALeaveOnItsWayForOnePartyLeavesAnotherPartysRemovalARemoval")
+bool FFlockPartyLeaveOfAnotherTest::RunTest(const FString& Parameters)
+{
+	FPartiesFixture F(1.0);
+	F.SignIn(PlayerA);
+	UFlockParty* First = F.MadeParty(*this);
+	if (First == nullptr)
+	{
+		return false;
+	}
+	const TSharedRef<FFlockFakePartyServer::FHeld> LeaveAnswer = F.Server->HoldNext(ERoute::Leave);
+	const FPartyAnswerRef Left = MakeShared<FPartyAnswer>();
+	First->Leave(Into(Left));
+	TestTrue(TEXT("precondition: the leave of the first is on its way"), LeaveAnswer->bArrived && !LeaveAnswer->bDelivered);
+	const FString TheirsId = F.Server->MadeBy(PlayerB).Id;
+	const FString TheirsCode = F.Server->PartyById(TheirsId)->InviteCode;
+	const FPartyAnswerRef Joined = F.Join(TheirsCode);
+	UFlockParty* Theirs = Joined->Party();
+	if (!TestTrue(TEXT("precondition: joined B's party"), Joined->Succeeded() && Theirs != nullptr))
+	{
+		return false;
+	}
+	const TStrongObjectPtr<UFlockParty> KeepTheirs(Theirs);
+	UFlockPartyTestListener* Listener = F.Listen(Theirs);
+	// B removes A while the first party's leave is still on its way; A's next refresh finds it out.
+	F.Server->Leaves(TheirsId, PlayerA);
+	F.Advance(1.0);
+	TestEqualSensitive(TEXT("a removal from B's party is a removal, not the first party's leave"), F.EndedAs(Listener), FString(TEXT("Removed")));
+	LeaveAnswer->Release();
+	TestEqualSensitive(TEXT("and stays so once the leave answers"), F.EndedAs(Listener), FString(TEXT("Removed")));
+	return true;
+}
+
+FLOCK_PARTY_TEST(FFlockPartyEarlierLeaveAnsweredTest, "ALeaveAnsweredForAnEarlierPartyKeepsTheNewerDisbandThisGames")
+bool FFlockPartyEarlierLeaveAnsweredTest::RunTest(const FString& Parameters)
+{
+	FPartiesFixture F(1.0);
+	F.SignIn(PlayerA);
+	UFlockParty* First = F.MadeParty(*this);
+	if (First == nullptr)
+	{
+		return false;
+	}
+	const TSharedRef<FFlockFakePartyServer::FHeld> LeaveAnswer = F.Server->HoldNext(ERoute::Leave);
+	const FPartyAnswerRef Left = MakeShared<FPartyAnswer>();
+	First->Leave(Into(Left));
+	UFlockParty* Second = F.MadeParty(*this);
+	if (Second == nullptr)
+	{
+		return false;
+	}
+	const TStrongObjectPtr<UFlockParty> KeepSecond(Second);
+	UFlockPartyTestListener* Listener = F.Listen(Second);
+	const TSharedRef<FFlockFakePartyServer::FHeld> DisbandAnswer = F.Server->HoldNext(ERoute::Disband);
+	const FPartyAnswerRef Disbanded = MakeShared<FPartyAnswer>();
+	Second->Disband(Into(Disbanded));
+	TestTrue(TEXT("precondition: the leave and the disband are on their way"), LeaveAnswer->bArrived && DisbandAnswer->bArrived && !DisbandAnswer->bDelivered);
+	LeaveAnswer->Release();
+	// The refresh finds the second party gone before its disband answers.
+	F.Advance(1.0);
+	TestEqualSensitive(TEXT("the first leave's answer did not forget the disband: it is this game's"), F.EndedAs(Listener), FString(TEXT("Disbanded")));
+	DisbandAnswer->Release();
+	TestEqualSensitive(TEXT("ended once"), F.EndedAs(Listener), FString(TEXT("Disbanded")));
+	return true;
+}
+
 FLOCK_PARTY_TEST(FFlockPartyGoneTest, "AChangeToAPartyThatIsGoneEndsItAsRemovedAndSaysWhy")
 bool FFlockPartyGoneTest::RunTest(const FString& Parameters)
 {

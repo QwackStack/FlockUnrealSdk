@@ -76,7 +76,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Flock")
 	void InitializeWithConfig(const FFlockInitConfig& Config);
 
-	/** Tears down SDK state, allowing a later re-initialization. */
+	/**
+	 * Tears down SDK state, allowing a later re-initialization. A multiplayer seat the player holds is kept (the server gives it
+	 * up once it stops hearing from the player), so Get My Session finds it again after re-initializing; the game instance
+	 * shutting down gives it up instead.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Flock")
 	void ShutdownSdk();
 
@@ -378,6 +382,9 @@ public:
 private:
 	/** Applies the baked-version gate and adopts the config. Returns false with OutError on failure. */
 	bool TryInitialize(const FFlockInitConfig& Config, FString& OutError);
+
+	/** ShutdownSdk's work. bGameEnding (the game instance shutting down) also gives up the player's multiplayer seat. */
+	void ShutdownSdkFor(bool bGameEnding);
 
 	/**
 	 * A session needs a player id, so it opens on sign-in rather than at init. Bound to the event hub

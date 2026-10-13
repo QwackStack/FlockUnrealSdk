@@ -86,6 +86,9 @@ private:
 	/** Settles everything before raising the end, so a handler that calls back in finds the party over. */
 	void End(UFlockParty* Party, EFlockPartyEndReason Reason, bool bRaise = true);
 
+	/** The leave or disband of this party has its answer; one of another party started since stays remembered. */
+	void ForgetEndingOf(const FString& PartyId);
+
 	/** Also restarts a refresh a failure stopped, whenever the game asks for its party again. */
 	void KeepRefreshing();
 	void StopRefreshing();
@@ -110,8 +113,9 @@ private:
 	int32 ReadsSent = 0;
 	/** Reads numbered at or below this change nothing when they land. */
 	int32 ReadsSettledThrough = 0;
-	/** A leave or disband of the held party on its way: a reading that finds the player out is its doing, not a removal. */
+	/** A leave or disband on its way, and the party it is for: a reading that finds the player out of that party is its doing, not a removal. */
 	EFlockPartyEndReason EndingByThisGame = EFlockPartyEndReason::None;
+	FString EndingPartyId;
 	/** Flock shut down: an answer still on its way holds nothing. */
 	bool bStopped = false;
 };

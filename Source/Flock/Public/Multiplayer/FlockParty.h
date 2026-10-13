@@ -111,7 +111,7 @@ private:
 	FFlockRequestHandle RefuseWithoutOwner(const FFlockOnParty& OnComplete);
 
 	TWeakPtr<FFlockParties> Owner;
-	TWeakPtr<FFlockAuthSession> Session;
+	TWeakPtr<FFlockAuthSession> AuthSession;
 	int32 SignInNumber = 0;
 	FString PlayerId;
 	/** Set once, by the owner, when the party ends; a sign-in that ended reads as SignedOut before then. */
