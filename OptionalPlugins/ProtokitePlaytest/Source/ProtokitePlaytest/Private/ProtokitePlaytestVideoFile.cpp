@@ -34,6 +34,11 @@ namespace
 	constexpr uint32 IdVideo               = 0xE0;
 	constexpr uint32 IdPixelWidth          = 0xB0;
 	constexpr uint32 IdPixelHeight         = 0xBA;
+	constexpr uint32 IdColour              = 0x55B0;
+	constexpr uint32 IdMatrixCoefficients  = 0x55B1;
+	constexpr uint32 IdRange               = 0x55B9;
+	constexpr uint32 IdTransferCharacteristics = 0x55BA;
+	constexpr uint32 IdPrimaries           = 0x55BB;
 	constexpr uint32 IdCluster             = 0x1F43B675;
 	constexpr uint32 IdTimecode            = 0xE7;
 	constexpr uint32 IdSimpleBlock         = 0xA3;
@@ -117,6 +122,104 @@ namespace
 		}
 	}
 
+	/** The end of the last frame: its start, and as long again as the gap before it; a lone frame's start. */
+	int64 EndOfLastFrameMs(int64 LastMs, int64 PreviousMs)
+	{
+		const int64 Last = FMath::Max<int64>(0, LastMs);
+		return PreviousMs >= 0 && LastMs > PreviousMs ? Last + (LastMs - PreviousMs) : Last;
+	}
+
+	/**
+	 * Reads one element's id and size at Offset: an EBML number each, whose width the leading zero bits of its first byte
+	 * state. False when they do not fit in the file or are malformed.
+	 */
+	bool ReadElementHead(IFileHandle& Handle, int64 FileBytes, int64 Offset, uint64& OutId, int32& OutIdWidth, uint64& OutSize,
+		int32& OutSizeWidth, bool& bOutUnknownSize)
+	{
+		uint8 Head[12] = {};
+		const int64 Available = FMath::Min<int64>(12, FileBytes - Offset);
+		if (Available < 2 || !Handle.Seek(Offset) || !Handle.Read(Head, Available))
+		{
+			return false;
+		}
+		auto Width = [](uint8 First) -> int32
+		{
+			for (int32 Bit = 0; Bit < 8; ++Bit)
+			{
+				if (First & (0x80 >> Bit))
+				{
+					return Bit + 1;
+				}
+			}
+			return 0;
+		};
+		OutIdWidth = Width(Head[0]);
+		if (OutIdWidth < 1 || OutIdWidth > 4 || OutIdWidth >= Available)
+		{
+			return false;
+		}
+		OutId = 0;
+		for (int32 Index = 0; Index < OutIdWidth; ++Index)
+		{
+			OutId = (OutId << 8) | Head[Index];
+		}
+		OutSizeWidth = Width(Head[OutIdWidth]);
+		if (OutSizeWidth < 1 || OutIdWidth + OutSizeWidth > Available)
+		{
+			return false;
+		}
+		OutSize = Head[OutIdWidth] & (0xFF >> OutSizeWidth);
+		bool bAllOnes = OutSize == static_cast<uint64>(0xFF >> OutSizeWidth);
+		for (int32 Index = 1; Index < OutSizeWidth; ++Index)
+		{
+			OutSize = (OutSize << 8) | Head[OutIdWidth + Index];
+			bAllOnes &= Head[OutIdWidth + Index] == 0xFF;
+		}
+		bOutUnknownSize = bAllOnes;
+		return true;
+	}
+
+	/**
+	 * Where the first cluster starts, read off the file's own header rather than this build's: a recording an earlier build cut
+	 * off carries that build's header, which may be another length. -1 when the header cannot be read.
+	 */
+	int64 FindFirstCluster(IFileHandle& Handle, int64 FileBytes)
+	{
+		uint64 Id = 0;
+		uint64 Size = 0;
+		int32 IdWidth = 0;
+		int32 SizeWidth = 0;
+		bool bUnknownSize = false;
+		if (!ReadElementHead(Handle, FileBytes, 0, Id, IdWidth, Size, SizeWidth, bUnknownSize) || Id != IdEbmlHeader || bUnknownSize)
+		{
+			return -1;
+		}
+		int64 Offset = IdWidth + SizeWidth + static_cast<int64>(Size);
+		if (!ReadElementHead(Handle, FileBytes, Offset, Id, IdWidth, Size, SizeWidth, bUnknownSize) || Id != IdSegment)
+		{
+			return -1;
+		}
+		// Into the segment: its info and its tracks, then the first frame's cluster.
+		Offset += IdWidth + SizeWidth;
+		for (int32 Child = 0; Child < 16; ++Child)
+		{
+			if (!ReadElementHead(Handle, FileBytes, Offset, Id, IdWidth, Size, SizeWidth, bUnknownSize))
+			{
+				return -1;
+			}
+			if (Id == IdCluster)
+			{
+				return Offset;
+			}
+			if (bUnknownSize)
+			{
+				return -1;
+			}
+			Offset += IdWidth + SizeWidth + static_cast<int64>(Size);
+		}
+		return -1;
+	}
+
 	uint64 ReadUnsignedBigEndian(const uint8* Bytes, int32 Width)
 	{
 		uint64 Value = 0;
@@ -144,11 +247,11 @@ EProtokitePlaytestInterruptedVideoResult FProtokitePlaytestVideoFile::FinishInte
 		const int64 FileBytes = Handle->Size();
 		int64 WholeClustersEnd = 0;
 		int64 LastTimecodeMs = 0;
-		uint8 Start[4];
-		if (FileBytes >= FileHeaderBytes && Handle->Seek(0) && Handle->Read(Start, 4)
-			&& Start[0] == 0x1A && Start[1] == 0x45 && Start[2] == 0xDF && Start[3] == 0xA3)
+		int64 PreviousTimecodeMs = -1;
+		const int64 FirstCluster = FindFirstCluster(*Handle, FileBytes);
+		if (FirstCluster > 0)
 		{
-			WholeClustersEnd = FileHeaderBytes;
+			WholeClustersEnd = FirstCluster;
 			// Every cluster here was written in one piece with its size already known, so walking them needs no parser:
 			// a cluster is whole when its declared size fits inside what the file actually holds.
 			// The cluster's fixed head, plus the frame's own first byte straight after it -- which is the byte the VP9
@@ -180,6 +283,7 @@ EProtokitePlaytestInterruptedVideoResult FProtokitePlaytestVideoFile::FinishInte
 				{
 					break;
 				}
+				PreviousTimecodeMs = Frames > 0 ? LastTimecodeMs : -1;
 				LastTimecodeMs = static_cast<int64>(ReadUnsignedBigEndian(Cluster + 10, 4));
 				WholeClustersEnd = ClusterEnd;
 				++Frames;
@@ -191,7 +295,7 @@ EProtokitePlaytestInterruptedVideoResult FProtokitePlaytestVideoFile::FinishInte
 			TArray<uint8> SegmentSize;
 			AppendSize(SegmentSize, static_cast<uint64>(WholeClustersEnd - (SegmentSizeOffset + 8)), 8);
 			uint8 Duration[8];
-			MakeDurationBytes(static_cast<double>(LastTimecodeMs), Duration);
+			MakeDurationBytes(static_cast<double>(EndOfLastFrameMs(LastTimecodeMs, PreviousTimecodeMs)), Duration);
 			if (!Handle->Truncate(WholeClustersEnd)
 				|| !Handle->Seek(SegmentSizeOffset) || !Handle->Write(SegmentSize.GetData(), SegmentSize.Num())
 				|| !Handle->Seek(DurationValueOffset) || !Handle->Write(Duration, 8)
@@ -233,6 +337,7 @@ bool FProtokitePlaytestVideoFile::Open(const FString& Path, FIntPoint FrameSize,
 	BytesWritten = 0;
 	FramesWritten = 0;
 	LastTimestampMs = -1;
+	PreviousTimestampMs = -1;
 
 	Archive.Reset(IFileManager::Get().CreateFileWriter(*Path, FILEWRITE_EvenIfReadOnly));
 	if (!Archive.IsValid())
@@ -264,6 +369,18 @@ bool FProtokitePlaytestVideoFile::Open(const FString& Path, FIntPoint FrameSize,
 	TArray<uint8> Video;
 	AppendUnsignedElement(Video, IdPixelWidth, static_cast<uint64>(FrameSize.X), 4);
 	AppendUnsignedElement(Video, IdPixelHeight, static_cast<uint64>(FrameSize.Y), 4);
+	// The colours as the encoder converted them, said in the file as well as in the stream, so no player guesses.
+	TArray<uint8> Colour;
+	// BT.601 (SMPTE 170M) coefficients.
+	AppendUnsignedElement(Colour, IdMatrixCoefficients, 6, 1);
+	// Limited range: brightness 16 to 235.
+	AppendUnsignedElement(Colour, IdRange, 1, 1);
+	// The game's picture is sRGB, which shares BT.709's primaries.
+	AppendUnsignedElement(Colour, IdTransferCharacteristics, 13, 1);
+	AppendUnsignedElement(Colour, IdPrimaries, 1, 1);
+	AppendId(Video, IdColour);
+	AppendSize(Video, static_cast<uint64>(Colour.Num()), 1);
+	Video.Append(Colour);
 
 	TArray<uint8> TrackEntry;
 	AppendUnsignedElement(TrackEntry, IdTrackNumber, 1, 1);
@@ -358,6 +475,7 @@ bool FProtokitePlaytestVideoFile::WriteFrame(const TArray<uint8>& FrameBytes, in
 	}
 	BytesWritten += FrameHeaderBytes + FrameBytes.Num();
 	++FramesWritten;
+	PreviousTimestampMs = LastTimestampMs;
 	LastTimestampMs = TimestampMs;
 	return true;
 }
@@ -386,7 +504,7 @@ bool FProtokitePlaytestVideoFile::Close()
 	Archive->Serialize(SegmentSize.GetData(), SegmentSize.Num());
 
 	uint8 Duration[8];
-	MakeDurationBytes(static_cast<double>(FMath::Max<int64>(0, LastTimestampMs)), Duration);
+	MakeDurationBytes(static_cast<double>(EndOfLastFrameMs(LastTimestampMs, PreviousTimestampMs)), Duration);
 	Archive->Seek(DurationValueOffset);
 	Archive->Serialize(Duration, 8);
 

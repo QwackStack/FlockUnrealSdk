@@ -132,9 +132,54 @@ int32 FFlockStructBinder::FillStructFromObject(const UStruct* Struct, void* Stru
 			continue;
 		}
 
-		// Everything else — scalars, containers, containers of structs — is the converter's job. A
-		// container of structs still resolves its element members through the recursion above only if it
-		// is a plain struct member; see the note in the header on what is not covered.
+		// A list or a map of structs is filled element by element through the same recursion, so its elements'
+		// members resolve their registered names too. A map's keys are author data and are kept as they are.
+		if (const FArrayProperty* AsArray = CastField<FArrayProperty>(Property))
+		{
+			const UScriptStruct* Element = StructOf(AsArray->Inner);
+			const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+			if (Element && (*Value)->TryGetArray(Items))
+			{
+				FScriptArrayHelper Array(AsArray, MemberPtr);
+				Array.EmptyValues();
+				for (const TSharedPtr<FJsonValue>& Item : *Items)
+				{
+					const int32 Index = Array.AddValue();
+					const TSharedPtr<FJsonObject> ItemObject = FFlockJsonUtils::AsObjectOrNull(Item);
+					if (ItemObject.IsValid())
+					{
+						FillStructFromObject(Element, Array.GetRawPtr(Index), ItemObject.ToSharedRef());
+					}
+				}
+				++Filled;
+				continue;
+			}
+		}
+		if (const FMapProperty* AsMap = CastField<FMapProperty>(Property))
+		{
+			const UScriptStruct* Element = StructOf(AsMap->ValueProp);
+			const TSharedPtr<FJsonObject>* Entries = nullptr;
+			if (Element && CastField<FStrProperty>(AsMap->KeyProp) && (*Value)->TryGetObject(Entries) && Entries->IsValid())
+			{
+				FScriptMapHelper Map(AsMap, MemberPtr);
+				Map.EmptyValues();
+				for (const FString& Key : FFlockJsonUtils::GetFieldNames(*Entries))
+				{
+					const int32 Index = Map.AddDefaultValue_Invalid_NeedsRehash();
+					*reinterpret_cast<FString*>(Map.GetKeyPtr(Index)) = Key;
+					const TSharedPtr<FJsonObject> EntryObject = FFlockJsonUtils::AsObjectOrNull((*Entries)->TryGetField(Key));
+					if (EntryObject.IsValid())
+					{
+						FillStructFromObject(Element, Map.GetValuePtr(Index), EntryObject.ToSharedRef());
+					}
+				}
+				Map.Rehash();
+				++Filled;
+				continue;
+			}
+		}
+
+		// Everything else — scalars, and containers of anything but structs — is the converter's job.
 		if (FJsonObjectConverter::JsonValueToUProperty(*Value, Property, MemberPtr))
 		{
 			++Filled;
@@ -179,6 +224,42 @@ FFlockCommandData FFlockStructBinder::ToCommandData(const UStruct* Struct, const
 			const FFlockCommandData NestedData = ToCommandData(Nested, MemberPtr);
 			Data.SetRawJson(OutName, NestedData.ToJsonString());
 			continue;
+		}
+
+		// A list or a map of structs is written element by element for the same reason, so a list of a generated
+		// struct writes its elements' members under their declared names too. A map's keys are kept as they are.
+		if (const FArrayProperty* AsArray = CastField<FArrayProperty>(Property))
+		{
+			if (const UScriptStruct* Element = StructOf(AsArray->Inner))
+			{
+				FScriptArrayHelper Array(AsArray, MemberPtr);
+				TArray<FString> Items;
+				for (int32 Index = 0; Index < Array.Num(); ++Index)
+				{
+					Items.Add(ToCommandData(Element, Array.GetRawPtr(Index)).ToJsonString());
+				}
+				Data.SetRawJson(OutName, TEXT("[") + FString::Join(Items, TEXT(",")) + TEXT("]"));
+				continue;
+			}
+		}
+		if (const FMapProperty* AsMap = CastField<FMapProperty>(Property))
+		{
+			const UScriptStruct* Element = StructOf(AsMap->ValueProp);
+			if (Element && CastField<FStrProperty>(AsMap->KeyProp))
+			{
+				FScriptMapHelper Map(AsMap, MemberPtr);
+				FFlockCommandData Entries;
+				for (int32 Index = 0; Index < Map.GetMaxIndex(); ++Index)
+				{
+					if (Map.IsValidIndex(Index))
+					{
+						Entries.SetRawJson(*reinterpret_cast<const FString*>(Map.GetKeyPtr(Index)),
+							ToCommandData(Element, Map.GetValuePtr(Index)).ToJsonString());
+					}
+				}
+				Data.SetRawJson(OutName, Entries.ToJsonString());
+				continue;
+			}
 		}
 
 		// SkipStandardizeCase is not a nicety: without it the converter lower-cases the first letter of

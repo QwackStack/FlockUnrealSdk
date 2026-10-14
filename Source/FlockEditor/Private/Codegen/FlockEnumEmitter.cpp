@@ -18,7 +18,7 @@ namespace
 {
 	const TCHAR* const AchievementTag = TEXT("achievement");
 
-	/** Sorts by id then name, matching the hasher, the catalog, and the struct emitter. */
+	/** In FlockCodegenComesBefore order, as the fetcher sorts the snapshot and the hasher and catalog walk it. */
 	template <typename T>
 	TArray<const T*> SortedById(const TArray<T>& Items)
 	{
@@ -30,7 +30,7 @@ namespace
 		}
 		Sorted.Sort([](const T& A, const T& B)
 		{
-			return A.Id == B.Id ? A.Name < B.Name : A.Id < B.Id;
+			return FlockCodegenComesBefore(A, B);
 		});
 		return Sorted;
 	}
@@ -70,8 +70,7 @@ FString FFlockEnumEmitter::MakeMemberName(const FString& SourceName)
 	{
 		return TEXT("Unnamed");
 	}
-	// A leading digit cannot start an identifier — the same problem the canonical SDK solves with its
-	// `_100` currency members.
+	// A leading digit cannot start an identifier, so `100` becomes `_100`.
 	return FChar::IsDigit(Pascal[0]) ? TEXT("_") + Pascal : Pascal;
 }
 

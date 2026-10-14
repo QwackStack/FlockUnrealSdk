@@ -741,7 +741,7 @@ bool FFlockNotificationLegacyStateTest::RunTest(const FString& Parameters)
 	// ClearCache — which no longer reaches the old location either — cannot resurrect a stale list.
 	FString Payload;
 	TestTrue(TEXT("moved to the state scope"),
-		F.Snapshot->TryRead(TEXT("ver-1/notification_state/player-a"), TEXT("pending_schedules"), Payload));
+		F.Snapshot->TryRead(TEXT("_state/notification_state/player-a"), TEXT("pending_schedules"), Payload));
 	TestFalse(TEXT("legacy copy removed"),
 		F.Snapshot->TryRead(LegacyScope, TEXT("pending_schedules_player-a"), Payload));
 
@@ -828,14 +828,15 @@ bool FFlockNotificationTemplatesTest::RunTest(const FString& Parameters)
 	});
 	TestTrue(TEXT("completed"), bDone);
 
-	// The catalog warmed the memo, so a by-name lookup answers without touching the network.
+	// The catalog does not warm the by-name memo: it lists every locale's row of a name, and only the by-name route knows
+	// which one a name with no locale means.
 	const int32 Before = F.Fake->Requests.Num();
 	F.Provider->GetTemplateByName(TEXT("DailyBonus"), [&](TFlockResult<FFlockNotificationTemplate> Result)
 	{
-		TestTrue(TEXT("memoized lookup succeeds"), Result.bSuccess);
+		TestTrue(TEXT("by-name lookup succeeds"), Result.bSuccess);
 		TestEqual(TEXT("resolved id"), Result.Value.Id, FString(TEXT("tpl-1")));
 	});
-	TestEqual(TEXT("no request for a memoized name"), F.Fake->Requests.Num(), Before);
+	TestEqual(TEXT("the by-name route is asked"), F.Fake->Requests.Num(), Before + 1);
 
 	Cleanup(F.Dir);
 	return true;
@@ -2047,6 +2048,129 @@ bool FFlockNotificationCancelAllKeepsItsSignInTest::RunTest(const FString& Param
 	MidWalk(true, SecondCancels, Type);
 	TestEqual(TEXT("after a switch: the second cancel is not sent as player B"), SecondCancels, 0);
 	TestEqual(TEXT("after a switch: the walk is cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
+	return true;
+}
+
+// ── The template list does not choose a locale: a name with no locale is the by-name route's to resolve ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationListDoesNotChooseALocaleTest, "Flock.Notification.Provider.TheTemplateListDoesNotChooseALocale",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationListDoesNotChooseALocaleTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+	// The list holds every locale's row of a name; the by-name route picks English, else the first locale on file.
+	F.Fake->On(TEXT("notification_template/by-name"), FFlockFakeTransport::Ok(TemplateByNameBody(TEXT("tpl-en"))));
+	F.Fake->On(TEXT("notification_template"), FFlockFakeTransport::Ok(Env(
+		TEXT("[{\"id\":\"tpl-en\",\"name\":\"DailyBonus\",\"category\":\"reward\"},{\"id\":\"tpl-de\",\"name\":\"DailyBonus\",\"category\":\"reward\"}]"))));
+	F.Provider->GetTemplates([](TFlockResult<TArray<FFlockNotificationTemplate>>) {});
+
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(4),
+		[](TFlockResult<FFlockScheduledNotification>) {});
+
+	TestEqual(TEXT("The name is resolved by the route that knows which locale it means"), F.Fake->CountTo(TEXT("notification_template/by-name")), 1);
+	TestTrue(TEXT("And that template is scheduled"),
+		F.LastBodyContaining(TEXT("notification/schedule")).Contains(TEXT("\"template_id\":\"tpl-en\""), ESearchCase::CaseSensitive));
+	Cleanup(F.Dir);
+	return true;
+}
+
+// ── A reply that lands after another sign-in raises nothing for the next player ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationLateReplyRaisesNothingTest, "Flock.Notification.Events.ALateReplyAfterAnotherSignInRaisesNothing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationLateReplyRaisesNothingTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	// Player B has seen their inbox up to the 12th.
+	F.SignIn(TEXT("player-b"));
+	F.Fake->On(TEXT("notification?"), FFlockFakeTransport::Ok(InboxOf({ RowAt(TEXT("b-1"), TEXT("2026-08-12T00:00:00Z")) })));
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+
+	// Player A asks for their inbox, unread count and summary, and B signs in again before the answers land.
+	F.SignIn(TEXT("player-a"));
+	F.Fake->On(TEXT("notification?"), FFlockFakeTransport::Ok(InboxOf({ RowAt(TEXT("a-9"), TEXT("2026-08-20T00:00:00Z")) })));
+	F.Fake->bDeferred = true;
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+	F.Provider->GetUnreadCount([](TFlockResult<int32>) {});
+	F.Provider->MarkAllRead([](TFlockResult<FFlockMarkAllReadResult>) {});
+	F.SignIn(TEXT("player-b"));
+	F.Fake->FlushPending();
+	F.Fake->bDeferred = false;
+
+	TestEqual(TEXT("A's mail is not announced to B"), F.Listener->ReceivedNotifications.Num(), 0);
+	TestEqual(TEXT("Nor A's count"), F.Listener->UnreadCountChangedCount, 0);
+
+	// And B's seen-marker did not move past mail B never had: B's own new row is still announced.
+	F.Fake->On(TEXT("notification?"), FFlockFakeTransport::Ok(InboxOf({
+		RowAt(TEXT("b-2"), TEXT("2026-08-15T00:00:00Z")), RowAt(TEXT("b-1"), TEXT("2026-08-12T00:00:00Z")) })));
+	F.Provider->GetNotifications([](TFlockResult<FFlockNotificationPage>) {});
+	TestEqual(TEXT("B's own newer row is still announced"), F.Listener->ReceivedNotifications.Num(), 1);
+	Cleanup(F.Dir);
+	return true;
+}
+
+// ── What the player has seen and the reminders they can cancel survive a new game version ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationStateSurvivesANewVersionTest, "Flock.Notification.Provider.StateSurvivesANewGameVersion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationStateSurvivesANewVersionTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn();
+	F.Provider->ScheduleByTemplateName(TEXT("DailyBonus"), FDateTime::UtcNow() + FTimespan::FromHours(4),
+		[](TFlockResult<FFlockScheduledNotification>) {});
+	TestEqual(TEXT("Precondition: one reminder tracked"), F.Provider->GetPendingSchedules().Num(), 1);
+
+	// The next build ships a new game version, which prunes every other version's tree.
+	F.Snapshot->PruneOtherVersions(TEXT("ver-2"));
+	const TSharedRef<FFlockNotificationProvider> NextVersion = MakeShared<FFlockNotificationProvider>(F.Client, NoRetry(),
+		MakeShared<FFlockNullLogger>(), F.Session, F.Events, TEXT("http://x/v1"), F.Snapshot, TEXT("ver-2"));
+	TestEqual(TEXT("The reminder is still there to cancel"), NextVersion->GetPendingSchedules().Num(), 1);
+
+	// A build before this one kept it under its version's tree: the start-up rescue moves it before the prune.
+	FString Payload;
+	const FString NewScope = FString::Printf(TEXT("%s/%s/player-a"), FFlockSnapshotStore::StateScope, FFlockNotificationProvider::StateSnapshotCategory);
+	TestTrue(TEXT("Precondition: the list is where this build keeps it"), F.Snapshot->TryRead(NewScope, TEXT("pending_schedules"), Payload));
+	F.Snapshot->DeleteScope(NewScope);
+	F.Snapshot->Write(FString::Printf(TEXT("ver-2/%s/player-a"), FFlockNotificationProvider::StateSnapshotCategory), TEXT("pending_schedules"), Payload);
+	F.Snapshot->MigrateLegacyState({ FFlockNotificationProvider::StateSnapshotCategory });
+	F.Snapshot->PruneOtherVersions(TEXT("ver-3"));
+	const TSharedRef<FFlockNotificationProvider> ThirdVersion = MakeShared<FFlockNotificationProvider>(F.Client, NoRetry(),
+		MakeShared<FFlockNullLogger>(), F.Session, F.Events, TEXT("http://x/v1"), F.Snapshot, TEXT("ver-3"));
+	TestEqual(TEXT("An earlier build's copy is rescued and kept"), ThirdVersion->GetPendingSchedules().Num(), 1);
+	Cleanup(F.Dir);
+	return true;
+}
+
+// ── A schedule answered after another sign-in is tracked for the player it was sent for, never the next one ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockNotificationTrackedForItsPlayerTest, "Flock.Notification.Schedule.AnAnswerAfterAnotherSignInIsTrackedForItsPlayer",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockNotificationTrackedForItsPlayerTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn(TEXT("player-a"));
+	F.Fake->bDeferred = true;
+	F.Provider->ScheduleByTemplateId(TEXT("tpl-1"), FDateTime::UtcNow() + FTimespan::FromHours(4), FFlockCommandData(), {},
+		[](TFlockResult<FFlockScheduledNotification>) {});
+	F.SignIn(TEXT("player-b"));
+	F.Fake->FlushPending();
+	F.Fake->bDeferred = false;
+
+	TestEqual(TEXT("B's list did not take A's reminder"), F.Provider->GetPendingSchedules().Num(), 0);
+	F.SignIn(TEXT("player-a"));
+	TestEqual(TEXT("A's list has it, to cancel"), F.Provider->GetPendingSchedules().Num(), 1);
+
+	// And a cancel answered after another sign-in forgets it from the player it was sent for.
+	F.Fake->bDeferred = true;
+	F.Provider->CancelScheduled(TEXT("sch-1"), [](TFlockResult<FFlockScheduledNotification>) {});
+	F.SignIn(TEXT("player-b"));
+	F.Fake->FlushPending();
+	F.Fake->bDeferred = false;
+	F.SignIn(TEXT("player-a"));
+	TestEqual(TEXT("A's list no longer holds the cancelled reminder"), F.Provider->GetPendingSchedules().Num(), 0);
+	Cleanup(F.Dir);
 	return true;
 }
 

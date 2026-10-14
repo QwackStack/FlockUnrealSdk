@@ -120,7 +120,8 @@ namespace
 			if (!bResized && ElapsedSeconds > 1.0)
 			{
 				bResized = true;
-				GEngine->Exec(World.Get(), TEXT("r.SetRes 960x540w"));
+				// Another shape too (4:3 against 16:9), so the frames after it come smaller and go between black bars.
+				GEngine->Exec(World.Get(), TEXT("r.SetRes 720x540w"));
 			}
 			if (bLettingFramesArrive && ++FramesLetArrive >= 10)
 			{
@@ -162,7 +163,20 @@ namespace
 				Test->TestTrue(FString::Printf(TEXT("And stopped while the latency was set (%d)"), FramesWithLatencySet), FramesWithLatencySet <= 2);
 				FIntPoint PictureSize;
 				double Brightness = -1.0;
-				Test->TestEqual(TEXT("Every frame decodes"), DecodeVideoFile(File, PictureSize, Brightness), File.Frames.Num());
+				TArray<double> LeftEdges;
+				Test->TestEqual(TEXT("Every frame decodes"), DecodeVideoFile(File, PictureSize, Brightness, &LeftEdges), File.Frames.Num());
+				// Black is 16 in the video's colours. A 4:3 window in a 16:9 video leaves a bar down each side; stretched, the
+				// game's own picture reaches the edge. Only judged when the scene's edge was not black to begin with.
+				constexpr double BlackAtMost = 24.0;
+				if (LeftEdges.Num() >= 2 && LeftEdges[0] > BlackAtMost)
+				{
+					Test->TestTrue(FString::Printf(TEXT("After the window changed shape the picture sits between black bars (left edge %.1f, %.1f at the start)"),
+						LeftEdges.Last(), LeftEdges[0]), LeftEdges.Last() <= BlackAtMost);
+				}
+				else
+				{
+					Test->AddWarning(TEXT("The scene's left edge was black before the resize, so the black bars could not be told from it."));
+				}
 			}
 			IFileManager::Get().DeleteDirectory(*Folder, /*RequireExists*/ false, /*Tree*/ true);
 			return true;

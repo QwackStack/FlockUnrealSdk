@@ -7,6 +7,7 @@
 #include "ProtokitePlaytestConfig.h"
 #include "ProtokitePlaytestConsent.h"
 #include "ProtokitePlaytestFormAnswers.h"
+#include "ProtokitePlaytestFormSubmission.h"
 #include "ProtokitePlaytestIdentity.h"
 #include "ProtokitePlaytestPerformanceTimeline.h"
 #include "ProtokitePlaytestSession.h"
@@ -474,6 +475,14 @@ private:
 
 	/** Sends every form kept from an earlier launch, once Flock has initialized. Runs whether or not a form is open. */
 	void SendFormsKeptFromEarlierLaunches();
+
+	/**
+	 * Sends the kept forms one at a time from Index, each claimed while it is sent so no other launch sends it too. Goes on after
+	 * a form taken, refused for good, or answered about itself; stops at a failure that says nothing about the form (no answer, a
+	 * gateway, a limit, a refused key), which leaves the rest for a later launch.
+	 */
+	void SendKeptForm(TSharedRef<TArray<TPair<FString, FProtokitePlaytestFormSubmission>>> Waiting, int32 Index,
+		TMap<FString, FString> LaunchHeaders, FString Folder);
 
 	/** Starts or stops watching for the form key, following whether there is a form to open. */
 	void UpdateFeedbackFormKeyWatcher();

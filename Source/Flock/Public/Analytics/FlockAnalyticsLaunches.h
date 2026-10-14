@@ -12,6 +12,8 @@ struct FLOCK_API FFlockEndedLaunchRecords
 {
 	FString SessionStatePath;
 	FString TerminationMarkerPath;
+	/** A queued entry could not be moved out: once its records are reported the launch keeps its folder for a later launch. */
+	bool bQueuedEntriesLeftBehind = false;
 };
 
 /**
@@ -44,7 +46,8 @@ public:
 
 	/**
 	 * Makes this launch's folder under AnalyticsFolder, holds its lock, and takes over every launch that has ended, and the files
-	 * of an earlier build. When the lock cannot be taken, this launch still gets a folder of its own but takes over nothing.
+	 * of an earlier build. When the lock cannot be taken, this launch has no folder (GetFolder is empty), keeps nothing on disk
+	 * and takes over nothing: a folder with no lock would never be taken over or deleted by a later launch.
 	 */
 	static TSharedRef<FFlockAnalyticsLaunches> Start(const FString& AnalyticsFolder);
 
@@ -53,10 +56,10 @@ public:
 
 	~FFlockAnalyticsLaunches();
 
-	/** False when this launch's lock could not be taken; nothing was taken over then. */
+	/** False when this launch's lock could not be taken; nothing was taken over then, and nothing is kept on disk. */
 	bool IsHoldingItsFolder() const;
 
-	/** This launch's folder. The event queues are its subfolders. */
+	/** This launch's folder, empty when it holds none. The event queues are its subfolders. */
 	FString GetFolder() const;
 	FString GetSessionStatePath() const;
 	FString GetTerminationMarkerPath() const;
@@ -64,7 +67,10 @@ public:
 	/** The records of every launch Start took over, oldest first. */
 	const TArray<FFlockEndedLaunchRecords>& GetEndedLaunchRecords() const { return EndedRecords; }
 
-	/** Deletes the launch at Index in GetEndedLaunchRecords, once its records are reported. */
+	/**
+	 * Deletes the launch at Index in GetEndedLaunchRecords, once its records are reported. A launch with queued entries left
+	 * behind keeps its folder, its lock file and those entries for a later launch, and loses only its reported records.
+	 */
 	void DeleteEndedLaunch(int32 Index);
 
 	/** Lets go of every launch taken over and not deleted, so a later launch finds what it kept. Forgets the records. */
@@ -73,11 +79,14 @@ public:
 	/** Lets go of this launch's lock while everything else stays, the way a launch that crashed looks to the next one. */
 	void StopHoldingItsFolderForTesting();
 
+	/** While set, a queued entry it answers true for (by file name) is left where it is, as a failed move leaves it. */
+	static void SetEntryMoveFailsForTesting(TFunction<bool(const FString& EntryFileName)> InEntryMoveFails);
+
 private:
 	explicit FFlockAnalyticsLaunches(const FString& InAnalyticsFolder);
 
-	/** Moves every queued entry in FromFolder's queues into this launch's queues. */
-	void TakeOverQueues(const FString& FromFolder);
+	/** Moves every queued entry in FromFolder's queues into this launch's queues. False when one could not be moved. */
+	bool TakeOverQueues(const FString& FromFolder);
 
 	void TakeOverEarlierBuildFiles();
 

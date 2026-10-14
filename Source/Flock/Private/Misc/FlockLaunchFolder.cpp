@@ -7,6 +7,16 @@
 #include "HAL/PlatformFileManager.h"
 #include "Misc/Paths.h"
 
+namespace
+{
+	TFunction<void()> BeforeNextFolderRemoval;
+}
+
+void FFlockLaunchFolder::SetBeforeNextFolderRemovalForTesting(TFunction<void()> Hook)
+{
+	BeforeNextFolderRemoval = MoveTemp(Hook);
+}
+
 FFlockLaunchFolder::FFlockLaunchFolder(const FString& InPath, TUniquePtr<IFileHandle> InLock)
 	: Path(InPath)
 	, Lock(MoveTemp(InLock))
@@ -92,6 +102,22 @@ bool FFlockLaunchFolder::DeleteEverything()
 	{
 		return false;
 	}
-	FileManager.Delete(*FPaths::Combine(Path, LockFileName), /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
-	return FileManager.DeleteDirectory(*Path, /*RequireExists*/ false, /*Tree*/ false);
+	const FString LockPath = FPaths::Combine(Path, LockFileName);
+	FileManager.Delete(*LockPath, /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
+	if (TFunction<void()> Hook = MoveTemp(BeforeNextFolderRemoval))
+	{
+		BeforeNextFolderRemoval = nullptr;
+		Hook();
+	}
+	if (FileManager.DeleteDirectory(*Path, /*RequireExists*/ false, /*Tree*/ false))
+	{
+		return true;
+	}
+	// The folder could not go once its lock had (a file arrived in it, or another program has it open). Without the lock no
+	// later launch would claim it, and whatever is in it would stay for good, so the lock is put back.
+	if (FileManager.DirectoryExists(*Path) && !FileManager.FileExists(*LockPath))
+	{
+		TUniquePtr<IFileHandle>(FPlatformFileManager::Get().GetPlatformFile().OpenWrite(*LockPath, /*bAppend*/ true, /*bAllowRead*/ false));
+	}
+	return false;
 }

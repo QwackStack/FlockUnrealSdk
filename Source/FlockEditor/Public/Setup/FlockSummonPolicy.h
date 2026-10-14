@@ -43,8 +43,9 @@ struct FLOCKEDITOR_API FFlockSummonDecision
 	/**
 	 * Persist the current SDK version as seen by this developer.
 	 *
-	 * False whenever no human could have seen anything. Recording it then is a silent lie about what the
-	 * developer has been shown, and it is unrecoverable — the notice is one-shot.
+	 * True only when the panel opens now. The upgrade notice is a finding inside the panel, so a launch that
+	 * opens nothing has shown it to nobody, and recording it then is unrecoverable: the notice is one-shot.
+	 * A panel the developer opens records it too (FFlockSetupUI::SpawnTab).
 	 */
 	bool bRecordSeen = false;
 };

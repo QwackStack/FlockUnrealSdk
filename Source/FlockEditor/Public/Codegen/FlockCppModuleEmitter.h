@@ -79,6 +79,7 @@ public:
 	 *
 	 * `bResetManifest` rewrites the manifest header with empty values rather than deleting it — anything
 	 * including it must keep compiling, and it must stop claiming a version nothing was generated for.
+	 * With no module skeleton (no `<ModuleName>.Build.cs`) it writes nothing and succeeds.
 	 */
 	static bool RemoveGeneratedTypes(const FString& GeneratedRoot, const FString& ModuleName,
 		bool bResetManifest, FString& OutError);

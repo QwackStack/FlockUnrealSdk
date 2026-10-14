@@ -5,6 +5,7 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Setup/FlockSetupStatus.h"
+#include "Setup/FlockConfigDetails.h"
 
 namespace
 {
@@ -306,6 +307,50 @@ bool FFlockSetupStatusOrderingTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("AtLeast(Warning) keeps the warning"), Has(WarnUp, TEXT("Flock.Codegen.Drift")));
 	TestFalse(TEXT("AtLeast(Warning) drops the info"), Has(WarnUp, TEXT("Flock.Sdk.Upgraded")));
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSetupStatusOpensThePanelTest, "Flock.Editor.Setup.Status.OnlyAnErrorOpensThePanelByItself",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSetupStatusOpensThePanelTest::RunTest(const FString& Parameters)
+{
+	FFlockSetupFinding Finding;
+	Finding.Severity = EFlockSetupSeverity::Error;
+	TestTrue(TEXT("An error opens it, so it offers to stop doing so"), FFlockSetupStatus::OpensThePanelByItself(Finding));
+	Finding.Severity = EFlockSetupSeverity::Warning;
+	TestFalse(TEXT("A warning never opens it"), FFlockSetupStatus::OpensThePanelByItself(Finding));
+	Finding.Severity = EFlockSetupSeverity::Info;
+	TestFalse(TEXT("Nor a note"), FFlockSetupStatus::OpensThePanelByItself(Finding));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSetupBannerHeadlineTest, "Flock.Editor.Setup.Status.TheBannerCountsWhatItNames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSetupBannerHeadlineTest::RunTest(const FString& Parameters)
+{
+	FFlockSetupInput Updated = Healthy();
+	Updated.LastSeenSdkVersion = TEXT("0.15.0");
+	const TArray<FFlockSetupFinding> NotesOnly = FFlockSetupStatus::Evaluate(Updated);
+	if (!TestTrue(TEXT("Precondition: the upgrade notice is the only finding"), NotesOnly.Num() == 1 && Has(NotesOnly, TEXT("Flock.Sdk.Upgraded"))))
+	{
+		return false;
+	}
+	const FString Notes = FFlockConfigDetails::MakeHeadline(NotesOnly).ToString();
+	TestTrue(TEXT("Only notes: the banner says so"), Notes.Contains(TEXT("1 note"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("...and never counts zero items needing attention"), Notes.Contains(TEXT("attention"), ESearchCase::CaseSensitive));
+
+	FFlockSetupFinding Warning;
+	Warning.Severity = EFlockSetupSeverity::Warning;
+	const FString OneWarning = FFlockConfigDetails::MakeHeadline({ Warning, NotesOnly[0] }).ToString();
+	TestTrue(TEXT("One warning reads in the singular"), OneWarning.Contains(TEXT("1 item needs attention"), ESearchCase::CaseSensitive));
+
+	FFlockSetupFinding Error;
+	Error.Severity = EFlockSetupSeverity::Error;
+	TestTrue(TEXT("An error says Flock is not ready"),
+		FFlockConfigDetails::MakeHeadline({ Error, Warning }).ToString().Contains(TEXT("not ready — 1 error"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("No findings, no headline"), FFlockConfigDetails::MakeHeadline({}).IsEmpty());
 	return true;
 }
 

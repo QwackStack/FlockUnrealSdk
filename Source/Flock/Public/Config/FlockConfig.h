@@ -209,7 +209,7 @@ public:
 
 	// ─────────────────────────────── Asset Cache ──────────────────────────────
 
-	/** Cache asset downloads on disk, keyed by asset ID + UpdatedAt. Disable on WebGL. */
+	/** Cache asset downloads on disk, keyed by asset ID + UpdatedAt. */
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Asset Cache")
 	bool bEnableAssetCache = true;
 

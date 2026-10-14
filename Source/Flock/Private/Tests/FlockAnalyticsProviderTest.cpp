@@ -7,6 +7,8 @@
 #include "Analytics/FlockAnalyticsJson.h"
 #include "Analytics/FlockAnalyticsLaunches.h"
 #include "Analytics/FlockLogSink.h"
+#include "Async/Async.h"
+#include "Containers/Ticker.h"
 #include "Auth/FlockAuthSession.h"
 #include "FlockEvents.h"
 #include "FlockLogger.h"
@@ -587,7 +589,7 @@ bool FFlockAnalyticsImplicitPlayerTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("session started without being handed a player id"), bStarted);
 	TestTrue(TEXT("active"), Fix.Provider->HasActiveSession());
 	TestTrue(TEXT("attributed to the signed-in player"),
-		Fix.Fake->Requests.Last().JsonBody.Contains(TEXT("\"player_id\":\"p-implicit\""), ESearchCase::CaseSensitive));
+		Fix.Fake->LastRequest().JsonBody.Contains(TEXT("\"player_id\":\"p-implicit\""), ESearchCase::CaseSensitive));
 	return true;
 }
 
@@ -1919,7 +1921,7 @@ bool FFlockAnalyticsLogSpoolRefusalTest::RunTest(const FString& Parameters)
 	Fix.Provider->Flush();
 	TestTrue(TEXT("precondition: the entry sent had already been counted"), FailedSendsOnDisk() >= 3);
 	TestFalse(TEXT("the attempt counter never reaches the wire"),
-		Fix.Fake->Requests.Last().JsonBody.Contains(TEXT("_flock_failed_sends")));
+		Fix.Fake->LastRequest().JsonBody.Contains(TEXT("_flock_failed_sends")));
 
 	// The answered budget still ends it.
 	for (int32 Guard = 0; Guard < FFlockAnalyticsProvider::MaxFailedSends
@@ -2652,6 +2654,155 @@ bool FFlockAnalyticsSessionPlatformIsSentTest::RunTest(const FString& Parameters
 		TestEqual(FString::Printf(TEXT("'%s' warns only when it is not used"), Case.Setting),
 			FFlockRecordingLogger::AnyContains(Logger->Warnings, FString::Printf(TEXT("'%s'"), Case.Setting)), Case.bWarns);
 	}
+	return true;
+}
+
+// ── A diagnostic from another thread is queued on the game thread, which owns the queue ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsDiagnosticsFromAnotherThreadTest, "Flock.Analytics.Provider.DiagnosticsFromAnotherThreadAreQueuedOnTheGameThread",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsDiagnosticsFromAnotherThreadTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	const int32 Before = Fix.Cache->PendingCount();
+
+	Async(EAsyncExecution::Thread, [&Fix]()
+	{
+		Fix.Provider->LogEvent(TEXT("from a worker"));
+		Fix.Provider->LogError(TEXT("worker logic fault"));
+		Fix.Provider->LogException(TEXT("worker fault"));
+	}).Wait();
+	TestEqual(TEXT("Nothing touched the queue off the game thread"), Fix.Cache->PendingCount(), Before);
+
+	FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+	TestEqual(TEXT("All three are queued once the game thread runs"), Fix.Cache->PendingCount(), Before + 3);
+
+	TArray<FString> Handles;
+	TArray<FString> Payloads;
+	Fix.Cache->PeekBatch(50, Handles, Payloads);
+	bool bExceptionHasItsStack = false;
+	for (const FString& Payload : Payloads)
+	{
+		FFlockLogEventRequest Event;
+		if (FFlockAnalyticsJson::DeserializeEvent(Payload, Event) && Event.Message.Equals(TEXT("worker fault"), ESearchCase::CaseSensitive))
+		{
+			bExceptionHasItsStack = !Event.Data.ErrorTraceback.IsEmpty();
+		}
+	}
+	TestTrue(TEXT("The exception keeps the stack walked on the worker"), bExceptionHasItsStack);
+	return true;
+}
+
+// ── A crash's report is written to disk for the next launch, and no request is started from the crashing thread ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsCrashReportIsKeptToDiskOnlyTest, "Flock.Analytics.Provider.ACrashReportIsKeptToDiskOnly",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsCrashReportIsKeptToDiskOnlyTest::RunTest(const FString& Parameters)
+{
+	for (const bool bCaching : { true, false })
+	{
+		const FString Label = bCaching ? TEXT("caching on") : TEXT("caching off");
+		FFlockAnalyticsConfig Config;
+		Config.MaxCachedEvents = bCaching ? 100 : 0;
+		Config.EventBufferFlushIntervalSeconds = 0.f;
+		FFixture Fix(Config);
+		Fix.EnableLogSink(Config);
+		Fix.Provider->Initialize();
+		FFlockLogSink* Sink = Fix.Provider->GetLogSinkForTesting();
+		if (!TestNotNull(*FString::Printf(TEXT("%s: the sink is live"), *Label), Sink))
+		{
+			continue;
+		}
+		const int32 RequestsBefore = Fix.Fake->Requests.Num();
+		FFlockCapturedLog Captured;
+		Captured.Message = TEXT("fatal fault");
+		Captured.Category = FName(TEXT("LogGame"));
+		Captured.bFatal = true;
+		Captured.Source = TEXT("crash");
+		Captured.StackTrace = TEXT("Game.exe+0x10\nGame.exe+0x20");
+		Sink->OnFatal.Broadcast(Captured);
+
+		TestEqual(*FString::Printf(TEXT("%s: no request is started from the crashing thread"), *Label), Fix.Fake->Requests.Num(), RequestsBefore);
+		TestEqual(*FString::Printf(TEXT("%s: the report is kept for the next launch when a queue can keep it"), *Label),
+			Fix.Cache->PendingCount(), bCaching ? 1 : 0);
+		Fix.Provider->Shutdown();
+	}
+	return true;
+}
+
+// ── A crash marker stays until its report is queued, so a game killed in between reports it rather than losing it ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsCrashMarkerStaysUntilQueuedTest, "Flock.Analytics.Provider.TheCrashMarkerStaysUntilItsReportIsQueued",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsCrashMarkerStaysUntilQueuedTest::RunTest(const FString& Parameters)
+{
+	class FMarkerWatchingCache : public FFlockMemoryEventCache
+	{
+	public:
+		TArray<FString> MarkerPaths;
+		TOptional<bool> bMarkerThereWhenQueued;
+
+		virtual FString Enqueue(const FString& Payload) override
+		{
+			if (!bMarkerThereWhenQueued.IsSet() && Payload.Contains(TEXT("app_termination"), ESearchCase::CaseSensitive))
+			{
+				bMarkerThereWhenQueued = MarkerPaths.ContainsByPredicate([](const FString& Path) { return IFileManager::Get().FileExists(*Path); });
+			}
+			return FFlockMemoryEventCache::Enqueue(Payload);
+		}
+	};
+
+	FFixture Owner;
+	FFixture::SaveInAnEndedLaunch(Owner.Dir, FFlockAnalyticsLaunches::TerminationMarkerFileName,
+		TEXT("{\"last_state\":\"foreground\",\"session_id\":\"old-1\",\"player_id\":\"p-1\",\"last_alive_utc\":\"2026-07-20T10:00:00Z\"}"));
+
+	FFixture Fix(FFlockAnalyticsConfig(), Owner.Dir);
+	const TSharedRef<FMarkerWatchingCache> Watching = MakeShared<FMarkerWatchingCache>();
+	for (const FFlockEndedLaunchRecords& Records : Fix.Deps.Launches->GetEndedLaunchRecords())
+	{
+		Watching->MarkerPaths.Add(Records.TerminationMarkerPath);
+	}
+	TestEqual(TEXT("Precondition: one ended launch left a marker"), Watching->MarkerPaths.Num(), 1);
+	Fix.Deps.LogEventCache = Watching;
+	Fix.Provider = MakeShared<FFlockAnalyticsProvider>(Fix.Client, NoRetryPolicy(), MakeShared<FFlockNullLogger>(),
+		Fix.Session, Fix.Events, TEXT("http://x/v1"), FFlockAnalyticsConfig(), Fix.Deps, TEXT("gv-1"), TEXT("0.7.0"));
+	Fix.Provider->Initialize();
+
+	TestTrue(TEXT("The report was queued"), Watching->bMarkerThereWhenQueued.IsSet());
+	TestTrue(TEXT("While the marker was still there"), Watching->bMarkerThereWhenQueued.Get(false));
+	TestFalse(TEXT("And the marker is gone afterwards"), IFileManager::Get().FileExists(*FlockTestAt(Watching->MarkerPaths, 0)));
+	return true;
+}
+
+// ── A transaction the server may already hold is never sent again, so its revenue never counts twice ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsTransactionIsSentOnceTest, "Flock.Analytics.Provider.ATransactionIsSentOnce",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsTransactionIsSentOnceTest::RunTest(const FString& Parameters)
+{
+	FFlockRetryPolicy Policy;
+	Policy.MaxRetries = 2;
+	Policy.InitialDelaySeconds = 0.f;
+	Policy.bUseJitter = false;
+	auto Attempts = [this, &Policy](const FFlockHttpResponse& Answer)
+	{
+		FFixture Fix;
+		Fix.Provider = MakeShared<FFlockAnalyticsProvider>(Fix.Client, Policy, MakeShared<FFlockNullLogger>(),
+			Fix.Session, Fix.Events, TEXT("http://x/v1"), FFlockAnalyticsConfig(), Fix.Deps, TEXT("gv-1"), TEXT("0.7.0"));
+		Fix.Provider->Initialize();
+		Fix.Fake->On(TEXT("analytics/transactions"), Answer);
+		FFlockAnalyticsTransactionRequest Request;
+		Request.Amount = 5.0;
+		Fix.Provider->RecordTransaction(Request, nullptr);
+		for (int32 Tick = 0; Tick < 8; ++Tick)
+		{
+			FTSTicker::GetCoreTicker().Tick(1.f);
+		}
+		return Fix.Fake->CountTo(TEXT("analytics/transactions"));
+	};
+	TestEqual(TEXT("A 500 (the server may have stored it) is not sent again"), Attempts(FFlockFakeTransport::Status(500, TEXT(""))), 1);
+	TestEqual(TEXT("A 429 (the server provably did not) is retried"), Attempts(FFlockFakeTransport::Status(429, TEXT(""))), 3);
 	return true;
 }
 

@@ -166,14 +166,19 @@ private:
 			return;
 		}
 
+		// A failure that is never retried is the caller's to report, whatever the retry setting, so only a retried
+		// failure that ran out of tries is warned about here.
 		const bool bRetryable = ShouldRetry(Result.Error, State->bIdempotent);
-		const bool bHaveBudget = State->Attempt <= State->MaxRetries;
-		if (!bRetryable || !bHaveBudget)
+		if (!bRetryable)
+		{
+			State->Finish(Result);
+			return;
+		}
+		if (State->Attempt > State->MaxRetries)
 		{
 			if (State->Logger.IsValid())
 			{
-				// An outcome the caller declared as expected — "already registered", say, which it
-				// turns into a success — is not a failure, and logging it as one trains people to
+				// An outcome the caller declared as expected is not a failure, and logging it as one trains people to
 				// ignore real errors. Still worth a breadcrumb at debug level.
 				const FString Line = FString::Printf(TEXT("Operation failed after %d attempt(s): %s"),
 					State->Attempt, *Result.Error.Message);
@@ -183,7 +188,7 @@ private:
 				}
 				else
 				{
-					State->Logger->LogError(Line);
+					State->Logger->LogWarning(Line);
 				}
 			}
 			State->Finish(Result);

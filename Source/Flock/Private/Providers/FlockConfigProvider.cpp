@@ -424,7 +424,7 @@ void FFlockConfigProvider::GetPlayerFeatures(const FString& PlayerId, TFunction<
 	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
 
-	// No snapshot: per-player resolved features must not be served stale, so this is a plain Execute.
+	// No snapshot on disk: a player's features are kept in memory for the run only (PlayerFeaturesByPlayer).
 	Execute<FFlockGameConfigSchema>(
 		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockGameConfigSchema>)> OnAttempt)
 		{

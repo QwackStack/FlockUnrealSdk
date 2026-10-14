@@ -12,7 +12,7 @@
  * A provider's resolved structured data as an opaque, read-mostly handle (OverlayFields is the single write
  * path, for the optimistic row an offline command leaves). The backend delivers such data as a
  * recursive list[DataField] tree (each node typed object/list/dict/scalar); this collapses it once, at
- * parse, into a single flat JSON object — the UE analog of the canonical SDK's ToFlatObject — and holds
+ * parse, into a single flat JSON object, and holds
  * that. Shared across features: a game config's/patch's `data` and a player template's/row's `data` all use
  * it.
  *

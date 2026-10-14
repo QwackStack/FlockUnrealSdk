@@ -8,6 +8,18 @@
 #include "Models/FlockShopModels.h"
 
 /**
+ * Id, then name, letter for letter: the one order codegen walks entities in. Generated names (where two
+ * entities would share one, the later takes `_2`) and the content hash then never depend on the order
+ * the server listed them in.
+ */
+template <typename T>
+bool FlockCodegenComesBefore(const T& A, const T& B)
+{
+	const int32 ById = A.Id.Compare(B.Id, ESearchCase::CaseSensitive);
+	return ById != 0 ? ById < 0 : A.Name.Compare(B.Name, ESearchCase::CaseSensitive) < 0;
+}
+
+/**
  * Everything codegen emits from, fetched in one pass: the player templates and game configs whose
  * `schema` describes the typed shapes, and the shops whose items and currencies become typed ids.
  *
@@ -36,9 +48,22 @@ struct FLOCKEDITOR_API FFlockSchemaSnapshot
 	TArray<FFlockGameConfigSchema> GameConfigs;
 	TArray<FFlockShop> Shops;
 
-	/** True when the resolved and baked version ids disagree — see BakedGameVersionId. */
+	/** True when the resolved and baked version ids disagree — see BakedGameVersionId. Compared letter for letter. */
 	bool IsBakeStale() const
 	{
-		return !BakedGameVersionId.IsEmpty() && !GameVersionId.IsEmpty() && BakedGameVersionId != GameVersionId;
+		return !BakedGameVersionId.IsEmpty() && !GameVersionId.IsEmpty()
+			&& !BakedGameVersionId.Equals(GameVersionId, ESearchCase::CaseSensitive);
+	}
+
+	/** Puts templates, configs, shops and each shop's items in FlockCodegenComesBefore order. */
+	void SortForEmitting()
+	{
+		PlayerTemplates.StableSort([](const FFlockPlayerTemplateSchema& A, const FFlockPlayerTemplateSchema& B) { return FlockCodegenComesBefore(A, B); });
+		GameConfigs.StableSort([](const FFlockGameConfigSchema& A, const FFlockGameConfigSchema& B) { return FlockCodegenComesBefore(A, B); });
+		Shops.StableSort([](const FFlockShop& A, const FFlockShop& B) { return FlockCodegenComesBefore(A, B); });
+		for (FFlockShop& Shop : Shops)
+		{
+			Shop.ShopItems.StableSort([](const FFlockShopItem& A, const FFlockShopItem& B) { return FlockCodegenComesBefore(A, B); });
+		}
 	}
 };

@@ -5,15 +5,15 @@
 
 namespace
 {
-	/** Applies ±25% jitter to a backoff delay (no-op when jitter is disabled). */
+	/** Applies ±25% jitter to a backoff delay (no-op when jitter is disabled), never past MaxDelay. */
 	float CalculateDelay(float BaseDelaySeconds, const FFlockRetryPolicy& Policy)
 	{
 		if (!Policy.bUseJitter)
 		{
-			return BaseDelaySeconds;
+			return FMath::Min(BaseDelaySeconds, Policy.MaxDelaySeconds);
 		}
 		const float JitterFactor = 0.75f + FMath::FRand() * 0.5f;
-		return BaseDelaySeconds * JitterFactor;
+		return FMath::Min(BaseDelaySeconds * JitterFactor, Policy.MaxDelaySeconds);
 	}
 }
 

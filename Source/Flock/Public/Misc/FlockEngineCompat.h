@@ -43,8 +43,9 @@
  * Moving either end
  * -----------------
  * Install the engine, run `Tooling/Build-AllEngines.ps1` (which builds *and* runs the test suite on
- * every installed engine, and reports what it could not cover), fix what breaks, then move the end here,
- * in `Flock.uplugin`, and in README.md together - the CI consistency job fails if those disagree.
+ * every installed engine, and reports what it could not cover), fix what breaks, then move the end here
+ * and in README.md together - the CI consistency job fails if those disagree. (`Flock.uplugin` carries no
+ * engine field and must not: see the README.)
  *
  * Known version-sensitive APIs the SDK already uses, for whoever does that work:
  *   - `EJsonObjectConversionFlags::SkipStandardizeCase`  (5.1+, so 5.0 can never be supported)

@@ -89,7 +89,7 @@ bool FFlockEnumShopItemTest::RunTest(const FString& Parameters)
 		TestEqualSensitive(TEXT("display name is Pascal-cased from the item name"), GemPack->Key, FString(TEXT("GemPack")));
 	}
 
-	// A name starting with a digit cannot be an identifier — same problem the canonical SDK hits.
+	// A name starting with a digit cannot be an identifier.
 	const TPair<FString, FString>* Gems = Items.FindByPredicate(
 		[](const TPair<FString, FString>& Member) { return Member.Value == TEXT("item-3"); });
 	if (TestNotNull(TEXT("digit-led item present"), Gems))

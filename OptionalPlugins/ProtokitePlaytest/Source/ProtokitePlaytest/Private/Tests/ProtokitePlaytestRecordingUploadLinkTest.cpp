@@ -125,7 +125,7 @@ bool FProtokitePlaytestUploadLinkSendsContentTypeTest::RunTest(const FString& Pa
 	{
 		return false;
 	}
-	const FFlockHttpRequest& Request = Fixture.Transport->Requests[0];
+	const FFlockHttpRequest& Request = Fixture.Transport->RequestAt(0);
 	TestEqual(TEXT("A POST"), Request.Method, FString(TEXT("POST")));
 	TestTrue(TEXT("It names the session"), Request.Url.Contains(UploadSessionId));
 	TestTrue(TEXT("It asks for video/webm"), Request.JsonBody.Contains(TEXT("\"content_type\":\"video/webm\""), ESearchCase::CaseSensitive));

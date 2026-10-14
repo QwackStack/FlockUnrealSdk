@@ -77,7 +77,9 @@ public:
 	// ── Commands ──
 
 	/**
-	 * Writes a set of fields onto a player-data row. Queued when offline (the cached row is overlaid so a
+	 * Replaces a player-data row with Data. The server replaces the whole row and needs every field the template
+	 * declares, nullable ones included: one left out is refused with game_command.template_validation_failed naming
+	 * it. To change one field, use UpdatePlayerDataField. Queued when offline (the cached row is overlaid so a
 	 * read-after-write is consistent), posted immediately otherwise.
 	 */
 	void UpdatePlayerData(const FString& PlayerDataId, const FFlockCommandData& Data,
@@ -152,19 +154,24 @@ private:
 		TFunction<void(TFlockResult<FFlockPlayerData>)> OnComplete);
 
 	/**
-	 * The shared offline/online fork for a queueable command: offline it persists, overlays the cached row
-	 * and answers Ok with that row; online it posts. Never used by AddGameFunds.
+	 * The shared offline/online fork for a queueable command: offline, or while older writes of this player are still
+	 * queued, it persists, overlays the cached row and answers Ok with that row (online, a flush is started); otherwise it
+	 * posts. A write sent past a queued one would reach the server first, and the queued one's replay would then undo it.
+	 * Never used by AddGameFunds.
 	 */
 	void SendQueueable(const FString& Path, const FString& PayloadJson, const FString& Context,
 		const FString& PlayerDataId, const FFlockCommandData& OptimisticFields,
 		TFunction<void(TFlockResult<FFlockPlayerData>)> OnComplete);
 
 	/** Persists the write and returns the optimistically-updated cached row (an empty row when uncached). */
-	FFlockPlayerData EnqueueOffline(const FString& Path, const FString& PayloadJson, const FString& Context,
-		const FString& PlayerDataId, const FFlockCommandData& OptimisticFields);
+	FFlockPlayerData EnqueueWrite(const FString& Path, const FString& PayloadJson, const FString& Context,
+		const FString& PlayerDataId, const FFlockCommandData& OptimisticFields, bool bReachable);
 
 	/** Drains the head of the queue, then recurses; ends the flush on an empty queue or a transient failure. */
 	void FlushNext(const TSharedRef<int32>& Delivered, TFunction<void(TFlockResult<int32>)> OnComplete);
+
+	/** FlushNext, or the end of the flush once the queue's player is no longer the one signed in. */
+	void FlushNextWhileSignedIn(const TSharedRef<int32>& Delivered, TFunction<void(TFlockResult<int32>)> OnComplete);
 
 	/** Ends the in-flight flush: clears the guard and reports the count exactly once. */
 	void FinishFlush(int32 Delivered, TFunction<void(TFlockResult<int32>)> OnComplete);
@@ -179,7 +186,7 @@ private:
 	void EnsureQueueLoaded();
 	void PersistQueue();
 
-	/** "<version>/command/<player id>" — one queue per player, so a replay can't cross accounts. */
+	/** "_state/command/<player id>" — one queue per player, so a replay can't cross accounts, kept apart from any game version. */
 	FString GetQueueScope() const;
 
 	/** Folds a mutated row into the player cache. No-op without a player provider. */

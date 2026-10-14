@@ -39,6 +39,15 @@ public:
 	static bool IsJson(const FString& Text);
 
 	/**
+	 * The object a JSON value holds, or null when it holds anything else. The engine's AsObject() hands back an empty
+	 * object for a non-object (and logs an error), which reads as a valid item with nothing in it.
+	 */
+	static TSharedPtr<FJsonObject> AsObjectOrNull(const TSharedPtr<FJsonValue>& Value)
+	{
+		return Value.IsValid() && Value->Type == EJson::Object ? Value->AsObject() : nullptr;
+	}
+
+	/**
 	 * The field names of a JSON object, in author spelling, in map order.
 	 *
 	 * The one JSON operation with no engine API behind it, which is why it is worth centralising: every
@@ -344,7 +353,7 @@ public:
 		}
 		for (const TSharedPtr<FJsonValue>& Elem : *Items)
 		{
-			const TSharedPtr<FJsonObject> ElemObj = Elem.IsValid() ? Elem->AsObject() : nullptr;
+			const TSharedPtr<FJsonObject> ElemObj = FFlockJsonUtils::AsObjectOrNull(Elem);
 			if (!ElemObj.IsValid())
 			{
 				OutError = TEXT("Malformed paginated item");

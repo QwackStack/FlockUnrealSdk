@@ -14,6 +14,7 @@
 #include "Providers/FlockConfigProvider.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
+#include "Tests/Support/FlockTestSafeIndex.h"
 
 namespace FlockConfigProviderTestHelpers
 {
@@ -171,7 +172,7 @@ bool FFlockConfigProviderByTagTest::RunTest(const FString& Parameters)
 	});
 	TestTrue(TEXT("by-tag succeeds"), bDone);
 	TestEqual(TEXT("one config in list"), Configs.Num(), 1);
-	TestTrue(TEXT("tag query present"), Fx.Fake->Requests.Num() > 0 && Fx.Fake->Requests[0].Url.Contains(TEXT("tag=gameplay")));
+	TestTrue(TEXT("tag query present"), Fx.Fake->Requests.Num() > 0 && FlockTestAt(Fx.Fake->Requests, 0).Url.Contains(TEXT("tag=gameplay")));
 
 	Cleanup(Fx.Dir);
 	return true;
@@ -190,7 +191,7 @@ bool FFlockConfigProviderTagAnyTest::RunTest(const FString& Parameters)
 	if (Fx.Fake->Requests.Num() > 0)
 	{
 		// Any means no filter: the query parameter is omitted entirely.
-		TestFalse(TEXT("no tag query for Any"), Fx.Fake->Requests[0].Url.Contains(TEXT("tag=")));
+		TestFalse(TEXT("no tag query for Any"), FlockTestAt(Fx.Fake->Requests, 0).Url.Contains(TEXT("tag=")));
 	}
 
 	Cleanup(Fx.Dir);

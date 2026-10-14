@@ -8,6 +8,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Http/FlockJsonUtils.h"
 
 namespace
 {
@@ -103,18 +104,32 @@ namespace
 
 	FString ResolveMemberType(const TSharedRef<FJsonObject>& Field, const FString& NamePrefix, int32 Depth,
 		const FString& ModuleApi, TArray<FStructText>& InOutStructs, FWireNamesByStruct& OutWireNames,
-		TArray<FString>& OutWarnings);
+		TSet<FString>& InOutUsedStructNames, TArray<FString>& OutWarnings);
+
+	/** Base, else Base_2, Base_3...: the first not yet used. Case-insensitively, as type and member names are. */
+	FString ReserveName(const FString& Base, TSet<FString>& InOutUsed)
+	{
+		FString Candidate = Base;
+		int32 Suffix = 2;
+		while (InOutUsed.Contains(Candidate))
+		{
+			Candidate = FString::Printf(TEXT("%s_%d"), *Base, Suffix++);
+		}
+		InOutUsed.Add(Candidate);
+		return Candidate;
+	}
 
 	FString BuildStruct(const FString& StructName, const TArray<TSharedPtr<FJsonValue>>& Entries, int32 Depth,
 		const FString& ModuleApi, const FString& Comment, TArray<FStructText>& InOutStructs,
-		FWireNamesByStruct& OutWireNames, TArray<FString>& OutWarnings)
+		FWireNamesByStruct& OutWireNames, TSet<FString>& InOutUsedStructNames, TArray<FString>& OutWarnings)
 	{
 		FString Members;
 		int32 Added = 0;
+		TSet<FString> UsedMemberNames;
 
 		for (const TSharedPtr<FJsonValue>& Entry : Entries)
 		{
-			const TSharedPtr<FJsonObject> Field = Entry.IsValid() ? Entry->AsObject() : nullptr;
+			const TSharedPtr<FJsonObject> Field = FFlockJsonUtils::AsObjectOrNull(Entry);
 			if (!Field.IsValid())
 			{
 				continue;
@@ -129,13 +144,21 @@ namespace
 			// member is what you type, the registered name is what the server sees. Without that map a
 			// rename silently writes a key the server rejects, which is why the Blueprint tier, which has
 			// no such map, keeps declared names verbatim.
-			const FString MemberName = PascalCase(DeclaredName);
-			if (!FFlockCppTypeEmitter::IsUsableMemberName(MemberName))
+			const FString PascalName = PascalCase(DeclaredName);
+			if (!FFlockCppTypeEmitter::IsUsableMemberName(PascalName))
 			{
 				OutWarnings.Add(FString::Printf(
 					TEXT("'%s.%s': field name cannot be made into a legal C++ member name, so it was skipped. ")
 					TEXT("Rename it on the dashboard to use it from C++."), *StructName, *DeclaredName));
 				continue;
+			}
+			// Two fields can make one member name (`max_health`, `maxHealth`); the later takes a suffix, which
+			// the wire-name table below makes safe.
+			const FString MemberName = ReserveName(PascalName, UsedMemberNames);
+			if (!MemberName.Equals(PascalName, ESearchCase::CaseSensitive))
+			{
+				OutWarnings.Add(FString::Printf(TEXT("'%s.%s': an earlier field makes the same member name, so it is %s."),
+					*StructName, *DeclaredName, *MemberName));
 			}
 			if (!MemberName.Equals(DeclaredName, ESearchCase::CaseSensitive))
 			{
@@ -143,7 +166,7 @@ namespace
 			}
 
 			const FString MemberType = ResolveMemberType(Field.ToSharedRef(),
-				StructName + MemberName, Depth, ModuleApi, InOutStructs, OutWireNames, OutWarnings);
+				StructName + MemberName, Depth, ModuleApi, InOutStructs, OutWireNames, InOutUsedStructNames, OutWarnings);
 
 			// Default-initialized so an unfetched struct is zeroed rather than holding stack garbage.
 			// FString/TArray/TMap default themselves; only the scalars need it spelled out.
@@ -174,7 +197,7 @@ namespace
 		}
 
 		FString Body;
-		Body += FString::Printf(TEXT("/** %s */\n"), *Comment);
+		Body += FString::Printf(TEXT("/** %s */\n"), *FFlockCppTypeEmitter::ToCppCommentText(Comment));
 		Body += TEXT("USTRUCT(BlueprintType)\n");
 		Body += FString::Printf(TEXT("struct %s %s\n{\n\tGENERATED_BODY()\n\n"), *ModuleApi, *StructName);
 		Body += Members;
@@ -186,7 +209,7 @@ namespace
 
 	FString ResolveMemberType(const TSharedRef<FJsonObject>& Field, const FString& NamePrefix, int32 Depth,
 		const FString& ModuleApi, TArray<FStructText>& InOutStructs, FWireNamesByStruct& OutWireNames,
-		TArray<FString>& OutWarnings)
+		TSet<FString>& InOutUsedStructNames, TArray<FString>& OutWarnings)
 	{
 		FString WireType;
 		Field->TryGetStringField(TEXT("type"), WireType);
@@ -221,15 +244,16 @@ namespace
 					TEXT("'%s': object with no declared body; emitted as an opaque JSON handle."), *NamePrefix));
 				return TEXT("FFlockJsonData");
 			}
-			// Appends the nested struct to the list before returning, so it is written out first.
-			return BuildStruct(TEXT("F") + NamePrefix.RightChop(1), Children, Depth + 1, ModuleApi,
-				FString::Printf(TEXT("Nested object `%s`."), *NamePrefix), InOutStructs, OutWireNames,
-				OutWarnings);
+			// Appends the nested struct to the list before returning, so it is written out first. Its name is
+			// reserved like an entity's, so it can never take one another struct already has.
+			return BuildStruct(ReserveName(TEXT("F") + NamePrefix.RightChop(1), InOutUsedStructNames), Children,
+				Depth + 1, ModuleApi, FString::Printf(TEXT("Nested object `%s`."), *NamePrefix), InOutStructs,
+				OutWireNames, InOutUsedStructNames, OutWarnings);
 		}
 
 		if (Kind == EFlockSchemaKind::List || Kind == EFlockSchemaKind::Dict)
 		{
-			const TSharedPtr<FJsonObject> Element = Children.IsEmpty() ? nullptr : Children[0]->AsObject();
+			const TSharedPtr<FJsonObject> Element = Children.IsEmpty() ? nullptr : FFlockJsonUtils::AsObjectOrNull(Children[0]);
 			if (!Element.IsValid())
 			{
 				OutWarnings.Add(FString::Printf(
@@ -239,7 +263,7 @@ namespace
 			}
 
 			const FString ElementType = ResolveMemberType(Element.ToSharedRef(), NamePrefix + TEXT("Item"),
-				Depth + 1, ModuleApi, InOutStructs, OutWireNames, OutWarnings);
+				Depth + 1, ModuleApi, InOutStructs, OutWireNames, InOutUsedStructNames, OutWarnings);
 
 			// UHT rejects a container whose element is itself a container, so this degrades rather than
 			// producing a header that fails the user's build.
@@ -324,7 +348,7 @@ namespace
 		for (const TPair<FString, FString>& Member : Members)
 		{
 			Text += FString::Printf(TEXT("\tcase E%s::%s: return TEXT(\"%s\");\n"),
-				*EnumName, *Member.Key, *Member.Value);
+				*EnumName, *Member.Key, *FFlockCppTypeEmitter::ToCppStringContents(Member.Value));
 		}
 		Text += TEXT("\tdefault: return FString();\n\t}\n}\n");
 		return Text;
@@ -334,6 +358,58 @@ namespace
 FString FFlockCppTypeEmitter::MakeStructName(const FString& EntityName, const TCHAR* Suffix)
 {
 	return TEXT("F") + PascalCase(EntityName) + Suffix;
+}
+
+FFlockCppTypeEmitter::FStructNames FFlockCppTypeEmitter::MakeStructNames(const FFlockSchemaSnapshot& Snapshot)
+{
+	FStructNames Names;
+	TSet<FString> Used;
+	for (const FFlockPlayerTemplateSchema& Template : Snapshot.PlayerTemplates)
+	{
+		Names.Templates.Add(ReserveName(MakeStructName(Template.Name, FFlockStructEmitter::TemplateSuffix), Used));
+	}
+	for (const FFlockGameConfigSchema& Config : Snapshot.GameConfigs)
+	{
+		Names.Configs.Add(ReserveName(MakeStructName(Config.Name, FFlockStructEmitter::ConfigSuffix), Used));
+	}
+	return Names;
+}
+
+FString FFlockCppTypeEmitter::ToCppStringContents(const FString& Text)
+{
+	FString Out;
+	Out.Reserve(Text.Len());
+	for (const TCHAR Character : Text)
+	{
+		if (Character == TEXT('"') || Character == TEXT('\\'))
+		{
+			Out.AppendChar(TEXT('\\'));
+			Out.AppendChar(Character);
+		}
+		else if (Character < 0x20 || Character == 0x7F)
+		{
+			// Three octal digits always, so the next character can never extend the escape. Written by hand: UE 5.6
+			// and later refuse `%o` in a format string.
+			const uint32 Code = static_cast<uint32>(Character);
+			Out.AppendChar(TEXT('\\'));
+			Out.AppendChar(static_cast<TCHAR>(TEXT('0') + ((Code >> 6) & 7)));
+			Out.AppendChar(static_cast<TCHAR>(TEXT('0') + ((Code >> 3) & 7)));
+			Out.AppendChar(static_cast<TCHAR>(TEXT('0') + (Code & 7)));
+		}
+		else
+		{
+			Out.AppendChar(Character);
+		}
+	}
+	return Out;
+}
+
+FString FFlockCppTypeEmitter::ToCppCommentText(const FString& Text)
+{
+	FString Out = Text.Replace(TEXT("*/"), TEXT("* /"));
+	Out.ReplaceCharInline(TEXT('\n'), TEXT(' '));
+	Out.ReplaceCharInline(TEXT('\r'), TEXT(' '));
+	return Out;
 }
 
 bool FFlockCppTypeEmitter::IsUsableMemberName(const FString& DeclaredName)
@@ -363,33 +439,22 @@ FFlockCppTypeEmitter::FEmitResult FFlockCppTypeEmitter::Emit(const FFlockSchemaS
 	const FString PublicDir = FPaths::Combine(GeneratedRoot, TEXT("Public"));
 	IFileManager::Get().MakeDirectory(*PublicDir, /*Tree*/ true);
 
-	// Generated headers are wholly owned, so the previous set goes rather than accumulating — a template
-	// deleted on the backend must lose its header, or the module still compiles a type that no longer
-	// exists. The manifest and module files are named differently and are left alone.
-	const FString ManifestHeader = ModuleName + TEXT("Manifest.h");
-	TArray<FString> Existing;
-	IFileManager::Get().FindFiles(Existing, *FPaths::Combine(PublicDir, TEXT("*.h")), /*Files*/ true, /*Dirs*/ false);
-	for (const FString& File : Existing)
-	{
-		// The manifest header belongs to the module skeleton, not to this emitter, and removing it would
-		// leave anything including it uncompilable until the next full sync.
-		if (File.Equals(ManifestHeader, ESearchCase::IgnoreCase))
-		{
-			continue;
-		}
-		IFileManager::Get().Delete(*FPaths::Combine(PublicDir, File));
-	}
-
 	const FString ModuleApi = ModuleName.ToUpper() + TEXT("_API");
 	FWireNamesByStruct WireNames;
 
-	auto EmitEntity = [&](const FString& EntityName, const FString& SchemaJson, const TCHAR* Suffix,
+	// Every entity's name is reserved first, so a nested struct never takes a name an entity needs.
+	const FStructNames Names = MakeStructNames(Snapshot);
+	TSet<FString> UsedStructNames;
+	UsedStructNames.Append(Names.Templates);
+	UsedStructNames.Append(Names.Configs);
+
+	auto EmitEntity = [&](const FString& EntityName, const FString& StructName, const FString& SchemaJson,
 		const TCHAR* Kind)
 	{
-		const FString StructName = MakeStructName(EntityName, Suffix);
 		TArray<FStructText> Structs;
 		BuildStruct(StructName, FFlockSchemaTypes::ParseSchemaArray(SchemaJson), /*Depth*/ 0, ModuleApi,
-			FString::Printf(TEXT("The \"%s\" %s."), *EntityName, Kind), Structs, WireNames, Result.Warnings);
+			FString::Printf(TEXT("The \"%s\" %s."), *EntityName, Kind), Structs, WireNames, UsedStructNames,
+			Result.Warnings);
 
 		// Nested structs were appended before their parent, which is the order C++ needs.
 		const FString HeaderName = StructName;
@@ -404,13 +469,15 @@ FFlockCppTypeEmitter::FEmitResult FFlockCppTypeEmitter::Emit(const FFlockSchemaS
 		Result.StructCount += Structs.Num();
 	};
 
-	for (const FFlockPlayerTemplateSchema& Template : Snapshot.PlayerTemplates)
+	for (int32 Index = 0; Index < Snapshot.PlayerTemplates.Num(); ++Index)
 	{
-		EmitEntity(Template.Name, Template.SchemaJson, FFlockStructEmitter::TemplateSuffix, TEXT("player template"));
+		const FFlockPlayerTemplateSchema& Template = Snapshot.PlayerTemplates[Index];
+		EmitEntity(Template.Name, Names.Templates[Index], Template.SchemaJson, TEXT("player template"));
 	}
-	for (const FFlockGameConfigSchema& Config : Snapshot.GameConfigs)
+	for (int32 Index = 0; Index < Snapshot.GameConfigs.Num(); ++Index)
 	{
-		EmitEntity(Config.Name, Config.SchemaJson, FFlockStructEmitter::ConfigSuffix, TEXT("game config"));
+		const FFlockGameConfigSchema& Config = Snapshot.GameConfigs[Index];
+		EmitEntity(Config.Name, Names.Configs[Index], Config.SchemaJson, TEXT("game config"));
 	}
 
 	// The enums, from the same member sets the Blueprint target uses — so an id means the same thing
@@ -471,7 +538,7 @@ FFlockCppTypeEmitter::FEmitResult FFlockCppTypeEmitter::Emit(const FFlockSchemaS
 		for (const TPair<FString, FString>& Pair : Entry.Value)
 		{
 			TableSource += FString::Printf(TEXT("\t\t{ TEXT(\"%s\"), TEXT(\"%s\") },\n"),
-				*Pair.Key, *Pair.Value);
+				*Pair.Key, *FFlockCppTypeEmitter::ToCppStringContents(Pair.Value));
 		}
 		TableSource += TEXT("\t});\n");
 	}
@@ -495,6 +562,24 @@ FFlockCppTypeEmitter::FEmitResult FFlockCppTypeEmitter::Emit(const FFlockSchemaS
 		return Result;
 	}
 	Result.Headers.Add(ModuleName + TEXT("WireNames.h"));
+
+	// The headers a previous sync wrote and this one did not go, or the module still compiles a type the backend
+	// deleted. Removed after writing rather than before, so an unchanged header keeps its time and nothing
+	// rebuilds. The skeleton's manifest header and the accessors' header belong to the other emitters.
+	const FString ManifestHeader = ModuleName + TEXT("Manifest.h");
+	const FString AccessorsHeader = ModuleName + TEXT("Accessors.h");
+	TArray<FString> Existing;
+	IFileManager::Get().FindFiles(Existing, *FPaths::Combine(PublicDir, TEXT("*.h")), /*Files*/ true, /*Dirs*/ false);
+	for (const FString& File : Existing)
+	{
+		const bool bWrittenNow = Result.Headers.ContainsByPredicate(
+			[&File](const FString& Header) { return Header.Equals(File, ESearchCase::IgnoreCase); });
+		if (!bWrittenNow && !File.Equals(ManifestHeader, ESearchCase::IgnoreCase)
+			&& !File.Equals(AccessorsHeader, ESearchCase::IgnoreCase))
+		{
+			IFileManager::Get().Delete(*FPaths::Combine(PublicDir, File));
+		}
+	}
 
 	Result.bSucceeded = true;
 	return Result;

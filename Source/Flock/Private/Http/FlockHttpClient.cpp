@@ -14,7 +14,8 @@ namespace
 		}
 		if (HeaderValue.IsNumeric())
 		{
-			OutSeconds = FCString::Atof(*HeaderValue);
+			// A negative value would make the retry wait less than nothing; it means "now".
+			OutSeconds = FMath::Max(0.f, FCString::Atof(*HeaderValue));
 			return true;
 		}
 		FDateTime When;
@@ -158,6 +159,19 @@ void FFlockHttpClient::LogResponse(const FString& Method, const FString& Url, co
 		? FString(TEXT("no response body"))
 		: Response.Body.Left(512);
 
+	// A cancel is the game's or the SDK's own choice, so it is no failure and stays out of the warning channel.
+	if (Response.Result == EFlockHttpResult::Cancelled)
+	{
+		Logger->LogDebug(FString::Printf(TEXT("<- %s %s [%s] cancelled after %.0f ms"), *Method, *Url, *Origin, ElapsedMs));
+		return;
+	}
+	// A timeout reached the network and heard nothing back in time, which is not the same as not reaching the server.
+	if (Response.Result == EFlockHttpResult::Timeout)
+	{
+		Logger->LogWarning(FString::Printf(TEXT("<- %s %s [%s] had no answer within the timeout (%.0f ms)"),
+			*Method, *Url, *Origin, ElapsedMs));
+		return;
+	}
 	if (Response.Result != EFlockHttpResult::Success)
 	{
 		Logger->LogWarning(FString::Printf(TEXT("<- %s %s [%s] failed to reach the server after %.0f ms: %s"),

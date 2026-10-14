@@ -83,7 +83,8 @@ public:
 	 *
 	 * The manifest goes **last and unconditionally**, mirroring how a sync writes it last: it is the claim
 	 * that generated output exists, so leaving it behind would have the drift check vouch for an empty
-	 * folder. (A generated C++ module would need its skeleton kept instead — there is none in this tier.)
+	 * folder. A generated C++ module keeps its skeleton: its types go and the module stays, so the project still
+	 * compiles.
 	 */
 	static FCleanResult Clean(bool bShowConfirmation = true);
 

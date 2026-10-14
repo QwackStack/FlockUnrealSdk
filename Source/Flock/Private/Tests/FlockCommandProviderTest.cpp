@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -16,6 +17,7 @@
 #include "Providers/FlockPlayerProvider.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
+#include "Tests/Support/FlockTestSafeIndex.h"
 
 namespace FlockCommandProviderTestHelpers
 {
@@ -403,10 +405,109 @@ bool FFlockCommandQueuePersistsTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("queue drained"), Fx.Commands->GetPendingWriteCount(), 0);
 	// Oldest first: the whole-bag write was queued before the single-field one.
 	TestEqual(TEXT("two requests"), Fx.Fake->Requests.Num(), 2);
-	TestTrue(TEXT("replayed in order"), Fx.Fake->Requests[0].Url.Contains(TEXT("update_player_data"))
-		&& Fx.Fake->Requests[1].Url.Contains(TEXT("update_player_data_key")));
+	TestTrue(TEXT("replayed in order"), FlockTestAt(Fx.Fake->Requests, 0).Url.Contains(TEXT("update_player_data"))
+		&& FlockTestAt(Fx.Fake->Requests, 1).Url.Contains(TEXT("update_player_data_key")));
 
 	Cleanup(Dir);
+	return true;
+}
+
+// ── A save made while older ones are still queued queues behind them, so their replay cannot undo it ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandOnlineSaveQueuesBehindTest, "Flock.Command.Provider.AnOnlineSaveQueuesBehindOlderOnes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCommandOnlineSaveQueuesBehindTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx;
+	Fx.SignIn();
+	Fx.bReachable = false;
+	Fx.Commands->UpdatePlayerData(TEXT("pd-1"), FFlockCommandData().Set(TEXT("coins"), 1), nullptr);
+	// Back online, and the older write has not been sent yet when the next save is made.
+	Fx.bReachable = true;
+	Fx.Fake->On(TEXT("game_command"), FFlockFakeTransport::Ok(PlayerDataObj(TEXT("pd-1"), TEXT("tmpl-1"), TEXT("player-a"), 2)));
+
+	bool bAnswered = false;
+	Fx.Commands->UpdatePlayerDataField(TEXT("pd-1"), TEXT("coins"), 2, [&bAnswered](TFlockResult<FFlockPlayerData> R) { bAnswered = R.bSuccess; });
+
+	TestTrue(TEXT("The save is answered"), bAnswered);
+	TestEqual(TEXT("Both went out"), Fx.Fake->Requests.Num(), 2);
+	TestTrue(TEXT("The older write first, so the newer value is the one the server keeps"),
+		FlockTestAt(Fx.Fake->Requests, 0).Url.EndsWith(TEXT("update_player_data"))
+		&& FlockTestAt(Fx.Fake->Requests, 1).Url.EndsWith(TEXT("update_player_data_key")));
+	TestEqual(TEXT("Nothing left queued"), Fx.Commands->GetPendingWriteCount(), 0);
+
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+// ── A player-data write reports the leaderboards that turned its score away, and the cached row never keeps them ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandLeaderboardRefusalsTest, "Flock.Command.Provider.AWriteReportsTheLeaderboardsThatRefusedIt",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCommandLeaderboardRefusalsTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx;
+	Fx.SignIn();
+	Fx.PrimePlayerCache();
+	const FString Row = PlayerDataObj(TEXT("pd-1"), TEXT("tmpl-1"), TEXT("player-a"), 9000);
+	const FString Refused = Row.LeftChop(1) + TEXT(",\"leaderboard_refusals\":[")
+		TEXT("{\"leaderboard_id\":\"lb-1\",\"leaderboard_name\":\"Daily\",\"reason\":\"gain_limit\",\"retryable\":true,\"retry_after_seconds\":120},")
+		TEXT("{\"leaderboard_id\":\"lb-2\",\"leaderboard_name\":\"AllTime\",\"reason\":\"score_bounds\",\"retryable\":false,\"retry_after_seconds\":null}]}");
+	Fx.Fake->On(TEXT("game_command"), FFlockFakeTransport::Ok(Refused));
+
+	FFlockPlayerData Written;
+	Fx.Commands->UpdatePlayerDataField(TEXT("pd-1"), TEXT("coins"), 9000, [&Written](TFlockResult<FFlockPlayerData> R) { Written = R.Value; });
+
+	if (TestEqual(TEXT("Both refusals are reported"), Written.LeaderboardRefusals.Num(), 2))
+	{
+		const FFlockLeaderboardRefusal& Daily = FlockTestAt(Written.LeaderboardRefusals, 0);
+		TestEqualSensitive(TEXT("By the board's name"), Daily.LeaderboardName, FString(TEXT("Daily")));
+		TestEqualSensitive(TEXT("And id"), Daily.LeaderboardId, FString(TEXT("lb-1")));
+		TestEqualSensitive(TEXT("With the reason as the server spelled it"), Daily.Reason, FString(FlockLeaderboardRefusalReasons::GainLimit));
+		TestTrue(TEXT("Retryable"), Daily.Retryable);
+		TestEqual(TEXT("In two minutes"), Daily.RetryAfterSeconds, 120);
+		const FFlockLeaderboardRefusal& AllTime = FlockTestAt(Written.LeaderboardRefusals, 1);
+		TestEqualSensitive(TEXT("The other's reason"), AllTime.Reason, FString(FlockLeaderboardRefusalReasons::ScoreBounds));
+		TestFalse(TEXT("Never retryable"), AllTime.Retryable);
+		TestEqual(TEXT("With no wait to give"), AllTime.RetryAfterSeconds, -1);
+	}
+	FFlockPlayerData Cached;
+	TestTrue(TEXT("Precondition: the row is cached"), Fx.Players->TryGetCachedRow(TEXT("pd-1"), Cached));
+	TestEqual(TEXT("The cached row keeps the write, not its refusals"), Cached.LeaderboardRefusals.Num(), 0);
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+// ── A flush stops once its player signs out: the command routes take no token, so nothing else would stop it ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandFlushStopsAtSignOutTest, "Flock.Command.Provider.AFlushStopsWhenItsPlayerSignsOut",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCommandFlushStopsAtSignOutTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx;
+	Fx.SignIn();
+	Fx.bReachable = false;
+	Fx.Commands->UpdatePlayerData(TEXT("pd-1"), FFlockCommandData().Set(TEXT("coins"), 1), nullptr);
+	Fx.Commands->UpdatePlayerDataField(TEXT("pd-1"), TEXT("coins"), 2, nullptr);
+	Fx.bReachable = true;
+	Fx.Fake->On(TEXT("game_command"), FFlockFakeTransport::Ok(PlayerDataObj(TEXT("pd-1"), TEXT("tmpl-1"), TEXT("player-a"), 2)));
+	Fx.Fake->bDeferred = true;
+
+	Fx.Commands->FlushPendingWrites();
+	TestEqual(TEXT("Precondition: the first write is on its way"), Fx.Fake->Requests.Num(), 1);
+	Fx.Session->ClearTokens();
+	Fx.Fake->FlushPending();
+	Fx.Fake->FlushPending();
+	TestEqual(TEXT("The second is not sent after the player signed out"), Fx.Fake->Requests.Num(), 1);
+
+	// It waits for that player's next sign-in.
+	Fx.Fake->bDeferred = false;
+	Fx.SignIn();
+	Fx.Commands->FlushPendingWrites();
+	TestEqual(TEXT("And goes when they sign in again"), Fx.Fake->Requests.Num(), 2);
+	TestTrue(TEXT("It is the second write"), FlockTestAt(Fx.Fake->Requests, 1).Url.EndsWith(TEXT("update_player_data_key")));
+
+	Cleanup(Fx.Dir);
 	return true;
 }
 

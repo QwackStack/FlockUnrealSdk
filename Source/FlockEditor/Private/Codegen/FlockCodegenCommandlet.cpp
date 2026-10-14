@@ -13,7 +13,7 @@
 
 namespace
 {
-	/** The canonical SDK's exit codes, kept identical so one CI script can drive either. */
+	/** What a CI script tells apart: an unreachable backend must never read as drift. */
 	constexpr int32 ExitOk = 0;
 	constexpr int32 ExitCouldNotRun = 1;
 	constexpr int32 ExitDrift = 2;

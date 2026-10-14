@@ -529,6 +529,87 @@ bool FProtokitePlaytestVideoRecordingWritesNothingAfterTheSizeLimitTest::RunTest
 	return true;
 }
 
+/**
+ * A window whose shape changes after the recording started hands over smaller pictures of the new shape. They are recorded
+ * between black bars at the video's own size; before, the encoder refused a frame of another size and the recording ended.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestVideoRecordingKeepsAPictureOfAnotherShapeTest,
+	"Protokite.Playtest.Video.Recording.KeepsAPictureOfAnotherShapeBetweenBlackBars",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestVideoRecordingKeepsAPictureOfAnotherShapeTest::RunTest(const FString& Parameters)
+{
+	const FString Folder = FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("ProtokitePlaytestTests"), FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const TSharedRef<FTestVideoFrameSource> Source = MakeShared<FTestVideoFrameSource>(FIntPoint(64, 36));
+	FString Error;
+	const TSharedPtr<FProtokitePlaytestVideoRecording> Recording = FProtokitePlaytestVideoRecording::Start(Source, FProtokitePlaytestVideoSettings(),
+		FPaths::Combine(Folder, TEXT("shape.webm")), Error);
+	if (!TestTrue(FString::Printf(TEXT("The recording starts ('%s')"), *Error), Recording.IsValid()))
+	{
+		return true;
+	}
+	for (int32 Index = 0; Index < 6; ++Index)
+	{
+		// The window turns from 16:9 to 4:3 after the third frame.
+		Source->PictureSize = Index < 3 ? FIntPoint::ZeroValue : FIntPoint(48, 36);
+		Recording->AddFrame(1.0 / 30.0);
+		Recording->WaitUntilWritten();
+	}
+	Recording->StopCapturing(EProtokitePlaytestVideoStopReason::StoppedByGame);
+	Recording->WaitUntilWritten();
+	const FProtokitePlaytestVideoRecordingSummary Summary = Recording->GetSummary();
+	TestTrue(FString::Printf(TEXT("Nothing went wrong ('%s')"), *Summary.Error), Summary.Error.IsEmpty());
+	TestEqual(TEXT("Every frame was written, before and after the change"), Summary.FramesWritten, 6);
+	FVideoFileRead File;
+	if (TestTrue(TEXT("The file reads back"), ReadVideoFile(Summary.FilePath, File)))
+	{
+		FIntPoint PictureSize;
+		double Brightness = -1.0;
+		TArray<double> LeftEdges;
+		TestEqual(TEXT("Every frame decodes"), DecodeVideoFile(File, PictureSize, Brightness, &LeftEdges), 6);
+		TestEqual(TEXT("At the video's own size throughout"), PictureSize, FIntPoint(64, 36));
+		// Black is 16 in the video's colours; the test pictures are never that dark.
+		if (TestEqual(TEXT("A left edge for each frame"), LeftEdges.Num(), 6))
+		{
+			TestTrue(FString::Printf(TEXT("Before the change the picture reaches the edge (%.1f)"), LeftEdges[2]), LeftEdges[2] > 40.0);
+			TestTrue(FString::Printf(TEXT("After it a black bar runs down the side (%.1f)"), LeftEdges[5]), LeftEdges[5] < 24.0);
+		}
+	}
+	IFileManager::Get().DeleteDirectory(*Folder, false, true);
+	return true;
+}
+
+/** A picture of another shape that does not fill its own size stops the recording, saying why, rather than going in black. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestVideoRecordingRefusesAPictureThatDoesNotFillItsSizeTest,
+	"Protokite.Playtest.Video.Recording.RefusesAPictureThatDoesNotFillItsSize",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestVideoRecordingRefusesAPictureThatDoesNotFillItsSizeTest::RunTest(const FString& Parameters)
+{
+	const FString Folder = FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("ProtokitePlaytestTests"), FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const TSharedRef<FTestVideoFrameSource> Source = MakeShared<FTestVideoFrameSource>(FIntPoint(64, 36));
+	FString Error;
+	const TSharedPtr<FProtokitePlaytestVideoRecording> Recording = FProtokitePlaytestVideoRecording::Start(Source, FProtokitePlaytestVideoSettings(),
+		FPaths::Combine(Folder, TEXT("short.webm")), Error);
+	if (!TestTrue(FString::Printf(TEXT("The recording starts ('%s')"), *Error), Recording.IsValid()))
+	{
+		return true;
+	}
+	Recording->AddFrame(1.0 / 30.0);
+	Recording->WaitUntilWritten();
+	Source->PictureSize = FIntPoint(48, 36);
+	Source->bPixelsShortOfTheSize = true;
+	Recording->AddFrame(1.0 / 30.0);
+	Recording->WaitUntilWritten();
+	Recording->StopCapturing(EProtokitePlaytestVideoStopReason::StoppedByGame);
+	Recording->WaitUntilWritten();
+	const FProtokitePlaytestVideoRecordingSummary Summary = Recording->GetSummary();
+	TestTrue(FString::Printf(TEXT("It says why it stopped ('%s')"), *Summary.Error), Summary.Error.Contains(TEXT("does not fill its 48x36"), ESearchCase::CaseSensitive));
+	TestEqual(TEXT("Only the whole frame before it was written"), Summary.FramesWritten, 1);
+	IFileManager::Get().DeleteDirectory(*Folder, false, true);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestVideoRecordingAsksForNoFrameWhileEarlierOnesAreOnTheirWayTest,
 	"Protokite.Playtest.Video.Recording.AsksForNoFrameWhileEarlierOnesAreOnTheirWay",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
@@ -1315,6 +1396,47 @@ bool FProtokitePlaytestVideoRecordingsKeepsWhatWasWrittenWhenAWriteFailsTest::Ru
 	{
 		TestEqual(TEXT("With the ten frames written"), File.Frames.Num(), 10);
 	}
+	return true;
+}
+
+/** A test video never costs a recording waiting to be uploaded: with no room it is simply not recorded. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestVideoSubsystemTestVideoKeepsWaitingUploadsTest,
+	"Protokite.Playtest.Video.Subsystem.ATestVideoNeverCostsAWaitingUpload",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestVideoSubsystemTestVideoKeepsWaitingUploadsTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(false, UsableUrl);
+	FScopedVideoSettings Video(FIntPoint(64, 36), 60.f, 1536, 2000, /*DiskBudgetMb*/ 1);
+	FPlaytestFixture Fixture;
+	UseTestVideoFrames(Fixture);
+
+	// A playtest recording an earlier launch left, waiting to be uploaded, filling most of the budget.
+	FString Error;
+	FString WaitingFolder;
+	{
+		const TSharedPtr<FProtokitePlaytestRecordingRun> Run = FProtokitePlaytestRecordingRun::CreateNamedForTesting(RecordingsFolder(Fixture),
+			EProtokitePlaytestRecordingKind::Playtest, TEXT("20260101-000000-aaaaaaaa"), /*ReservedBytes*/ 0, Error);
+		if (!TestTrue(TEXT("Precondition: an earlier run"), Run.IsValid()))
+		{
+			return false;
+		}
+		TArray<uint8> Bytes;
+		Bytes.SetNumZeroed(600 * 1024);
+		FFileHelper::SaveArrayToFile(Bytes, *Run->GetVideoFilePath());
+		FProtokitePlaytestRecordingSession Session;
+		Session.ProtokiteSessionId = TEXT("01KX0WAITINGSESSION0000001");
+		TestTrue(TEXT("Precondition: its session is saved"), Run->SaveSession(Session, Error));
+		WaitingFolder = Run->GetFolder();
+	}
+	Fixture.StartFlock();
+	RunPendingPlaytestRetries();
+
+	Fixture.Playtest->StartTestVideoRecording(2.0);
+	PlayVideoFrames(Fixture, 0.5);
+
+	TestTrue(TEXT("The waiting upload is still there"), IFileManager::Get().DirectoryExists(*WaitingFolder));
+	TestFalse(TEXT("And no test video took its room"), Fixture.Playtest->IsRecordingVideo());
 	return true;
 }
 

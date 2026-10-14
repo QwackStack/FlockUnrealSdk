@@ -158,4 +158,48 @@ bool FFlockCppAccessorSparseTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── With no wallet template, Add Funds finds the wallet by its tag rather than sending an empty id ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCppAccessorNoWalletTest, "Flock.Editor.CppAccessors.AddFundsWithNoWalletTemplateUsesTheTag",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCppAccessorNoWalletTest::RunTest(const FString& Parameters)
+{
+	FFlockSchemaSnapshot Untagged = Snapshot();
+	Untagged.PlayerTemplates[0].Tag = FString();
+
+	IFileManager::Get().DeleteDirectory(*Root(), /*RequireExists*/ false, /*Tree*/ true);
+	const FFlockCppAccessorEmitter::FEmitResult Result = FFlockCppAccessorEmitter::Emit(Untagged, Root(), TEXT("FlockGenerated"));
+	TestTrue(TEXT("emitted"), Result.bSucceeded);
+
+	const FString Source = Read(TEXT("Private/FlockGeneratedAccessors.cpp"));
+	TestTrue(TEXT("Add Funds is emitted"), Source.Contains(TEXT("FFlockGenerated::AddFunds("), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and calls the overload that finds the wallet by tag"),
+		Source.Contains(TEXT("AddGameFunds(FlockCurrencyIdToWire(Currency), Amount, \n"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("never with an empty template id, which is refused on every call"),
+		Source.Contains(TEXT("TEXT(\"\")"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and the warning says the call fails until a template has the tag"),
+		Result.Warnings.ContainsByPredicate([](const FString& Warning) { return Warning.Contains(TEXT("fails until one is"), ESearchCase::CaseSensitive); }));
+	return true;
+}
+
+// ── An accessor names the struct the type emitter wrote, a suffixed one included ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCppAccessorSharedNameTest, "Flock.Editor.CppAccessors.UseTheTypeEmittersNames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCppAccessorSharedNameTest::RunTest(const FString& Parameters)
+{
+	FFlockSchemaSnapshot Shared = Snapshot();
+	FFlockPlayerTemplateSchema Twin = Template(TEXT("wallet"), FString());
+	Twin.Id = TEXT("tmpl-twin");
+	Shared.PlayerTemplates.Add(Twin);
+
+	IFileManager::Get().DeleteDirectory(*Root(), /*RequireExists*/ false, /*Tree*/ true);
+	FFlockCppAccessorEmitter::Emit(Shared, Root(), TEXT("FlockGenerated"));
+	const FString Header = Read(TEXT("Public/FlockGeneratedAccessors.h"));
+	TestTrue(TEXT("the second template's accessor takes the suffixed struct"),
+		Header.Contains(TEXT("TFlockResult<FWalletTemplate_2>"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and includes its header"), Header.Contains(TEXT("#include \"FWalletTemplate_2.h\""), ESearchCase::CaseSensitive));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

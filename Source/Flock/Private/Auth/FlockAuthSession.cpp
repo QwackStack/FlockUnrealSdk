@@ -173,11 +173,10 @@ void FFlockAuthSession::RefreshAccessToken(int32 ForSignInNumber, TFunction<void
 
 			if (!Result.bSuccess)
 			{
-				// An authoritative rejection kills the session; transport-shaped failures keep it
-				// so a flaky network doesn't sign the player out.
-				const bool bAuthoritative = Result.Error.Type == EFlockErrorType::Auth
-					|| Result.Error.Type == EFlockErrorType::Serialization;
-				if (bAuthoritative)
+				// Only the server refusing the token ends the sign-in. Anything else keeps it, so a flaky network does not
+				// sign the player out, and neither does a captive portal's page answering in the server's place (a 200
+				// that is not the server's JSON).
+				if (Result.Error.Type == EFlockErrorType::Auth)
 				{
 					Self->Logger->LogWarning(TEXT("Token refresh failed: session expired"));
 					Self->FailRefreshAsExpired(Refresh);
@@ -234,6 +233,10 @@ void FFlockAuthSession::FinishRefresh(const TSharedRef<FRefreshInFlight>& Refres
 
 void FFlockAuthSession::FailRefreshAsExpired(const TSharedRef<FRefreshInFlight>& Refresh)
 {
+	if (BeforeExpiredSignInEnds)
+	{
+		BeforeExpiredSignInEnds();
+	}
 	ClearTokens();
 	if (UFlockEvents* Hub = Events.Get())
 	{

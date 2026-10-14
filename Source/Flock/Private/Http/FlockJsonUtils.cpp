@@ -197,7 +197,7 @@ TArray<FString> FFlockJsonUtils::GetFieldNames(const TSharedPtr<FJsonObject>& Ob
 TSharedRef<FJsonObject> FFlockJsonUtils::TransformObjectKeys(const TSharedRef<FJsonObject>& In, bool bToPascal)
 {
 	const TSharedPtr<FJsonValue> Transformed = TransformValue(MakeShared<FJsonValueObject>(In), bToPascal);
-	const TSharedPtr<FJsonObject> Obj = Transformed.IsValid() ? Transformed->AsObject() : nullptr;
+	const TSharedPtr<FJsonObject> Obj = FFlockJsonUtils::AsObjectOrNull(Transformed);
 	return Obj.IsValid() ? Obj.ToSharedRef() : MakeShared<FJsonObject>();
 }
 

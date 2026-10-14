@@ -127,8 +127,9 @@ protected:
 				// Some failures are a normal outcome the caller converts into a success (registering
 				// an identity that already exists). Logging those as errors is noise that devalues
 				// the real ones, so the caller can declare them and they drop to debug.
+				// A cancel is the game's or the SDK's own choice (a handle cancelled, a sign-in ended), so it is no failure either.
 				const FString Line = FString::Printf(TEXT("%s failed: %s"), *LoggedContext, *Result.Error.Message);
-				if (IsExpectedFailure && IsExpectedFailure(Result.Error))
+				if (Result.Error.Type == EFlockErrorType::Cancelled || (IsExpectedFailure && IsExpectedFailure(Result.Error)))
 				{
 					Log->LogDebug(Line);
 				}
@@ -146,8 +147,13 @@ protected:
 		FFlockRetryHandler::FOperation<T> ReplayOperation = Operation; // copy held for the post-refresh replay
 		const TSharedPtr<FFlockAuthSession> Session = AuthSession;
 		const int32 SentUnderSignIn = Session.IsValid() ? Session->GetSignInNumber() : 0;
-		return RetryHandler.Execute<T>(MoveTemp(Operation),
-			[Log, Finish, ReplayOperation, Session, SentUnderSignIn, bAllowAuthRetry](TFlockResult<T> Result)
+		// The call's own handle covers the attempts, the refresh and the replay after it: the retry handler's handle ends
+		// when its attempts do, so cancelling through it alone left the replay running.
+		const TSharedRef<FFlockCancelToken> CallToken = MakeShared<FFlockCancelToken>();
+		const TSharedRef<FFlockRequestHandle> ReplayHandle = MakeShared<FFlockRequestHandle>();
+		const TWeakPtr<FFlockCancelToken> WeakCallToken = CallToken;
+		const FFlockRequestHandle RetryHandle = RetryHandler.Execute<T>(MoveTemp(Operation),
+			[Log, Finish, ReplayOperation, Session, SentUnderSignIn, bAllowAuthRetry, WeakCallToken, ReplayHandle](TFlockResult<T> Result)
 			{
 				const bool bTryRefresh = !Result.bSuccess && Result.Error.Type == EFlockErrorType::Auth
 					&& Result.Error.StatusCode != 403
@@ -159,21 +165,34 @@ protected:
 				}
 
 				Log->LogDebug(TEXT("Access token rejected; attempting silent refresh"));
-				Session->RefreshAccessToken(SentUnderSignIn, [Finish, ReplayOperation, Result](bool bRefreshed)
+				Session->RefreshAccessToken(SentUnderSignIn, [Finish, ReplayOperation, Result, WeakCallToken, ReplayHandle](bool bRefreshed)
 				{
+					const TSharedPtr<FFlockCancelToken> Call = WeakCallToken.Pin();
+					if (Call.IsValid() && Call->bCancelled)
+					{
+						Finish(TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Cancelled, TEXT("Request cancelled"))));
+						return;
+					}
 					if (!bRefreshed)
 					{
 						// Surface the original error; the session already raised OnAuthExpired if terminal.
 						Finish(Result);
 						return;
 					}
-					ReplayOperation([Finish](TFlockResult<T> ReplayResult)
+					*ReplayHandle = ReplayOperation([Finish](TFlockResult<T> ReplayResult)
 					{
 						Finish(ReplayResult);
 					});
 				});
 			},
 			bIdempotent, MaxRetriesOverride, IsExpectedFailure);
+		CallToken->Canceller = [RetryHandle, ReplayHandle]()
+		{
+			FFlockRequestHandle Attempts = RetryHandle;
+			Attempts.Cancel();
+			ReplayHandle->Cancel();
+		};
+		return FFlockRequestHandle(CallToken);
 	}
 
 	/**

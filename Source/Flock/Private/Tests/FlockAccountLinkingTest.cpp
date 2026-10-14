@@ -172,7 +172,7 @@ bool FFlockAccountLinkingRequestShapeTest::RunTest(const FString& Parameters)
 		F.Provider->LinkEmail(TEXT("a@b.c"), TEXT("pw"), nullptr);
 
 		TestEqual(TEXT("one request"), F.Fake->Requests.Num(), 1);
-		const FFlockHttpRequest& Sent = F.Fake->Requests.Last();
+		const FFlockHttpRequest& Sent = F.Fake->LastRequest();
 		TestEqual(TEXT("POST"), Sent.Method, FString(TEXT("POST")));
 		TestTrue(TEXT("email on the wire"), Sent.JsonBody.Contains(TEXT("\"email\":\"a@b.c\""), ESearchCase::CaseSensitive));
 		TestTrue(TEXT("password on the wire"), Sent.JsonBody.Contains(TEXT("\"password\":\"pw\""), ESearchCase::CaseSensitive));
@@ -185,7 +185,7 @@ bool FFlockAccountLinkingRequestShapeTest::RunTest(const FString& Parameters)
 		F.Fake->On(TEXT("player/link/device"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("device_id"), TEXT("d-1")))));
 		F.Provider->LinkDevice(TEXT("dev-9"), nullptr);
 
-		const FFlockHttpRequest& Sent = F.Fake->Requests.Last();
+		const FFlockHttpRequest& Sent = F.Fake->LastRequest();
 		TestTrue(TEXT("device_id snake_cased"), Sent.JsonBody.Contains(TEXT("\"device_id\":\"dev-9\""), ESearchCase::CaseSensitive));
 		TestTrue(TEXT("device_type sent"), Sent.JsonBody.Contains(TEXT("\"device_type\""), ESearchCase::CaseSensitive));
 	}
@@ -213,7 +213,7 @@ bool FFlockAccountLinkingRequestShapeTest::RunTest(const FString& Parameters)
 			default: F.Provider->LinkDiscord(TEXT("tok"), nullptr); break;
 			}
 
-			const FFlockHttpRequest& Sent = F.Fake->Requests.Last();
+			const FFlockHttpRequest& Sent = F.Fake->LastRequest();
 			TestTrue(FString::Printf(TEXT("%s hits its own route"), Case.Wire),
 				Sent.Url.EndsWith(FString::Printf(TEXT("player/link/oauth/%s"), Case.Wire)));
 			TestTrue(FString::Printf(TEXT("%s posts a bare token"), Case.Wire), Sent.JsonBody.Contains(TEXT("\"token\":\"tok\""), ESearchCase::CaseSensitive));
@@ -228,7 +228,7 @@ bool FFlockAccountLinkingRequestShapeTest::RunTest(const FString& Parameters)
 		F.Fake->On(TEXT("player/unlink"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("email"), TEXT("u-1")))));
 		F.Provider->Unlink(EFlockCredentialProvider::DeviceId, nullptr);
 
-		const FFlockHttpRequest& Sent = F.Fake->Requests.Last();
+		const FFlockHttpRequest& Sent = F.Fake->LastRequest();
 		TestTrue(TEXT("device_id segment, not DeviceId"), Sent.Url.EndsWith(TEXT("player/unlink/device_id")));
 		TestEqual(TEXT("POST"), Sent.Method, FString(TEXT("POST")));
 		TestTrue(TEXT("Authorization sent"), Sent.Headers.Contains(TEXT("Authorization")));
@@ -384,116 +384,6 @@ bool FFlockAccountLinkingCodedErrorTest::RunTest(const FString& Parameters)
 		TestEqual(FString::Printf(TEXT("%s kept its raw wire code"), Case.Wire), Got.Error.Code, FString(Case.Wire));
 		TestEqual(FString::Printf(TEXT("%s parsed to its typed code"), Case.Wire),
 			static_cast<int32>(Got.Error.ErrorCode), static_cast<int32>(Case.Expected));
-	}
-	return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAccountLinkingResetGateTest, "Flock.Auth.Linking.PasswordResetGate",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FFlockAccountLinkingResetGateTest::RunTest(const FString& Parameters)
-{
-	using namespace FlockAccountLinkingTestHelpers;
-
-	// Baseline: a device session cannot reset a password.
-	{
-		FFixture F;
-		F.SignIn();
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("gated on a device session"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-		TestEqual(TEXT("no network touched"), F.Fake->Requests.Num(), 0);
-	}
-	// Linking an email during a device session opens the gate.
-	{
-		FFixture F;
-		F.SignIn();
-		F.Fake->On(TEXT("player/link/email"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("email"), TEXT("u-1")))));
-		F.Provider->LinkEmail(TEXT("a@b.c"), TEXT("pw"), nullptr);
-
-		F.Fake->On(TEXT("player/password/reset"), FFlockFakeTransport::Ok(TEXT("{\"success\":true}")));
-		bool bSuccess = false;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { bSuccess = R.bSuccess; });
-		TestTrue(TEXT("reset allowed after linking an email"), bSuccess);
-	}
-	// Reading a list with no email credential leaves the gate closed.
-	{
-		FFixture F;
-		F.SignIn();
-		F.Fake->On(TEXT("player/accounts"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("device_id"), TEXT("d-1")))));
-		F.Provider->GetLinkedAccounts(nullptr);
-
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("still gated"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-	}
-	// Unlinking the email closes the gate again — the flag re-derives from the returned list.
-	{
-		FFixture F;
-		F.SignIn();
-		F.Fake->On(TEXT("player/link/email"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("email"), TEXT("u-1")))));
-		F.Provider->LinkEmail(TEXT("a@b.c"), TEXT("pw"), nullptr);
-
-		F.Fake->On(TEXT("player/unlink"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("device_id"), TEXT("d-1")))));
-		F.Provider->Unlink(EFlockCredentialProvider::Email, nullptr);
-
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("re-gated after unlink"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-	}
-	// Cross-player trap: a new sign-in without an intervening logout must not inherit the previous player's answer.
-	{
-		FFixture F;
-		F.SignIn(TEXT("p-1"));
-		F.Fake->On(TEXT("player/link/email"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("email"), TEXT("u-1")))));
-		F.Provider->LinkEmail(TEXT("a@b.c"), TEXT("pw"), nullptr);
-
-		// Sign in as a different player through the real login path, no Logout() in between.
-		F.Fake->On(TEXT("player/login/device"), FFlockFakeTransport::Ok(FString::Printf(
-			TEXT("{\"player_id\":\"p-2\",\"access_token\":\"%s\",\"refresh_token\":\"r-2\"}"), *MakeJwt(TEXT("p-2")))));
-		F.Provider->LoginWithDevice(TEXT("dev-2"), nullptr);
-
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("new player does not inherit the gate"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-	}
-	// Logout clears it.
-	{
-		FFixture F;
-		F.SignIn();
-		F.Fake->On(TEXT("player/link/email"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("email"), TEXT("u-1")))));
-		F.Provider->LinkEmail(TEXT("a@b.c"), TEXT("pw"), nullptr);
-		F.Provider->Logout();
-		F.SignIn();
-
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("gate cleared by logout"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-	}
-	// A restore knows nothing about linked credentials until the game reads the list.
-	{
-		FFixture F;
-		F.SignIn();
-		F.Fake->On(TEXT("player/link/email"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("email"), TEXT("u-1")))));
-		F.Provider->LinkEmail(TEXT("a@b.c"), TEXT("pw"), nullptr);
-
-		FFlockStoredTokens Stored;
-		Stored.AccessToken = MakeJwt(TEXT("p-1"));
-		Stored.RefreshToken = TEXT("r-1");
-		Stored.AuthMethod = EFlockAuthMethod::Device;
-		F.Store->Save(Stored);
-		F.Provider->TryRestoreSession(nullptr);
-
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("gate cleared by restore"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
 	}
 	return true;
 }

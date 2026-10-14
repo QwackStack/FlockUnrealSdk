@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -192,6 +193,79 @@ bool FProtokitePlaytestVideoFitsInsideTheVideoSizeTest::RunTest(const FString& P
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestVideoPlacesAPictureBetweenBlackBarsTest,
+	"Protokite.Playtest.Video.PlacesAPictureOfAnotherShapeBetweenBlackBars",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestVideoPlacesAPictureBetweenBlackBarsTest::RunTest(const FString& Parameters)
+{
+	const FColor White = FColor::White;
+	const auto Picture = [White](FIntPoint Size)
+	{
+		TArray<FColor> Pixels;
+		Pixels.Init(White, Size.X * Size.Y);
+		return Pixels;
+	};
+	const auto Row = [](const TArray<FColor>& Frame, int32 Width, int32 Index)
+	{
+		FString Text;
+		for (int32 Column = 0; Column < Width; ++Column)
+		{
+			Text += Frame[Index * Width + Column] == FColor::White ? TEXT("W") : Frame[Index * Width + Column] == FColor::Black ? TEXT("B") : TEXT("?");
+		}
+		return Text;
+	};
+
+	TArray<FColor> Frame;
+	// A window turned narrower: bars left and right, the picture's own height kept.
+	TestTrue(TEXT("A picture that fills its size is placed"), PlaceInTheMiddleOfTheFrame(Picture(FIntPoint(2, 2)), FIntPoint(2, 2), FIntPoint(6, 2), Frame));
+	if (TestEqual(TEXT("A frame of the video's size"), Frame.Num(), 12))
+	{
+		TestEqualSensitive(TEXT("Bars at the sides"), Row(Frame, 6, 0), FString(TEXT("BBWWBB")));
+		TestEqualSensitive(TEXT("On every row"), Row(Frame, 6, 1), FString(TEXT("BBWWBB")));
+	}
+	// A window turned wider: bars above and below.
+	PlaceInTheMiddleOfTheFrame(Picture(FIntPoint(4, 2)), FIntPoint(4, 2), FIntPoint(4, 4), Frame);
+	if (TestEqual(TEXT("The reused frame takes the new size"), Frame.Num(), 16))
+	{
+		TestEqualSensitive(TEXT("A bar above"), Row(Frame, 4, 0), FString(TEXT("BBBB")));
+		TestEqualSensitive(TEXT("The picture"), Row(Frame, 4, 1) + Row(Frame, 4, 2), FString(TEXT("WWWWWWWW")));
+		TestEqualSensitive(TEXT("A bar below"), Row(Frame, 4, 3), FString(TEXT("BBBB")));
+	}
+	// A picture larger than the frame is cut to its middle rather than written past the frame.
+	TArray<FColor> Wide = Picture(FIntPoint(6, 2));
+	Wide[0] = FColor::Red;
+	Wide[5] = FColor::Red;
+	PlaceInTheMiddleOfTheFrame(Wide, FIntPoint(6, 2), FIntPoint(4, 2), Frame);
+	if (TestEqual(TEXT("Still the frame's size"), Frame.Num(), 8))
+	{
+		TestEqualSensitive(TEXT("Its middle kept, its edges cut"), Row(Frame, 4, 0), FString(TEXT("WWWW")));
+	}
+	// A picture whose pixel count does not match its size is not read at all, and says so.
+	TestFalse(TEXT("An unreadable picture is refused"), PlaceInTheMiddleOfTheFrame(Picture(FIntPoint(2, 1)), FIntPoint(2, 2), FIntPoint(2, 2), Frame));
+	TestEqualSensitive(TEXT("And leaves a black frame"), Row(Frame, 2, 0) + Row(Frame, 2, 1), FString(TEXT("BBBB")));
+	// A frame with no size is nothing to fill, and nothing is written past it.
+	TestFalse(TEXT("A frame with a side of 0 is refused"), PlaceInTheMiddleOfTheFrame(Picture(FIntPoint(2, 2)), FIntPoint(2, 2), FIntPoint(-2, 4), Frame));
+	TestEqual(TEXT("And holds nothing"), Frame.Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestVideoFitsAPictureInsideTheVideoTest,
+	"Protokite.Playtest.Video.FitsAPictureInsideTheVideoWithBarsOnlyWhereTheyShow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestVideoFitsAPictureInsideTheVideoTest::RunTest(const FString& Parameters)
+{
+	// A window of odd height: fitting it twice rounds the width 2 short, which must not draw a 1-pixel line down each side.
+	TestEqual(TEXT("A window that never changed shape fills the video"), FitPictureInsideTheVideo(FIntPoint(1000, 563), FitVideoSizeInside(FIntPoint(1000, 563), FIntPoint(1280, 720))),
+		FIntPoint(1000, 562));
+	TestEqual(TEXT("A 4:3 window in a 16:9 video gets bars at the sides"), FitPictureInsideTheVideo(FIntPoint(1024, 768), FIntPoint(1280, 720)), FIntPoint(960, 720));
+	TestEqual(TEXT("A side 10 pixels short is stretched over"), FitPictureInsideTheVideo(FIntPoint(1280, 710), FIntPoint(1280, 720)), FIntPoint(1280, 720));
+	TestEqual(TEXT("A side 16 pixels short gets bars"), FitPictureInsideTheVideo(FIntPoint(1280, 704), FIntPoint(1280, 720)), FIntPoint(1280, 704));
+	TestEqual(TEXT("A window with no size is grabbed at the video's"), FitPictureInsideTheVideo(FIntPoint(0, 0), FIntPoint(1280, 720)), FIntPoint(1280, 720));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestVideoWhyVideoCannotBeRecordedTest,
 	"Protokite.Playtest.Video.WhyVideoCannotBeRecorded",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
@@ -290,7 +364,11 @@ bool FProtokitePlaytestVideoFileWritesHeaderAndFramesTest::RunTest(const FString
 		TestEqual(TEXT("Height"), Read.Height, 36);
 		TestEqual(TEXT("Times are in milliseconds"), Read.TimecodeScaleNanoseconds, static_cast<uint64>(1000000));
 		TestTrue(TEXT("A closed file states how long its segment is"), Read.bSegmentSizeWritten);
-		TestEqual(TEXT("The duration is the last frame's time"), Read.DurationMs, 67.0, 1e-6);
+		TestEqual(TEXT("The duration runs to the end of the last frame, which lasts as long as the one before"), Read.DurationMs, 101.0, 1e-6);
+		TestEqual(TEXT("The colours are BT.601"), Read.MatrixCoefficients, 6);
+		TestEqual(TEXT("In limited range"), Read.Range, 1);
+		TestEqual(TEXT("From an sRGB picture"), Read.TransferCharacteristics, 13);
+		TestEqual(TEXT("With BT.709's primaries"), Read.Primaries, 1);
 		TestEqual(TEXT("The file is the size counted"), Read.FileBytes, ExpectedFileBytes);
 		if (TestEqual(TEXT("Three frames"), Read.Frames.Num(), 3))
 		{
@@ -301,6 +379,51 @@ bool FProtokitePlaytestVideoFileWritesHeaderAndFramesTest::RunTest(const FString
 		}
 	}
 	IFileManager::Get().DeleteDirectory(*FPaths::GetPath(Path), false, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestVideoFileFinishesAnEarlierBuildsFileTest,
+	"Protokite.Playtest.Video.File.FinishesACutOffFileWithAnEarlierHeader",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestVideoFileFinishesAnEarlierBuildsFileTest::RunTest(const FString& Parameters)
+{
+	// A recording cut off by an earlier build, whose header had no colour element, so its first frame starts 19 bytes sooner.
+	const FString Path = UniqueTestFilePath(TEXT("earlier.webm"));
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
+	{
+		FProtokitePlaytestVideoFile File;
+		FString Error;
+		if (!TestTrue(TEXT("The file opens"), File.Open(Path, FIntPoint(64, 36), Error)))
+		{
+			return true;
+		}
+		File.WriteFrame({ 0x82, 2, 3, 4, 5 }, 0, /*bKeyFrame*/ true);
+		File.WriteFrame({ 0x82, 7, 8, 9, 10, 11 }, 33, /*bKeyFrame*/ false);
+		File.WriteFrame({ 0x82, 13, 14, 15, 16, 17, 18 }, 67, /*bKeyFrame*/ false);
+		File.AbandonForTesting();
+	}
+	TArray<uint8> Bytes;
+	FFileHelper::LoadFileToArray(Bytes, *Path);
+	if (!TestTrue(TEXT("Precondition: the colour element is taken out, as an earlier build wrote it"), RemoveColourElementForTesting(Bytes)))
+	{
+		return true;
+	}
+	const FString Unfinished = Path + TEXT(".part");
+	FFileHelper::SaveArrayToFile(Bytes, *Unfinished);
+	IFileManager::Get().Delete(*Path);
+
+	int32 FramesKept = 0;
+	FString Error;
+	TestEqual(TEXT("It is finished"), static_cast<int32>(FProtokitePlaytestVideoFile::FinishInterruptedFile(Unfinished, Path, FramesKept, Error)),
+		static_cast<int32>(EProtokitePlaytestInterruptedVideoResult::Finished));
+	TestEqual(TEXT("With every frame it held"), FramesKept, 3);
+	FVideoFileRead Read;
+	if (TestTrue(TEXT("It reads back"), ReadVideoFile(Path, Read)))
+	{
+		TestEqual(TEXT("Three frames"), Read.Frames.Num(), 3);
+		TestEqual(TEXT("And a duration to the end of the last"), Read.DurationMs, 101.0, 1e-6);
+	}
 	return true;
 }
 
@@ -386,6 +509,14 @@ bool FProtokitePlaytestVideoEncoderEncodesVideoThatDecodesTest::RunTest(const FS
 	}
 	TestTrue(TEXT("The first is a key frame"), Encoded[0].bKeyFrame);
 	TestEqual(TEXT("Times carried through"), Encoded[29].TimestampMs, 29LL * 33);
+	// A key frame's header: the frame marker byte, the three sync bytes, then the colour space in the top three bits and the
+	// range in the next one.
+	if (TestTrue(TEXT("The key frame holds a colour header"), Encoded[0].Bytes.Num() > 4
+		&& Encoded[0].Bytes[1] == 0x49 && Encoded[0].Bytes[2] == 0x83 && Encoded[0].Bytes[3] == 0x42))
+	{
+		TestEqual(TEXT("The stream says BT.601"), Encoded[0].Bytes[4] >> 5, 1);
+		TestEqual(TEXT("In limited range"), (Encoded[0].Bytes[4] >> 4) & 1, 0);
+	}
 
 	for (const FProtokitePlaytestEncodedFrame& Frame : Encoded)
 	{

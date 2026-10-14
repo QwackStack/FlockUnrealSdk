@@ -191,7 +191,7 @@ int32 FFlockSnapshotStore::MigrateLegacyState(const TArray<FString>& Leaves)
 	if (Moved > 0)
 	{
 		Logger->LogWarning(FString::Printf(
-			TEXT("Flock: rescued %d queued write file(s) into '%s' — they would otherwise have been deleted ")
+			TEXT("Flock: rescued %d saved state file(s) (queued writes, notification state) into '%s' — they would otherwise have been deleted ")
 			TEXT("by this build's game-version change."), Moved, StateScope));
 	}
 	return Moved;

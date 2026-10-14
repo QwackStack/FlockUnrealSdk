@@ -1,10 +1,14 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
+#include "HAL/FileManager.h"
 #include "Http/FlockJsonUtils.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "Models/FlockAnalyticsModels.h"
 #include "Models/FlockGameModels.h"
 #include "Tests/Support/FlockTestSpelling.h"
@@ -353,6 +357,82 @@ bool FFlockJsonKeySemanticsTest::RunTest(const FString& Parameters)
 	// A null object enumerates to nothing rather than crashing; several callers pass an unresolved object.
 	TestEqual(TEXT("null object yields no names"), FFlockJsonUtils::GetFieldNames(nullptr).Num(), 0);
 
+	return true;
+}
+
+// ── A page item that is not an object fails the read, never lands as an empty item ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonPaginatedRefusesANonObjectItemTest, "Flock.Http.Json.PaginatedRefusesANonObjectItem",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockJsonPaginatedRefusesANonObjectItemTest::RunTest(const FString& Parameters)
+{
+	TFlockPage<FFlockGameVersionSchema> Page;
+	FString Error;
+	const bool bRead = FFlockJsonUtils::UnwrapPaginated(TEXT("{\"items\":[{\"id\":\"v1\"},7],\"total\":2,\"page\":1,\"limit\":10}"), Page, Error);
+	TestFalse(TEXT("a number among the items fails the read"), bRead);
+	TestEqualSensitive(TEXT("saying the item is malformed"), Error, FString(TEXT("Malformed paginated item")));
+
+	TestFalse(TEXT("null is no object"), FFlockJsonUtils::AsObjectOrNull(MakeShared<FJsonValueNull>()).IsValid());
+	TestFalse(TEXT("nor is an array"), FFlockJsonUtils::AsObjectOrNull(MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>())).IsValid());
+	TestFalse(TEXT("nor nothing"), FFlockJsonUtils::AsObjectOrNull(nullptr).IsValid());
+	TestTrue(TEXT("an object is"), FFlockJsonUtils::AsObjectOrNull(MakeShared<FJsonValueObject>(MakeShared<FJsonObject>())).IsValid());
+	return true;
+}
+
+// ── Every object read checks the value holds an object first ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockJsonEveryObjectReadChecksItsTypeTest, "Flock.Http.Json.EveryObjectReadChecksItsType",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockJsonEveryObjectReadChecksItsTypeTest::RunTest(const FString& Parameters)
+{
+	// The engine's AsObject() on a non-object returns an empty object and logs an error, so a read that does not check
+	// the type first turns a wrong shape into an empty item. AsObjectOrNull checks it; any other read checks it nearby.
+	const FString PluginRoot = FPaths::ConvertRelativePathToFull(
+		FPaths::Combine(FPaths::GetPath(FString(ANSI_TO_TCHAR(__FILE__))), TEXT(".."), TEXT(".."), TEXT(".."), TEXT("..")));
+	TArray<FString> Files;
+	for (const TCHAR* Folder : { TEXT("Source"), TEXT("OptionalPlugins") })
+	{
+		for (const TCHAR* Pattern : { TEXT("*.cpp"), TEXT("*.h") })
+		{
+			TArray<FString> Found;
+			IFileManager::Get().FindFilesRecursive(Found, *FPaths::Combine(PluginRoot, Folder), Pattern, /*Files*/ true, /*Directories*/ false);
+			Files.Append(Found);
+		}
+	}
+	int32 Reads = 0;
+	TArray<FString> Unchecked;
+	for (const FString& File : Files)
+	{
+		if (File.Contains(TEXT("/Tests/")))
+		{
+			continue;
+		}
+		FString Text;
+		FFileHelper::LoadFileToString(Text, *File);
+		TArray<FString> Lines;
+		Text.ParseIntoArrayLines(Lines, /*bCullEmpty*/ false);
+		for (int32 Index = 0; Index < Lines.Num(); ++Index)
+		{
+			const FString Trimmed = Lines[Index].TrimStart();
+			if (!Lines[Index].Contains(TEXT("AsObject()"), ESearchCase::CaseSensitive) || Trimmed.StartsWith(TEXT("//")) || Trimmed.StartsWith(TEXT("*"))
+				|| Trimmed.StartsWith(TEXT("/*")))
+			{
+				continue;
+			}
+			++Reads;
+			bool bChecked = false;
+			for (int32 Back = FMath::Max(0, Index - 6); Back <= Index && !bChecked; ++Back)
+			{
+				bChecked = Lines[Back].Contains(TEXT("EJson::Object"), ESearchCase::CaseSensitive);
+			}
+			if (!bChecked)
+			{
+				Unchecked.Add(FString::Printf(TEXT("%s:%d"), *FPaths::GetCleanFilename(File), Index + 1));
+			}
+		}
+	}
+	TestTrue(FString::Printf(TEXT("the scan found the reads (%d)"), Reads), Reads > 10);
+	TestEqual(FString::Printf(TEXT("reads that do not check the type: %s"), *FString::Join(Unchecked, TEXT(", "))), Unchecked.Num(), 0);
 	return true;
 }
 

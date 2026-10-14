@@ -26,7 +26,7 @@ struct FEdGraphPinType;
 class FLOCKEDITOR_API FFlockStructEmitter
 {
 public:
-	/** Suffixes matching the canonical SDK's generated class names. */
+	/** Suffixes of the generated struct names. */
 	static const TCHAR* const TemplateSuffix;
 	static const TCHAR* const ConfigSuffix;
 

@@ -129,6 +129,13 @@ Sdk->GetPlayerProvider()->GetMyDataByTemplate(TEXT("gameplay"),
     });
 ```
 
+The write itself succeeds, but a board can still turn the new score away: `Written.Value.LeaderboardRefusals` lists
+those boards, each with its `LeaderboardName`, a `Reason` (`score_bounds`, outside what the board accepts, or
+`gain_limit`, the player's recent gains fill its allowance; compare with the *Flock Refusal Reason* nodes or
+`FlockLeaderboardRefusalReasons`), whether it is `Retryable`, and `RetryAfterSeconds` (-1 when the server gave none).
+Only Update Player Data and Update Player Data Field report them, so an empty list after a read, Add Game Funds or
+Unlock Achievement means "not reported here", not "no board refused". The cached row never keeps them.
+
 The write key is the field name the **template declares**, not the Pascal-cased name a read gives back —
 see [Game commands](game-commands.md). Whether the new score appears on the board immediately or on a
 delay is the backend's business; re-read the rank to find out, and call `ClearCache()` first if you need

@@ -93,6 +93,8 @@ bool FFlockPurchaseResult::FromWireObject(const TSharedRef<FJsonObject>& Object,
 {
 	Object->TryGetStringField(TEXT("purchase_id"), OutStruct.PurchaseId);
 	Object->TryGetStringField(TEXT("item_type"), OutStruct.ItemType);
+	// Absent keeps the member's default, paid, which is the schema's own default.
+	Object->TryGetStringField(TEXT("status"), OutStruct.Status);
 
 	// Both nested models are nullable on the wire: a currency pack holds no inventory row, and a purchase
 	// that moved no currency reports no wallet. Absent leaves the member default-constructed, so callers

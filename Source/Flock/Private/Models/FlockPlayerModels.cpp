@@ -2,6 +2,8 @@
 
 #include "Models/FlockPlayerModels.h"
 
+#include "Http/FlockJsonUtils.h"
+
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -46,6 +48,31 @@ bool FFlockPlayerData::FromWireObject(const TSharedRef<FJsonObject>& Object, FFl
 	Object->TryGetStringField(TEXT("updated_at"), OutStruct.UpdatedAt);
 
 	OutStruct.Data = FFlockStructuredData::FromWireData(Object->TryGetField(TEXT("data")));
+
+	OutStruct.LeaderboardRefusals.Reset();
+	const TArray<TSharedPtr<FJsonValue>>* Refusals = nullptr;
+	if (Object->TryGetArrayField(TEXT("leaderboard_refusals"), Refusals))
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *Refusals)
+		{
+			const TSharedPtr<FJsonObject> Entry = FFlockJsonUtils::AsObjectOrNull(Value);
+			if (!Entry.IsValid())
+			{
+				continue;
+			}
+			FFlockLeaderboardRefusal Refusal;
+			Entry->TryGetStringField(TEXT("leaderboard_id"), Refusal.LeaderboardId);
+			Entry->TryGetStringField(TEXT("leaderboard_name"), Refusal.LeaderboardName);
+			Entry->TryGetStringField(TEXT("reason"), Refusal.Reason);
+			Entry->TryGetBoolField(TEXT("retryable"), Refusal.Retryable);
+			int32 Seconds = 0;
+			if (Entry->TryGetNumberField(TEXT("retry_after_seconds"), Seconds))
+			{
+				Refusal.RetryAfterSeconds = Seconds;
+			}
+			OutStruct.LeaderboardRefusals.Add(Refusal);
+		}
+	}
 	return true;
 }
 

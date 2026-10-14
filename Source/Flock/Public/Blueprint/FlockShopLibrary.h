@@ -57,6 +57,26 @@ public:
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Has Wallet"), Category = "Flock|Shop")
 	static bool PurchaseHasWallet(const FFlockPurchaseResult& PurchaseResult) { return PurchaseResult.HasWallet(); }
 
+	/** True when the purchase is paid, so what it grants is the player's. A pending real-money purchase has handed nothing over. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Is Purchase Paid"), Category = "Flock|Shop")
+	static bool IsPurchasePaid(const FFlockPurchaseResult& PurchaseResult) { return PurchaseResult.IsPaid(); }
+
+	/** Purchase statuses as the server spells them, to compare a result's Status against rather than typing them. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Purchase Status Pending"), Category = "Flock|Shop")
+	static FString PurchaseStatusPending() { return FlockPurchaseStatuses::Pending; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Purchase Status Paid"), Category = "Flock|Shop")
+	static FString PurchaseStatusPaid() { return FlockPurchaseStatuses::Paid; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Purchase Status Failed"), Category = "Flock|Shop")
+	static FString PurchaseStatusFailed() { return FlockPurchaseStatuses::Failed; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Purchase Status Expired"), Category = "Flock|Shop")
+	static FString PurchaseStatusExpired() { return FlockPurchaseStatuses::Expired; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Purchase Status Refunded"), Category = "Flock|Shop")
+	static FString PurchaseStatusRefunded() { return FlockPurchaseStatuses::Refunded; }
+
 	/** The consume counterpart: true when consuming the entry moved currency and reported the new balances. */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Has Wallet (Consume)"), Category = "Flock|Shop")
 	static bool ConsumeHasWallet(const FFlockConsumeResult& ConsumeResult) { return ConsumeResult.HasWallet(); }

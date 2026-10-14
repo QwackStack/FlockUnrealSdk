@@ -13,7 +13,9 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/FlockLaunchFolder.h"
+#include "Misc/Guid.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
 
 namespace
@@ -139,6 +141,92 @@ bool FFlockAnalyticsLaunchesTakesOverQueuedEntriesTest::RunTest(const FString& P
 }
 
 /** Taking over a full queue is a start-up cost, so it is measured on the most entries a launch can leave. */
+/**
+ * A queued entry that cannot be moved out of an ended launch stays where it is: the launch's reported records go, and its folder
+ * keeps the entry and its lock file, so a later launch takes the entry over rather than it being deleted with the folder.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsLaunchesAnEntryThatCannotBeMovedStaysTest, "Flock.Analytics.Launches.AnEntryThatCannotBeMovedStaysForALaterLaunch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsLaunchesAnEntryThatCannotBeMovedStaysTest::RunTest(const FString& Parameters)
+{
+	const FAnalyticsLaunchesTestRoot Root;
+	const FString LaunchesFolder = FPaths::Combine(Root.Path, FFlockAnalyticsLaunches::LaunchesFolderName);
+	TSharedPtr<FFlockLaunchFolder> EarlierLaunch = FFlockLaunchFolder::Create(LaunchesFolder);
+	TSharedPtr<FFlockLaunchFolder> LaterLaunch = FFlockLaunchFolder::Create(LaunchesFolder);
+	TestTrue(TEXT("Precondition: two launches make folders"), EarlierLaunch.IsValid() && LaterLaunch.IsValid());
+	if (!EarlierLaunch.IsValid() || !LaterLaunch.IsValid())
+	{
+		return true;
+	}
+	// Folders made in the same second sort by their random ending, so both are renamed to names that sort in a known order.
+	const FString EarlierFolder = FPaths::Combine(LaunchesFolder, TEXT("20000101-000000-aaaaaaaa"));
+	const FString LaterFolder = FPaths::Combine(LaunchesFolder, TEXT("20000101-000001-bbbbbbbb"));
+	const FString EarlierMade = EarlierLaunch->GetPath();
+	const FString LaterMade = LaterLaunch->GetPath();
+	EarlierLaunch.Reset();
+	LaterLaunch.Reset();
+	TestTrue(TEXT("Precondition: the earlier folder is named to sort first"), IFileManager::Get().Move(*EarlierFolder, *EarlierMade));
+	TestTrue(TEXT("Precondition: the later folder is named to sort second"), IFileManager::Get().Move(*LaterFolder, *LaterMade));
+	const FString LaterQueue = FPaths::Combine(LaterFolder, FFlockAnalyticsLaunches::LogEventsQueueName);
+	const FString LaterRecord = FPaths::Combine(LaterFolder, FFlockAnalyticsLaunches::SessionStateFileName);
+	// The earlier launch's queue becomes the taking launch's in one rename, so the later launch's entries are moved one by one.
+	FFileHelper::SaveStringToFile(TEXT("{\"n\":1}"), *FPaths::Combine(EarlierFolder, FFlockAnalyticsLaunches::LogEventsQueueName,
+		TEXT("1789000000001_00000001.json")));
+	FFileHelper::SaveStringToFile(TEXT("{\"n\":2}"), *FPaths::Combine(LaterQueue, TEXT("1789000000002_00000001.json")));
+	FFileHelper::SaveStringToFile(TEXT("{\"n\":3}"), *FPaths::Combine(LaterQueue, TEXT("1789000000003_00000001.json")));
+	TestTrue(TEXT("Precondition: the later launch left a live-session record"), FFileHelper::SaveStringToFile(TEXT("{\"session_number\":1}"), *LaterRecord));
+
+	FFlockAnalyticsLaunches::SetEntryMoveFailsForTesting([](const FString& EntryFileName)
+	{
+		return EntryFileName.Equals(TEXT("1789000000003_00000001.json"), ESearchCase::CaseSensitive);
+	});
+	const TSharedRef<FFlockAnalyticsLaunches> Taking = FFlockAnalyticsLaunches::Start(Root.Path);
+	FFlockAnalyticsLaunches::SetEntryMoveFailsForTesting(nullptr);
+	TestEqual(TEXT("Both ended launches are taken over"), Taking->GetEndedLaunchRecords().Num(), 2);
+	TestEqual(TEXT("The entries that moved are this launch's"), QueuedAnalyticsLaunchesTestPayloads(Taking->GetFolder()).Num(), 2);
+	TestTrue(TEXT("The later launch is marked as leaving an entry behind"),
+		FlockTestAt(Taking->GetEndedLaunchRecords(), 1).bQueuedEntriesLeftBehind);
+
+	Taking->DeleteEndedLaunch(0);
+	Taking->DeleteEndedLaunch(1);
+	Taking->LetGoOfEndedLaunches();
+	TestTrue(TEXT("The entry that could not move is still there"),
+		IFileManager::Get().FileExists(*FPaths::Combine(LaterQueue, TEXT("1789000000003_00000001.json"))));
+	TestFalse(TEXT("The reported record is not, so it is never reported twice"), IFileManager::Get().FileExists(*LaterRecord));
+
+	const TSharedRef<FFlockAnalyticsLaunches> Next = FFlockAnalyticsLaunches::Start(Root.Path);
+	// The earlier launch was deleted and the taking launch still runs, so only the folder kept for the entry is taken over.
+	TestEqual(TEXT("A later launch takes the folder over again"), Next->GetEndedLaunchRecords().Num(), 1);
+	TestTrue(TEXT("And the entry with it"), QueuedAnalyticsLaunchesTestPayloads(Next->GetFolder()).Contains(TEXT("{\"n\":3}")));
+	return true;
+}
+
+/** A launch that cannot hold a folder keeps nothing on disk, rather than a folder with no lock no later launch would ever clear. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsLaunchesALaunchWithNoFolderKeepsNothingTest, "Flock.Analytics.Launches.ALaunchWithNoFolderKeepsNothing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsLaunchesALaunchWithNoFolderKeepsNothingTest::RunTest(const FString& Parameters)
+{
+	const FAnalyticsLaunchesTestRoot Root;
+	// A file where the launches folder goes: no launch folder or lock can be made under it.
+	TestTrue(TEXT("Precondition: the launches folder's place is taken"),
+		FFileHelper::SaveStringToFile(TEXT("not a folder"), *FPaths::Combine(Root.Path, FFlockAnalyticsLaunches::LaunchesFolderName)));
+
+	const TSharedRef<FFlockAnalyticsLaunches> Launch = FFlockAnalyticsLaunches::Start(Root.Path);
+	TestFalse(TEXT("Precondition: the launch holds no folder"), Launch->IsHoldingItsFolder());
+	TestTrue(TEXT("It names no folder"), Launch->GetFolder().IsEmpty());
+	TestTrue(TEXT("No session record path"), Launch->GetSessionStatePath().IsEmpty());
+	TestTrue(TEXT("No crash marker path"), Launch->GetTerminationMarkerPath().IsEmpty());
+
+	const FString QueueName = FString::Printf(TEXT("flock_test_queue_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	FFlockFileEventCache Queue(QueueName, 100, Launch->GetFolder());
+	TestTrue(TEXT("Its queue keeps nothing, so the entry goes straight out"), Queue.Enqueue(TEXT("{\"n\":1}")).IsEmpty());
+	TestFalse(TEXT("And makes no folder where the game runs"), IFileManager::Get().DirectoryExists(*QueueName));
+	TestFalse(TEXT("Nor beside the engine"), IFileManager::Get().DirectoryExists(*FPaths::Combine(FPlatformProcess::BaseDir(), QueueName)));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsLaunchesTakesOverAFullQueueQuicklyTest, "Flock.Analytics.Launches.TakesOverAFullQueueQuickly",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -291,6 +379,45 @@ bool FFlockAnalyticsLaunchesRunningGameHoldsItsFolderTest::RunTest(const FString
 		{
 			Claim->DeleteEverything();
 		}
+	}
+	return true;
+}
+
+// ── A launch folder that cannot be removed once its lock has gone gets the lock back, so a later launch still takes it over ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLaunchFolderKeepsItsLockTest, "Flock.Analytics.Launches.AFolderThatCannotBeRemovedKeepsItsLock",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockLaunchFolderKeepsItsLockTest::RunTest(const FString& Parameters)
+{
+	const FString Parent = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("FlockTests"),
+		TEXT("LaunchFolderLock"), FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+	ON_SCOPE_EXIT
+	{
+		IFileManager::Get().DeleteDirectory(*Parent, /*RequireExists*/ false, /*Tree*/ true);
+	};
+	TSharedPtr<FFlockLaunchFolder> Launch = FFlockLaunchFolder::Create(Parent);
+	if (!TestTrue(TEXT("Precondition: a launch folder is made"), Launch.IsValid()))
+	{
+		return false;
+	}
+	const FString Folder = Launch->GetPath();
+	const FString LockPath = FPaths::Combine(Folder, FFlockLaunchFolder::LockFileName);
+	const FString Stray = FPaths::Combine(Folder, TEXT("arrived-meanwhile.txt"));
+	FFlockLaunchFolder::SetBeforeNextFolderRemovalForTesting([Stray]()
+	{
+		FFileHelper::SaveStringToFile(TEXT("x"), *Stray);
+	});
+
+	TestFalse(TEXT("The folder is not reported gone"), Launch->DeleteEverything());
+	Launch.Reset();
+	TestTrue(TEXT("It is still there"), IFileManager::Get().DirectoryExists(*Folder));
+	TestTrue(TEXT("With its lock back"), IFileManager::Get().FileExists(*LockPath));
+
+	const TSharedPtr<FFlockLaunchFolder> Later = FFlockLaunchFolder::ClaimEnded(Folder);
+	if (TestTrue(TEXT("A later launch takes it over"), Later.IsValid()))
+	{
+		TestTrue(TEXT("And deletes it"), Later->DeleteEverything());
+		TestFalse(TEXT("The folder is gone"), IFileManager::Get().DirectoryExists(*Folder));
 	}
 	return true;
 }

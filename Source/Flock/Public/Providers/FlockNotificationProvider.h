@@ -30,6 +30,13 @@ class FLOCK_API FFlockNotificationProvider
 	, public TSharedFromThis<FFlockNotificationProvider>
 {
 public:
+	/**
+	 * The seen-watermark and the pending-schedule list. Their own category because they are state rather than cache: they
+	 * must outlive a ClearCache(), and a new game version, so they live under the store's StateScope, not a version's
+	 * tree (see PlayerStateScope()). The subsystem rescues them from where builds before 1.28.0 kept them.
+	 */
+	static const TCHAR* const StateSnapshotCategory;
+
 	FFlockNotificationProvider(const TSharedRef<FFlockHttpClient>& InClient, const FFlockRetryPolicy& InPolicy,
 		const TSharedRef<IFlockLogger>& InLogger, const TSharedRef<FFlockAuthSession>& InSession,
 		const TWeakObjectPtr<UFlockEvents>& InEvents,
@@ -194,9 +201,9 @@ public:
 	//
 	// **The SDK never acquires a token, by design.** The game gets one from its push plugin — Firebase
 	// Cloud Messaging, OneSignal — and hands the string here; this half registers it against the signed-in
-	// player so the backend can deliver. That is where every comparable backend SDK draws the line, and on
-	// Android it is the only line available: stock Unreal has no Java implementation behind its remote-
-	// notification JNI hook, so there is nothing for the engine to hand over.
+	// player so the backend can deliver. That is where every comparable backend SDK draws the line. On Android
+	// the engine's GoogleCloudMessaging plugin does hand a token over, but it asks Google Cloud Messaging, which
+	// Google shut down in 2019, so a Firebase plugin is the source to use.
 	//
 	// Registering is idempotent — the row is keyed by token, so a retry after an ambiguous failure lands on
 	// the same state. That is the opposite of scheduling, where a resend would double-book a reminder.
@@ -263,7 +270,8 @@ private:
 	FString PlayerCacheScope() const;
 
 	/**
-	 * "<version>/notification_state/<player id>" — the seen-watermark and the pending-schedule list.
+	 * "_state/notification_state/<player id>" — the seen-watermark and the pending-schedule list, outside every game
+	 * version's tree, so a new version's prune keeps them.
 	 *
 	 * A separate category because these are **state, not cache**: the watermark decides whether the next
 	 * fetch re-announces an entire inbox, and the pending list is the only record of what this install
@@ -275,6 +283,9 @@ private:
 	 */
 	FString PlayerStateScope() const;
 
+	/** The state scope of one player, signed in or not; empty for no player. */
+	static FString PlayerStateScopeOf(const FString& PlayerId);
+
 	/**
 	 * Moves a state entry written by an earlier version — which kept both under the shared cache category,
 	 * keyed "<key>_<player id>" — into PlayerStateScope(), then deletes the old copy.
@@ -283,7 +294,7 @@ private:
 	 * that location is the category root rather than the per-player scope. Returns true when it recovered
 	 * something.
 	 */
-	bool TryMigrateLegacyState(const FString& Key, FString& OutPayload) const;
+	bool TryMigrateLegacyState(const FString& PlayerId, const FString& Key, FString& OutPayload) const;
 
 	/**
 	 * Fails OnComplete with Auth when no player is signed in. Every route in this provider is player-scoped,
@@ -323,26 +334,30 @@ private:
 
 	// Pending-schedule bookkeeping
 	//
-	// The id a schedule call returns is the only handle on a pending reminder and /v1 has no route to list
-	// or read one back, so the SDK persists what it scheduled. Player-scoped: a second player on the same
-	// device must not see, or be able to cancel, the first player's reminders.
+	// The id a schedule call returns is the only handle on a pending reminder. GetScheduled reads the player's
+	// schedules from the server; this list, persisted as the SDK schedules, is the fallback when that read
+	// fails. Player-scoped: a second player on the same device must not see, or be able to cancel, the first
+	// player's reminders.
+
+	// Each takes the player the list belongs to: a schedule or cancel is tracked for the player it was sent for, even when
+	// its answer lands after another sign-in.
 
 	/** Stored entries with the elapsed ones dropped; rewrites the list when it drops any. */
-	TArray<FFlockPendingSchedule> LoadPendingSchedules() const;
+	TArray<FFlockPendingSchedule> LoadPendingSchedules(const FString& PlayerId) const;
 
-	/** Persists the list under the player-scoped key. No-op without a snapshot store. */
-	void SavePendingSchedules(const TArray<FFlockPendingSchedule>& Pending) const;
+	/** Persists the list under the player's state scope. No-op without a snapshot store. */
+	void SavePendingSchedules(const FString& PlayerId, const TArray<FFlockPendingSchedule>& Pending) const;
 
 	/** Records a successful schedule. Ignores a response with no id — there would be nothing to cancel. */
-	void TrackPending(const FFlockScheduledNotification& Scheduled, const FString& TemplateName,
+	void TrackPending(const FString& PlayerId, const FFlockScheduledNotification& Scheduled, const FString& TemplateName,
 		const FString& TemplateId) const;
 
 	/** Forgets one entry by scheduled id. Called after a cancel, and after a permanent rejection. */
-	void UntrackPending(const FString& ScheduledId) const;
+	void UntrackPending(const FString& PlayerId, const FString& ScheduledId) const;
 
 	/** One step of CancelAllScheduled's sequential walk. Kept a member so the recursion never captures `this`. */
-	void CancelAllStep(int32 SignInNumber, TSharedRef<TArray<FString>> Ids, int32 Index, TSharedRef<int32> Cancelled,
-		TFunction<void(TFlockResult<int32>)> OnComplete);
+	void CancelAllStep(int32 SignInNumber, const FString& PlayerId, TSharedRef<TArray<FString>> Ids, int32 Index,
+		TSharedRef<int32> Cancelled, TFunction<void(TFlockResult<int32>)> OnComplete);
 
 	/**
 	 * Decides what CancelAllScheduled will cancel: the server's pending list, or this install's local one
@@ -378,10 +393,10 @@ private:
 	 * advances it. The first fetch for a player seeds silently — replaying an existing inbox as a burst of
 	 * events is worse than not reporting its history.
 	 */
-	void RaiseNewNotifications(const TArray<FFlockNotification>& Items) const;
+	void RaiseNewNotifications(const TArray<FFlockNotification>& Items, int32 ForSignIn) const;
 
 	/** Raises OnUnreadCountChanged. Only ever called with a count the server just reported. */
-	void RaiseUnreadCount(int32 Count) const;
+	void RaiseUnreadCount(int32 Count, int32 ForSignIn) const;
 
 	TSharedRef<FFlockAuthSession> Session;
 
@@ -395,12 +410,6 @@ private:
 
 	/** Inbox, counts and summary, under a per-player scope. This is what ClearCache() drops. */
 	static const TCHAR* const SnapshotCategory;
-
-	/**
-	 * The seen-watermark and the pending-schedule list. Their own category because they are state rather
-	 * than cache and must outlive a ClearCache() — see PlayerStateScope().
-	 */
-	static const TCHAR* const StateSnapshotCategory;
 
 	/** Key of the seen-watermark within the state scope. */
 	static const TCHAR* const WatermarkKey;

@@ -393,7 +393,7 @@ EFlockCodegenDrift FFlockCodegenRunner::CompareBakedVersion(const FString& Baked
 	{
 		return EFlockCodegenDrift::Current;
 	}
-	return Stored.GameVersionId == BakedGameVersionId
+	return Stored.GameVersionId.Equals(BakedGameVersionId, ESearchCase::CaseSensitive)
 		? EFlockCodegenDrift::Current
 		: EFlockCodegenDrift::VersionChanged;
 }

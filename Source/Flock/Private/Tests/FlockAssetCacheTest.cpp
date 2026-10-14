@@ -304,4 +304,44 @@ bool FFlockAssetVersionTokenTest::RunTest(const FString&)
 	return true;
 }
 
+// ── Making room never evicts the file just taken in, whatever the other files' times say ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAssetCacheKeepsTheFileJustTakenTest, "Flock.Assets.Cache.MakingRoomNeverEvictsTheFileJustTaken",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAssetCacheKeepsTheFileJustTakenTest::RunTest(const FString& Parameters)
+{
+	const FString Dir = TempRoot();
+	FFlockAssetCache Cache(Dir, /*MaxSizeMB*/ 1, MakeShared<FFlockNullLogger>());
+	const FString Older = Store(Cache, TEXT("a"), TEXT("v1"), FString::ChrN(600 * 1024, TEXT('a')));
+	// The other file reads as used later than the next one: a clock moved back, or two commits within one tick.
+	IFileManager::Get().SetTimeStamp(*Older, FDateTime::UtcNow() + FTimespan::FromHours(1));
+
+	const FString Taken = Store(Cache, TEXT("b"), TEXT("v1"), FString::ChrN(600 * 1024, TEXT('b')));
+	TestFalse(TEXT("The new file is taken"), Taken.IsEmpty());
+	TestTrue(TEXT("And is still there to read"), IFileManager::Get().FileExists(*Taken));
+	TestFalse(TEXT("The other made room for it"), IFileManager::Get().FileExists(*Older));
+	Cleanup(Dir);
+	return true;
+}
+
+// ── A file larger than the whole budget is not taken, and stays where it was written ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAssetCacheLargerThanTheBudgetTest, "Flock.Assets.Cache.AFileLargerThanTheBudgetIsNotTaken",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAssetCacheLargerThanTheBudgetTest::RunTest(const FString& Parameters)
+{
+	const FString Dir = TempRoot();
+	FFlockAssetCache Cache(Dir, /*MaxSizeMB*/ 1, MakeShared<FFlockNullLogger>());
+	const FString Kept = Store(Cache, TEXT("a"), TEXT("v1"), TEXT("small"));
+	const FString Temp = Cache.BeginWrite(TEXT("big"), TEXT("v1"));
+	FFileHelper::SaveStringToFile(FString::ChrN(2 * 1024 * 1024, TEXT('x')), *Temp);
+
+	TestTrue(TEXT("Not taken"), Cache.Commit(TEXT("big"), TEXT("v1"), Temp).IsEmpty());
+	TestTrue(TEXT("Its bytes stay where they were written"), IFileManager::Get().FileExists(*Temp));
+	TestTrue(TEXT("Which counts as a download not kept"), Cache.IsUnkeptDownload(Temp));
+	TestTrue(TEXT("Nothing else was evicted for it"), IFileManager::Get().FileExists(*Kept));
+	Cleanup(Dir);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

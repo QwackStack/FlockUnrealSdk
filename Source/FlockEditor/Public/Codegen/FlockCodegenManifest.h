@@ -22,8 +22,8 @@ enum class EFlockCodegenDrift : uint8
  * What a sync recorded about itself: which version it generated for, and a fingerprint of the schema it
  * generated from. Comparing this against a fresh snapshot is the whole of drift detection.
  *
- * **Written as JSON on disk, not as a generated header.** The canonical SDK reads its manifest back out of
- * compiled constants by reflection, which Unreal cannot copy: the editor has to answer "is this stale?"
+ * **Written as JSON on disk, not as a generated header.** Compiled constants cannot serve here: the editor
+ * has to answer "is this stale?"
  * *before* the generated module has ever been compiled, and possibly when it does not exist at all. A
  * sidecar file removes that chicken-and-egg entirely. The C++ tier additionally emits a header carrying
  * the same values for code that wants them at runtime; this file stays the source of truth for tooling.

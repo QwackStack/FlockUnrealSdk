@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -24,6 +25,7 @@
 #include "Tests/Support/FlockRecordingLogger.h"
 #include "Tests/Support/FlockTestSdk.h"
 #include "Tests/Support/FlockTestSpelling.h"
+#include "Tests/Support/FlockTestSafeIndex.h"
 #include "UObject/StrongObjectPtr.h"
 
 namespace FlockPartiesTestHelpers
@@ -232,7 +234,7 @@ bool FFlockPartyCreateTest::RunTest(const FString& Parameters)
 	TestEqualSensitive(TEXT("the server's invite code"), Party->GetInviteCode(), FString(TEXT("INV001")));
 	TestEqual(TEXT("the server's own default size"), Party->GetMaxSize(), 4);
 	TestFalse(TEXT("not ended"), Party->HasEnded());
-	TestEqualSensitive(TEXT("nothing given, nothing sent"), F.Server->Requests[0].JsonBody, FString(TEXT("{}")));
+	TestEqualSensitive(TEXT("nothing given, nothing sent"), FlockTestAt(F.Server->Requests, 0).JsonBody, FString(TEXT("{}")));
 	TestEqual(TEXT("the new party needs no read"), F.Server->Count(ERoute::Mine) + F.Server->Count(ERoute::Read), 0);
 	TestTrue(TEXT("held"), F.Held() == Party);
 	return true;
@@ -248,7 +250,7 @@ bool FFlockPartyCreateSendsTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	const TSharedPtr<FJsonObject> Sent = BodyOf(F.Server->Requests[0]);
+	const TSharedPtr<FJsonObject> Sent = BodyOf(FlockTestAt(F.Server->Requests, 0));
 	int32 SentSize = 0;
 	const TSharedPtr<FJsonObject>* SentSettings = nullptr;
 	TestTrue(TEXT("the size was sent"), Sent.IsValid() && Sent->TryGetNumberField(TEXT("max_size"), SentSize) && SentSize == 3);
@@ -283,7 +285,7 @@ bool FFlockPartyJoinTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("the player does not lead"), Party->IsLeader());
 	TestEqual(TEXT("one read of the party joined"), F.Server->Count(ERoute::Read), 1);
 	FString SentCode;
-	const TSharedPtr<FJsonObject> Sent = BodyOf(F.Server->Requests[0]);
+	const TSharedPtr<FJsonObject> Sent = BodyOf(FlockTestAt(F.Server->Requests, 0));
 	TestTrue(TEXT("the code is sent as the game gave it"), Sent.IsValid() && Sent->TryGetStringField(TEXT("invite_code"), SentCode));
 	TestEqualSensitive(TEXT("the code is not changed"), SentCode, Code);
 	return true;

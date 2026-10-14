@@ -181,10 +181,8 @@ void FFlockAuthProvider::TryRestoreSession(TFunction<void(bool)> OnComplete)
 		return;
 	}
 
-	// Carry the original login method forward so method-gated flows keep working after a restore.
+	// Carry the original login method forward, so a restored session reports how the player first signed in.
 	SessionRef->SetAuthMethod(Stored.AuthMethod.IsSet() ? Stored.AuthMethod.GetValue() : EFlockAuthMethod::SessionRestore);
-	// Linked-credential state is never persisted — a restored session knows nothing until the game reads the list.
-	*bHasEmailCredential = false;
 
 	TFunction<void()> CompleteRestored = [SessionRef, EventsWeak, Log, Finish, LoggedContext]()
 	{
@@ -201,12 +199,21 @@ void FFlockAuthProvider::TryRestoreSession(TFunction<void(bool)> OnComplete)
 
 	if (SessionRef->IsTokenExpired())
 	{
-		SessionRef->RefreshAccessToken([Finish, CompleteRestored](bool bRefreshed)
+		const int32 RestoredSignIn = SessionRef->GetSignInNumber();
+		SessionRef->RefreshAccessToken([SessionRef, Log, LoggedContext, RestoredSignIn, Finish, CompleteRestored](bool bRefreshed)
 		{
-			if (!bRefreshed)
+			// A refresh the server refused cleared the sign-in, and another sign-in meanwhile replaced it.
+			if (SessionRef->GetSignInNumber() != RestoredSignIn || !SessionRef->IsAuthenticated())
 			{
 				Finish(false);
 				return;
+			}
+			// One that never reached the server keeps it: a launch with no network does not sign the player out, and the
+			// next call refreshes the token again.
+			if (!bRefreshed)
+			{
+				Log->LogWarning(FString::Printf(TEXT("%s -> the token could not be refreshed (no answer from the server); the "
+					"sign-in is kept and the next call refreshes it"), *LoggedContext));
 			}
 			CompleteRestored();
 		});
@@ -219,7 +226,6 @@ void FFlockAuthProvider::TryRestoreSession(TFunction<void(bool)> OnComplete)
 void FFlockAuthProvider::Logout()
 {
 	const bool bWasAuthenticated = Session->IsAuthenticated();
-	*bHasEmailCredential = false;
 	Session->ClearTokens();
 	if (bWasAuthenticated)
 	{
@@ -254,8 +260,8 @@ FFlockRequestHandle FFlockAuthProvider::ForgotPassword(const FString& Email,
 FFlockRequestHandle FFlockAuthProvider::ResetPassword(const FString& Email, const FString& Code,
 	const FString& NewPassword, TFunction<void(TFlockResult<FFlockAuthActionResponse>)> OnComplete)
 {
-	if (!RequireEmailAuth<FFlockAuthActionResponse>(OnComplete)
-		|| !RequireNotEmpty<FFlockAuthActionResponse>(Email, TEXT("Email"), OnComplete)
+	// Not gated on sign-in: a player who forgot their password is usually signed out, and the route takes no token.
+	if (!RequireNotEmpty<FFlockAuthActionResponse>(Email, TEXT("Email"), OnComplete)
 		|| !RequireNotEmpty<FFlockAuthActionResponse>(Code, TEXT("Code"), OnComplete)
 		|| !RequireNotEmpty<FFlockAuthActionResponse>(NewPassword, TEXT("NewPassword"), OnComplete))
 	{
@@ -349,19 +355,12 @@ FFlockRequestHandle FFlockAuthProvider::IsNameAvailable(const FString& Name,
 
 // ── Account linking ──
 
-void FFlockAuthProvider::AdoptAccounts(FFlockPlayerAccountsResponse& Response, const TSharedRef<bool>& HasEmailFlag)
+void FFlockAuthProvider::AdoptAccounts(FFlockPlayerAccountsResponse& Response)
 {
-	bool bHasEmail = false;
 	for (FFlockPlayerLinkedAccount& Account : Response.Accounts)
 	{
 		Account.ProviderType = FFlockCredentialProviders::Parse(Account.Provider);
-		if (Account.ProviderType == EFlockCredentialProvider::Email)
-		{
-			bHasEmail = true;
-		}
 	}
-	// Every route hands back the full list, so the flag re-derives itself on any of them.
-	*HasEmailFlag = bHasEmail;
 }
 
 FFlockRequestHandle FFlockAuthProvider::GetLinkedAccounts(
@@ -373,7 +372,6 @@ FFlockRequestHandle FFlockAuthProvider::GetLinkedAccounts(
 	}
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const TSharedRef<FFlockAuthSession> SessionRef = Session;
-	const TSharedRef<bool> HasEmailFlag = bHasEmailCredential;
 	const FString Url = AuthUrl(FlockEndpoints::PlayerAccounts);
 	return Execute<FFlockPlayerAccountsResponse>(ForTheCurrentSignInOnly<FFlockPlayerAccountsResponse>(
 		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnAttempt)
@@ -381,11 +379,11 @@ FFlockRequestHandle FFlockAuthProvider::GetLinkedAccounts(
 			// Raw (non-enveloped): the player auth routes return the model at the root.
 			return ClientRef->GetRaw<FFlockPlayerAccountsResponse>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		}),
-		[HasEmailFlag, OnComplete](TFlockResult<FFlockPlayerAccountsResponse> Result)
+		[OnComplete](TFlockResult<FFlockPlayerAccountsResponse> Result)
 		{
 			if (Result.bSuccess)
 			{
-				AdoptAccounts(Result.Value, HasEmailFlag);
+				AdoptAccounts(Result.Value);
 			}
 			if (OnComplete)
 			{
@@ -502,7 +500,6 @@ FFlockRequestHandle FFlockAuthProvider::Unlink(EFlockCredentialProvider Provider
 	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const TWeakObjectPtr<UFlockEvents> EventsWeak = Events;
 	const TSharedRef<IFlockLogger> Log = Logger;
-	const TSharedRef<bool> HasEmailFlag = bHasEmailCredential;
 	const FString Context = FString::Printf(TEXT("Unlink %s"), *Wire);
 	const FString LoggedContext = DecorateContext(Context);
 	const FString Url = AuthUrl(FlockEndpoints::PlayerUnlink(Wire));
@@ -512,11 +509,11 @@ FFlockRequestHandle FFlockAuthProvider::Unlink(EFlockCredentialProvider Provider
 		{
 			return ClientRef->PostJsonRaw<FFlockPlayerAccountsResponse>(Url, SessionRef->GetAuthHeaders(), TEXT("{}"), MoveTemp(OnAttempt));
 		}),
-		[SessionRef, EventsWeak, Log, HasEmailFlag, LoggedContext, Provider, OnComplete](TFlockResult<FFlockPlayerAccountsResponse> Result)
+		[SessionRef, EventsWeak, Log, LoggedContext, Provider, OnComplete](TFlockResult<FFlockPlayerAccountsResponse> Result)
 		{
 			if (Result.bSuccess)
 			{
-				AdoptAccounts(Result.Value, HasEmailFlag);
+				AdoptAccounts(Result.Value);
 				Log->LogInfo(FString::Printf(TEXT("%s from player: %s"), *LoggedContext, *SessionRef->GetPlayerId()));
 				if (UFlockEvents* Hub = EventsWeak.Get())
 				{

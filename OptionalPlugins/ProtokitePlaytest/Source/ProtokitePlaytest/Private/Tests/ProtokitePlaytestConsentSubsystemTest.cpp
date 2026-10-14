@@ -166,7 +166,7 @@ bool FProtokitePlaytestConsentNothingTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Heavy analytics is off"), Fixture.Playtest->IsPlaytestFeatureEnabled(ProtokitePlaytestFeatures::HeavyAnalytics));
 	TestFalse(TEXT("Nothing is being measured"), Fixture.Playtest->IsMeasuringPerformance());
 	TestEqual(TEXT("No Protokite session is started"), Fixture.SessionStarts(), 0);
-	TestFalse(TEXT("And there is no feedback form to open, since nothing of this launch is collected"),
+	TestTrue(TEXT("The feedback form still opens: a report is the player's own message, whatever the answer"),
 		Fixture.Playtest->CanOpenFeedbackForm());
 	return true;
 }

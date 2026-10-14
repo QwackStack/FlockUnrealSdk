@@ -25,7 +25,7 @@ class FLOCK_API FFlockFileEventCache : public IFlockEventCache
 public:
 	/**
 	 * Subfolder separates consumers (e.g. `log_events`, `session_ends`). MaxEntries of 0 or less retains nothing — use the
-	 * caching config flag to turn the spool off, not the cap.
+	 * caching config flag to turn the spool off, not the cap. An empty InRootDirectory keeps nothing either, and makes no folder.
 	 */
 	FFlockFileEventCache(const FString& Subfolder, int32 InMaxEntries, const FString& InRootDirectory);
 
@@ -34,6 +34,7 @@ public:
 
 	virtual int32 PendingCount() const override;
 	virtual FString Enqueue(const FString& Payload) override;
+	virtual bool KeepForALaterLaunch(const FString& Payload) override;
 	virtual bool Read(const FString& Handle, FString& OutPayload) const override;
 	virtual void Replace(const FString& Handle, const FString& Payload) override;
 	virtual void Remove(const FString& Handle) override;
@@ -62,7 +63,8 @@ private:
 	/** Oldest first. */
 	TArray<FString> Handles;
 	/** Disambiguates entries minted inside the same millisecond. */
-	uint32 Sequence = 0;
+	/** Moved by any thread, since a crash's entry is named from the crashing one. */
+	volatile int32 Sequence = 0;
 	/**
 	 * Consecutive failed reads per handle, cleared by a successful read. Two strikes rather than one so a
 	 * momentary lock — a virus scanner, a backup agent — costs a retry instead of a good event: a

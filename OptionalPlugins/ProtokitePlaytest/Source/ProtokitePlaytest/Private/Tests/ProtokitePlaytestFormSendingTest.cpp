@@ -7,6 +7,7 @@
 #include "Misc/FlockEngineCompat.h"
 
 #include "ProtokitePlaytestFormSpool.h"
+#include "HAL/FileManager.h"
 #include "ProtokitePlaytestFormSubmission.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -307,6 +308,171 @@ bool FProtokitePlaytestFormSendingNoCaseWarningTest::RunTest(const FString& Para
 	ExpectPlaytestStatus(*this, TEXT("Ready"), Fixture.Playtest->GetStatus(), EProtokitePlaytestStatus::Ready);
 	TestTrue(TEXT("Precondition: a form loaded"), Fixture.Playtest->CanOpenFeedbackForm());
 	TestEqual(TEXT("Nothing said"), Log.LinesContaining(TEXT("differ only in letter case")).Num(), 0);
+	return true;
+}
+
+/** Kept forms go one at a time, so a form is never sent while another is on its way, and none is sent twice. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestFormSendingOneAtATimeTest,
+	"Protokite.Playtest.Form.Sending.KeptFormsGoOneAtATime",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestFormSendingOneAtATimeTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	const FString Folder = FPaths::Combine(Fixture.Folder, TEXT("FeedbackForms"));
+	if (!TestTrue(TEXT("Two earlier forms are kept"), KeepFormFromAnEarlierLaunch(Folder) && KeepFormFromAnEarlierLaunch(Folder)))
+	{
+		return false;
+	}
+	Fixture.Transport->Answer(FeedbackFormRoute, FProtokitePlaytestFakeTransport::Status(200, FormTakenBody()));
+	Fixture.Transport->HoldRepliesToUrlsContaining.Add(FeedbackFormRoute);
+	StartReadyWithItsOwnFormFolder(Fixture);
+	RunPendingPlaytestRetries();
+
+	TestEqual(TEXT("One is sent while the other waits"), Fixture.Transport->CountRequestsEndingWith(FeedbackFormRoute), 1);
+	Fixture.Transport->ReleaseOldestHeldReply();
+	TestEqual(TEXT("The next goes once the first is answered"), Fixture.Transport->CountRequestsEndingWith(FeedbackFormRoute), 2);
+	Fixture.Transport->ReleaseAllHeldReplies();
+	TestEqual(TEXT("Both were taken"), FormsKept(Folder), 0);
+	return true;
+}
+
+/** A kept form another launch is sending is left to it. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestFormSendingClaimedTest,
+	"Protokite.Playtest.Form.Sending.AFormAnotherLaunchIsSendingIsLeftToIt",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestFormSendingClaimedTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	const FString Folder = FPaths::Combine(Fixture.Folder, TEXT("FeedbackForms"));
+	if (!TestTrue(TEXT("An earlier form is kept"), KeepFormFromAnEarlierLaunch(Folder)))
+	{
+		return false;
+	}
+	const FProtokitePlaytestFormSpool Spool(Folder);
+	const TArray<TPair<FString, FProtokitePlaytestFormSubmission>> Waiting = Spool.FindWaiting();
+	if (!TestEqual(TEXT("Precondition: one is waiting"), Waiting.Num(), 1))
+	{
+		return false;
+	}
+	// Another launch holds it.
+	TUniquePtr<IFileHandle> OtherLaunch = Spool.Claim(Waiting[0].Key);
+	TestTrue(TEXT("Precondition: the other launch claims it"), OtherLaunch.IsValid());
+
+	Fixture.Transport->Answer(FeedbackFormRoute, FProtokitePlaytestFakeTransport::Status(200, FormTakenBody()));
+	StartReadyWithItsOwnFormFolder(Fixture);
+	RunPendingPlaytestRetries();
+
+	TestEqual(TEXT("Nothing was sent by this launch"), Fixture.Transport->CountRequestsEndingWith(FeedbackFormRoute), 0);
+	TestEqual(TEXT("And the form is still there for the one sending it"), FormsKept(Folder), 1);
+	TestFalse(TEXT("A second claim is refused while the first holds"), Spool.Claim(Waiting[0].Key).IsValid());
+	FProtokitePlaytestFormSpool::Release(OtherLaunch, Waiting[0].Key);
+	TestTrue(TEXT("And taken once it lets go"), Spool.Claim(Waiting[0].Key).IsValid());
+	return true;
+}
+
+/** With no answer the forms behind wait for a later launch, rather than every form being tried in turn into a network that is down. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestFormSendingStopsWithNoAnswerTest,
+	"Protokite.Playtest.Form.Sending.TheFormsBehindWaitWhenNothingAnswers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestFormSendingStopsWithNoAnswerTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	const FString Folder = FPaths::Combine(Fixture.Folder, TEXT("FeedbackForms"));
+	if (!TestTrue(TEXT("Two earlier forms are kept"), KeepFormFromAnEarlierLaunch(Folder) && KeepFormFromAnEarlierLaunch(Folder)))
+	{
+		return false;
+	}
+	Fixture.Transport->Answer(FeedbackFormRoute, FProtokitePlaytestFakeTransport::ConnectionFailure());
+	StartReadyWithItsOwnFormFolder(Fixture);
+	RunPendingPlaytestRetries();
+
+	TestEqual(TEXT("Only the first was tried"), Fixture.Transport->CountRequestsEndingWith(FeedbackFormRoute), 1);
+	TestEqual(TEXT("Both are kept"), FormsKept(Folder), 2);
+	return true;
+}
+
+/** A failure Protokite gave about one form leaves the forms behind it free to go. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestFormSendingGoesOnAfterOneFormTest,
+	"Protokite.Playtest.Form.Sending.TheFormsBehindGoOnAfterAFailureAboutOneForm",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestFormSendingGoesOnAfterOneFormTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	const FString Folder = FPaths::Combine(Fixture.Folder, TEXT("FeedbackForms"));
+	if (!TestTrue(TEXT("Two earlier forms are kept"), KeepFormFromAnEarlierLaunch(Folder) && KeepFormFromAnEarlierLaunch(Folder)))
+	{
+		return false;
+	}
+	Fixture.Transport->Answer(FeedbackFormRoute, FProtokitePlaytestFakeTransport::Status(500, TEXT("{\"detail\":{\"code\":\"internal\",\"message\":\"boom\"}}")));
+	StartReadyWithItsOwnFormFolder(Fixture);
+	RunPendingPlaytestRetries();
+
+	TestEqual(TEXT("Both were tried"), Fixture.Transport->CountRequestsEndingWith(FeedbackFormRoute), 2);
+	TestEqual(TEXT("And both are kept for a later launch"), FormsKept(Folder), 2);
+	return true;
+}
+
+/** This launch's own form is claimed while it is sent, so a launch sending what was kept leaves it alone. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestFormSendingOwnFormClaimedTest,
+	"Protokite.Playtest.Form.Sending.ThisLaunchsFormIsClaimedWhileSent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestFormSendingOwnFormClaimedTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	Fixture.Transport->Answer(FeedbackFormRoute, FProtokitePlaytestFakeTransport::Status(200, FormTakenBody()));
+	const FString Folder = StartReadyWithItsOwnFormFolder(Fixture);
+	Fixture.Transport->HoldRepliesToUrlsContaining.Add(FeedbackFormRoute);
+
+	TestTrue(TEXT("Sending reports it went"), Fixture.Playtest->SendFilledInForm(FilledInAnswers()));
+	const FProtokitePlaytestFormSpool Spool(Folder);
+	const TArray<TPair<FString, FProtokitePlaytestFormSubmission>> Waiting = Spool.FindWaiting();
+	if (TestEqual(TEXT("Precondition: it is kept while it is on its way"), Waiting.Num(), 1))
+	{
+		TestFalse(TEXT("Another launch cannot claim it meanwhile"), Spool.Claim(Waiting[0].Key).IsValid());
+	}
+	Fixture.Transport->ReleaseAllHeldReplies();
+	TestEqual(TEXT("It is forgotten once taken"), FormsKept(Folder), 0);
+	TArray<FString> Left;
+	IFileManager::Get().FindFiles(Left, *FPaths::Combine(Folder, TEXT("*")), /*Files*/ true, /*Directories*/ false);
+	TestEqual(TEXT("And its claim with it: nothing is left in the folder"), Left.Num(), 0);
+	return true;
+}
+
+/** A claim a launch left when it ended, for a form that has gone since, is swept; one for a form still there is taken over. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestFormSendingLeftClaimTest,
+	"Protokite.Playtest.Form.Sending.AClaimLeftByAnEndedLaunchIsTidiedUp",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestFormSendingLeftClaimTest::RunTest(const FString& Parameters)
+{
+	FPlaytestFixture Fixture;
+	const FString Folder = FPaths::Combine(Fixture.Folder, TEXT("FeedbackForms"));
+	if (!TestTrue(TEXT("An earlier form is kept"), KeepFormFromAnEarlierLaunch(Folder)))
+	{
+		return false;
+	}
+	const FProtokitePlaytestFormSpool Spool(Folder);
+	const FString FormPath = Spool.FindWaiting()[0].Key;
+	const FString GoneForm = FPaths::Combine(Folder, TEXT("20250101-000000-deadbeef.json"));
+	// Claims an ended launch left: one beside the kept form, one beside a form already sent and deleted.
+	FFileHelper::SaveStringToFile(FString(), *(FormPath + TEXT(".sending")));
+	FFileHelper::SaveStringToFile(FString(), *(GoneForm + TEXT(".sending")));
+
+	TestEqual(TEXT("The kept form is still found"), Spool.FindWaiting().Num(), 1);
+	TestFalse(TEXT("The claim for the form gone is swept"), IFileManager::Get().FileExists(*(GoneForm + TEXT(".sending"))));
+	TUniquePtr<IFileHandle> Taken = Spool.Claim(FormPath);
+	TestTrue(TEXT("And the kept form's left claim is taken over"), Taken.IsValid());
+	FProtokitePlaytestFormSpool::Release(Taken, FormPath);
 	return true;
 }
 

@@ -6,7 +6,9 @@
 
 #include "Version/FlockVersionResolver.h"
 #include "Version/FlockVersionLookup.h"
+#include "Version/FlockHttpVersionLookup.h"
 #include "Config/FlockConfig.h"
+#include "Misc/ScopeExit.h"
 #include "UObject/Package.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockByNameUrlTest, "Flock.Editor.Resolver.ByNameUrl",
@@ -51,6 +53,50 @@ bool FFlockApplyResultTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Empty success ID reports no change"),
 		FFlockVersionResolver::ApplyResult(*Config, FFlockResolveResult::Ok(TEXT(""))));
 
+	return true;
+}
+
+namespace
+{
+	/** Answers only when the test says, the way a real lookup answers some time after it is asked. */
+	class FHeldVersionLookup final : public IFlockVersionLookup
+	{
+	public:
+		FFlockResolveComplete Waiting;
+		virtual void Resolve(const FString&, const FString&, const FString&, FFlockResolveComplete OnComplete) override { Waiting = OnComplete; }
+		virtual bool CanResolve() const override { return true; }
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockResolveAndBakeFinishedTest, "Flock.Editor.Resolver.TellsItsCallerOnceTheLookupHasAnswered",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockResolveAndBakeFinishedTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FHeldVersionLookup> Lookup = MakeShared<FHeldVersionLookup>();
+	FFlockVersionLookupRegistry::Set(Lookup);
+	ON_SCOPE_EXIT
+	{
+		FFlockVersionLookupRegistry::Set(MakeShared<FFlockHttpVersionLookup>());
+	};
+
+	// It already holds the ID the lookup answers, so the bake changes nothing and writes no settings file.
+	UFlockConfig* Config = NewObject<UFlockConfig>(GetTransientPackage());
+	Config->GameVersionId = TEXT("ver-abc");
+	int32 Finished = 0;
+	FFlockVersionResolver::ResolveAndBake(*Config, [&Finished]() { ++Finished; });
+	if (!TestTrue(TEXT("Precondition: the lookup was asked"), Lookup->Waiting.IsBound()))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Nothing is told before the lookup answers"), Finished, 0);
+	Lookup->Waiting.Execute(FFlockResolveResult::Ok(TEXT("ver-abc")));
+	TestEqual(TEXT("Told once it has"), Finished, 1);
+
+	AddExpectedMessagePlain(TEXT("Flock resolve failed"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	FFlockVersionResolver::ResolveAndBake(*Config, [&Finished]() { ++Finished; });
+	Lookup->Waiting.Execute(FFlockResolveResult::Fail(TEXT("unreachable")));
+	TestEqual(TEXT("A failed lookup is an answer too"), Finished, 2);
 	return true;
 }
 

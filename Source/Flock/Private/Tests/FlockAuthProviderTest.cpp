@@ -17,6 +17,7 @@
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
 #include "Tests/Support/FlockRecordingLogger.h"
+#include "Tests/Support/FlockTestSafeIndex.h"
 
 namespace FlockAuthProviderTestHelpers
 {
@@ -145,7 +146,7 @@ bool FFlockProviderBaseSilentRefreshTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("replay succeeded"), bSuccess);
 		TestEqual(TEXT("two data attempts"), F.Fake->CountTo(TEXT("data")), 2);
 		TestEqual(TEXT("one refresh"), F.Fake->CountTo(TEXT("token/refresh")), 1);
-		TestEqual(TEXT("replay used new bearer"), F.Fake->Requests.Last().Headers[TEXT("Authorization")],
+		TestEqual(TEXT("replay used new bearer"), F.Fake->LastRequest().Headers[TEXT("Authorization")],
 			FString::Printf(TEXT("Bearer %s"), *NewJwt));
 	}
 	// Refresh fails -> original Auth error surfaces, no replay.
@@ -194,6 +195,89 @@ bool FFlockProviderBaseSilentRefreshTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace FlockAuthProviderTestHelpers
+{
+	/** Answers a cancelled request Cancelled when its answer arrives, as the engine does; the fake alone cannot cancel. */
+	class FCancellableTransport : public IFlockHttpAdapter
+	{
+	public:
+		explicit FCancellableTransport(const TSharedRef<FFlockFakeTransport>& InInner) : Inner(InInner) {}
+
+		virtual FFlockRequestHandle SendAsync(const FFlockHttpRequest& Request, TFunction<void(FFlockHttpResponse)> OnComplete) override
+		{
+			const TSharedRef<FFlockCancelToken> Token = MakeShared<FFlockCancelToken>();
+			Inner->SendAsync(Request, [Token, OnComplete](FFlockHttpResponse Response)
+			{
+				if (Token->bCancelled)
+				{
+					Response = FFlockHttpResponse();
+					Response.Result = EFlockHttpResult::Cancelled;
+				}
+				OnComplete(Response);
+			});
+			return FFlockRequestHandle(Token);
+		}
+
+	private:
+		TSharedRef<FFlockFakeTransport> Inner;
+	};
+}
+
+// ── A call's handle cancels the replay after a token refresh too, not only the attempts before it ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockProviderBaseCancelReachesTheReplayTest, "Flock.Auth.ProviderBase.CancelReachesTheReplay",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockProviderBaseCancelReachesTheReplayTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockAuthProviderTestHelpers;
+	for (const bool bDuringTheReplay : { false, true })
+	{
+		const FString When = bDuringTheReplay ? TEXT("during the replay") : TEXT("during the refresh");
+		const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+		const TSharedRef<FFlockHttpClient> Client = MakeShared<FFlockHttpClient>(MakeShared<FCancellableTransport>(Fake), MakeShared<FFlockNullLogger>());
+		const TSharedRef<FFlockAuthSession> Session = MakeShared<FFlockAuthSession>(Client, MakeShared<FFlockMemoryTokenStore>(),
+			MakeShared<FFlockNullLogger>(), TEXT("http://x/v1"), TMap<FString, FString>());
+		const TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
+		FTestProvider Provider(Client, NoRetryPolicy(), Log);
+		Provider.SetAuthSession(Session);
+		FString Error;
+		Session->SetTokens(MakeJwt(TEXT("p-1")), TEXT("r-1"), Error);
+		const FString NewJwt = MakeJwt(TEXT("p-1"), 7200);
+		Fake->OnSequence(TEXT("data"), { FFlockFakeTransport::Status(401, TEXT("")), FFlockFakeTransport::Ok(LoginBody(TEXT("p-1"), NewJwt)) });
+		Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Ok(LoginBody(TEXT("p-1"), NewJwt, TEXT("r-2"))));
+		Fake->bDeferred = true;
+
+		int32 Answers = 0;
+		EFlockErrorType Type = EFlockErrorType::None;
+		bool bSuccess = false;
+		FFlockRequestHandle Handle = Provider.Execute<FFlockPlayerLoginResponse>(
+			[Client, Session](TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnAttempt)
+			{
+				return Client->GetRaw<FFlockPlayerLoginResponse>(TEXT("http://x/v1/data"), Session->GetAuthHeaders(), MoveTemp(OnAttempt));
+			},
+			[&](TFlockResult<FFlockPlayerLoginResponse> R) { ++Answers; bSuccess = R.bSuccess; Type = R.Error.Type; }, TEXT("Data call"));
+
+		Fake->FlushPending(); // the 401, which asks for a refresh
+		if (bDuringTheReplay)
+		{
+			Fake->FlushPending(); // the refresh, which sends the replay
+			TestEqual(*FString::Printf(TEXT("%s: the replay is on its way"), *When), Fake->CountTo(TEXT("data")), 2);
+		}
+		Handle.Cancel();
+		Fake->FlushPending();
+		Fake->FlushPending();
+
+		TestEqual(*FString::Printf(TEXT("%s: answered once"), *When), Answers, 1);
+		TestFalse(*FString::Printf(TEXT("%s: not as a success"), *When), bSuccess);
+		TestEqual(*FString::Printf(TEXT("%s: as cancelled"), *When), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
+		TestEqual(*FString::Printf(TEXT("%s: no replay after it"), *When), Fake->CountTo(TEXT("data")), bDuringTheReplay ? 2 : 1);
+		// A cancel is the caller's own choice, so nothing about it is logged as an error.
+		TestEqual(*FString::Printf(TEXT("%s: no error logged"), *When), Log->Errors.Num(), 0);
+		TestTrue(*FString::Printf(TEXT("%s: a debug line says so"), *When), FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("Data call [C++] failed")));
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAuthProviderLoginTest, "Flock.Auth.Provider.Login",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -214,7 +298,7 @@ bool FFlockAuthProviderLoginTest::RunTest(const FString& Parameters)
 
 		TestTrue(TEXT("success"), bSuccess);
 		TestEqual(TEXT("player id"), PlayerId, FString(TEXT("p-1")));
-		const FFlockHttpRequest& Request = F.Fake->Requests.Last();
+		const FFlockHttpRequest& Request = F.Fake->LastRequest();
 		TestEqual(TEXT("url"), Request.Url, FString(TEXT("http://x/v1/player/login")));
 		TestEqual(TEXT("method"), Request.Method, FString(TEXT("POST")));
 		TestTrue(TEXT("login_type"), Request.JsonBody.Contains(TEXT("\"login_type\":\"email\""), ESearchCase::CaseSensitive));
@@ -257,8 +341,8 @@ bool FFlockAuthProviderLoginTest::RunTest(const FString& Parameters)
 			FProviderFixture F;
 			F.Fake->On(TEXT("player/login"), FFlockFakeTransport::Ok(LoginBody(TEXT("p-1"), MakeJwt(TEXT("p-1")))));
 			Case.Call(F);
-			TestTrue(FString::Printf(TEXT("%s url"), Case.UrlSuffix), F.Fake->Requests.Last().Url.EndsWith(Case.UrlSuffix));
-			TestTrue(FString::Printf(TEXT("%s body"), Case.BodyFragment), F.Fake->Requests.Last().JsonBody.Contains(Case.BodyFragment));
+			TestTrue(FString::Printf(TEXT("%s url"), Case.UrlSuffix), F.Fake->LastRequest().Url.EndsWith(Case.UrlSuffix));
+			TestTrue(FString::Printf(TEXT("%s body"), Case.BodyFragment), F.Fake->LastRequest().JsonBody.Contains(Case.BodyFragment));
 			TestEqual(TEXT("method recorded"), static_cast<int32>(F.Session->GetAuthMethod().GetValue()), static_cast<int32>(Case.Method));
 		}
 		// Device login also reports the platform.
@@ -266,14 +350,14 @@ bool FFlockAuthProviderLoginTest::RunTest(const FString& Parameters)
 			FProviderFixture F;
 			F.Fake->On(TEXT("player/login"), FFlockFakeTransport::Ok(LoginBody(TEXT("p-1"), MakeJwt(TEXT("p-1")))));
 			F.Provider->LoginWithDevice(TEXT("dev-1"), nullptr);
-			TestTrue(TEXT("device_type sent"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"device_type\""), ESearchCase::CaseSensitive));
+			TestTrue(TEXT("device_type sent"), F.Fake->LastRequest().JsonBody.Contains(TEXT("\"device_type\""), ESearchCase::CaseSensitive));
 		}
 		// Facebook/Discord ride the generic route with a login_type discriminator.
 		{
 			FProviderFixture F;
 			F.Fake->On(TEXT("player/login"), FFlockFakeTransport::Ok(LoginBody(TEXT("p-1"), MakeJwt(TEXT("p-1")))));
 			F.Provider->LoginWithFacebook(TEXT("fb-1"), nullptr);
-			TestTrue(TEXT("facebook login_type"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"login_type\":\"facebook\""), ESearchCase::CaseSensitive));
+			TestTrue(TEXT("facebook login_type"), F.Fake->LastRequest().JsonBody.Contains(TEXT("\"login_type\":\"facebook\""), ESearchCase::CaseSensitive));
 		}
 	}
 	// Response without an access token -> Auth error, still signed out, no event.
@@ -386,7 +470,7 @@ bool FFlockAuthProviderRegisterTest::RunTest(const FString& Parameters)
 
 		TestTrue(TEXT("success"), bSuccess);
 		TestFalse(TEXT("not already registered"), bAlready);
-		const FFlockHttpRequest& Request = F.Fake->Requests.Last();
+		const FFlockHttpRequest& Request = F.Fake->LastRequest();
 		TestEqual(TEXT("url"), Request.Url, FString(TEXT("http://x/v1/player/register")));
 		TestTrue(TEXT("email"), Request.JsonBody.Contains(TEXT("\"email\":\"a@b.c\""), ESearchCase::CaseSensitive));
 		TestTrue(TEXT("name"), Request.JsonBody.Contains(TEXT("\"name\":\"Duck\""), ESearchCase::CaseSensitive));
@@ -399,7 +483,7 @@ bool FFlockAuthProviderRegisterTest::RunTest(const FString& Parameters)
 		FProviderFixture F;
 		F.Fake->On(TEXT("player/register"), FFlockFakeTransport::Ok(LoginBody(TEXT("p-1"), MakeJwt(TEXT("p-1")))));
 		F.Provider->RegisterWithEmail(TEXT("a@b.c"), TEXT("pw"), TEXT(""), nullptr);
-		TestFalse(TEXT("no empty name"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"name\"")));
+		TestFalse(TEXT("no empty name"), F.Fake->LastRequest().JsonBody.Contains(TEXT("\"name\"")));
 	}
 	// Already-registered short-circuit: success with the flag; session stays signed out; no event.
 	{
@@ -423,7 +507,7 @@ bool FFlockAuthProviderRegisterTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("reported as a warning instead"),
 			FFlockRecordingLogger::AnyContains(F.Log->Warnings, TEXT("already registered")));
 		TestTrue(TEXT("and still leaves a debug breadcrumb"),
-			FFlockRecordingLogger::AnyContains(F.Log->Debugs, TEXT("Operation failed")));
+			FFlockRecordingLogger::AnyContains(F.Log->Debugs, TEXT("] failed: ")));
 	}
 	// A taken display name is NOT the already-registered case — it must fail.
 	{
@@ -471,9 +555,9 @@ bool FFlockAuthProviderRegisterTest::RunTest(const FString& Parameters)
 			FProviderFixture F;
 			F.Fake->On(Case.Fragment, FFlockFakeTransport::Ok(LoginBody(TEXT("p-1"), MakeJwt(TEXT("p-1")))));
 			Case.Call(F);
-			TestTrue(FString::Printf(TEXT("%s url"), Case.UrlSuffix), F.Fake->Requests.Last().Url.EndsWith(Case.UrlSuffix));
-			TestTrue(FString::Printf(TEXT("%s body"), Case.BodyFragment), F.Fake->Requests.Last().JsonBody.Contains(Case.BodyFragment));
-			TestTrue(TEXT("name in body"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"name\":\"N\""), ESearchCase::CaseSensitive));
+			TestTrue(FString::Printf(TEXT("%s url"), Case.UrlSuffix), F.Fake->LastRequest().Url.EndsWith(Case.UrlSuffix));
+			TestTrue(FString::Printf(TEXT("%s body"), Case.BodyFragment), F.Fake->LastRequest().JsonBody.Contains(Case.BodyFragment));
+			TestTrue(TEXT("name in body"), F.Fake->LastRequest().JsonBody.Contains(TEXT("\"name\":\"N\""), ESearchCase::CaseSensitive));
 			TestEqual(TEXT("method recorded"), static_cast<int32>(F.Session->GetAuthMethod().GetValue()), static_cast<int32>(Case.Method));
 		}
 	}
@@ -564,6 +648,25 @@ bool FFlockAuthProviderRestoreTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("restored payload false"), F.Listener->bLastSessionRestored);
 		TestEqual(TEXT("no auth event"), F.Listener->AuthenticatedCount, 0);
 	}
+	// Expired token -> refresh never reaches the server -> restored, still signed in: no network at launch is no sign-out.
+	{
+		FProviderFixture F;
+		F.Store->bHasTokens = true;
+		F.Store->Stored.AccessToken = MakeJwt(TEXT("p-9"), -60);
+		F.Store->Stored.RefreshToken = TEXT("r-9");
+		F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Offline());
+
+		bool bRestored = false;
+		F.Provider->TryRestoreSession([&](bool bOk) { bRestored = bOk; });
+
+		TestTrue(TEXT("unreachable: restored"), bRestored);
+		TestTrue(TEXT("unreachable: still signed in"), F.Session->IsAuthenticated());
+		TestEqual(TEXT("unreachable: as the same player"), F.Session->GetPlayerId(), FString(TEXT("p-9")));
+		TestEqual(TEXT("unreachable: the game hears it"), F.Listener->AuthenticatedCount, 1);
+		TestTrue(TEXT("unreachable: restored payload"), F.Listener->bLastSessionRestored);
+		TestEqual(TEXT("unreachable: no expiry"), F.Listener->AuthExpiredCount, 0);
+		TestTrue(TEXT("unreachable: the store keeps the sign-in"), F.Store->bHasTokens);
+	}
 	// Unparseable stored tokens -> cleared, not restored.
 	{
 		FProviderFixture F;
@@ -639,49 +742,43 @@ bool FFlockAuthProviderAccountTest::RunTest(const FString& Parameters)
 			[&](TFlockResult<FFlockAuthActionResponse> R) { bSuccess = R.bSuccess; bServerSuccess = R.Value.Success; });
 		TestTrue(TEXT("success"), bSuccess);
 		TestTrue(TEXT("server success"), bServerSuccess);
-		TestTrue(TEXT("url"), F.Fake->Requests.Last().Url.EndsWith(TEXT("/player/password/forgot")));
-		TestTrue(TEXT("email in body"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"email\":\"a@b.c\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("url"), F.Fake->LastRequest().Url.EndsWith(TEXT("/player/password/forgot")));
+		TestTrue(TEXT("email in body"), F.Fake->LastRequest().JsonBody.Contains(TEXT("\"email\":\"a@b.c\""), ESearchCase::CaseSensitive));
 
 		EFlockErrorType GuardType = EFlockErrorType::None;
 		F.Provider->ForgotPassword(TEXT(""), [&](TFlockResult<FFlockAuthActionResponse> R) { GuardType = R.Error.Type; });
 		TestEqual(TEXT("empty email -> validation"), static_cast<int32>(GuardType), static_cast<int32>(EFlockErrorType::Validation));
 		TestEqual(TEXT("guard sent nothing"), F.Fake->CountTo(TEXT("password/forgot")), 1);
 	}
-	// ResetPassword: gated on an email-method session (restored email sessions count).
+	// ResetPassword: the email and code name the account and the route takes no token, so a signed-out player can reset.
 	{
 		FProviderFixture F;
-
-		// Signed out -> Auth error, no request.
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("123"), TEXT("np"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("signed out -> auth"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-
-		// Signed in via device -> still gated.
-		F.Session->SetTokens(MakeJwt(TEXT("p-1")), TEXT("r-1"), Error);
-		F.Session->SetAuthMethod(EFlockAuthMethod::Device);
-		Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("123"), TEXT("np"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("device method -> auth"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-		TestEqual(TEXT("no request yet"), F.Fake->CountTo(TEXT("password/reset")), 0);
-
-		// Email method -> posts all three fields.
-		F.Session->SetAuthMethod(EFlockAuthMethod::Email);
 		F.Fake->On(TEXT("password/reset"), FFlockFakeTransport::Ok(TEXT("{\"success\":true}")));
 		bool bSuccess = false;
 		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("123"), TEXT("np"),
 			[&](TFlockResult<FFlockAuthActionResponse> R) { bSuccess = R.bSuccess; });
-		TestTrue(TEXT("reset posted"), bSuccess);
-		const FString& Body = F.Fake->Requests.Last().JsonBody;
-		TestTrue(TEXT("code"), Body.Contains(TEXT("\"code\":\"123\""), ESearchCase::CaseSensitive));
-		TestTrue(TEXT("new_password"), Body.Contains(TEXT("\"new_password\":\"np\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("a signed-out player resets"), bSuccess);
+		TestEqual(TEXT("one request"), F.Fake->CountTo(TEXT("password/reset")), 1);
+		const FFlockHttpRequest& Sent = FlockTestAt(F.Fake->Requests, F.Fake->Requests.Num() - 1);
+		TestTrue(TEXT("email"), Sent.JsonBody.Contains(TEXT("\"email\":\"a@b.c\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("code"), Sent.JsonBody.Contains(TEXT("\"code\":\"123\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("new_password"), Sent.JsonBody.Contains(TEXT("\"new_password\":\"np\""), ESearchCase::CaseSensitive));
+		TestFalse(TEXT("no bearer"), Sent.Headers.Contains(TEXT("Authorization")));
+
+		// A player signed in some other way resets too.
+		F.Session->SetTokens(MakeJwt(TEXT("p-1")), TEXT("r-1"), Error);
+		F.Session->SetAuthMethod(EFlockAuthMethod::Device);
+		bSuccess = false;
+		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("123"), TEXT("np"),
+			[&](TFlockResult<FFlockAuthActionResponse> R) { bSuccess = R.bSuccess; });
+		TestTrue(TEXT("a device session resets"), bSuccess);
 
 		// Empty args are guarded.
-		Type = EFlockErrorType::None;
+		EFlockErrorType Type = EFlockErrorType::None;
 		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT(""), TEXT("np"),
 			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
 		TestEqual(TEXT("empty code -> validation"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Validation));
+		TestEqual(TEXT("the guard sent nothing"), F.Fake->CountTo(TEXT("password/reset")), 2);
 	}
 	// SendEmailVerification: empty JSON body; bearer rides along when signed in.
 	{
@@ -691,8 +788,8 @@ bool FFlockAuthProviderAccountTest::RunTest(const FString& Parameters)
 		bool bSuccess = false;
 		F.Provider->SendEmailVerification([&](TFlockResult<FFlockAuthActionResponse> R) { bSuccess = R.bSuccess; });
 		TestTrue(TEXT("sent"), bSuccess);
-		TestEqual(TEXT("empty body"), F.Fake->Requests.Last().JsonBody, FString(TEXT("{}")));
-		TestTrue(TEXT("bearer sent"), F.Fake->Requests.Last().Headers.Contains(TEXT("Authorization")));
+		TestEqual(TEXT("empty body"), F.Fake->LastRequest().JsonBody, FString(TEXT("{}")));
+		TestTrue(TEXT("bearer sent"), F.Fake->LastRequest().Headers.Contains(TEXT("Authorization")));
 	}
 	// VerifyEmail: code guard + body.
 	{
@@ -701,7 +798,7 @@ bool FFlockAuthProviderAccountTest::RunTest(const FString& Parameters)
 		bool bSuccess = false;
 		F.Provider->VerifyEmail(TEXT("999"), [&](TFlockResult<FFlockAuthActionResponse> R) { bSuccess = R.bSuccess; });
 		TestTrue(TEXT("verified"), bSuccess);
-		TestTrue(TEXT("code in body"), F.Fake->Requests.Last().JsonBody.Contains(TEXT("\"code\":\"999\""), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("code in body"), F.Fake->LastRequest().JsonBody.Contains(TEXT("\"code\":\"999\""), ESearchCase::CaseSensitive));
 
 		EFlockErrorType Type = EFlockErrorType::None;
 		F.Provider->VerifyEmail(TEXT(""), [&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
@@ -727,7 +824,7 @@ bool FFlockAuthProviderAccountTest::RunTest(const FString& Parameters)
 		bool bSuccess = false;
 		F.Provider->RevokeToken([&](TFlockResult<FFlockTokenRevokeResponse> R) { bSuccess = R.bSuccess; });
 		TestTrue(TEXT("confirmed revoke"), bSuccess);
-		TestEqual(TEXT("empty body"), F.Fake->Requests.Last().JsonBody, FString(TEXT("{}")));
+		TestEqual(TEXT("empty body"), F.Fake->LastRequest().JsonBody, FString(TEXT("{}")));
 	}
 	// IsNameAvailable: GET with the encoded name in the query; response passthrough; guard.
 	{
@@ -737,7 +834,7 @@ bool FFlockAuthProviderAccountTest::RunTest(const FString& Parameters)
 		F.Provider->IsNameAvailable(TEXT("Duck Duck"),
 			[&](TFlockResult<FFlockNameAvailableResponse> R) { bAvailable = R.Value.Available; });
 		TestTrue(TEXT("available"), bAvailable);
-		const FFlockHttpRequest& Request = F.Fake->Requests.Last();
+		const FFlockHttpRequest& Request = F.Fake->LastRequest();
 		TestEqual(TEXT("GET"), Request.Method, FString(TEXT("GET")));
 		TestTrue(TEXT("encoded query"), Request.Url.Contains(TEXT("name-available?name=Duck%20Duck")));
 

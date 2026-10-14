@@ -101,7 +101,7 @@ public:
 	FFlockRequestHandle ForgotPassword(const FString& Email,
 		TFunction<void(TFlockResult<FFlockAuthActionResponse>)> OnComplete);
 
-	/** Sets a new password using the emailed code. Requires being signed in with email (restored email sessions count). */
+	/** Sets a new password using the emailed code. Works signed out: the email and code name the account. */
 	FFlockRequestHandle ResetPassword(const FString& Email, const FString& Code, const FString& NewPassword,
 		TFunction<void(TFlockResult<FFlockAuthActionResponse>)> OnComplete);
 
@@ -178,10 +178,6 @@ private:
 	template <typename T>
 	bool RequireAuthenticated(const TFunction<void(TFlockResult<T>)>& OnComplete) const;
 
-	/** Fails fast unless signed in via email (restored email sessions count). */
-	template <typename T>
-	bool RequireEmailAuth(const TFunction<void(TFlockResult<T>)>& OnComplete) const;
-
 	/**
 	 * Shared account-flow POST: serialize (omitting empty optionals), per-attempt auth headers, run under Execute.
 	 * bActsForThePlayer: the route acts as the signed-in player through the token, so every attempt is that sign-in's.
@@ -199,11 +195,8 @@ private:
 	FFlockRequestHandle LinkOAuth(EFlockCredentialProvider Provider, const FString& Token, const FString& TokenArgName,
 		const FString& Context, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
 
-	/**
-	 * Post-processes a credential list: fills each account's typed ProviderType and re-derives the
-	 * email-credential flag. Static and flag-by-parameter so completion lambdas never capture `this`.
-	 */
-	static void AdoptAccounts(FFlockPlayerAccountsResponse& Response, const TSharedRef<bool>& HasEmailFlag);
+	/** Post-processes a credential list: fills each account's typed ProviderType. Static so completion lambdas never capture `this`. */
+	static void AdoptAccounts(FFlockPlayerAccountsResponse& Response);
 
 	FString AuthUrl(const FString& Endpoint) const;
 
@@ -213,13 +206,6 @@ private:
 
 	/** Heap-shared (not a plain member) so async restore legs can clear it even if the provider is torn down mid-restore. */
 	TSharedRef<bool> bRestoringSession = MakeShared<bool>(false);
-
-	/**
-	 * Best-effort: true once a credential list or an email link proves the account has an email
-	 * credential. Widens the ResetPassword gate. Session-scoped and never persisted — false after a
-	 * restore until the caller reads the list. Heap-shared for the same reason as bRestoringSession.
-	 */
-	TSharedRef<bool> bHasEmailCredential = MakeShared<bool>(false);
 };
 
 // ── Template implementations ──
@@ -258,9 +244,8 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 
 	const TWeakObjectPtr<UFlockEvents> EventsWeak = Events;
 	const TSharedRef<IFlockLogger> Log = Logger;
-	const TSharedRef<bool> HasEmailFlag = bHasEmailCredential;
 	return Execute<FFlockPlayerLoginResponse>(MoveTemp(Operation),
-		[SessionRef, EventsWeak, Log, HasEmailFlag, Context, LoggedContext, Method, OnComplete](TFlockResult<FFlockPlayerLoginResponse> Result)
+		[SessionRef, EventsWeak, Log, Context, LoggedContext, Method, OnComplete](TFlockResult<FFlockPlayerLoginResponse> Result)
 		{
 			if (!Result.bSuccess)
 			{
@@ -297,8 +282,6 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 			}
 
 			SessionRef->SetAuthMethod(Method);
-			// A new session knows nothing about linked credentials yet — never carry the previous player's answer over.
-			*HasEmailFlag = false;
 			Log->LogInfo(FString::Printf(TEXT("%s successful for player: %s"), *LoggedContext, *SessionRef->GetPlayerId()));
 
 			if (UFlockEvents* Hub = EventsWeak.Get())
@@ -368,26 +351,6 @@ bool FFlockAuthProvider::RequireAuthenticated(const TFunction<void(TFlockResult<
 	return true;
 }
 
-template <typename T>
-bool FFlockAuthProvider::RequireEmailAuth(const TFunction<void(TFlockResult<T>)>& OnComplete) const
-{
-	if (!RequireAuthenticated<T>(OnComplete))
-	{
-		return false;
-	}
-	// An email login (restored ones count) or an email credential linked during this session.
-	if (Session->GetAuthMethod() != EFlockAuthMethod::Email && !*bHasEmailCredential)
-	{
-		if (OnComplete)
-		{
-			OnComplete(TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Auth,
-				TEXT("Password reset requires an email credential on this account"))));
-		}
-		return false;
-	}
-	return true;
-}
-
 template <typename TReq>
 FFlockRequestHandle FFlockAuthProvider::Link(const TReq& Request, const FString& Endpoint,
 	EFlockCredentialProvider Provider, const FString& Context,
@@ -396,14 +359,13 @@ FFlockRequestHandle FFlockAuthProvider::Link(const TReq& Request, const FString&
 	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const TWeakObjectPtr<UFlockEvents> EventsWeak = Events;
 	const TSharedRef<IFlockLogger> Log = Logger;
-	const TSharedRef<bool> HasEmailFlag = bHasEmailCredential;
 	const FString LoggedContext = DecorateContext(Context);
 	return PostAccount<TReq, FFlockPlayerAccountsResponse>(Request, Endpoint, Context, /*bActsForThePlayer*/ true,
-		[SessionRef, EventsWeak, Log, HasEmailFlag, LoggedContext, Provider, OnComplete](TFlockResult<FFlockPlayerAccountsResponse> Result)
+		[SessionRef, EventsWeak, Log, LoggedContext, Provider, OnComplete](TFlockResult<FFlockPlayerAccountsResponse> Result)
 		{
 			if (Result.bSuccess)
 			{
-				AdoptAccounts(Result.Value, HasEmailFlag);
+				AdoptAccounts(Result.Value);
 				Log->LogInfo(FString::Printf(TEXT("%s succeeded for player: %s"), *LoggedContext, *SessionRef->GetPlayerId()));
 				if (UFlockEvents* Hub = EventsWeak.Get())
 				{

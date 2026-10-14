@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Codegen/FlockCppModuleEmitter.h"
+#include "Codegen/FlockCppTypeEmitter.h"
 
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
@@ -153,7 +154,10 @@ namespace
 			TEXT("\tinline constexpr int32 ShopCount = %d;\n")
 			TEXT("}\n"),
 			GeneratedBanner, *ModuleName,
-			*Manifest.GameVersionId, *Manifest.ContentHash, *Manifest.GeneratedAtUtc, *Manifest.SdkVersion,
+			*FFlockCppTypeEmitter::ToCppStringContents(Manifest.GameVersionId),
+			*FFlockCppTypeEmitter::ToCppStringContents(Manifest.ContentHash),
+			*FFlockCppTypeEmitter::ToCppStringContents(Manifest.GeneratedAtUtc),
+			*FFlockCppTypeEmitter::ToCppStringContents(Manifest.SdkVersion),
 			Manifest.PlayerTemplateCount, Manifest.GameConfigCount, Manifest.ShopCount);
 	}
 }
@@ -364,6 +368,13 @@ bool FFlockCppModuleEmitter::RemoveGeneratedTypes(const FString& GeneratedRoot, 
 	const FString WireNamesHeader = ModuleName + TEXT("WireNames.h");
 	const FString WireNamesSource = ModuleName + TEXT("WireNames.cpp");
 	const FString ModuleSource = ModuleName + TEXT("Module.cpp");
+
+	// No module, nothing to remove and nothing to keep compiling: a project that never used the C++ target gets no
+	// files under Source/ from a Blueprint sync or a Clean.
+	if (!IFileManager::Get().FileExists(*FPaths::Combine(GeneratedRoot, ModuleName + TEXT(".Build.cs"))))
+	{
+		return true;
+	}
 
 	// Public: every generated header goes except the two the skeleton owns. The module implementation
 	// includes both unconditionally, so removing either leaves a project that will not compile.

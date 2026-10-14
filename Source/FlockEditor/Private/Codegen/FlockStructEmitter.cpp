@@ -15,6 +15,7 @@
 #include FLOCK_USER_DEFINED_STRUCT_HEADER
 #include "UObject/Package.h"
 #include "UserDefinedStructure/UserDefinedStructEditorData.h"
+#include "Http/FlockJsonUtils.h"
 
 const TCHAR* const FFlockStructEmitter::TemplateSuffix = TEXT("Template");
 const TCHAR* const FFlockStructEmitter::ConfigSuffix = TEXT("Config");
@@ -125,7 +126,7 @@ namespace
 		if (Type == TEXT("list") || Type == TEXT("array") || Type == TEXT("dict"))
 		{
 			const TArray<TSharedPtr<FJsonValue>> Children = FFlockSchemaTypes::ChildEntries(Field);
-			const TSharedPtr<FJsonObject> Element = Children.IsEmpty() ? nullptr : Children[0]->AsObject();
+			const TSharedPtr<FJsonObject> Element = Children.IsEmpty() ? nullptr : FFlockJsonUtils::AsObjectOrNull(Children[0]);
 			if (!Element.IsValid())
 			{
 				OutWarnings.Add(FString::Printf(
@@ -185,7 +186,7 @@ namespace
 		int32 Added = 0;
 		for (const TSharedPtr<FJsonValue>& Entry : Entries)
 		{
-			const TSharedPtr<FJsonObject> Field = Entry.IsValid() ? Entry->AsObject() : nullptr;
+			const TSharedPtr<FJsonObject> Field = FFlockJsonUtils::AsObjectOrNull(Entry);
 			if (!Field.IsValid())
 			{
 				continue;

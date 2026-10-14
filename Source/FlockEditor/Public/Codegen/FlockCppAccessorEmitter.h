@@ -17,9 +17,8 @@
  * `Get<Template>` hands back `(struct, row id)` and `Save<Template>` takes both — the row id never lives
  * on the generated struct.
  *
- * The canonical SDK does the opposite, carrying `PlayerDataId` on the generated class so `UpdateAsync()`
- * needs no arguments, and the original design here copied that. It is wrong for Unreal for two reasons
- * that only became clear once the Blueprint tier existed. Generated structs are `BlueprintType`, so a
+ * Carrying the row id on the generated struct, so a save needs no arguments, was the original design, and
+ * it is wrong here for two reasons that only became clear once the Blueprint tier existed. Generated structs are `BlueprintType`, so a
  * member would surface in a Break node reading exactly like template data — which is why the Blueprint
  * tier made it a pin. And the write-side conversion reflects over *every* member, so a `PlayerDataId`
  * member would have to be specially excluded; a special case in the one code path whose bugs are

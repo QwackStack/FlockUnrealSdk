@@ -49,6 +49,9 @@ struct FProtokitePlaytestWhatEndedRunsLeft
 	int32 InterruptedRecordingsFinished = 0;
 	/** Playtest recordings deleted because no Protokite session started for them, so they can never be uploaded. */
 	int32 RecordingsWithoutASessionDeleted = 0;
+
+	/** Playtest recordings kept although their session file cannot be read: deleting a recording is the one step never undone. */
+	int32 RecordingsWithAnUnreadableSessionKept = 0;
 	/** Files that could not be finished or deleted, left for the next launch to try again. */
 	TArray<FString> FilesLeftForTheNextLaunch;
 };
@@ -114,10 +117,20 @@ public:
 	FProtokitePlaytestRecordingSession LoadSession() const;
 
 	/**
+	 * Whether a session file is there that cannot be read or parsed: its recording is kept, since deleting one cannot be undone,
+	 * where a file that parses but names no session is no session.
+	 */
+	bool HasUnreadableSessionFile() const;
+
+	/**
 	 * Deletes every file in the folder, the lock last, then the folder, and lets go of the run. When a file cannot be
-	 * deleted (another program has it open, say), it is added to OutFilesLeft, the lock stays and so does the hold.
+	 * deleted (another program has it open, say), it is added to OutFilesLeft, the lock stays and so does the hold. A folder
+	 * that cannot be removed once its lock has gone gets the lock back, so a later launch still finds it.
 	 */
 	bool DeleteEverything(TArray<FString>& OutFilesLeft);
+
+	/** Runs Hook once, between deleting the next run's lock and removing its folder, where a test makes the removal fail. */
+	static void SetBeforeNextFolderRemovalForTesting(TFunction<void()> Hook);
 
 private:
 	FProtokitePlaytestRecordingRun(const FString& InFolder, const FString& InName, EProtokitePlaytestRecordingKind InKind, TUniquePtr<IFileHandle> InLock);
@@ -164,12 +177,14 @@ public:
 	static TArray<FProtokitePlaytestRecordingWaitingToUpload> FindRecordingsWaitingToUpload(const FString& RecordingsFolder);
 
 	/**
-	 * Makes room for a recording expected to need BytesWanted inside BudgetBytes, counting every run in the folder, a
-	 * running game's at the size it may still grow to. Until it fits, ended runs are deleted: test videos first, oldest
-	 * first, and only when that is not enough the playtest recordings waiting to be uploaded, oldest first. A run still
-	 * going is never deleted. Answers what the budget has left.
+	 * Makes room for a recording of NewKind expected to need BytesWanted inside BudgetBytes, counting every run in the
+	 * folder, a running game's at the size it may still grow to. Until it fits, ended runs are deleted: test videos first,
+	 * oldest first, and only when that is not enough, and only for a playtest recording, the playtest recordings waiting to
+	 * be uploaded, oldest first: a test video never costs one. A run still going is never deleted. Answers what the budget
+	 * has left.
 	 */
-	static FProtokitePlaytestRecordingsRoom MakeRoom(const FString& RecordingsFolder, int64 BudgetBytes, int64 BytesWanted);
+	static FProtokitePlaytestRecordingsRoom MakeRoom(const FString& RecordingsFolder, int64 BudgetBytes, int64 BytesWanted,
+		EProtokitePlaytestRecordingKind NewKind);
 
 	/** The folder the runs of Kind are kept in. */
 	static FString GetKindFolder(const FString& RecordingsFolder, EProtokitePlaytestRecordingKind Kind);

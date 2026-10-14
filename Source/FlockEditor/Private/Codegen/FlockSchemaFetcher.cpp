@@ -51,6 +51,8 @@ namespace
 		void Succeed()
 		{
 			Snapshot.FetchedAtUtc = FDateTime::UtcNow();
+			// In one order whatever order the server listed them in, so a generated name never swaps between syncs.
+			Snapshot.SortForEmitting();
 			OnComplete.ExecuteIfBound(TFlockResult<FFlockSchemaSnapshot>::Ok(Snapshot));
 		}
 	};
@@ -171,7 +173,7 @@ void FFlockSchemaFetcher::Fetch(const TSharedRef<FFlockHttpClient>& Client, cons
 	State->OnComplete = OnComplete;
 	State->Snapshot.BakedGameVersionId = BakedGameVersionId;
 	State->VersionedUrl = FString::Printf(TEXT("%s/%s"),
-		*ApiUrl.TrimEnd().TrimChar('/'), *UFlockSubsystem::ApiVersion);
+		*FFlockInitConfig::TrimApiUrl(ApiUrl), *UFlockSubsystem::ApiVersion);
 	State->Headers.Add(TEXT("X-Flock-API-Key"), ApiKey);
 
 	// Resolve by name first: the version id scopes every request after it, and resolving (rather than

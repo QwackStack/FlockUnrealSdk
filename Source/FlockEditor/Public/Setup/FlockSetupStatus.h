@@ -130,6 +130,9 @@ public:
 	/** True when any finding would stop the SDK initializing. */
 	static bool HasErrors(const TArray<FFlockSetupFinding>& Findings);
 
+	/** Whether this finding opens the Flock panel by itself, and so whether the developer can stop it doing so. */
+	static bool OpensThePanelByItself(const FFlockSetupFinding& Finding);
+
 	/** The subset at or above a severity — how the PIE guard and the build validator narrow the list. */
 	static TArray<FFlockSetupFinding> AtLeast(const TArray<FFlockSetupFinding>& Findings, EFlockSetupSeverity Min);
 };

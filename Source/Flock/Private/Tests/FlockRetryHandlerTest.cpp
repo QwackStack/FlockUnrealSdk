@@ -8,6 +8,7 @@
 #include "Http/FlockResult.h"
 #include "Http/FlockError.h"
 #include "FlockLogger.h"
+#include "Tests/Support/FlockRecordingLogger.h"
 
 namespace
 {
@@ -202,6 +203,86 @@ bool FFlockRetryCancellationTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("cancelled result"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
 	TestEqual(TEXT("no further attempts"), Attempts, 1);
 
+	return true;
+}
+
+// ── MaxDelay is the longest wait, jitter included ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRetryJitterNeverPassesMaxDelayTest, "Flock.Http.Retry.JitterNeverPassesMaxDelay",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRetryJitterNeverPassesMaxDelayTest::RunTest(const FString& Parameters)
+{
+	FFlockRetryPolicy Policy;
+	Policy.MaxDelaySeconds = 30.f;
+	Policy.bUseJitter = true;
+	// The backoff grows to MaxDelay and jitter is applied after, so a quarter more could be waited without the cap.
+	float Longest = 0.f;
+	for (int32 Roll = 0; Roll < 200; ++Roll)
+	{
+		Longest = FMath::Max(Longest, FFlockRetryHandler::ResolveDelaySeconds(Net(500), Policy.MaxDelaySeconds, Policy));
+	}
+	TestTrue(FString::Printf(TEXT("no wait passes MaxDelay (longest %.2f s)"), Longest), Longest <= Policy.MaxDelaySeconds);
+	TestTrue(TEXT("and the jitter still shortens some"), Longest > 0.f);
+	return true;
+}
+
+namespace
+{
+	/** Runs one call under a handler with no waits, answering each attempt from Answers in turn. */
+	int32 RunWithAnswers(FFlockRetryHandler& Handler, const TArray<FFlockError>& Answers, bool bIdempotent = true)
+	{
+		Handler.SetScheduler([](float, TFunction<void()> Work) { Work(); });
+		int32 Attempts = 0;
+		Handler.Execute<int32>([&Attempts, Answers](TFunction<void(TFlockResult<int32>)> Callback) -> FFlockRequestHandle
+		{
+			const FFlockError& Answer = Answers[FMath::Min(Attempts, Answers.Num() - 1)];
+			++Attempts;
+			Callback(TFlockResult<int32>::Fail(Answer));
+			return FFlockRequestHandle();
+		}, [](TFlockResult<int32>) {}, bIdempotent);
+		return Attempts;
+	}
+
+	FFlockRetryPolicy NoWaits(int32 MaxRetries)
+	{
+		FFlockRetryPolicy Policy;
+		Policy.MaxRetries = MaxRetries;
+		Policy.InitialDelaySeconds = 0.f;
+		Policy.MaxDelaySeconds = 0.f;
+		Policy.bUseJitter = false;
+		return Policy;
+	}
+}
+
+// ── A failure that is never retried is the caller's to report, so the retry handling warns nothing about it ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRetryNeverRetriedFailureIsNotWarnedAboutTest, "Flock.Http.Retry.NeverRetriedFailureIsNotWarnedAbout",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRetryNeverRetriedFailureIsNotWarnedAboutTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
+	FFlockRetryHandler Handler(NoWaits(0), Log);
+	RunWithAnswers(Handler, { Net(404) });
+	RunWithAnswers(Handler, { FFlockError::Make(EFlockErrorType::Validation, TEXT("bad request"), 422) });
+	RunWithAnswers(Handler, { Net(500) }, /*bIdempotent*/ false);
+	TestEqual(TEXT("with retries off nothing is warned"), Log->Warnings.Num(), 0);
+	TestEqual(TEXT("and nothing is an error"), Log->Errors.Num(), 0);
+
+	// A refusal landing on the last try is not warned about either; only the retry before it is.
+	const TSharedRef<FFlockRecordingLogger> LastTryLog = MakeShared<FFlockRecordingLogger>();
+	FFlockRetryHandler LastTryHandler(NoWaits(1), LastTryLog);
+	TestEqual(TEXT("two attempts"), RunWithAnswers(LastTryHandler, { Net(500), Net(404) }), 2);
+	TestEqual(TEXT("only the retry is warned about"), LastTryLog->Warnings.Num(), 1);
+	TestTrue(TEXT("and it is the retry"), LastTryLog->Warnings.Num() == 1 && LastTryLog->Warnings[0].StartsWith(TEXT("Attempt 1 failed")));
+	TestEqual(TEXT("and nothing is an error"), LastTryLog->Errors.Num(), 0);
+
+	// The control: a failure it retries and ran out of tries for is warned about once.
+	const TSharedRef<FFlockRecordingLogger> OutOfTriesLog = MakeShared<FFlockRecordingLogger>();
+	FFlockRetryHandler OutOfTriesHandler(NoWaits(0), OutOfTriesLog);
+	RunWithAnswers(OutOfTriesHandler, { FFlockError::Make(EFlockErrorType::Timeout, TEXT("timeout")) });
+	TestEqual(TEXT("a retried failure out of tries is warned about once"), OutOfTriesLog->Warnings.Num(), 1);
+	TestTrue(TEXT("saying how many tries it had"),
+		OutOfTriesLog->Warnings.Num() == 1 && OutOfTriesLog->Warnings[0].StartsWith(TEXT("Operation failed after 1 attempt(s)")));
 	return true;
 }
 

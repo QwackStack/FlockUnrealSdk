@@ -19,15 +19,8 @@ TSharedRef<IDetailCustomization> FFlockConfigDetails::MakeInstance()
 	return MakeShared<FFlockConfigDetails>();
 }
 
-void FFlockConfigDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
+FText FFlockConfigDetails::MakeHeadline(const TArray<FFlockSetupFinding>& Findings)
 {
-	const TArray<FFlockSetupFinding> Findings = FFlockSetupContext::Evaluate();
-	if (Findings.Num() == 0)
-	{
-		// Nothing wrong, so no banner. A permanent "all good" strip would just be furniture.
-		return;
-	}
-
 	int32 ErrorCount = 0;
 	int32 WarningCount = 0;
 	for (const FFlockSetupFinding& Finding : Findings)
@@ -42,21 +35,39 @@ void FFlockConfigDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 		}
 	}
 
-	const bool bBlocking = ErrorCount > 0;
-
-	FText Headline;
-	if (bBlocking)
+	if (ErrorCount > 0)
 	{
-		Headline = FText::Format(
+		return FText::Format(
 			LOCTEXT("BannerBlocking", "Flock is not ready — {0} {0}|plural(one=error,other=errors)"),
 			FText::AsNumber(ErrorCount));
 	}
-	else
+	if (WarningCount > 0)
 	{
-		Headline = FText::Format(
-			LOCTEXT("BannerWarning", "Flock works, but {0} {0}|plural(one=item,other=items) need attention"),
+		return FText::Format(
+			LOCTEXT("BannerWarning", "Flock works, but {0} {0}|plural(one=item needs,other=items need) attention"),
 			FText::AsNumber(WarningCount));
 	}
+	if (Findings.Num() > 0)
+	{
+		return FText::Format(
+			LOCTEXT("BannerNotes", "Flock is set up — {0} {0}|plural(one=note,other=notes)"),
+			FText::AsNumber(Findings.Num()));
+	}
+	return FText::GetEmpty();
+}
+
+void FFlockConfigDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
+{
+	const TArray<FFlockSetupFinding> Findings = FFlockSetupContext::Evaluate();
+	if (Findings.Num() == 0)
+	{
+		// Nothing wrong, so no banner. A permanent "all good" strip would just be furniture.
+		return;
+	}
+
+	// Findings are ordered most severe first, so the first one picks the icon.
+	const EFlockSetupSeverity Worst = Findings[0].Severity;
+	const FText Headline = MakeHeadline(Findings);
 
 	// Findings are already ordered most-severe-first, so the first one is the one worth quoting.
 	const FText Lead = FText::Format(LOCTEXT("BannerLead", "{0} {1}"), Findings[0].Title, Findings[0].Detail);
@@ -79,7 +90,8 @@ void FFlockConfigDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.f, 0.f, 8.f, 0.f)
 				[
 					SNew(SImage).Image(FAppStyle::GetBrush(
-						bBlocking ? "Icons.ErrorWithColor" : "Icons.WarningWithColor"))
+						Worst == EFlockSetupSeverity::Error ? "Icons.ErrorWithColor"
+						: Worst == EFlockSetupSeverity::Warning ? "Icons.WarningWithColor" : "Icons.InfoWithColor"))
 				]
 				+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
 				[

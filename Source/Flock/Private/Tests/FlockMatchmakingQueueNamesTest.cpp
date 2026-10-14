@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -13,6 +14,7 @@
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
 #include "Tests/Support/FlockRecordingLogger.h"
+#include "Tests/Support/FlockTestSafeIndex.h"
 
 namespace FlockMatchmakingQueueNamesTestHelpers
 {
@@ -333,7 +335,7 @@ bool FFlockQueueNamesWireTest::RunTest(const FString& Parameters)
 	TestEqualSensitive(TEXT("found through the enveloped list"), Found.IsSet() ? Found->Value : FString(), FString(TEXT("q-duo")));
 	if (TestEqual(TEXT("one request"), F.Fake->Requests.Num(), 1))
 	{
-		const FFlockHttpRequest& Request = F.Fake->Requests[0];
+		const FFlockHttpRequest& Request = FlockTestAt(F.Fake->Requests, 0);
 		TestEqualSensitive(TEXT("the whole list in one page"), Request.Url, FString(TEXT("http://x/v1/matchmaking/queues?limit=200")));
 		TestEqualSensitive(TEXT("with the API key"), Request.Headers.FindRef(TEXT("X-Flock-API-Key")), FString(TEXT("k")));
 		TestFalse(TEXT("and no player's token, signed in or not"), Request.Headers.Contains(TEXT("Authorization")));

@@ -43,6 +43,44 @@ struct FLOCK_API FFlockPlayerTemplateSchema
 	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockPlayerTemplateSchema& OutStruct, FString& OutError);
 };
 
+/** Why a leaderboard turned a score away. An open set the server can widen, so compare against these, never a literal. */
+namespace FlockLeaderboardRefusalReasons
+{
+	/** The value is outside what the board accepts; trying again changes nothing. */
+	inline constexpr const TCHAR* ScoreBounds = TEXT("score_bounds");
+	/** The player's recent gains fill the board's allowance; it clears as they age out, unless this jump is larger than all of it. */
+	inline constexpr const TCHAR* GainLimit = TEXT("gain_limit");
+}
+
+/**
+ * A leaderboard that turned away the score a player-data write fed it (OpenAPI LeaderboardRefusalSchema). The write itself
+ * succeeded; the board did not take the new value.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockLeaderboardRefusal
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString LeaderboardId;
+
+	/** The board's name, which is how the leaderboard calls address it. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString LeaderboardName;
+
+	/** One of FlockLeaderboardRefusalReasons, as the server spelled it. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Reason;
+
+	/** Whether trying again can ever work. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool Retryable = false;
+
+	/** Seconds until it can, when Retryable and the server said how long; -1 otherwise. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int32 RetryAfterSeconds = -1;
+};
+
 /**
  * A single per-player data row (OpenAPI PlayerDataSchema): a player's values for one player template.
  * Its `data` is the same list[DataField] tree as a config, exposed through the shared data handle; a
@@ -73,6 +111,14 @@ struct FLOCK_API FFlockPlayerData
 
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString UpdatedAt;
+
+	/**
+	 * The leaderboards that turned away the score this write fed them. Only Update Player Data and Update Player Data Field
+	 * report them: empty after a read, Add Game Funds or Unlock Achievement means "not reported here", not "no board
+	 * refused". The write itself succeeded either way, and the cached row never keeps them.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockLeaderboardRefusal> LeaderboardRefusals;
 
 	/** Builds the row from a wire object, flattening `data`. */
 	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockPlayerData& OutStruct, FString& OutError);

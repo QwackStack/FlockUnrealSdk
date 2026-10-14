@@ -68,7 +68,7 @@ bool FProtokiteClientSendsWhatItIsGivenTest::RunTest(const FString& Parameters)
 
 	if (TestEqual(TEXT("One request"), Fixture.Transport->Requests.Num(), 1))
 	{
-		const FFlockHttpRequest& Request = Fixture.Transport->Requests[0];
+		const FFlockHttpRequest& Request = Fixture.Transport->RequestAt(0);
 		TestEqual(TEXT("A GET"), Request.Method, FString(TEXT("GET")));
 		TestEqual(TEXT("To the playtest-config route"), Request.Url, FString(TEXT("http://localhost:8020/game/sdk/playtest-config")));
 		TestEqual(TEXT("With the API key given"), Request.Headers.FindRef(TEXT("X-Flock-API-Key")), FString(TEXT("secret")));
@@ -274,7 +274,7 @@ bool FProtokiteClientStartSendsTheRequestItIsGivenTest::RunTest(const FString& P
 
 	if (TestEqual(TEXT("One request"), Fixture.Transport->Requests.Num(), 1))
 	{
-		const FFlockHttpRequest& Request = Fixture.Transport->Requests[0];
+		const FFlockHttpRequest& Request = Fixture.Transport->RequestAt(0);
 		TestEqual(TEXT("A POST"), Request.Method, FString(TEXT("POST")));
 		TestEqual(TEXT("To the session route"), Request.Url, FString(TEXT("http://localhost:8020/game/sdk/playtest-session")));
 		TestEqual(TEXT("With the API key given"), Request.Headers.FindRef(TEXT("X-Flock-API-Key")), FString(TEXT("secret")));
@@ -324,7 +324,7 @@ bool FProtokiteClientEndAcceptsNoContentTest::RunTest(const FString& Parameters)
 		TestEqual(FString::Printf(TEXT("%s: ended"), Case.What), Outcome->IsSet() && Outcome->GetValue().bSuccess, Case.bEnds);
 		if (Fixture.Transport->Requests.Num() > 0)
 		{
-			const FFlockHttpRequest& Request = Fixture.Transport->Requests[0];
+			const FFlockHttpRequest& Request = Fixture.Transport->RequestAt(0);
 			TestEqual(FString::Printf(TEXT("%s: a POST"), Case.What), Request.Method, FString(TEXT("POST")));
 			TestEqual(FString::Printf(TEXT("%s: to the session's end address"), Case.What), Request.Url,
 				FString::Printf(TEXT("http://localhost:8020/game/sdk/playtest-session/%s/end"), ProtokitePlaytestFixtures::PlaytestSessionId));

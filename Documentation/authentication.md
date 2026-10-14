@@ -164,11 +164,9 @@ Four coded errors are worth handling in-game:
 - **`ForgotPassword` always reports success.** The backend never reveals whether an address has an
   account, so success means "if that address exists, a code was sent". Do not use it to test whether
   someone is registered.
-- **Password reset needs an email credential.** `ResetPassword` accepts a session signed in with email
-  (a restored email session counts) **or** an email credential linked during this session. A device or
-  Steam session with no email attached cannot reset a password it never had. That linked-email
-  knowledge is session-scoped and deliberately not persisted — after a restore the SDK does not know
-  what is attached until you call `GetLinkedAccounts`.
+- **Password reset works signed out.** `ResetPassword` sends the email, the code from `ForgotPassword`
+  and the new password, and the route takes no token, so a player who forgot their password can reset it
+  from the sign-in screen. The server refuses a wrong or expired code.
 - **`RevokeToken` is the server-side kill**, and the thing to reach for when a token is stolen — it
   invalidates the refresh token for good. Call `Logout` afterwards for a full sign-out; `Logout` alone
   only clears local state.

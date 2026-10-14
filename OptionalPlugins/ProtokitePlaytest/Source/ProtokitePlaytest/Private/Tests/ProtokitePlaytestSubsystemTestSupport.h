@@ -187,7 +187,7 @@ namespace ProtokitePlaytestSubsystemTesting
 		// Nothing in these tests signs in, so nothing is sent to Flock; the address is unreachable all the same.
 		Config.ApiUrl = TEXT("http://127.0.0.1:9");
 		Config.ApiKey = TEXT("secret");
-		Config.GameId = TEXT("flock-playtest-test");
+		Config.GameId = TEXT("protokite-playtest-test");
 		Config.GameVersion = TEXT("1.2.3");
 		Config.GameVersionId = GameVersionId;
 		return Config;

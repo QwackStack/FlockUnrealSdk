@@ -14,7 +14,7 @@
 #include "Http/FlockHttpShutdown.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.27.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.28.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -164,6 +164,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	}
 
 	ActiveConfig = Config;
+	ActiveConfig.ApiUrl = FFlockInitConfig::TrimApiUrl(Config.ApiUrl);
 
 	const UFlockConfig* Settings = GetDefault<UFlockConfig>();
 	FFlockRetryPolicy RetryPolicy;
@@ -188,6 +189,14 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	AuthSession = MakeShared<FFlockAuthSession>(HttpClient.ToSharedRef(), TokenStore, LoggerRef,
 		GetVersionedApiUrl(), Config.GetBaseHeaders());
 	AuthSession->SetEvents(GetEvents());
+	// A sign-in the server will not refresh ends here as a sign-out does, or its analytics session runs on with no player.
+	AuthSession->SetBeforeExpiredSignInEnds([WeakThis = TWeakObjectPtr<UFlockSubsystem>(this)]()
+	{
+		if (UFlockSubsystem* Self = WeakThis.Get())
+		{
+			Self->EndSessionAndDropPlayerCaches();
+		}
+	});
 	AuthProvider = MakeUnique<FFlockAuthProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
 		AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl());
 
@@ -202,7 +211,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		// Order matters and is the whole fix: rescue state out of the version-scoped tree BEFORE pruning it.
 		// A queue left where builds before 1.9.0 put it would already be deleted by the time its provider
 		// went looking, which is how a game-version change used to lose a player's unsent offline writes.
-		SnapshotStore->MigrateLegacyState({ FFlockCommandProvider::SnapshotCategory });
+		SnapshotStore->MigrateLegacyState({ FFlockCommandProvider::SnapshotCategory, FFlockNotificationProvider::StateSnapshotCategory });
 		SnapshotStore->PruneOtherVersions(Config.GameVersionId);
 	}
 
@@ -224,11 +233,17 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		const FString AnalyticsFolder = bSavesInTestFolder
 			? FPaths::Combine(TestSavedFilesFolder, TEXT("analytics")) : FFlockAnalyticsLaunches::DefaultFolder();
 		const TSharedRef<FFlockAnalyticsLaunches> Launches = FFlockAnalyticsLaunches::Start(AnalyticsFolder);
-		if (!Launches->IsHoldingItsFolder())
+		// A launch that could not hold a folder keeps nothing on disk: entries go straight out, and no session record or crash
+		// marker is written, since no later launch could ever tell them apart from a running game's.
+		const bool bKeepsFiles = Launches->IsHoldingItsFolder();
+		if (!bKeepsFiles)
 		{
-			LoggerRef->LogWarning(FString::Printf(TEXT("Could not lock a folder for this launch's analytics files under %s, so ")
-				TEXT("launches that ended before this one are not reported this time."), *AnalyticsFolder));
+			LoggerRef->LogWarning(FString::Printf(TEXT("Could not lock a folder for this launch's analytics files under %s, so this ")
+				TEXT("launch keeps none: what it cannot send now is lost, and launches that ended before it are not reported this time."),
+				*AnalyticsFolder));
 		}
+		FFlockAnalyticsConfig SessionConfig = AnalyticsConfig;
+		SessionConfig.bPersistSessionOnDisk = AnalyticsConfig.bPersistSessionOnDisk && bKeepsFiles;
 		Deps.Launches = Launches;
 		// A cap of zero is how "don't spool" is expressed, so the caching switch maps onto it.
 		Deps.LogEventCache = MakeShared<FFlockFileEventCache>(FFlockAnalyticsLaunches::LogEventsQueueName,
@@ -240,10 +255,10 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		// shipping a new version must not delete the previous one's unsent events.
 		Deps.AnalyticsEventCache = MakeShared<FFlockFileEventCache>(FFlockAnalyticsLaunches::AnalyticsEventsQueueName,
 			AnalyticsConfig.bCacheFailedEvents ? AnalyticsConfig.MaxCachedEvents : 0, Launches->GetFolder());
-		Deps.Session = MakeShared<FFlockSession>(AnalyticsConfig, Launches->GetSessionStatePath());
+		Deps.Session = MakeShared<FFlockSession>(SessionConfig, Launches->GetSessionStatePath());
 		// Off in the editor: a PIE shutdown is not a real app death and would be reported as a crash.
 		Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(
-			AnalyticsConfig.bPersistSessionOnDisk && !GIsEditor, Launches->GetTerminationMarkerPath());
+			SessionConfig.bPersistSessionOnDisk && !GIsEditor, Launches->GetTerminationMarkerPath());
 		// The consent decision and the coverage notice belong to the install, so every launch shares them.
 		Deps.ConsentStore = MakeShared<FFlockConsentStore>(FPaths::Combine(AnalyticsFolder, FFlockConsentStore::FileName));
 		Deps.Pump = MakeShared<FFlockLifecyclePump>();
@@ -257,6 +272,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		// The backend requires a player id on a session, so sessions follow sign-in rather than init.
 		GetEvents()->OnAuthenticated.AddDynamic(this, &UFlockSubsystem::HandleAnalyticsAuthenticated);
 		GetEvents()->OnLoggedOut.AddDynamic(this, &UFlockSubsystem::HandleAnalyticsLoggedOut);
+		GetEvents()->OnAuthExpired.AddDynamic(this, &UFlockSubsystem::HandleAnalyticsLoggedOut);
 	}
 
 	// After the analytics block so the shop can record purchase transactions through it. The reference is
@@ -469,24 +485,27 @@ void UFlockSubsystem::ShutdownSdkFor(bool bGameEnding)
 
 	// The game is ending (it quits, or Play In Editor stops): the player's multiplayer seat is given up on the way out, before
 	// the wait below for requests on their way, which then covers the leave.
-	const bool bLeftSessionForQuit = bGameEnding && MultiplayerProvider.IsValid() && MultiplayerProvider->LeaveSessionForQuit();
+	if (bGameEnding && MultiplayerProvider.IsValid())
+	{
+		MultiplayerProvider->LeaveSessionForQuit();
+	}
 
 	// Shut the provider down while it is still alive — its destructor deliberately will not end a
 	// session, because that would dispatch HTTP from a destructor.
+	const bool bSessionEndSent = AnalyticsProvider.IsValid();
 	if (AnalyticsProvider.IsValid())
 	{
 		AnalyticsProvider->Shutdown();
-		// The session end it just sent is the last thing this SDK does and has no second chance: a saved end is not
-		// re-sent on a later launch, so one abandoned here leaves the session open for good. Waited for while the
-		// provider is still alive, so its completion runs and says what became of it, and before the HTTP client is
-		// let go below.
-		FlockFinishRequestsBeforeShutdown();
-		AnalyticsProvider.Reset();
 	}
-	else if (bLeftSessionForQuit)
+	// The session end just sent is saved to disk first (with Analytics Cache Failed Events on), so one abandoned here is
+	// sent again by a later launch; with the setting off it has no second chance. It, and whatever else is on its way when
+	// the game ends, is waited for while the providers are still alive, so it lands now and its completion runs and says
+	// what became of it, before the HTTP client is let go below.
+	if (FlockShouldFinishRequestsBeforeShutdown(bGameEnding, bSessionEndSent))
 	{
 		FlockFinishRequestsBeforeShutdown();
 	}
+	AnalyticsProvider.Reset();
 	// Same reason: stop the pump while the provider is alive rather than leaving it to the destructor.
 	// Anything still queued stays on disk and replays next run.
 	if (CommandProvider.IsValid())
@@ -504,6 +523,7 @@ void UFlockSubsystem::ShutdownSdkFor(bool bGameEnding)
 	{
 		Events->OnAuthenticated.RemoveDynamic(this, &UFlockSubsystem::HandleAnalyticsAuthenticated);
 		Events->OnLoggedOut.RemoveDynamic(this, &UFlockSubsystem::HandleAnalyticsLoggedOut);
+		Events->OnAuthExpired.RemoveDynamic(this, &UFlockSubsystem::HandleAnalyticsLoggedOut);
 		Events->OnAuthenticated.RemoveDynamic(this, &UFlockSubsystem::HandleCommandsAuthenticated);
 	}
 
@@ -594,6 +614,12 @@ void UFlockSubsystem::Logout()
 		GetLogger().LogWarning(TEXT("Logout called before the SDK was initialized; nothing to do."));
 		return;
 	}
+	EndSessionAndDropPlayerCaches();
+	AuthProvider->Logout();
+}
+
+void UFlockSubsystem::EndSessionAndDropPlayerCaches()
+{
 	// Before the tokens go: closing the session needs a bearer, and OnLoggedOut — which is where the
 	// analytics side would otherwise hear about this — only fires once they have been cleared. The
 	// end is spooled either way, so a failure here costs delivery time, not the record.
@@ -614,11 +640,11 @@ void UFlockSubsystem::Logout()
 	{
 		LeaderboardProvider->ClearCache();
 	}
-	// An inbox is the most personal thing the SDK caches. Every notification snapshot belongs to the player
-	// signing out, so all of them go — there is no game-scoped remainder worth keeping here.
+	// An inbox is the most personal thing the SDK caches. The player signing out loses their cached inbox; the
+	// template catalog (the game's), their seen-watermark and pending list (state, not cache) and other players'
+	// inboxes stay.
 	if (NotificationProvider.IsValid())
 	{
 		NotificationProvider->ClearCache();
 	}
-	AuthProvider->Logout();
 }

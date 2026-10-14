@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -26,6 +27,7 @@
 #include "Tests/Support/FlockSessionTestListener.h"
 #include "Tests/Support/FlockTestSdk.h"
 #include "Tests/Support/FlockTestSpelling.h"
+#include "Tests/Support/FlockTestSafeIndex.h"
 #include "UObject/StrongObjectPtr.h"
 
 namespace FlockSessionsTestHelpers
@@ -293,7 +295,7 @@ bool FFlockSessionHostTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("no end reason while it lasts"), Session->GetEndReason().IsEmpty());
 	if (TestEqual(TEXT("one request"), F.Server->Requests.Num(), 1))
 	{
-		TestEqualSensitive(TEXT("nothing given, nothing sent"), F.Server->Requests[0].JsonBody, FString(TEXT("{}")));
+		TestEqualSensitive(TEXT("nothing given, nothing sent"), FlockTestAt(F.Server->Requests, 0).JsonBody, FString(TEXT("{}")));
 	}
 	TestTrue(TEXT("held"), F.Held() == Session);
 	return true;
@@ -309,7 +311,7 @@ bool FFlockSessionHostSendsTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	const TSharedPtr<FJsonObject> Sent = SessionBodyOf(F.Server->Requests[0]);
+	const TSharedPtr<FJsonObject> Sent = SessionBodyOf(FlockTestAt(F.Server->Requests, 0));
 	int32 SentSize = 0;
 	const TSharedPtr<FJsonObject>* SentData = nullptr;
 	TestTrue(TEXT("the size was sent"), Sent.IsValid() && Sent->TryGetNumberField(TEXT("max_players"), SentSize) && SentSize == 4);

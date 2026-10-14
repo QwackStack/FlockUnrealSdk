@@ -91,7 +91,7 @@ FFlockSummonContext FFlockSetupContext::BuildSummonContext(const TArray<FFlockSe
 		bool bAnyUnsuppressedError = false;
 		for (const FFlockSetupFinding& Finding : Findings)
 		{
-			if (Finding.Severity == EFlockSetupSeverity::Error && !UserSettings->IsSuppressed(Finding.Id))
+			if (FFlockSetupStatus::OpensThePanelByItself(Finding) && !UserSettings->IsSuppressed(Finding.Id))
 			{
 				bAnyUnsuppressedError = true;
 				break;

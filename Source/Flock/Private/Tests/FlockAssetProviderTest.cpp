@@ -398,4 +398,77 @@ bool FFlockAssetCacheQueriesTest::RunTest(const FString&)
 	return true;
 }
 
+// ── A download larger than the whole budget is not kept, and the path handed back still holds its bytes ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAssetLargerThanTheBudgetTest, "Flock.Assets.Provider.ADownloadLargerThanTheBudgetIsNotKept",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAssetLargerThanTheBudgetTest::RunTest(const FString&)
+{
+	// A 1 MB budget, and a record that leaves the size out, so nothing can tell before the download that it will not fit.
+	FFixture Fx(FString(), /*CacheMaxMB*/ 1);
+	Fx.Fake->On(TEXT("/asset"), FFlockFakeTransport::Ok(ListBody(TEXT("https://s3/big"), TEXT("t1"), -1)));
+	Fx.Downloader->On(TEXT("s3/big"), FString::ChrN(2 * 1024 * 1024, TEXT('x')));
+
+	FString Path;
+	Fx.Provider->DownloadFile(TEXT("logo"), FFlockAssetProgress(), [&Path](TFlockResult<FString> R) { Path = R.bSuccess ? R.Value : FString(); });
+
+	TestFalse(TEXT("The download succeeds"), Path.IsEmpty());
+	TestTrue(TEXT("And its file is there to read"), IFileManager::Get().FileExists(*Path));
+	TestEqual(TEXT("It was not kept: the cache holds nothing"), Fx.Cache->GetTotalSizeBytes(), 0LL);
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+// ── A download that is not kept is written beside the cache, and the typed getters delete it once read ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAssetUnkeptDownloadTest, "Flock.Assets.Provider.ADownloadNotKeptIsWrittenBesideTheCache",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAssetUnkeptDownloadTest::RunTest(const FString&)
+{
+	FFixture Fx;
+	Fx.Provider->Configure(/*bCacheEnabled*/ false, 0.f, /*Retries*/ 0, /*MaxConcurrent*/ 4);
+	Fx.Fake->On(TEXT("/asset"), FFlockFakeTransport::Ok(ListBody(TEXT("https://s3/u-old"))));
+	Fx.Downloader->On(TEXT("s3/u-old"), TEXT("data"));
+
+	FString Path;
+	Fx.Provider->DownloadFile(TEXT("logo"), FFlockAssetProgress(), [&Path](TFlockResult<FString> R) { Path = R.Value; });
+	TestTrue(TEXT("Under the cache's folder, as writable as the cache on every platform"),
+		FPaths::ConvertRelativePathToFull(Path).StartsWith(FPaths::ConvertRelativePathToFull(Fx.CacheDir)));
+	TestFalse(TEXT("Never under Intermediate's scratch folder"), Path.Contains(TEXT("asset_tmp")));
+
+	const int32 Before = [&Fx]()
+	{
+		TArray<FString> Files;
+		IFileManager::Get().FindFilesRecursive(Files, *Fx.CacheDir, TEXT("*.tmp"), true, false);
+		return Files.Num();
+	}();
+	bool bRead = false;
+	Fx.Provider->DownloadBytes(TEXT("logo"), FFlockAssetProgress(), [&bRead](TFlockResult<TArray<uint8>> R) { bRead = R.bSuccess; });
+	TArray<FString> After;
+	IFileManager::Get().FindFilesRecursive(After, *Fx.CacheDir, TEXT("*.tmp"), true, false);
+	TestTrue(TEXT("The bytes are read"), bRead);
+	TestEqual(TEXT("And that file is deleted once read"), After.Num(), Before);
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+// ── A name is matched letter for letter: two assets can differ only in case ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAssetNameCaseTest, "Flock.Assets.Provider.ANameIsMatchedLetterForLetter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAssetNameCaseTest::RunTest(const FString&)
+{
+	FFixture Fx;
+	Fx.Fake->On(TEXT("/asset"), FFlockFakeTransport::Ok(ListBody()));
+	bool bFoundExactly = false;
+	Fx.Provider->GetByName(TEXT("logo"), [&bFoundExactly](TFlockResult<FFlockAsset> R) { bFoundExactly = R.bSuccess; });
+	TestTrue(TEXT("The name as written is found"), bFoundExactly);
+
+	bool bFoundInAnotherCase = true;
+	Fx.Provider->GetByName(TEXT("Logo"), [&bFoundInAnotherCase](TFlockResult<FFlockAsset> R) { bFoundInAnotherCase = R.bSuccess; });
+	TestFalse(TEXT("Another case is another name"), bFoundInAnotherCase);
+	Cleanup(Fx.Dir);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

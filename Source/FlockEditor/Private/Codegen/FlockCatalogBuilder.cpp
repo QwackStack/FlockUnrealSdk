@@ -9,6 +9,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "UObject/Package.h"
+#include "Http/FlockJsonUtils.h"
 
 const TCHAR* const FFlockCatalogBuilder::AssetName = TEXT("FlockContentCatalog");
 
@@ -29,7 +30,7 @@ namespace
 		}
 		Sorted.Sort([](const T& A, const T& B)
 		{
-			return A.Id == B.Id ? A.Name < B.Name : A.Id < B.Id;
+			return FlockCodegenComesBefore(A, B);
 		});
 		return Sorted;
 	}
@@ -54,7 +55,7 @@ TArray<FFlockCatalogField> FFlockCatalogBuilder::ReadFields(const FString& Schem
 
 	for (const TSharedPtr<FJsonValue>& Entry : Entries)
 	{
-		const TSharedPtr<FJsonObject> Object = Entry.IsValid() ? Entry->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject> Object = FFlockJsonUtils::AsObjectOrNull(Entry);
 		if (!Object.IsValid())
 		{
 			continue;

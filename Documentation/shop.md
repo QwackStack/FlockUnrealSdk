@@ -34,7 +34,11 @@ no JSON parsing node needed.
 ![A Flock Purchase node with its Shop Item Id wired from a picked item, both exec pins handled, and the Purchase Result output feeding a UI update](images/shop-purchase.png)
 
 **Break the Purchase Result to see what actually happened.** It carries `Inventory` (the row the player
-now owns), `Granted` (what the purchase handed over immediately) and `Wallet` (the balances afterwards).
+now owns), `Granted` (what the purchase handed over immediately), `Wallet` (the balances afterwards) and
+`Status`. A wallet purchase is paid at once; a real-money checkout can come back `pending` and hands nothing
+over until it is paid. Branch with *Is Purchase Paid*, or compare `Status` against the *Flock Purchase Status*
+nodes, never a typed-out string. A purchase or consume that reports a wallet also writes it into the cached
+player data, so the next read of that template shows the new balance.
 
 `Inventory` can be **empty**, and that is not an error: an item that grants its contents outright — a
 currency pack — creates nothing to own and reports the grant instead. Use *Has Inventory Row* before

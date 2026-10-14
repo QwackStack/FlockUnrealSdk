@@ -54,6 +54,8 @@ public class Flock : ModuleRules
 			{
 				"Projects",
 				"HTTP",
+				// Only the transport tests' stalling server uses it.
+				"Sockets",
 			}
 			);
 	}

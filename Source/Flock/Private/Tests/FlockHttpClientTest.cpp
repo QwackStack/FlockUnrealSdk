@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -10,6 +11,7 @@
 #include "FlockLogger.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockRecordingLogger.h"
+#include "Tests/Support/FlockTestSafeIndex.h"
 
 namespace
 {
@@ -143,7 +145,7 @@ bool FFlockHttpClientAcceptsNoContentTest::RunTest(const FString& Parameters)
 			TestEqualSensitive(Label + TEXT(": value"), Outcome->Value.Id, FString(Case.ExpectedId));
 			if (Fake->Requests.Num() == 1)
 			{
-				TestEqualSensitive(Label + TEXT(": method"), Fake->Requests[0].Method, FString(Method));
+				TestEqualSensitive(Label + TEXT(": method"), FlockTestAt(Fake->Requests, 0).Method, FString(Method));
 			}
 			else
 			{
@@ -255,9 +257,9 @@ bool FFlockHttpClientPostJsonTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("success"), bSuccess);
 	TestEqual(TEXT("unwrapped"), Id, FString(TEXT("p-1")));
 	TestEqual(TEXT("one request"), Fake->CountTo(TEXT("login")), 1);
-	TestEqual(TEXT("method"), Fake->Requests.Last().Method, FString(TEXT("POST")));
-	TestEqual(TEXT("body passed through"), Fake->Requests.Last().JsonBody, FString(TEXT("{\"login_type\":\"email\"}")));
-	TestTrue(TEXT("has body"), Fake->Requests.Last().bHasBody);
+	TestEqual(TEXT("method"), Fake->LastRequest().Method, FString(TEXT("POST")));
+	TestEqual(TEXT("body passed through"), Fake->LastRequest().JsonBody, FString(TEXT("{\"login_type\":\"email\"}")));
+	TestTrue(TEXT("has body"), Fake->LastRequest().bHasBody);
 	return true;
 }
 
@@ -308,6 +310,53 @@ bool FFlockHttpClientTraceTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("an unreachable server says so"),
 		FFlockRecordingLogger::AnyContains(OfflineLog->Warnings, TEXT("failed to reach the server")));
 
+	// A cancel is a choice, not a failure: it stays at debug and never says the server was unreachable.
+	const TSharedRef<FFlockRecordingLogger> CancelLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> CancelClient = MakeShared<FFlockHttpClient>(Fake, CancelLog);
+	FFlockHttpResponse Cancelled;
+	Cancelled.Result = EFlockHttpResult::Cancelled;
+	Fake->On(TEXT("dropped"), Cancelled);
+	CancelClient->Get<FFlockGameVersionSchema>(TEXT("http://x/dropped"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("a cancelled call is traced as cancelled"),
+		FFlockRecordingLogger::AnyContains(CancelLog->Debugs, TEXT("<- GET http://x/dropped [C++] cancelled")));
+	TestEqual(TEXT("and warns nothing"), CancelLog->Warnings.Num(), 0);
+
+	// A timeout reached the network, so it is not reported as an unreachable server either.
+	const TSharedRef<FFlockRecordingLogger> SlowLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> SlowClient = MakeShared<FFlockHttpClient>(Fake, SlowLog);
+	Fake->On(TEXT("slow"), FFlockFakeTransport::Timeout());
+	SlowClient->Get<FFlockGameVersionSchema>(TEXT("http://x/slow"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("a timeout says it had no answer in time"),
+		FFlockRecordingLogger::AnyContains(SlowLog->Warnings, TEXT("had no answer within the timeout")));
+	TestFalse(TEXT("and not that the server was unreachable"),
+		FFlockRecordingLogger::AnyContains(SlowLog->Warnings, TEXT("failed to reach the server")));
+
+	return true;
+}
+
+// ── A Retry-After the server got wrong never makes a retry wait less than nothing ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientNegativeRetryAfterTest, "Flock.Http.Client.NegativeRetryAfterMeansNow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientNegativeRetryAfterTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockHttpClient> Client = MakeClient(Fake);
+
+	FFlockHttpResponse Busy = FFlockFakeTransport::Status(429, TEXT(""));
+	Busy.RetryAfterHeader = TEXT("-5");
+	Fake->On(TEXT("busy"), Busy);
+	FFlockError Error;
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/busy"), {},
+		[&Error](TFlockResult<FFlockGameVersionSchema> R) { Error = R.Error; });
+	TestTrue(TEXT("the header was read"), Error.bHasRetryAfter);
+	TestEqual(TEXT("a negative wait reads as none"), Error.RetryAfterSeconds, 0.f);
+
+	Busy.RetryAfterHeader = TEXT("7");
+	Fake->On(TEXT("busy"), Busy);
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/busy"), {},
+		[&Error](TFlockResult<FFlockGameVersionSchema> R) { Error = R.Error; });
+	TestEqual(TEXT("a positive wait is kept as it is"), Error.RetryAfterSeconds, 7.f);
 	return true;
 }
 

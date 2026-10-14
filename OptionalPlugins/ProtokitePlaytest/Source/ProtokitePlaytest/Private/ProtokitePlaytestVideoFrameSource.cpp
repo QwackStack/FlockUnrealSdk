@@ -146,7 +146,8 @@ void FProtokitePlaytestGameViewportFrameSource::TakeCapturedFrames(TArray<FProto
 	}
 
 	// The grabber reads the part of the window the viewport had when it started. After a resize a new one reads the new
-	// part, at the same video size, since a video keeps one size throughout.
+	// part at the largest size of its shape that fits the video, which keeps one size throughout: the recording puts a
+	// picture of another shape between black bars rather than stretching it.
 	const TSharedPtr<FSceneViewport> Pinned = Viewport.Pin();
 	if (Pinned.IsValid())
 	{
@@ -171,7 +172,7 @@ void FProtokitePlaytestGameViewportFrameSource::Stop(TArray<FProtokitePlaytestVi
 
 void FProtokitePlaytestGameViewportFrameSource::StartGrabber(const TSharedRef<FSceneViewport>& InViewport)
 {
-	Grabber = MakeUnique<FFrameGrabber>(InViewport, FrameSize, PF_B8G8R8A8, /*NumSurfaces*/ 3);
+	Grabber = MakeUnique<FFrameGrabber>(InViewport, FitPictureInsideTheVideo(InViewport->GetSizeXY(), FrameSize), PF_B8G8R8A8, /*NumSurfaces*/ 3);
 	Grabber->StartCapturingFrames();
 	ViewportSizeWhenGrabberStarted = InViewport->GetSizeXY();
 	FramesOnTheirWay = 0;

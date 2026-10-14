@@ -21,8 +21,21 @@ FFlockAssetCache::FFlockAssetCache(const FString& InDirectory, int32 InMaxSizeMB
 	, Logger(InLogger)
 {
 	// A download that died part-way leaves its temporary file behind. Only old ones go: another launch of the game shares
-	// this folder, and a fresh one may be a download it is still writing or about to commit.
+	// this folder, and a fresh one may be a download it is still writing or about to commit. The downloads not kept go too.
 	FFlockTemporaryFiles::DeleteLeftOverFiles(Directory, TEXT("*.tmp"), /*bIncludeSubfolders*/ false);
+	FFlockTemporaryFiles::DeleteLeftOverFiles(FPaths::Combine(Directory, UnkeptFolder), TEXT("*.tmp"), /*bIncludeSubfolders*/ false);
+}
+
+FString FFlockAssetCache::MakeUnkeptPath(const FString& VersionToken) const
+{
+	const FString Folder = FPaths::Combine(Directory, UnkeptFolder);
+	IFileManager::Get().MakeDirectory(*Folder, /*Tree*/ true);
+	return FPaths::Combine(Folder, FString::Printf(TEXT("%s_%s.tmp"), *FGuid::NewGuid().ToString(EGuidFormats::Digits), *Sanitize(VersionToken)));
+}
+
+bool FFlockAssetCache::IsUnkeptDownload(const FString& Path) const
+{
+	return Path.StartsWith(Directory + TEXT("/")) && Path.EndsWith(TEXT(".tmp"));
 }
 
 FString FFlockAssetCache::GetFinalPath(const FString& AssetId, const FString& VersionToken) const
@@ -62,6 +75,13 @@ FString FFlockAssetCache::Commit(const FString& AssetId, const FString& VersionT
 {
 	const FString FinalPath = GetFinalPath(AssetId, VersionToken);
 
+	// Larger than the whole budget: kept, it would evict everything else and then itself, and hand back a deleted file.
+	if (MaxSizeBytes > 0 && IFileManager::Get().FileSize(*TempPath) > MaxSizeBytes)
+	{
+		Logger->LogDebug(FString::Printf(TEXT("Asset cache: '%s' is larger than the whole budget, so it is not kept"), *AssetId));
+		return FString();
+	}
+
 	// Move first, prune second: losing the old copy before the new one is in place would turn a failed
 	// move into "no cached asset at all" instead of "still the previous version".
 	if (!FFlockTemporaryFiles::MoveIntoPlace(TempPath, FinalPath))
@@ -71,7 +91,7 @@ FString FFlockAssetCache::Commit(const FString& AssetId, const FString& VersionT
 	}
 
 	DeleteOtherVersions(AssetId, FinalPath);
-	EnforceMaxSize();
+	EnforceMaxSize(FinalPath);
 	return FinalPath;
 }
 
@@ -121,7 +141,7 @@ void FFlockAssetCache::DeleteOtherVersions(const FString& AssetId, const FString
 	}
 }
 
-void FFlockAssetCache::EnforceMaxSize()
+void FFlockAssetCache::EnforceMaxSize(const FString& KeepPath)
 {
 	if (MaxSizeBytes <= 0)
 	{
@@ -164,6 +184,10 @@ void FFlockAssetCache::EnforceMaxSize()
 		if (Total <= MaxSizeBytes)
 		{
 			break;
+		}
+		if (Entry.Path == KeepPath)
+		{
+			continue;
 		}
 		if (IFileManager::Get().Delete(*Entry.Path, /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true))
 		{

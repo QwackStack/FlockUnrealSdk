@@ -149,7 +149,8 @@ public:
 
 	// ── log_event API ──
 	// All three spool immediately and deliver on the next flush; none of them block or report failure,
-	// because an analytics call must never be a reason the game stops.
+	// because an analytics call must never be a reason the game stops. Called off the game thread they are
+	// forwarded there, since the queue belongs to it; LogException walks its stack on the calling thread first.
 
 	/**
 	 * A diagnostic entry. Not for gameplay — a level completed or an item bought is TrackEvent.
@@ -368,6 +369,12 @@ private:
 
 	/** Builds and spools an exception entry from a trace already in hand. LogException adds the walk and the tally. */
 	void SpoolException(const FString& Message, const FString& StackTrace, const FFlockLogDetails& Details);
+	FFlockLogEventRequest MakeExceptionEvent(const FString& Message, const FString& StackTrace, const FFlockLogDetails& Details) const;
+	/**
+	 * A crash's report, on the crashing thread: written to disk for the next launch and nothing else, since no request can be
+	 * sent from there. With Analytics Cache Failed Events off nothing is kept, and the next launch's termination report is all.
+	 */
+	void KeepCrashReport(const FString& Message, const FString& StackTrace, const FFlockLogDetails& Details);
 
 	/** Spools one entry per repeat window that closed with repeats in it. */
 	void QueueRepeatReports(const TArray<FFlockRepeatedExceptionCounter::FRepeatReport>& Summaries);

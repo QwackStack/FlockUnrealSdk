@@ -27,8 +27,9 @@ namespace
 	class FFlockHttpFileUploader final : public IFlockFileUploader
 	{
 	public:
-		explicit FFlockHttpFileUploader(const TSharedRef<IFlockLogger>& InLogger)
+		FFlockHttpFileUploader(const TSharedRef<IFlockLogger>& InLogger, float InStallSeconds)
 			: Logger(InLogger)
+			, StallSeconds(InStallSeconds)
 		{
 		}
 
@@ -55,6 +56,11 @@ namespace
 			if (TimeoutSeconds > 0.f)
 			{
 				HttpRequest->SetTimeout(TimeoutSeconds);
+			}
+			// A gigabyte and a half takes long on a slow connection, so only standing still is given up on.
+			if (StallSeconds > 0.f)
+			{
+				HttpRequest->SetActivityTimeout(StallSeconds);
 			}
 
 			if (!HttpRequest->SetContentAsStreamedFile(SourcePath))
@@ -87,6 +93,11 @@ namespace
 				[OnComplete, Token, FileBytes]
 				(FHttpRequestPtr RequestPtr, FHttpResponsePtr Response, bool bConnectedSuccessfully)
 				{
+					if (Token->bAnswered)
+					{
+						return;
+					}
+					Token->bAnswered = true;
 					FFlockFileUploadOutcome Outcome;
 					Outcome.Result = Classify(Token->bCancelled, RequestPtr, Response, bConnectedSuccessfully);
 
@@ -115,9 +126,11 @@ namespace
 					}
 				});
 
-			if (!HttpRequest->ProcessRequest())
+			// A request the engine refuses to start may already have been answered through the completion above (UE 5.5
+			// answers it before ProcessRequest returns), so this answers only when that did not.
+			if (!HttpRequest->ProcessRequest() && !Token->bAnswered)
 			{
-				// Never dispatched, so the completion above will not run.
+				Token->bAnswered = true;
 				CompleteWithFailure(OnComplete, TEXT("Failed to start the upload"));
 			}
 			return FFlockRequestHandle(Token);
@@ -160,10 +173,11 @@ namespace
 		}
 
 		TSharedRef<IFlockLogger> Logger;
+		float StallSeconds = 0.f;
 	};
 }
 
-TSharedRef<IFlockFileUploader> FlockCreateHttpFileUploader(const TSharedRef<IFlockLogger>& Logger)
+TSharedRef<IFlockFileUploader> FlockCreateHttpFileUploader(const TSharedRef<IFlockLogger>& Logger, float StallSeconds)
 {
-	return MakeShared<FFlockHttpFileUploader>(Logger);
+	return MakeShared<FFlockHttpFileUploader>(Logger, StallSeconds);
 }

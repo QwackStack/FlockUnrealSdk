@@ -103,6 +103,29 @@ jobs:
           fi
           echo "$total wire error codes checked against $(wc -l < /tmp/members.txt) enum members — no drift."
 
+  standalone:
+    # Shipped code and docs present this SDK on its own: a comment that leans on another engine's SDK ("the
+    # canonical SDK does it this way") tells a studio reading it nothing, and fifteen of them had crept in.
+    # Reads text files only, so it needs no engine.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No shipped file names another engine's SDK
+        run: |
+          set -euo pipefail
+
+          # What a release carries. "unity build" and its relatives are the compiler's term, not the engine's.
+          hits=$(git ls-files -z -- Source OptionalPlugins Documentation README.md CHANGELOG.md Flock.uplugin \
+            | xargs -0 grep -n -I -i -E 'canonical sdk|canonical (buffers|uses|splits|does|reads|carries)|\bunity\b|\bgodot\b' \
+            | grep -v -i -E 'unity build|unity-safe|bUseUnity|adaptive unity|unity blob' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::A shipped file names another engine's SDK; say what this SDK does instead."
+            exit 1
+          fi
+          echo "No shipped file names another engine's SDK."
+
   version:
     # Three facts about a release have to agree and nothing mechanical links them: Flock.uplugin's
     # VersionName is what the archive is named for and what UFlockSubsystem::SdkVersion is bumped
@@ -294,3 +317,13 @@ jobs:
           fi
 
           echo "VersionName $VERSION is ahead of main's $BASE_VERSION."
+
+          # Version, the integer the engine compares to tell an update from an older build, moves forward with it.
+          # The playtest plugin's must equal Flock's (playtest-plugin.yml), so checking Flock's covers both.
+          NUMBER=$(grep -oE '"Version": *[0-9]+' "$MANIFEST" | grep -oE '[0-9]+$' || true)
+          BASE_NUMBER=$(git show "${BASE_SHA}:${MANIFEST}" | grep -oE '"Version": *[0-9]+' | grep -oE '[0-9]+$' || true)
+          if [ -z "$NUMBER" ] || [ -z "$BASE_NUMBER" ] || [ "$NUMBER" -le "$BASE_NUMBER" ]; then
+            echo "::error file=$MANIFEST::Version is ${NUMBER:-<unreadable>} on this branch and ${BASE_NUMBER:-<unreadable>} on main. Raise it with VersionName, in both manifests."
+            exit 1
+          fi
+          echo "Version $NUMBER is ahead of main's $BASE_NUMBER."

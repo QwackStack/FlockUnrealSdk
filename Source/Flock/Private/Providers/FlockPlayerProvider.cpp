@@ -400,7 +400,10 @@ void FFlockPlayerProvider::ApplyServerPlayerData(const FFlockPlayerData& Row)
 	// off a single row, and every other template would then read as absent without a refetch.
 	if (TMap<FString, FFlockPlayerData>* Rows = PlayerDataByPlayer.Find(Row.PlayerId))
 	{
-		Rows->Add(Row.PlayerTemplateId, Row);
+		// A refusal describes the one write it came back with, never the row a later read finds.
+		FFlockPlayerData Kept = Row;
+		Kept.LeaderboardRefusals.Reset();
+		Rows->Add(Row.PlayerTemplateId, Kept);
 	}
 }
 

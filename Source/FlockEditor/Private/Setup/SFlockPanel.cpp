@@ -220,6 +220,33 @@ TSharedRef<SWidget> SFlockPanel::BuildFindingRow(const FFlockSetupFinding& Findi
 		];
 	}
 
+	// Only a finding that opens the panel by itself can be stopped from doing so; it stays listed here and in
+	// Project Settings either way.
+	if (FFlockSetupStatus::OpensThePanelByItself(Finding))
+	{
+		const FName FindingId = Finding.Id;
+		Row->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(8.f, 0.f, 0.f, 0.f)
+		[
+			SNew(SButton)
+			.Text(LOCTEXT("StopOpeningForThis", "Don't Open For This"))
+			.ToolTipText(LOCTEXT("StopOpeningForThisTip", "Stop the Flock panel opening by itself at startup for this. It is still listed here and in Project Settings."))
+			.Visibility_Lambda([FindingId]()
+			{
+				const UFlockEditorUserSettings* Settings = UFlockEditorUserSettings::Get();
+				return (Settings && !Settings->IsSuppressed(FindingId)) ? EVisibility::Visible : EVisibility::Collapsed;
+			})
+			.OnClicked_Lambda([this, FindingId]()
+			{
+				if (UFlockEditorUserSettings* Settings = UFlockEditorUserSettings::Get())
+				{
+					Settings->Suppress(FindingId);
+				}
+				Refresh();
+				return FReply::Handled();
+			})
+		];
+	}
+
 	return SNew(SBorder)
 		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		.Padding(8.f)
@@ -371,7 +398,9 @@ void SFlockPanel::RunFix(EFlockSetupFix Fix)
 	case EFlockSetupFix::Resolve:
 		if (UFlockConfig* Config = GetMutableDefault<UFlockConfig>())
 		{
+			// The bake refreshes the panel once it lands; refreshing now would show the state from before it.
 			FFlockVersionResolver::ResolveAndBake(*Config);
+			return;
 		}
 		break;
 

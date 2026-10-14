@@ -139,7 +139,7 @@ bool FFlockAuthSessionRefreshTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("refresh token replaced"), F.Session->GetRefreshTokenValue(), FString(TEXT("r-2")));
 		TestEqual(TEXT("event raised"), F.Listener->TokenRefreshedCount, 1);
 		TestEqual(TEXT("no auth-expired"), F.Listener->AuthExpiredCount, 0);
-		const FFlockHttpRequest& Request = F.Fake->Requests.Last();
+		const FFlockHttpRequest& Request = F.Fake->LastRequest();
 		TestTrue(TEXT("body has refresh token"), Request.JsonBody.Contains(TEXT("\"refresh_token\":\"r-1\""), ESearchCase::CaseSensitive));
 		TestTrue(TEXT("body has player id"), Request.JsonBody.Contains(TEXT("\"player_id\":\"p-1\""), ESearchCase::CaseSensitive));
 		TestFalse(TEXT("no bearer on refresh"), Request.Headers.Contains(TEXT("Authorization")));
@@ -166,6 +166,18 @@ bool FFlockAuthSessionRefreshTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("failed"), bResult);
 		TestTrue(TEXT("still signed in"), F.Session->IsAuthenticated());
 		TestEqual(TEXT("no auth-expired"), F.Listener->AuthExpiredCount, 0);
+	}
+	// A captive portal's page in the server's place (a 200 that is not JSON) -> tokens kept: the server refused nothing.
+	{
+		FSessionFixture F;
+		F.Session->SetTokens(MakeJwt(TEXT("p-1")), TEXT("r-1"), Error);
+		F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Ok(TEXT("<html><body>Sign in to the hotel Wi-Fi</body></html>")));
+		bool bResult = true;
+		F.Session->RefreshAccessToken([&](bool bOk) { bResult = bOk; });
+		TestFalse(TEXT("portal: failed"), bResult);
+		TestTrue(TEXT("portal: still signed in"), F.Session->IsAuthenticated());
+		TestTrue(TEXT("portal: the store keeps the sign-in"), F.Store->bHasTokens);
+		TestEqual(TEXT("portal: no auth-expired"), F.Listener->AuthExpiredCount, 0);
 	}
 	// Success with an empty access token -> treated as a rejection.
 	{

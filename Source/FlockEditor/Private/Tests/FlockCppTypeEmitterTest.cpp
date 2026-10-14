@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -244,6 +245,85 @@ bool FFlockCppTypeResyncTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("but the skeleton's manifest header survives"),
 		IFileManager::Get().FileExists(*ManifestPath));
 
+	return true;
+}
+
+// ── Names two entities or two fields would share get a suffix, never a second file or member of one name ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCppTypeCollisionTest, "Flock.Editor.CppTypes.SharedNamesTakeASuffix",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCppTypeCollisionTest::RunTest(const FString& Parameters)
+{
+	FFlockSchemaSnapshot Snapshot;
+	Snapshot.GameVersionId = TEXT("ver-1");
+	Snapshot.PlayerTemplates.Add(Template(TEXT("Hero Stats"), TEXT("[{\"type\":\"int\",\"field_name\":\"max_health\"},{\"type\":\"int\",\"field_name\":\"maxHealth\"}]")));
+	FFlockPlayerTemplateSchema Second = Template(TEXT("HeroStats"), TEXT("[{\"type\":\"int\",\"field_name\":\"level\"}]"));
+	Second.Id = TEXT("tmpl-second");
+	Snapshot.PlayerTemplates.Add(Second);
+
+	FFlockCppTypeEmitter::FEmitResult Result;
+	const FString First = EmitAndRead(Snapshot, TEXT("FHeroStatsTemplate"), Result);
+	const FString Later = Read(TEXT("Public/FHeroStatsTemplate_2.h"));
+	TestTrue(TEXT("the first keeps the name"), First.Contains(TEXT("int32 MaxHealth"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("the second takes a suffix, in a file of its own"), Later.Contains(TEXT("struct FLOCKGENERATED_API FHeroStatsTemplate_2"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("two fields making one member name: the later takes a suffix"), First.Contains(TEXT("int32 MaxHealth_2"), ESearchCase::CaseSensitive));
+	const FString Table = Read(TEXT("Private/FlockGeneratedWireNames.cpp"));
+	TestTrue(TEXT("and still writes under its declared name"), Table.Contains(TEXT("{ TEXT(\"MaxHealth_2\"), TEXT(\"maxHealth\") }"), ESearchCase::CaseSensitive));
+
+	const FFlockCppTypeEmitter::FStructNames Names = FFlockCppTypeEmitter::MakeStructNames(Snapshot);
+	TestTrue(TEXT("the accessors are given the same names"), Names.Templates.Num() == 2
+		&& Names.Templates[0] == TEXT("FHeroStatsTemplate") && Names.Templates[1] == TEXT("FHeroStatsTemplate_2"));
+	return true;
+}
+
+// ── Dashboard text reaches generated C++ escaped ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCppTypeEscapingTest, "Flock.Editor.CppTypes.DashboardTextIsEscaped",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCppTypeEscapingTest::RunTest(const FString& Parameters)
+{
+	TestEqualSensitive(TEXT("quotes and backslashes"), FFlockCppTypeEmitter::ToCppStringContents(TEXT("a\"b\\c")), FString(TEXT("a\\\"b\\\\c")));
+	TestEqualSensitive(TEXT("a control character as three octal digits"), FFlockCppTypeEmitter::ToCppStringContents(TEXT("x\ny")), FString(TEXT("x\\012y")));
+	TestEqualSensitive(TEXT("a comment cannot be ended early"), FFlockCppTypeEmitter::ToCppCommentText(TEXT("a */ b\nc")), FString(TEXT("a * / b c")));
+
+	FFlockSchemaSnapshot Snapshot;
+	Snapshot.GameVersionId = TEXT("ver-1");
+	Snapshot.PlayerTemplates.Add(Template(TEXT("Odd */ \"Name\""), TEXT("[{\"type\":\"int\",\"field_name\":\"say\\\"hi\\\"\"}]")));
+	FFlockShop Shop;
+	Shop.Id = TEXT("shop-1");
+	FFlockShopItem Item;
+	Item.Id = TEXT("item\"1");
+	Item.Name = TEXT("Gem Pack");
+	Shop.ShopItems.Add(Item);
+	Snapshot.Shops.Add(Shop);
+
+	FFlockCppTypeEmitter::FEmitResult Result;
+	const FString Header = EmitAndRead(Snapshot, TEXT("FOddNameTemplate"), Result);
+	TestTrue(TEXT("the entity name sits inside its comment"), Header.Contains(TEXT("/** The \"Odd * / \"Name\"\" player template. */"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("an item id with a quote is escaped"), Read(TEXT("Public/FlockShopItemId.h")).Contains(TEXT("return TEXT(\"item\\\"1\");"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and so is a declared field name"), Read(TEXT("Private/FlockGeneratedWireNames.cpp")).Contains(TEXT("TEXT(\"say\\\"hi\\\"\")"), ESearchCase::CaseSensitive));
+	return true;
+}
+
+// ── A re-sync leaves an unchanged header alone, so nothing rebuilds ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCppTypeUnchangedTest, "Flock.Editor.CppTypes.AnUnchangedHeaderIsNotRewritten",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCppTypeUnchangedTest::RunTest(const FString& Parameters)
+{
+	FFlockSchemaSnapshot Snapshot;
+	Snapshot.GameVersionId = TEXT("ver-1");
+	Snapshot.PlayerTemplates.Add(Template(TEXT("Wallet"), TEXT("[{\"type\":\"int\",\"field_name\":\"gold\"}]")));
+	FFlockCppTypeEmitter::FEmitResult Result;
+	EmitAndRead(Snapshot, TEXT("FWalletTemplate"), Result);
+
+	const FString HeaderPath = FPaths::Combine(Root(), TEXT("Public"), TEXT("FWalletTemplate.h"));
+	const FDateTime Earlier(2020, 1, 1);
+	IFileManager::Get().SetTimeStamp(*HeaderPath, Earlier);
+	const FFlockCppTypeEmitter::FEmitResult Again = FFlockCppTypeEmitter::Emit(Snapshot, Root(), TEXT("FlockGenerated"));
+	TestTrue(TEXT("the second sync succeeded"), Again.bSucceeded);
+	TestTrue(TEXT("the header is still there"), IFileManager::Get().FileExists(*HeaderPath));
+	TestEqual(TEXT("and was not written again"), IFileManager::Get().GetTimeStamp(*HeaderPath), Earlier);
 	return true;
 }
 

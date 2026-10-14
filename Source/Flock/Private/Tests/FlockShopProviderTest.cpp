@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -694,6 +695,35 @@ bool FFlockShopClearCacheTest::RunTest(const FString& Parameters)
 // This is the defect the whole change exists to fix: the SDK used to deserialize the response straight
 // onto the inventory model, which against a real backend produced a populated-looking row of nulls. The
 // fixture is root-shaped and nests `inventory`, so reading it off the root cannot pass.
+// ── A purchase says where it has got to: paid by default, pending for a real-money checkout not settled yet ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopPurchaseStatusTest, "Flock.Shop.Provider.PurchaseReadsItsStatus",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopPurchaseStatusTest::RunTest(const FString& Parameters)
+{
+	auto Purchase = [this](const FString& Body)
+	{
+		FFixture Fx;
+		Fx.SignIn();
+		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(RewardItemBody(TEXT("item-1"), 100)));
+		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(Body));
+		FFlockPurchaseResult Purchased;
+		Fx.Provider->Purchase(TEXT("item-1"), FString(), [&Purchased](TFlockResult<FFlockPurchaseResult> R) { Purchased = R.Value; });
+		return Purchased;
+	};
+
+	const FFlockPurchaseResult Pending = Purchase(TEXT("{\"purchase_id\":\"pur-2\",\"item_type\":\"standard\",\"status\":\"pending\"}"));
+	TestEqualSensitive(TEXT("The status is read as the server spelled it"), Pending.Status, FString(FlockPurchaseStatuses::Pending));
+	TestFalse(TEXT("A pending purchase is not paid"), Pending.IsPaid());
+	TestFalse(TEXT("Nor to a graph"), UFlockShopLibrary::IsPurchasePaid(Pending));
+
+	const FFlockPurchaseResult Unsaid = Purchase(PurchaseResultBody());
+	TestEqualSensitive(TEXT("A status left out reads as paid, the schema's default"), Unsaid.Status, FString(FlockPurchaseStatuses::Paid));
+	TestTrue(TEXT("And is paid"), Unsaid.IsPaid());
+	TestTrue(TEXT("To a graph too"), UFlockShopLibrary::IsPurchasePaid(Unsaid));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopPurchaseResultShapeTest, "Flock.Shop.Provider.PurchaseParsesNestedResult",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -972,6 +1002,19 @@ bool FFlockShopLibraryParityTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("consume wallet absent"), UFlockShopLibrary::ConsumeHasWallet(Consumed));
 	Consumed.Wallet.Id = TEXT("pd-1");
 	TestTrue(TEXT("consume wallet present"), UFlockShopLibrary::ConsumeHasWallet(Consumed));
+
+	FFlockPurchaseResult Pending;
+	Pending.Status = FlockPurchaseStatuses::Pending;
+	TestEqual(TEXT("Is Purchase Paid matches the struct"), UFlockShopLibrary::IsPurchasePaid(Pending), Pending.IsPaid());
+	TestFalse(TEXT("and a pending purchase is not paid"), UFlockShopLibrary::IsPurchasePaid(Pending));
+	TestTrue(TEXT("a purchase with no status read is paid"), UFlockShopLibrary::IsPurchasePaid(Bare));
+
+	TestEqualSensitive(TEXT("pending is the wire spelling"), UFlockShopLibrary::PurchaseStatusPending(), FString(FlockPurchaseStatuses::Pending));
+	TestEqualSensitive(TEXT("paid is the wire spelling"), UFlockShopLibrary::PurchaseStatusPaid(), FString(FlockPurchaseStatuses::Paid));
+	TestEqualSensitive(TEXT("failed is the wire spelling"), UFlockShopLibrary::PurchaseStatusFailed(), FString(FlockPurchaseStatuses::Failed));
+	TestEqualSensitive(TEXT("expired is the wire spelling"), UFlockShopLibrary::PurchaseStatusExpired(), FString(FlockPurchaseStatuses::Expired));
+	TestEqualSensitive(TEXT("refunded is the wire spelling"), UFlockShopLibrary::PurchaseStatusRefunded(), FString(FlockPurchaseStatuses::Refunded));
+	TestEqualSensitive(TEXT("and the constants are the schema's"), FString(FlockPurchaseStatuses::Paid), FString(TEXT("paid")));
 
 	return true;
 }

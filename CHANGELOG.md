@@ -5,14 +5,74 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.28.0] - 2026-10-14
+
+Fixes found while writing the SDK guide, across the core, the editor, codegen and the Protokite Playtest plugin.
+
+### Added
+
+- **`FFlockPlayerData::LeaderboardRefusals`**: the boards that turned away the score an update fed them (Update Player Data
+  and Update Player Data Field), each with a reason (`FlockLeaderboardRefusalReasons`, an open set), whether it can be retried
+  and when. An empty list after Add Game Funds or Unlock Achievement means those routes do not report refusals.
+- **`FFlockPurchaseResult::Status`** (`FlockPurchaseResultStatuses`) and `IsPaid()`, with Blueprint nodes.
+- **Editor: Don't Open For This** on a finding that opens the Flock panel by itself; it stays listed.
+
+### Changed
+
+- **`ResetPassword` works signed out**: the route needs no sign-in, so a player who forgot their password can use it.
+- **An analytics transaction is sent once**: a timeout or 5xx after the server may have stored it is not sent again (only
+  408 and 429 are), so revenue is never counted twice.
+- **Codegen, C++ target**: two templates or fields making one name give the later a `_2` suffix (the declared name still
+  goes on the wire); dashboard text in generated code is escaped; a re-sync leaves an unchanged header untouched, so nothing
+  rebuilds; entities are walked in id order, so a suffix never moves between syncs.
+- **The upgrade notice counts as seen only once the Flock panel has shown it**; a launch that opens nothing keeps it.
 
 ### Fixed
+
+- **Core**: a request the engine refuses to start is answered once; a cancelled request is no longer logged as a failure to
+  reach the server; the call replayed after a token refresh can be cancelled; a sign-in whose refresh the server rejects
+  ends as a sign-out does (analytics told, the player's caches cleared); a retry wait never passes `MaxDelay`, and a negative
+  `Retry-After` means now; a failure that is never retried is not warned about, and a final failure is logged once; a
+  paginated list refuses an item that is not an object; the API URL is trimmed like the editor's; shutdown waits for
+  requests in flight with analytics off.
+- **Commands**: an online save waits behind older queued saves, so their replay cannot undo it; a flush stops when its
+  player signs out.
+- **Analytics**: an ended launch's queued entry that cannot be moved stays for a later launch rather than being deleted; a
+  launch that cannot hold a folder keeps nothing on disk; diagnostics logged from another thread are queued on the game
+  thread; a crash is written to disk only, and its marker stays until its report is queued; faults differing only in
+  letter case are counted apart.
+- **Notifications**: the seen marker and the pending reminders survive a new game version (and an earlier build's are
+  rescued); a reply landing after another sign-in raises nothing and is tracked for the player who asked; the template
+  list no longer chooses a locale for a by-name schedule.
+- **Account linking**: a reply landing after another sign-in no longer sets the next session's email flag.
+- **Assets**: a download larger than the cache budget is not kept (and never evicts the file just kept); a download that
+  is not kept is written beside the cache and cleaned up; a name is matched letter for letter.
+- **Editor**: Resolve and the startup bake refresh the panel once they answer, and the startup checks wait for the bake;
+  the settings banner counts what it names (notes, not "0 items"); the help text names both codegen targets.
+- **Codegen**: Add Funds with no `currency`-tagged template finds the wallet by tag instead of sending an empty id, which
+  was refused on every call; a Blueprint-target sync or Clean writes nothing under `Source/` for a project with no generated
+  module; version ids are compared letter for letter; lists and maps of generated structs use the wire-name table in both
+  directions.
+- **UE 5.4: the editor target builds again.** Seventeen test files used `TestEqualSensitive`, which UE 5.4 lacks, without
+  the stand-in `Misc/FlockEngineCompat.h` supplies, so a 5.4 editor build failed to compile its tests.
+- **Protokite Playtest**: a run or launch folder that cannot be removed keeps its lock, so a later launch finds it; a
+  recording whose session file cannot be parsed is kept; a test video never deletes a recording waiting to upload; the
+  feedback form opens for any loaded playtest, a player who answered "nothing" included; kept forms are sent one at a time,
+  each claimed so two launches never send one twice; a fresh upload link is asked for only where one can help; an upload
+  that stops moving is given up after 60 s; recordings carry their colour standard (BT.601, studio range) in the stream and
+  the file; a WebM's duration ends at its last frame's end; the self-test's wrong key no longer says `flock-playtest`.
 
 - **A party or session this game is leaving ends as `Left`, however the SDK learns it is gone.** Three ways ignored a leave
   still on its way: a party replaced by creating or joining another ended `Removed`; a party call answered `party.not_found`
   ended `Removed` (a disband answered so now ends `Disbanded`); and a session that could not be read to learn why it ended
   ended `dropped`.
+- **Protokite Playtest: pushing the recordings earlier launches left no longer keeps its work in memory for the rest of the
+  launch.** The step that uploads them one at a time held itself, so it, the list of recordings, the request headers and
+  the completion were never freed.
+- **Protokite Playtest: a recording keeps the game's shape when the window changes shape.** After a resize to another
+  shape (a window made taller, or turned) the picture was stretched to the video's size; it is now recorded at the largest
+  size of its new shape that fits, between black bars; a side within 16 pixels of the video's still fills it, so rounding
+  never draws thin lines.
 
 ### Documentation
 

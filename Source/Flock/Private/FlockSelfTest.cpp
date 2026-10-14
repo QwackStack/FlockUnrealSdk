@@ -49,8 +49,8 @@
 
 namespace
 {
-	// Demo credentials for the auth sweep. Mirror the canonical SDK test values with a "UE" suffix so
-	// a player registered from this SDK stays distinct from one made elsewhere. The sweep runs against
+	// Demo credentials for the auth sweep, with a "UE" suffix so a player registered from this SDK stays
+	// distinct from one made elsewhere. The sweep runs against
 	// your configured backend: a first run registers this player and signs in; later runs report
 	// "already registered" and log in.
 	const TCHAR* const DemoEmail = TEXT("pUE@x.com");
@@ -602,7 +602,7 @@ namespace
 		}
 		for (const TSharedPtr<FJsonValue>& Element : Fields)
 		{
-			const TSharedPtr<FJsonObject> Field = Element.IsValid() ? Element->AsObject() : nullptr;
+			const TSharedPtr<FJsonObject> Field = FFlockJsonUtils::AsObjectOrNull(Element);
 			FString FieldName;
 			if (Field.IsValid() && Field->TryGetStringField(TEXT("field_name"), FieldName) && !FieldName.IsEmpty())
 			{

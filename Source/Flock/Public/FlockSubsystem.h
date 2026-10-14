@@ -230,11 +230,11 @@ public:
 
 	/**
 	 * Records a gameplay event (level_complete, purchase_view) for the Game Metrics dashboards — unlike Log
-	 * Analytics Event, which writes a diagnostic entry. Spooled and delivered on the next flush while a player
+	 * Diagnostic Event, which writes a diagnostic entry. Spooled and delivered on the next flush while a player
 	 * is signed in; recorded with nobody signed in, it is credited to whoever signs in next. Build Properties
-	 * with the Set Command nodes: keys stay verbatim and values keep their type. Returns false when refused —
-	 * analytics off, no consent, an empty name, or session_started, which the server records itself when a
-	 * session starts.
+	 * with the Flock Event Property nodes: keys stay verbatim and values keep their type. Returns false when
+	 * refused — analytics off, no consent, an empty name, a name over 200 characters or a category over 100 (the
+	 * server cannot store either), or session_started, which the server records itself when a session starts.
 	 *
 	 * Surface: analytics — read on Dashboards → Game Metrics.
 	 */
@@ -395,6 +395,12 @@ private:
 
 	UFUNCTION()
 	void HandleAnalyticsLoggedOut();
+
+	/**
+	 * What ending a sign-in ends here, while the player is still known: the analytics session and the player's cached
+	 * data. Run by Logout before it clears the tokens, and by the auth session when the server refuses to refresh them.
+	 */
+	void EndSessionAndDropPlayerCaches();
 
 	/**
 	 * Signing in is the third auto-flush trigger (the provider's own pump covers foreground and reconnect):

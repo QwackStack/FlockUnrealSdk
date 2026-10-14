@@ -8,6 +8,7 @@
 #include "ImageUtils.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
+#include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
 
 const TCHAR* const FFlockAssetProvider::SnapshotCategory = TEXT("asset");
@@ -15,12 +16,6 @@ const TCHAR* const FFlockAssetProvider::IndexKey = TEXT("asset_index");
 
 namespace
 {
-	/** Scratch space for downloads that must not be cached. One file per call, so nothing races. */
-	FString TempDownloadRoot()
-	{
-		return FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("Flock"), TEXT("asset_tmp"));
-	}
-
 	/**
 	 * Turns a transfer outcome into the SDK's error model, so the retry handler's existing rules apply
 	 * unchanged: Auth/Validation/Cancelled are never retried, Connection and 5xx are.
@@ -82,6 +77,9 @@ FFlockAssetProvider::FFlockAssetProvider(const TSharedRef<FFlockHttpClient>& InC
 {
 	SetSnapshotStore(InSnapshotStore, InGameVersionId);
 	SetAuthSession(InSession);
+	// Builds before 1.28.0 wrote the downloads they did not keep under Intermediate and never deleted them.
+	FFlockTemporaryFiles::DeleteLeftOverFiles(FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("Flock"), TEXT("asset_tmp")),
+		TEXT("*.tmp"), /*bIncludeSubfolders*/ false);
 }
 
 void FFlockAssetProvider::Configure(bool bInCacheEnabled, float InDownloadTimeoutSeconds, int32 InDownloadRetryCount,
@@ -202,9 +200,10 @@ void FFlockAssetProvider::GetByName(const FString& Name, TFunction<void(TFlockRe
 			return;
 		}
 
+		// Letter for letter: two assets can differ only in case, and the dashboard keeps them apart.
 		for (const TPair<FString, FFlockAsset>& Pair : Self->AssetsById)
 		{
-			if (Pair.Value.Name == Name)
+			if (Pair.Value.Name.Equals(Name, ESearchCase::CaseSensitive))
 			{
 				OnComplete(TFlockResult<FFlockAsset>::Ok(Pair.Value));
 				return;
@@ -258,7 +257,7 @@ void FFlockAssetProvider::GetByIdOrName(const FString& IdOrName, TFunction<void(
 		}
 		for (const TPair<FString, FFlockAsset>& Pair : Self->AssetsById)
 		{
-			if (Pair.Value.Name == IdOrName)
+			if (Pair.Value.Name.Equals(IdOrName, ESearchCase::CaseSensitive))
 			{
 				if (OnComplete)
 				{
@@ -432,10 +431,7 @@ void FFlockAssetProvider::BeginTransfer(const FFlockAsset& Asset, FFlockAssetPro
 	const FString Token = Asset.VersionToken();
 	const bool bCacheThis = ShouldCache(Asset);
 
-	const FString TempPath = bCacheThis
-		? Cache->BeginWrite(Asset.Id, Token)
-		: FPaths::Combine(TempDownloadRoot(), FString::Printf(TEXT("%s_%s.tmp"),
-			*FGuid::NewGuid().ToString(EGuidFormats::Digits), *Token));
+	const FString TempPath = bCacheThis ? Cache->BeginWrite(Asset.Id, Token) : Cache->MakeUnkeptPath(Token);
 
 	const TSharedRef<IFlockAssetDownloader> DownloaderRef = Downloader;
 	const FString Url = Asset.S3DownloadUrl;
@@ -892,9 +888,9 @@ void FFlockAssetProvider::ClearCache()
 
 void FFlockAssetProvider::DiscardIfTemporary(const FString& Path) const
 {
-	// Only scratch files are ours to delete. A cached path belongs to the cache, and a caller who asked
-	// for DownloadFile with caching off owns theirs.
-	if (Path.StartsWith(TempDownloadRoot()))
+	// Only downloads the cache did not keep are ours to delete once read. A cached path belongs to the cache, and a caller
+	// who asked for DownloadFile owns its file until a later launch clears the downloads not kept.
+	if (Cache->IsUnkeptDownload(Path))
 	{
 		IFileManager::Get().Delete(*Path, /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
 	}

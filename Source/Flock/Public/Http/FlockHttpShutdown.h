@@ -18,7 +18,14 @@
  * so it cannot hang a game's exit, and a request that does not make it is cancelled exactly as it would have been a
  * moment later.
  *
- * This matters more than a lost request usually would, because a session end has no second chance: a saved end is not
- * re-sent on a later launch, so an end lost here leaves a session open for good.
+ * This matters more than a lost request usually would for a session end with no second chance: one that was not saved
+ * first is not re-sent on a later launch, so an end lost here leaves a session open for good.
  */
 FLOCK_API void FlockFinishRequestsBeforeShutdown();
+
+/**
+ * Whether a shutdown waits for requests on their way: always when the game is ending, since whatever is in flight then
+ * (a purchase, a save, a seat given up) loses its answer with the process, and after a session end was just sent. An
+ * explicit shutdown mid-game with nothing of its own to send does not hold the game thread.
+ */
+FLOCK_API bool FlockShouldFinishRequestsBeforeShutdown(bool bGameEnding, bool bSessionEndSent);

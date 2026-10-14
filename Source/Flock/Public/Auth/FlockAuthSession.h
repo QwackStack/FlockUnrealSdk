@@ -31,6 +31,12 @@ public:
 	/** Event hub for OnTokenRefreshed/OnAuthExpired raises; safe to leave unset (tests). */
 	void SetEvents(const TWeakObjectPtr<UFlockEvents>& InEvents) { Events = InEvents; }
 
+	/**
+	 * Run when the server refuses to refresh the sign-in, just before its tokens are cleared, while the player is still
+	 * known: whatever a sign-out ends (the analytics session, the player's cached data) ends there too.
+	 */
+	void SetBeforeExpiredSignInEnds(TFunction<void()> InWork) { BeforeExpiredSignInEnds = MoveTemp(InWork); }
+
 	// ── State ──
 
 	/**
@@ -40,7 +46,7 @@ public:
 	 */
 	bool SetTokens(const FString& InAccessToken, const FString& InRefreshToken, FString& OutError);
 
-	/** Records how the session was established and re-persists (drives method-gated flows). */
+	/** Records how the session was established and re-persists it, so a restore reports how the player signed in. */
 	void SetAuthMethod(EFlockAuthMethod Method);
 
 	/** Wipes tokens, claims, and method from memory and the store, which ends the sign-in. */
@@ -108,6 +114,7 @@ private:
 	FString VersionedApiUrl;
 	TMap<FString, FString> BaseHeaders;
 	TWeakObjectPtr<UFlockEvents> Events;
+	TFunction<void()> BeforeExpiredSignInEnds;
 
 	FString AccessToken;
 	FString RefreshToken;

@@ -53,6 +53,9 @@ struct FFlockCancelToken
 	/** Set once cancelled; callers check this to suppress a late completion. */
 	bool bCancelled = false;
 
+	/** Set once the request has been answered, so a transport that could answer twice answers once. */
+	bool bAnswered = false;
+
 	/** Performs the actual cancel for the current owner of in-flight work (e.g. IHttpRequest::CancelRequest). */
 	TFunction<void()> Canceller;
 };

@@ -271,4 +271,126 @@ bool FProtokitePlaytestUploadWithoutASessionTest::RunTest(const FString& Paramet
 	return true;
 }
 
+/**
+ * Pushing what earlier launches left walks the recordings one at a time through a step that hands itself to the next. That
+ * step once held itself strongly, so it, the list and the caller's completion were never freed; the completion's captures
+ * are what this watches.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestUploadEveryOneWaitingLetsGoTest,
+	"Protokite.Playtest.RecordingUpload.UploadingEveryOneWaitingKeepsNothingAfterward",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestUploadEveryOneWaitingLetsGoTest::RunTest(const FString& Parameters)
+{
+	FUploadsFixture Fixture;
+	for (const TCHAR* Name : { TEXT("run-e"), TEXT("run-f") })
+	{
+		// Made, then let go, so the pass can take hold of it as an earlier launch's.
+		if (!Fixture.MakeRunWithRecording(*this, Name).IsValid())
+		{
+			return false;
+		}
+	}
+
+	Fixture.Transport->Answer(UploadRoute, FProtokitePlaytestFakeTransport::Status(200, EnvelopedLinkBody()));
+	Fixture.Uploader->On(TEXT("/put/"));
+
+	TOptional<TPair<int32, int32>> Counts;
+	TWeakPtr<int32> HeldByTheCompletion;
+	{
+		const TSharedRef<int32> Watched = MakeShared<int32>(0);
+		HeldByTheCompletion = Watched;
+		Fixture.Uploads->UploadEveryOneWaiting(Fixture.Scratch.Recordings, Fixture.LaunchHeaders(),
+			[Watched, &Counts](int32 Uploaded, int32 Left) { Counts = TPair<int32, int32>(Uploaded, Left); });
+	}
+
+	if (!TestTrue(TEXT("It finished"), Counts.IsSet()))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Both recordings were uploaded"), Counts->Key, 2);
+	TestEqual(TEXT("None was left"), Counts->Value, 0);
+	TestEqual(TEXT("One upload each, one after the other"), Fixture.Uploader->Uploads.Num(), 2);
+	TestFalse(TEXT("Nothing the pass held is kept once it has finished"), HeldByTheCompletion.IsValid());
+	return true;
+}
+
+/** A fresh link is asked for only where one can mend what went wrong; anything else a second link meets the same way. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestUploadFreshLinkOnlyWhereItHelpsTest,
+	"Protokite.Playtest.RecordingUpload.AFreshLinkOnlyWhereOneCanHelp",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestUploadFreshLinkOnlyWhereItHelpsTest::RunTest(const FString& Parameters)
+{
+	struct FCase
+	{
+		const TCHAR* What;
+		int32 Status;
+		const TCHAR* Detail;
+		int32 LinksWanted;
+	};
+	const FCase Cases[] = {
+		{ TEXT("Too large for storage"), 413, TEXT("EntityTooLarge"), 1 },
+		{ TEXT("A content type the link was not signed for"), 403, TEXT("<Code>SignatureDoesNotMatch</Code>"), 1 },
+		{ TEXT("An expired link"), 403, TEXT("<Code>AccessDenied</Code><Message>Request has expired</Message>"), 2 },
+		{ TEXT("Storage having a moment"), 503, TEXT("SlowDown"), 2 },
+	};
+	for (const FCase& Case : Cases)
+	{
+		FUploadsFixture Fixture;
+		const TSharedPtr<FProtokitePlaytestRecordingRun> Run = Fixture.MakeRunWithRecording(*this, TEXT("run-f"));
+		if (!Run.IsValid())
+		{
+			return false;
+		}
+		Fixture.Transport->Answer(UploadRoute, FProtokitePlaytestFakeTransport::Status(200, EnvelopedLinkBody()));
+		Fixture.Uploader->OnStatus(TEXT("/put/"), Case.Status, Case.Detail);
+		TOptional<FProtokitePlaytestRecordingUploadOutcome> Outcome;
+		Fixture.Uploads->UploadOne(Run.ToSharedRef(), FUploadsFixture::Session(), Fixture.LaunchHeaders(),
+			[&Outcome](FProtokitePlaytestRecordingUploadOutcome Result) { Outcome = Result; });
+		if (TestTrue(FString::Printf(TEXT("%s: it finished"), Case.What), Outcome.IsSet()))
+		{
+			TestEqual(FString::Printf(TEXT("%s: links asked for"), Case.What), Outcome->LinkRequests, Case.LinksWanted);
+		}
+	}
+
+	// No answer while the file is still there is worth a second try; with the file gone it is not.
+	{
+		FUploadsFixture Fixture;
+		const TSharedPtr<FProtokitePlaytestRecordingRun> Run = Fixture.MakeRunWithRecording(*this, TEXT("run-g"));
+		if (!Run.IsValid())
+		{
+			return false;
+		}
+		Fixture.Transport->Answer(UploadRoute, FProtokitePlaytestFakeTransport::Status(200, EnvelopedLinkBody()));
+		Fixture.Uploader->OnTransportFailure(TEXT("/put/"), EFlockHttpResult::ConnectionError);
+		TOptional<FProtokitePlaytestRecordingUploadOutcome> Outcome;
+		Fixture.Uploads->UploadOne(Run.ToSharedRef(), FUploadsFixture::Session(), Fixture.LaunchHeaders(),
+			[&Outcome](FProtokitePlaytestRecordingUploadOutcome Result) { Outcome = Result; });
+		if (TestTrue(TEXT("No answer: it finished"), Outcome.IsSet()))
+		{
+			TestEqual(TEXT("No answer, file there: a second link"), Outcome->LinkRequests, 2);
+		}
+	}
+	{
+		FUploadsFixture Fixture;
+		const TSharedPtr<FProtokitePlaytestRecordingRun> Run = Fixture.MakeRunWithRecording(*this, TEXT("run-h"));
+		if (!Run.IsValid())
+		{
+			return false;
+		}
+		Fixture.Transport->Answer(UploadRoute, FProtokitePlaytestFakeTransport::Status(200, EnvelopedLinkBody()));
+		Fixture.Uploader->OnTransportFailure(TEXT("/put/"), EFlockHttpResult::ConnectionError);
+		IFileManager::Get().Delete(*Run->GetVideoFilePath());
+		TOptional<FProtokitePlaytestRecordingUploadOutcome> Outcome;
+		Fixture.Uploads->UploadOne(Run.ToSharedRef(), FUploadsFixture::Session(), Fixture.LaunchHeaders(),
+			[&Outcome](FProtokitePlaytestRecordingUploadOutcome Result) { Outcome = Result; });
+		if (Outcome.IsSet())
+		{
+			TestEqual(TEXT("The file gone: no second link"), Outcome->LinkRequests, 1);
+		}
+	}
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

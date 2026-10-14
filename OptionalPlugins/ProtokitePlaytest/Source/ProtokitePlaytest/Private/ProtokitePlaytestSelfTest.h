@@ -115,7 +115,7 @@ public:
 	static constexpr const TCHAR* SessionIdThatDoesNotExist = TEXT("01ZZZZZZZZZZZZZZZZZZZZZZZZ");
 
 	/** The key sent where a wrong one is wanted. */
-	static constexpr const TCHAR* WrongApiKey = TEXT("flock-playtest-self-test-wrong-key");
+	static constexpr const TCHAR* WrongApiKey = TEXT("protokite-playtest-self-test-wrong-key");
 
 	/** The playtest event it records, under the playtest category like any the game records. */
 	static constexpr const TCHAR* SelfTestEventName = TEXT("playtest_self_test");

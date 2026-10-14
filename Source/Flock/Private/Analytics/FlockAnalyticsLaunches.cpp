@@ -10,6 +10,8 @@
 
 namespace
 {
+	TFunction<bool(const FString&)> EntryMoveFailsForTesting;
+
 	const TCHAR* const AnalyticsLaunchQueueNames[] = {
 		FFlockAnalyticsLaunches::LogEventsQueueName,
 		FFlockAnalyticsLaunches::SessionEndsQueueName,
@@ -58,9 +60,8 @@ TSharedRef<FFlockAnalyticsLaunches> FFlockAnalyticsLaunches::Start(const FString
 	Launches->ThisLaunch = FFlockLaunchFolder::Create(LaunchesFolder);
 	if (!Launches->ThisLaunch.IsValid())
 	{
-		// A launch that cannot show it is running takes over nothing, so it cannot take a running launch's files either.
-		Launches->Folder = FPaths::Combine(LaunchesFolder,
-			FString::Printf(TEXT("unheld-%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits).ToLower()));
+		// A launch that cannot show it is running takes over nothing, so it cannot take a running launch's files either. It keeps
+		// none of its own: a folder with no lock is one no later launch would ever take over or delete.
 		return Launches;
 	}
 	Launches->Folder = Launches->ThisLaunch->GetPath();
@@ -74,9 +75,10 @@ TSharedRef<FFlockAnalyticsLaunches> FFlockAnalyticsLaunches::Start(const FString
 		{
 			continue;
 		}
-		Launches->TakeOverQueues(LaunchFolder);
+		const bool bEveryEntryMoved = Launches->TakeOverQueues(LaunchFolder);
 		Launches->EndedLaunches.Add(Ended);
-		Launches->EndedRecords.Add({ FPaths::Combine(LaunchFolder, SessionStateFileName), FPaths::Combine(LaunchFolder, TerminationMarkerFileName) });
+		Launches->EndedRecords.Add({ FPaths::Combine(LaunchFolder, SessionStateFileName), FPaths::Combine(LaunchFolder, TerminationMarkerFileName),
+			!bEveryEntryMoved });
 	}
 	return Launches;
 }
@@ -91,6 +93,11 @@ void FFlockAnalyticsLaunches::StopHoldingItsFolderForTesting()
 	ThisLaunch.Reset();
 }
 
+void FFlockAnalyticsLaunches::SetEntryMoveFailsForTesting(TFunction<bool(const FString& EntryFileName)> InEntryMoveFails)
+{
+	EntryMoveFailsForTesting = MoveTemp(InEntryMoveFails);
+}
+
 FString FFlockAnalyticsLaunches::GetFolder() const
 {
 	return Folder;
@@ -98,12 +105,12 @@ FString FFlockAnalyticsLaunches::GetFolder() const
 
 FString FFlockAnalyticsLaunches::GetSessionStatePath() const
 {
-	return FPaths::Combine(GetFolder(), SessionStateFileName);
+	return GetFolder().IsEmpty() ? FString() : FPaths::Combine(GetFolder(), SessionStateFileName);
 }
 
 FString FFlockAnalyticsLaunches::GetTerminationMarkerPath() const
 {
-	return FPaths::Combine(GetFolder(), TerminationMarkerFileName);
+	return GetFolder().IsEmpty() ? FString() : FPaths::Combine(GetFolder(), TerminationMarkerFileName);
 }
 
 void FFlockAnalyticsLaunches::TakeOverEarlierBuildFiles()
@@ -120,14 +127,16 @@ void FFlockAnalyticsLaunches::TakeOverEarlierBuildFiles()
 	{
 		return;
 	}
-	TakeOverQueues(AnalyticsFolder);
+	const bool bEveryEntryMoved = TakeOverQueues(AnalyticsFolder);
 	EarlierBuildFilesIndex = EndedRecords.Num();
 	EndedLaunches.Add(nullptr);
-	EndedRecords.Add({ FPaths::Combine(AnalyticsFolder, SessionStateFileName), FPaths::Combine(AnalyticsFolder, TerminationMarkerFileName) });
+	EndedRecords.Add({ FPaths::Combine(AnalyticsFolder, SessionStateFileName), FPaths::Combine(AnalyticsFolder, TerminationMarkerFileName),
+		!bEveryEntryMoved });
 }
 
-void FFlockAnalyticsLaunches::TakeOverQueues(const FString& FromFolder)
+bool FFlockAnalyticsLaunches::TakeOverQueues(const FString& FromFolder)
 {
+	bool bEveryEntryMoved = true;
 	IFileManager& FileManager = IFileManager::Get();
 	const FString ThisFolder = GetFolder();
 	for (const TCHAR* Queue : AnalyticsLaunchQueueNames)
@@ -157,16 +166,34 @@ void FFlockAnalyticsLaunches::TakeOverQueues(const FString& FromFolder)
 				Destination = FPaths::Combine(To, FString::Printf(TEXT("%s_%s.json"), *FPaths::GetBaseFilename(Entry),
 					*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8).ToLower()));
 			}
-			FileManager.Move(*Destination, *FPaths::Combine(From, Entry), /*Replace*/ false, /*EvenIfReadOnly*/ true, /*Attributes*/ false,
-				/*bDoNotRetryOrError*/ true);
+			const bool bMoveFails = EntryMoveFailsForTesting && EntryMoveFailsForTesting(Entry);
+			if (bMoveFails || !FileManager.Move(*Destination, *FPaths::Combine(From, Entry), /*Replace*/ false, /*EvenIfReadOnly*/ true,
+				/*Attributes*/ false, /*bDoNotRetryOrError*/ true))
+			{
+				bEveryEntryMoved = false;
+			}
 		}
 	}
+	return bEveryEntryMoved;
 }
 
 void FFlockAnalyticsLaunches::DeleteEndedLaunch(int32 Index)
 {
 	if (!EndedRecords.IsValidIndex(Index))
 	{
+		return;
+	}
+	if (EndedRecords[Index].bQueuedEntriesLeftBehind)
+	{
+		// Its records are reported, so they go; the entries that could not be moved stay, with the folder and its lock file, for a
+		// later launch to take over. Deleting the folder would lose them.
+		IFileManager& FileManager = IFileManager::Get();
+		FileManager.Delete(*EndedRecords[Index].SessionStatePath, /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
+		FileManager.Delete(*EndedRecords[Index].TerminationMarkerPath, /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
+		if (EndedLaunches.IsValidIndex(Index))
+		{
+			EndedLaunches[Index].Reset();
+		}
 		return;
 	}
 	if (Index == EarlierBuildFilesIndex)

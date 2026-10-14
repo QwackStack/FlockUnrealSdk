@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.27.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.28.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -67,8 +67,8 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   player's row for a template by the template's id or tag), browse the player templates that define those
   records, and check a player's ban status. A player's rows are paginated once and cached; templates are
   cached and snapshot-backed.
-- **Game commands** — the server-validated way to change a player's data: write a set of fields or a
-  single field onto a data row, unlock an achievement, or add funds to a wallet. Every command returns
+- **Game commands** — the server-validated way to change a player's data: replace a data row (every field
+  its template declares, nullable ones included) or write a single field onto it, unlock an achievement, or add funds to a wallet. Every command returns
   the updated row and writes it back into the player cache. Data writes queue offline and replay
   automatically; funds never do — a grant fails rather than being queued, and is never re-sent after an
   ambiguous failure.
@@ -200,12 +200,8 @@ announced on the releases page.
 
 ## Requirements
 
-- **Unreal Engine 5.4 to 5.8.** Every version from 5.5 up is built *and* run against the full test
-  suite before a release — that part of the range is what has been verified, not what is expected to
-  work. **5.4 is newer to the range and is not there yet:** it has been built and linked in a real 5.4
-  project, all modules, with no errors or warnings, but the test suite has not been run on it. Treat a
-  first run on 5.4 as something to check rather than assume, and please report what you find — that is
-  how this sentence gets shorter. Older engines are refused with a single clear error. Newer ones
+- **Unreal Engine 5.4 to 5.8.** Every version in the range is built *and* run against the full test
+  suite before a release — the range is what has been verified, not what is expected to work. Older engines are refused with a single clear error. Newer ones
   compile and emit a warning saying they are past what has been verified: a new engine usually breaks
   nothing, so the SDK does not block you on the day one ships. See [CHANGELOG.md](CHANGELOG.md) for how
   the range moves.
