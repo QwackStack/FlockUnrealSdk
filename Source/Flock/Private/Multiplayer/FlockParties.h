@@ -7,6 +7,7 @@
 #include "FlockLogger.h"
 #include "Http/FlockRequestsInTurn.h"
 #include "Models/FlockMultiplayerModels.h"
+#include "Multiplayer/FlockMatchmaking.h"
 #include "Multiplayer/FlockParty.h"
 #include "Multiplayer/FlockPartyRequests.h"
 #include "Multiplayer/FlockRepeatingCalls.h"
@@ -19,6 +20,13 @@ struct FFlockPartyRead
 	int32 SignInNumber = 0;
 	bool bInParty = false;
 	FFlockPartyReading Party;
+};
+
+/** What one party refresh read: the party, then the player's own search ticket, which is how a member's game learns of the leader's search. */
+struct FFlockPartyRefresh
+{
+	FFlockPartyRead Party;
+	FFlockMatchmakingTicketRead Ticket;
 };
 
 /**
@@ -34,7 +42,8 @@ public:
 	static constexpr int32 MostReadsWhileThePartyChanges = 5;
 
 	FFlockParties(const TSharedRef<FFlockPartyRequests>& InRequests, const TSharedRef<FFlockRepeatingCalls>& InRepeatingCalls,
-		const TSharedRef<FFlockAuthSession>& InSession, const TSharedRef<IFlockLogger>& InLogger, double InRefreshIntervalSeconds);
+		const TSharedRef<FFlockMatchmaking>& InMatchmaking, const TSharedRef<FFlockAuthSession>& InSession,
+		const TSharedRef<IFlockLogger>& InLogger, double InRefreshIntervalSeconds);
 
 	FFlockRequestHandle Create(TOptional<int32> MaxSize, const FFlockCommandData& Settings, FFlockOnParty OnComplete);
 	FFlockRequestHandle Join(const FString& InviteCode, FFlockOnParty OnComplete);
@@ -47,6 +56,11 @@ public:
 	FFlockRequestHandle Update(UFlockParty* Party, TOptional<int32> MaxSize, const TOptional<FFlockCommandData>& Settings,
 		FFlockOnParty OnComplete);
 	FFlockRequestHandle Disband(UFlockParty* Party, FFlockOnParty OnComplete);
+
+	/** The party's search for a match: started by the leader's game, waited for by a member's. */
+	FFlockRequestHandle FindMatch(UFlockParty* Party, const FString& QueueName, const FFlockMatchmakingOptions& Options,
+		FFlockOnMatchmakingResult OnComplete);
+	bool IsSearching(const UFlockParty* Party) const;
 
 	/** Ends the party of a sign-in that has ended; run once a frame. */
 	void EndIfSignInEnded();
@@ -78,6 +92,18 @@ private:
 	/** The one place a reading changes the party; holds the party when a call asked for it (PlayerId given), else returns the held one or null. */
 	UFlockParty* Apply(const FFlockPartyRead& Read, const FString& PlayerId);
 
+	/** The one place a reading changes the party, saying what changed without raising it. */
+	UFlockParty* Take(const FFlockPartyRead& Read, const FString& PlayerId, FFlockPartyChanges& OutChanges);
+
+	/** A party the game just got hold of is watched for its searches before it is handed over; the read goes through InTurn. */
+	void Watched(UFlockParty* Party, const TSharedRef<FFlockRequestsInTurn>& InTurn, const FFlockOnParty& OnComplete);
+
+	/** A refresh reads the party, then the player's own search ticket. */
+	FFlockRequestHandle ReadForRefresh(int32 SignInNumber, TFunction<void(TFlockResult<FFlockPartyRefresh>)> OnRead);
+
+	/** The refresh's ticket is taken before the party's own events, so a handler of either finds both readings in place. */
+	void TakeRefresh(const FFlockPartyRefresh& Refreshed);
+
 	UFlockParty* Hold(int32 SignInNumber, const FString& PlayerId, const FFlockPartyReading& Reading, const TArray<FString>& MemberIds);
 
 	/** A finished write is newer than every read sent before it; one answered for a sign-in that ended settles nothing. */
@@ -107,6 +133,7 @@ private:
 
 	TSharedRef<FFlockPartyRequests> Requests;
 	TSharedRef<FFlockRepeatingCalls> RepeatingCalls;
+	TSharedRef<FFlockMatchmaking> Matchmaking;
 	TSharedRef<FFlockAuthSession> Session;
 	TSharedRef<IFlockLogger> Logger;
 	double RefreshIntervalSeconds = 0.0;

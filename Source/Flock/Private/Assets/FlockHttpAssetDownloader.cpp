@@ -104,11 +104,10 @@ namespace
 				[OnComplete, Token, Writer, TargetPath, bStreaming, Log]
 				(FHttpRequestPtr RequestPtr, FHttpResponsePtr Response, bool bConnectedSuccessfully)
 				{
-					if (Token->bAnswered)
+					if (!Token->TryClaimAnswer())
 					{
 						return;
 					}
-					Token->bAnswered = true;
 					// Flush and release the handle before anything reads, moves, or deletes the file.
 					if (Writer.IsValid())
 					{
@@ -167,9 +166,8 @@ namespace
 
 			// A request the engine refuses to start may already have been answered through the completion above (UE 5.5
 			// answers it before ProcessRequest returns), so this answers only when that did not.
-			if (!HttpRequest->ProcessRequest() && !Token->bAnswered)
+			if (!HttpRequest->ProcessRequest() && Token->TryClaimAnswer())
 			{
-				Token->bAnswered = true;
 				if (Writer.IsValid())
 				{
 					Writer->Close();

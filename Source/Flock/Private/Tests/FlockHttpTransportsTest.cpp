@@ -163,4 +163,19 @@ bool FFlockHttpUploadStallTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── The one answer a request gets is claimed once, whichever of a transport's two sites asks first ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpTransportsClaimAnswerOnceTest, "Flock.Http.Transports.ATokenClaimsItsAnswerOnce",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpTransportsClaimAnswerOnceTest::RunTest(const FString& Parameters)
+{
+	FFlockCancelToken Token;
+	TestFalse(TEXT("Nothing has answered yet"), Token.bAnswered);
+	TestTrue(TEXT("The first claim is granted"), Token.TryClaimAnswer());
+	TestTrue(TEXT("And recorded"), Token.bAnswered);
+	TestFalse(TEXT("The second is refused"), Token.TryClaimAnswer());
+	TestFalse(TEXT("However often it is asked"), Token.TryClaimAnswer());
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

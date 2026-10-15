@@ -209,6 +209,9 @@ private:
 	 */
 	bool HeadStillIs(const FFlockPendingCommand& Entry) const;
 
+	/** Whether PlayerId is the queue's player, compared letter for letter: the one place that comparison is made. */
+	bool IsTheQueuesPlayer(const FString& PlayerId) const;
+
 
 	TSharedRef<FFlockAuthSession> Session;
 	TWeakPtr<FFlockPlayerProvider> PlayerProvider;

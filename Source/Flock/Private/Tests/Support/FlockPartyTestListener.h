@@ -27,6 +27,11 @@ public:
 	/** Members and leader as the handler saw them, so an event raised before the party took its reading shows. */
 	TArray<int32> MembersSeen;
 	TArray<FString> LeadersSeen;
+	/** What the party's search did, in order: "started", or "ended " and the outcome. */
+	TArray<FString> SearchHeard;
+	TArray<FFlockMatchmakingResult> SearchesEnded;
+	/** IsSearching as each members handler saw it, so a search state taken after the event shows. */
+	TArray<bool> SearchingSeen;
 	/** Run inside every handler, after recording, to call back into the party from an event. */
 	TFunction<void()> AlsoInHandler;
 
@@ -36,6 +41,31 @@ public:
 		InParty->OnMembersChanged.AddDynamic(this, &UFlockPartyTestListener::HandleMembersChanged);
 		InParty->OnLeaderChanged.AddDynamic(this, &UFlockPartyTestListener::HandleLeaderChanged);
 		InParty->OnEnded.AddDynamic(this, &UFlockPartyTestListener::HandleEnded);
+		InParty->OnSearchStarted.AddDynamic(this, &UFlockPartyTestListener::HandleSearchStarted);
+		InParty->OnSearchEnded.AddDynamic(this, &UFlockPartyTestListener::HandleSearchEnded);
+	}
+
+	int32 SearchesStarted() const { return SearchHeard.FilterByPredicate([](const FString& Heard) { return Heard == TEXT("started"); }).Num(); }
+
+	UFUNCTION()
+	void HandleSearchStarted()
+	{
+		SearchHeard.Add(TEXT("started"));
+		if (AlsoInHandler)
+		{
+			AlsoInHandler();
+		}
+	}
+
+	UFUNCTION()
+	void HandleSearchEnded(const FFlockMatchmakingResult& Result)
+	{
+		SearchHeard.Add(TEXT("ended ") + Result.Outcome);
+		SearchesEnded.Add(Result);
+		if (AlsoInHandler)
+		{
+			AlsoInHandler();
+		}
 	}
 
 	UFUNCTION()
@@ -43,6 +73,7 @@ public:
 	{
 		++MembersChanged;
 		MembersSeen.Add(Party.IsValid() ? Party->GetMembers().Num() : -1);
+		SearchingSeen.Add(Party.IsValid() && Party->IsSearching());
 		if (AlsoInHandler)
 		{
 			AlsoInHandler();

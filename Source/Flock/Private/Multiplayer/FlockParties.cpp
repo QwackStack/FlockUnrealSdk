@@ -22,9 +22,11 @@ FString FFlockParties::EndReasonName(EFlockPartyEndReason Reason)
 }
 
 FFlockParties::FFlockParties(const TSharedRef<FFlockPartyRequests>& InRequests, const TSharedRef<FFlockRepeatingCalls>& InRepeatingCalls,
-	const TSharedRef<FFlockAuthSession>& InSession, const TSharedRef<IFlockLogger>& InLogger, double InRefreshIntervalSeconds)
+	const TSharedRef<FFlockMatchmaking>& InMatchmaking, const TSharedRef<FFlockAuthSession>& InSession,
+	const TSharedRef<IFlockLogger>& InLogger, double InRefreshIntervalSeconds)
 	: Requests(InRequests)
 	, RepeatingCalls(InRepeatingCalls)
+	, Matchmaking(InMatchmaking)
 	, Session(InSession)
 	, Logger(InLogger)
 	, RefreshIntervalSeconds(InRefreshIntervalSeconds)
@@ -40,29 +42,34 @@ FFlockRequestHandle FFlockParties::Create(TOptional<int32> MaxSize, const FFlock
 		return FFlockRequestHandle();
 	}
 	const TWeakPtr<FFlockParties> WeakSelf = AsShared();
-	return Requests->Create(SignInNumber, MaxSize, Settings,
-		[WeakSelf, SignInNumber, PlayerId, OnComplete](TFlockResult<FFlockPartyReading> Created)
-		{
-			const TSharedPtr<FFlockParties> Self = WeakSelf.Pin();
-			if (!Self.IsValid())
+	const TSharedRef<FFlockRequestsInTurn> InTurn = FFlockRequestsInTurn::Make();
+	InTurn->Send([&]()
+	{
+		return Requests->Create(SignInNumber, MaxSize, Settings,
+			[WeakSelf, InTurn, SignInNumber, PlayerId, OnComplete](TFlockResult<FFlockPartyReading> Created)
 			{
-				Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(ShutDownError()));
-				return;
-			}
-			if (!Created.bSuccess)
-			{
-				Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(Created.Error));
-				return;
-			}
-			if (!Self->StillCurrent(SignInNumber, OnComplete))
-			{
-				return;
-			}
-			// A new party is newer than every reading on its way; its only member is the player who made it, its leader.
-			Self->SettleReadsSentSoFar(SignInNumber);
-			UFlockParty* Party = Self->Hold(SignInNumber, PlayerId, Created.Value, { Created.Value.LeaderPlayerId });
-			Answer(OnComplete, TFlockResult<UFlockParty*>::Ok(Party));
-		});
+				const TSharedPtr<FFlockParties> Self = WeakSelf.Pin();
+				if (!Self.IsValid())
+				{
+					Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(ShutDownError()));
+					return;
+				}
+				if (!Created.bSuccess)
+				{
+					Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(Created.Error));
+					return;
+				}
+				if (!Self->StillCurrent(SignInNumber, OnComplete))
+				{
+					return;
+				}
+				// A new party is newer than every reading on its way; its only member is the player who made it, its leader.
+				Self->SettleReadsSentSoFar(SignInNumber);
+				UFlockParty* Party = Self->Hold(SignInNumber, PlayerId, Created.Value, { Created.Value.LeaderPlayerId });
+				Self->Watched(Party, InTurn, OnComplete);
+			});
+	});
+	return InTurn->GetHandle();
 }
 
 FFlockRequestHandle FFlockParties::Join(const FString& InviteCode, FFlockOnParty OnComplete)
@@ -104,7 +111,7 @@ FFlockRequestHandle FFlockParties::Join(const FString& InviteCode, FFlockOnParty
 			}
 			// The join answer carries no members, so the party is read before it is handed over.
 			Self->ReadUntilNewest(SignInNumber, Joined.Value.Id, InTurn, 1,
-				[WeakSelf, SignInNumber, PlayerId, OnComplete](TFlockResult<FFlockPartyRead> Read)
+				[WeakSelf, InTurn, SignInNumber, PlayerId, OnComplete](TFlockResult<FFlockPartyRead> Read)
 				{
 					const TSharedPtr<FFlockParties> Reader = WeakSelf.Pin();
 					if (!Reader.IsValid())
@@ -119,7 +126,7 @@ FFlockRequestHandle FFlockParties::Join(const FString& InviteCode, FFlockOnParty
 					}
 					if (Reader->StillCurrent(SignInNumber, OnComplete))
 					{
-						Answer(OnComplete, TFlockResult<UFlockParty*>::Ok(Reader->Apply(Read.Value, PlayerId)));
+						Reader->Watched(Reader->Apply(Read.Value, PlayerId), InTurn, OnComplete);
 					}
 				});
 		});
@@ -137,7 +144,7 @@ FFlockRequestHandle FFlockParties::GetMine(FFlockOnParty OnComplete)
 	}
 	const TWeakPtr<FFlockParties> WeakSelf = AsShared();
 	const TSharedRef<FFlockRequestsInTurn> InTurn = FFlockRequestsInTurn::Make();
-	ReadUntilNewest(SignInNumber, FString(), InTurn, 1, [WeakSelf, SignInNumber, PlayerId, OnComplete](TFlockResult<FFlockPartyRead> Read)
+	ReadUntilNewest(SignInNumber, FString(), InTurn, 1, [WeakSelf, InTurn, SignInNumber, PlayerId, OnComplete](TFlockResult<FFlockPartyRead> Read)
 	{
 		const TSharedPtr<FFlockParties> Self = WeakSelf.Pin();
 		if (!Self.IsValid())
@@ -152,10 +159,31 @@ FFlockRequestHandle FFlockParties::GetMine(FFlockOnParty OnComplete)
 		}
 		if (Self->StillCurrent(SignInNumber, OnComplete))
 		{
-			Answer(OnComplete, TFlockResult<UFlockParty*>::Ok(Self->Apply(Read.Value, PlayerId)));
+			Self->Watched(Self->Apply(Read.Value, PlayerId), InTurn, OnComplete);
 		}
 	});
 	return InTurn->GetHandle();
+}
+
+void FFlockParties::Watched(UFlockParty* Party, const TSharedRef<FFlockRequestsInTurn>& InTurn, const FFlockOnParty& OnComplete)
+{
+	// The party's searches are watched from the moment the game holds it: a match made before its first refresh is not taken for an old one.
+	const TWeakObjectPtr<UFlockParty> WeakParty = Party;
+	Matchmaking->StartWatching(Party, InTurn, [WeakParty, OnComplete]()
+	{
+		Answer(OnComplete, TFlockResult<UFlockParty*>::Ok(WeakParty.Get()));
+	});
+}
+
+FFlockRequestHandle FFlockParties::FindMatch(UFlockParty* Party, const FString& QueueName, const FFlockMatchmakingOptions& Options,
+	FFlockOnMatchmakingResult OnComplete)
+{
+	return Matchmaking->FindForParty(Party, QueueName, Options, MoveTemp(OnComplete));
+}
+
+bool FFlockParties::IsSearching(const UFlockParty* Party) const
+{
+	return Matchmaking->IsSearching(Party);
 }
 
 FFlockRequestHandle FFlockParties::Leave(UFlockParty* Party, FFlockOnParty OnComplete)
@@ -443,6 +471,18 @@ FFlockRequestHandle FFlockParties::ReadNumbered(int32 SignInNumber, const FStrin
 
 UFlockParty* FFlockParties::Apply(const FFlockPartyRead& Read, const FString& PlayerId)
 {
+	FFlockPartyChanges Changes;
+	UFlockParty* Party = Take(Read, PlayerId, Changes);
+	if (Party != nullptr && !Party->HasEnded())
+	{
+		Party->RaiseChanges(Changes);
+	}
+	return Party;
+}
+
+UFlockParty* FFlockParties::Take(const FFlockPartyRead& Read, const FString& PlayerId, FFlockPartyChanges& OutChanges)
+{
+	OutChanges = FFlockPartyChanges();
 	// A party from a sign-in that ended is over first; that sign-in's late readings are older than any newer one.
 	EndIfSignInEnded();
 	if (Read.Number <= ReadsSettledThrough)
@@ -454,7 +494,7 @@ UFlockParty* FFlockParties::Apply(const FFlockPartyRead& Read, const FString& Pl
 	UFlockParty* Party = Held.Get();
 	if (Party != nullptr && Read.bInParty && Party->Id.Equals(Read.Party.Id, ESearchCase::CaseSensitive))
 	{
-		Party->TakeReading(Read.Party, Read.Party.MemberIds);
+		OutChanges = Party->TakeReading(Read.Party, Read.Party.MemberIds);
 		if (!PlayerId.IsEmpty())
 		{
 			KeepRefreshing();
@@ -472,6 +512,63 @@ UFlockParty* FFlockParties::Apply(const FFlockPartyRead& Read, const FString& Pl
 		return nullptr;
 	}
 	return Hold(Read.SignInNumber, PlayerId, Read.Party, Read.Party.MemberIds);
+}
+
+void FFlockParties::TakeRefresh(const FFlockPartyRefresh& Refreshed)
+{
+	FFlockPartyChanges Changes;
+	UFlockParty* Party = Take(Refreshed.Party, FString(), Changes);
+	if (Party == nullptr)
+	{
+		return;
+	}
+	// The search's state first, so a members or leader handler reads IsSearching as this same refresh found it.
+	Matchmaking->TakePartyReading(Party, Refreshed.Ticket);
+	if (!Party->HasEnded())
+	{
+		Party->RaiseChanges(Changes);
+	}
+}
+
+FFlockRequestHandle FFlockParties::ReadForRefresh(int32 SignInNumber, TFunction<void(TFlockResult<FFlockPartyRefresh>)> OnRead)
+{
+	const TSharedRef<FFlockRequestsInTurn> InTurn = FFlockRequestsInTurn::Make();
+	const TWeakPtr<FFlockParties> WeakSelf = AsShared();
+	InTurn->Send([&]()
+	{
+		return ReadNumbered(SignInNumber, FString(), [WeakSelf, SignInNumber, InTurn, OnRead](TFlockResult<FFlockPartyRead> Read)
+		{
+			if (!Read.bSuccess)
+			{
+				OnRead(TFlockResult<FFlockPartyRefresh>::Fail(Read.Error));
+				return;
+			}
+			const TSharedPtr<FFlockParties> Self = WeakSelf.Pin();
+			if (!Self.IsValid())
+			{
+				OnRead(TFlockResult<FFlockPartyRefresh>::Fail(ShutDownError()));
+				return;
+			}
+			if (InTurn->IsCancelled())
+			{
+				OnRead(TFlockResult<FFlockPartyRefresh>::Fail(FFlockError::Make(EFlockErrorType::Cancelled, TEXT("Request cancelled"))));
+				return;
+			}
+			// A refresh also reads the player's own matchmaking ticket, which is how a member's game learns of the leader's search.
+			const FFlockPartyRead PartyRead = Read.Value;
+			InTurn->Send([&]()
+			{
+				return Self->Matchmaking->ReadForParty(SignInNumber, [PartyRead, OnRead](const FFlockMatchmakingTicketRead& Ticket)
+				{
+					FFlockPartyRefresh Read;
+					Read.Party = PartyRead;
+					Read.Ticket = Ticket;
+					OnRead(TFlockResult<FFlockPartyRefresh>::Ok(Read));
+				});
+			});
+		});
+	});
+	return InTurn->GetHandle();
 }
 
 UFlockParty* FFlockParties::Hold(int32 SignInNumber, const FString& PlayerId, const FFlockPartyReading& Reading,
@@ -549,21 +646,21 @@ void FFlockParties::KeepRefreshing()
 	const int32 SignInNumber = Party->SignInNumber;
 	const TWeakPtr<FFlockParties> WeakSelf = AsShared();
 	const TSharedRef<IFlockLogger> Log = Logger;
-	Refresh = RepeatingCalls->Start<FFlockPartyRead>(RefreshCallName, RefreshIntervalSeconds,
-		[WeakSelf, SignInNumber](TFunction<void(TFlockResult<FFlockPartyRead>)> OnResult) -> FFlockRequestHandle
+	Refresh = RepeatingCalls->Start<FFlockPartyRefresh>(RefreshCallName, RefreshIntervalSeconds,
+		[WeakSelf, SignInNumber](TFunction<void(TFlockResult<FFlockPartyRefresh>)> OnResult) -> FFlockRequestHandle
 		{
 			if (const TSharedPtr<FFlockParties> Self = WeakSelf.Pin())
 			{
-				return Self->ReadNumbered(SignInNumber, FString(), MoveTemp(OnResult));
+				return Self->ReadForRefresh(SignInNumber, MoveTemp(OnResult));
 			}
-			OnResult(TFlockResult<FFlockPartyRead>::Fail(ShutDownError()));
+			OnResult(TFlockResult<FFlockPartyRefresh>::Fail(ShutDownError()));
 			return FFlockRequestHandle();
 		},
-		[WeakSelf](const FFlockPartyRead& Read)
+		[WeakSelf](const FFlockPartyRefresh& Refreshed)
 		{
 			if (const TSharedPtr<FFlockParties> Self = WeakSelf.Pin())
 			{
-				Self->Apply(Read, FString());
+				Self->TakeRefresh(Refreshed);
 			}
 		},
 		[Log](const FFlockError& Failure)

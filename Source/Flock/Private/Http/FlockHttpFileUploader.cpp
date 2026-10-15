@@ -93,11 +93,10 @@ namespace
 				[OnComplete, Token, FileBytes]
 				(FHttpRequestPtr RequestPtr, FHttpResponsePtr Response, bool bConnectedSuccessfully)
 				{
-					if (Token->bAnswered)
+					if (!Token->TryClaimAnswer())
 					{
 						return;
 					}
-					Token->bAnswered = true;
 					FFlockFileUploadOutcome Outcome;
 					Outcome.Result = Classify(Token->bCancelled, RequestPtr, Response, bConnectedSuccessfully);
 
@@ -128,9 +127,8 @@ namespace
 
 			// A request the engine refuses to start may already have been answered through the completion above (UE 5.5
 			// answers it before ProcessRequest returns), so this answers only when that did not.
-			if (!HttpRequest->ProcessRequest() && !Token->bAnswered)
+			if (!HttpRequest->ProcessRequest() && Token->TryClaimAnswer())
 			{
-				Token->bAnswered = true;
 				CompleteWithFailure(OnComplete, TEXT("Failed to start the upload"));
 			}
 			return FFlockRequestHandle(Token);

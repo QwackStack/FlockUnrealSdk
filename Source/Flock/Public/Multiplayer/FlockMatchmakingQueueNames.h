@@ -30,6 +30,12 @@ public:
 	 */
 	FFlockRequestHandle FindId(const FString& QueueName, TFunction<void(TFlockResult<FString>)> OnComplete);
 
+	/**
+	 * The server no longer knows QueueId (the queue was deleted, or made again under the same name with a new id): a list
+	 * holding it is let go, so the next lookup reads the list again. Nothing else changes.
+	 */
+	void ForgetQueue(const FString& QueueId);
+
 	/** Flock is shutting down: every caller still waiting for a read is answered Cancelled at once. */
 	void GiveUpEveryWait();
 

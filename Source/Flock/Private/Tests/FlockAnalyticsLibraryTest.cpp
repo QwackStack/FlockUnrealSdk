@@ -187,4 +187,41 @@ bool FFlockAnalyticsLibraryEventPropertyParityTest::RunTest(const FString& Param
 	return true;
 }
 
+// ── Keys are compared letter for letter: a second spelling is refused, loudly, since the engine's map cannot keep both ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsLibraryKeySpellingTest, "Flock.Analytics.Library.MetadataKeysAreComparedLetterForLetter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsLibraryKeySpellingTest::RunTest(const FString& Parameters)
+{
+	// One warning for each refused spelling below: the C++ builder, the Blueprint chain and the event properties.
+	AddExpectedMessagePlain(TEXT("is already there, and the two are different"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 3);
+
+	const FFlockMetadata Meta = FFlockMetadata().Add(TEXT("Score"), 1).Add(TEXT("score"), 2);
+	TestEqual(TEXT("the second spelling is not added"), Meta.Values.Num(), 1);
+	for (const TPair<FString, FString>& Pair : Meta.Values)
+	{
+		TestEqualSensitive(TEXT("the first spelling stays"), Pair.Key, FString(TEXT("Score")));
+		TestEqual(TEXT("with its value"), Pair.Value, FString(TEXT("1")));
+	}
+
+	const TMap<FString, FString> Built = UFlockAnalyticsLibrary::AddMetadataInt(
+		UFlockAnalyticsLibrary::AddMetadataInt(UFlockAnalyticsLibrary::MakeMetadata(), TEXT("Score"), 1), TEXT("score"), 2);
+	TestEqual(TEXT("the Blueprint chain refuses it too"), Built.Num(), 1);
+	for (const TPair<FString, FString>& Pair : Built)
+	{
+		TestEqualSensitive(TEXT("keeping the first spelling"), Pair.Key, FString(TEXT("Score")));
+		TestEqual(TEXT("and its value"), Pair.Value, FString(TEXT("1")));
+	}
+
+	const FString Properties = FFlockCommandData().Set(TEXT("Score"), 1).Set(TEXT("score"), 2).ToJsonString();
+	TestTrue(TEXT("an event property keeps the first spelling"), Properties.Contains(TEXT("\"Score\":1"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("and never the second"), Properties.Contains(TEXT("\"score\""), ESearchCase::CaseSensitive));
+
+	// The control: the same spelling again replaces the value, as a map does, with nothing said.
+	const FFlockMetadata Same = FFlockMetadata().Add(TEXT("Score"), 1).Add(TEXT("Score"), 2);
+	TestEqual(TEXT("one entry"), Same.Values.Num(), 1);
+	TestEqual(TEXT("holding the later value"), Same.Values.FindRef(TEXT("Score")), FString(TEXT("2")));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

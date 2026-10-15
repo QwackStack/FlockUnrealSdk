@@ -809,8 +809,13 @@ bool FProtokitePlaytestRecordingsUnreadableSessionTest::RunTest(const FString& P
 {
 	FRecordingsTestFolder Test;
 	const TArray<uint8> Video = MakeRecordingsTestVideoBytes(1, 10 * 1024, 1);
+	// Its video was cut off (five whole frames, then 40 bytes of a sixth promising 100), so finishing it is what makes what
+	// is kept playable.
+	TArray<uint8> CutOff = MakeRecordingsTestVideoBytes(5, 100, 0);
+	AppendRecordingsTestFrameHeader(CutOff, 5, 100);
+	CutOff.Append(MakeRecordingsTestFrame(5, 40));
 	const FString Kept = MakeEndedRecordingRun(*this, Test.Recordings, EProtokitePlaytestRecordingKind::Playtest,
-		TEXT("20260101-000000-aaaaaaaa"), &Video, nullptr, nullptr);
+		TEXT("20260101-000000-aaaaaaaa"), nullptr, &CutOff, nullptr);
 	FFileHelper::SaveStringToFile(TEXT("{\"protokite_session_id\": "), *FPaths::Combine(Kept, FProtokitePlaytestRecordingsFolder::SessionFileName));
 	// The controls: a recording no session was saved for is deleted, as before, and so is one whose file parses but names no session.
 	const FString NoSession = MakeEndedRecordingRun(*this, Test.Recordings, EProtokitePlaytestRecordingKind::Playtest,
@@ -822,6 +827,10 @@ bool FProtokitePlaytestRecordingsUnreadableSessionTest::RunTest(const FString& P
 	const FProtokitePlaytestWhatEndedRunsLeft Result = FProtokitePlaytestRecordingsFolder::FinishWhatEndedRunsLeft(Test.Recordings);
 	TestEqual(TEXT("The recording with an unreadable session is kept"), Result.RecordingsWithAnUnreadableSessionKept, 1);
 	TestTrue(TEXT("Its folder is there"), RecordingsTestFolderExists(Kept));
+	TestEqual(TEXT("Its cut-off video was finished first"), Result.InterruptedRecordingsFinished, 1);
+	TestTrue(TEXT("So the kept file is a whole one"), FPaths::FileExists(FPaths::Combine(Kept, TEXT("recording-20260101-000000-aaaaaaaa.webm"))));
+	TestFalse(TEXT("With no cut-off file left beside it"), FPaths::FileExists(FPaths::Combine(Kept, TEXT("recording-20260101-000000-aaaaaaaa.webm.part"))));
+	TestEqual(TEXT("And it is not offered for upload"), Result.RecordingsWaitingToUpload, 0);
 	TestEqual(TEXT("The two with no session are deleted"), Result.RecordingsWithoutASessionDeleted, 2);
 	TestFalse(TEXT("The one with no session file"), RecordingsTestFolderExists(NoSession));
 	TestFalse(TEXT("And the one whose file names no session"), RecordingsTestFolderExists(NamesNoSession));

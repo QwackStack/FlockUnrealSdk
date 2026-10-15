@@ -4,8 +4,12 @@
 
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
+#include "Models/FlockCommandModels.h"
 #include "Models/FlockJsonData.h"
+#include "UObject/ObjectPtr.h"
 #include "FlockMultiplayerModels.generated.h"
+
+class UFlockMultiplayerSession;
 
 /** One row of the game's matchmaking queue list, as much of it as the SDK reads. */
 USTRUCT()
@@ -253,4 +257,143 @@ struct FLOCK_API FFlockMultiplayerSessionReading
 
 	/** Reads a session; one that names no session (no id), or a seat with no player, fails the read. */
 	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockMultiplayerSessionReading& OutStruct, FString& OutError);
+};
+
+/**
+ * How a search for a match ended. An open set: the server can add others, so compare FFlockMatchmakingResult::Outcome with
+ * these and treat any other as ended without a match.
+ */
+namespace FlockMatchmakingOutcomes
+{
+	/** Players were matched; the result's Session is the session the match seats them in. */
+	inline constexpr const TCHAR* Matched = TEXT("matched");
+	/** No match was found within the server's time for a search (5 minutes). Search again to keep looking. */
+	inline constexpr const TCHAR* Expired = TEXT("expired");
+	/** A player joined or left the party while it searched, so the server stopped the search; the leader searches again. */
+	inline constexpr const TCHAR* PartyChanged = TEXT("party_changed");
+	/** Stopped by another game: a party member's, or this player's on another device. A search this game cancels completes the call as Cancelled instead. */
+	inline constexpr const TCHAR* Cancelled = TEXT("cancelled");
+}
+
+/** What the game can choose about a search. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockMatchmakingOptions
+{
+	GENERATED_BODY()
+
+	/** The game's own data on the search, sent to the server as given, keys as written; empty sends none. */
+	UPROPERTY(BlueprintReadWrite, Category = "Flock|Multiplayer")
+	FFlockCommandData Attributes;
+};
+
+/** A search for a match that has ended: matched, or how it ended without one. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockMatchmakingResult
+{
+	GENERATED_BODY()
+
+	/** One of FlockMatchmakingOutcomes, or an outcome the server added. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FString Outcome;
+
+	/**
+	 * The session the match seats its players in, held like any other; null without a match, when the game's multiplayer
+	 * settings make no session on a match, or when reading it failed (GetMySession finds it).
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	TObjectPtr<UFlockMultiplayerSession> Session = nullptr;
+
+	/** The matched players' ids, the longest waiting first; empty without a match. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	TArray<FString> PlayerIds;
+
+	bool IsMatched() const { return Outcome.Equals(FlockMatchmakingOutcomes::Matched, ESearchCase::CaseSensitive); }
+};
+
+/** The wire spellings of a search's ticket. */
+namespace FlockMatchmakingWireValues
+{
+	inline constexpr const TCHAR* TicketQueued = TEXT("queued");
+	inline constexpr const TCHAR* TicketMatched = TEXT("matched");
+	inline constexpr const TCHAR* TicketCancelled = TEXT("cancelled");
+	inline constexpr const TCHAR* TicketExpired = TEXT("expired");
+	/** The cancel reason the server gives when a party's roster changed under its search. */
+	inline constexpr const TCHAR* CancelledForPartyChange = TEXT("party_changed");
+}
+
+/** A match, as much of it as a ticket's reading carries. */
+USTRUCT()
+struct FLOCK_API FFlockMatchmakingMatch
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FString Id;
+
+	/** The matched players, the longest waiting first. */
+	UPROPERTY()
+	TArray<FString> PlayerIds;
+
+	/** The session the match made, or empty when the game's settings make none. */
+	UPROPERTY()
+	FString SessionId;
+};
+
+/** One reading of a search's ticket, as the ticket routes answer it. */
+USTRUCT()
+struct FLOCK_API FFlockMatchmakingTicketReading
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FString Id;
+
+	UPROPERTY()
+	FString QueueId;
+
+	UPROPERTY()
+	FString PlayerId;
+
+	/** queued, matched, cancelled or expired (FlockMatchmakingWireValues), or a status the server added. */
+	UPROPERTY()
+	FString Status;
+
+	/** The party the search is for, or empty for a search alone. */
+	UPROPERTY()
+	FString PartyId;
+
+	/** Why a cancelled ticket was cancelled: the player, or party_changed. */
+	UPROPERTY()
+	FString CancelReason;
+
+	/** True once the reading carries the match: the reads do, once there is one; the create and cancel answers do not. */
+	UPROPERTY()
+	bool bHasMatch = false;
+
+	UPROPERTY()
+	FFlockMatchmakingMatch Match;
+
+	bool IsQueued() const;
+	bool IsMatched() const;
+	/** True for a ticket of this party; an empty party id means a search alone. */
+	bool IsForParty(const FString& InPartyId) const;
+
+	/** Reads a ticket; one that names no ticket (no id) or no status is not one, and fails the read. */
+	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockMatchmakingTicketReading& OutStruct, FString& OutError);
+};
+
+/** The answer to making a search: one ticket per player in it (the party's members, or the player alone). */
+USTRUCT()
+struct FLOCK_API FFlockMatchmakingTicketsMade
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FFlockMatchmakingTicketReading> Tickets;
+
+	/** The ticket of this player among them, or null. */
+	const FFlockMatchmakingTicketReading* FindTicketOf(const FString& PlayerId) const;
+
+	/** Reads the envelope: a result that is not a list of at least one ticket is not the server's answer. */
+	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockMatchmakingTicketsMade& OutStruct, FString& OutError);
 };

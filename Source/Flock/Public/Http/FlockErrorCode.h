@@ -156,6 +156,7 @@ enum class EFlockErrorCode : uint8
 	ShopMalformedReward,
 	ShopPackGrantsNothing,
 	ShopPlayerNotFound,
+	ShopRealCurrencyNeedsCheckout,
 	ShopRewardCurrencyNotHeld,
 	ShopShopNotFound,
 	ShopWalletNotFound,

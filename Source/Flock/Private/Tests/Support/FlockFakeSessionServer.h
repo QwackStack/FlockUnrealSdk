@@ -152,6 +152,28 @@ public:
 		return Session;
 	}
 
+	/** The session a match makes: every matched player seated in order, the first hosting, and each one's other seat given up. */
+	FSessionRef SeatedByMatch(const TArray<FString>& PlayerIds, const FString& GameVersion = GameBuild)
+	{
+		for (const FString& PlayerId : PlayerIds)
+		{
+			ReleaseSeatsOf(PlayerId);
+		}
+		++SessionsMade;
+		const FSessionRef Session = MakeShared<FSession>();
+		Session->Id = FString::Printf(TEXT("01SESSION%017d"), SessionsMade);
+		Session->Code = FString::Printf(TEXT("S%05d"), SessionsMade + 10000);
+		Session->HostId = PlayerIds.Num() > 0 ? PlayerIds[0] : FString();
+		Session->MaxPlayers = FMath::Max(8, PlayerIds.Num());
+		Session->GameVersion = GameVersion;
+		for (const FString& PlayerId : PlayerIds)
+		{
+			Session->Seats.Add(FSeat{ PlayerId });
+		}
+		Sessions.Add(Session);
+		return Session;
+	}
+
 	/** A player seated again keeps one row, now the least senior, as the backend resets the old row. */
 	void Joins(const FSessionRef& Session, const FString& PlayerId)
 	{

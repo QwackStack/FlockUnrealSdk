@@ -16,6 +16,7 @@
 #include "Containers/Ticker.h"
 #include "HAL/FileManager.h"
 #include "Http/FlockHttpClient.h"
+#include "Http/FlockErrorHints.h"
 #include "Http/FlockSnapshotStore.h"
 #include "Misc/Base64.h"
 #include "Misc/Paths.h"
@@ -578,6 +579,74 @@ bool FFlockShopPurchaseNotRetriedTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── A real-money item sent through the wallet purchase is refused on its own code, with its hint ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopRealMoneyItemTest, "Flock.Shop.Provider.ARealMoneyItemIsRefusedOnItsOwnCodeWithItsHint",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopRealMoneyItemTest::RunTest(const FString& Parameters)
+{
+	// The body as the backend's shop settlement code builds it; the route's documented responses leave the code out.
+	FFixture Fx(Retrying());
+	Fx.SignIn();
+	Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+	Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Status(422,
+		TEXT("{\"detail\":{\"code\":\"shop.real_currency_needs_checkout\",\"message\":\"'USD' is a real currency and cannot be paid from a wallet; open a checkout with POST /v1/shop/checkout, or verify a store receipt with POST /v1/shop/validate-receipt\"}}")));
+
+	TOptional<TFlockResult<FFlockPurchaseResult>> Answer;
+	Fx.Provider->Purchase(TEXT("item-1"), FString(), [&Answer](TFlockResult<FFlockPurchaseResult> R) { Answer = R; });
+	PumpRetries();
+	if (!TestTrue(TEXT("answered"), Answer.IsSet()))
+	{
+		Cleanup(Fx.Dir);
+		return false;
+	}
+	TestFalse(TEXT("refused"), Answer->bSuccess);
+	TestEqual(TEXT("on its own code, not Unknown"), Answer->Error.ErrorCode, EFlockErrorCode::ShopRealCurrencyNeedsCheckout);
+	TestEqual(TEXT("as the 422 it is"), Answer->Error.StatusCode, 422);
+	TestEqualSensitive(TEXT("with its hint"), Answer->Error.Hint, FFlockErrorHints::For(EFlockErrorCode::ShopRealCurrencyNeedsCheckout));
+	TestFalse(TEXT("a hint there is"), Answer->Error.Hint.IsEmpty());
+	TestTrue(TEXT("and the server's reason"), Answer->Error.Message.Contains(TEXT("real currency")) || Answer->Error.ServerMessage.Contains(TEXT("real currency")));
+	TestEqual(TEXT("sent once"), Fx.Fake->CountTo(TEXT("shop/transaction")), 1);
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+// ── A purchase or consume made with the server unreachable is sent once, fails, and is never queued for later ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopOfflineMoneyTest, "Flock.Shop.Provider.APurchaseOrConsumeMadeOfflineIsSentOnceAndNeverQueued",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopOfflineMoneyTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx(Retrying());
+	Fx.SignIn();
+	Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+	Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Offline());
+	Fx.Fake->On(TEXT("player_inventory/inv-1/consume"), FFlockFakeTransport::Offline());
+
+	EFlockErrorType PurchaseFailure = EFlockErrorType::None;
+	Fx.Provider->Purchase(TEXT("item-1"), FString(), [&PurchaseFailure](TFlockResult<FFlockPurchaseResult> R) { PurchaseFailure = R.bSuccess ? EFlockErrorType::None : R.Error.Type; });
+	EFlockErrorType ConsumeFailure = EFlockErrorType::None;
+	Fx.Provider->Consume(TEXT("inv-1"), [&ConsumeFailure](TFlockResult<FFlockConsumeResult> R) { ConsumeFailure = R.bSuccess ? EFlockErrorType::None : R.Error.Type; });
+	PumpRetries();
+	TestEqual(TEXT("the purchase fails as unreachable"), PurchaseFailure, EFlockErrorType::Connection);
+	TestEqual(TEXT("so does the consume"), ConsumeFailure, EFlockErrorType::Connection);
+
+	// The network comes back: nothing held back is sent.
+	Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(PurchaseResultBody()));
+	Fx.Fake->On(TEXT("player_inventory/inv-1/consume"), FFlockFakeTransport::Ok(ConsumeResultBody()));
+	PumpRetries();
+	TestEqual(TEXT("the purchase was sent once"), Fx.Fake->CountTo(TEXT("shop/transaction")), 1);
+	TestEqual(TEXT("the consume was sent once"), Fx.Fake->CountTo(TEXT("player_inventory/inv-1/consume")), 1);
+
+	// Contrast: a read made with the server unreachable is tried again under the same policy.
+	Fx.Fake->On(TEXT("player_inventory/player/player-a"), FFlockFakeTransport::Offline());
+	Fx.Provider->GetPlayerInventory(FString(), 1, 100, [](TFlockResult<FFlockPlayerInventoryPage>) {});
+	PumpRetries();
+	TestTrue(TEXT("contrast: a read is tried again"), Fx.Fake->CountTo(TEXT("player_inventory/player/player-a")) > 1);
+	Cleanup(Fx.Dir);
+	return true;
+}
+
 // ── SHOP-06: inventory is never cached — offline it fails rather than serving stale ownership ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopInventoryOfflineTest, "Flock.Shop.Provider.InventoryOfflineFails",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -695,7 +764,7 @@ bool FFlockShopClearCacheTest::RunTest(const FString& Parameters)
 // This is the defect the whole change exists to fix: the SDK used to deserialize the response straight
 // onto the inventory model, which against a real backend produced a populated-looking row of nulls. The
 // fixture is root-shaped and nests `inventory`, so reading it off the root cannot pass.
-// ── A purchase says where it has got to: paid by default, pending for a real-money checkout not settled yet ──
+// ── A purchase says where it has got to: paid by default, any other status the server sends read as it spelled it ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopPurchaseStatusTest, "Flock.Shop.Provider.PurchaseReadsItsStatus",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 

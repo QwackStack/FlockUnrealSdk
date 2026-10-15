@@ -13,12 +13,14 @@
 #include "Multiplayer/FlockParty.h"
 #include "Multiplayer/FlockRepeatingCalls.h"
 
+class FFlockMatchmaking;
+class FFlockMatchmakingRequests;
 class FFlockMultiplayerSessions;
 class FFlockParties;
 class FFlockPartyRequests;
 
 /**
- * The entry point for multiplayer: the player's party and session, and the lookup of matchmaking queues by name. Owns every
+ * The entry point for multiplayer: the player's party, session and search for a match, and the lookup of matchmaking queues by name. Owns every
  * call the SDK repeats for them, sent from the core ticker. Built at Flock's initialization and torn down at its shutdown;
  * make its calls from the game thread.
  */
@@ -73,6 +75,15 @@ public:
 	 */
 	FFlockRequestHandle GetMySession(FFlockOnMultiplayerSession OnComplete);
 
+	/**
+	 * Searches for a match alone in the queue named exactly QueueName (letter case included), and hands back the session the
+	 * match seats the player in, held like any other. A search the server ends without a match (nobody found within 5 minutes,
+	 * or another game of this player stopping it) completes with its outcome, not a failure. Cancelling the handle cancels the
+	 * search on the server (a match that landed meanwhile gives its seat up) and completes the call as Cancelled. A search of
+	 * the player's own left from an earlier launch is cancelled first. To search as a party, use the party's FindMatch.
+	 */
+	FFlockRequestHandle FindMatch(const FString& QueueName, const FFlockMatchmakingOptions& Options, FFlockOnMatchmakingResult OnComplete);
+
 	/** Starts sending repeating calls from the core ticker. Called once, right after construction. */
 	void Start();
 
@@ -97,6 +108,9 @@ public:
 	/** The owner of the player's session; for tests. */
 	FFlockMultiplayerSessions& GetSessionsForTesting() { return *Sessions; }
 
+	/** The owner of the player's search for a match; for tests. */
+	FFlockMatchmaking& GetMatchmakingForTesting() { return *Matchmaking; }
+
 	/** Runs one frame's work (a party or session of an ended sign-in, then the calls due); for tests that drive frames themselves. */
 	void TickForTesting() { Tick(0.f); }
 
@@ -104,21 +118,23 @@ private:
 	friend class UFlockSubsystem;
 
 	/**
-	 * The game is ending: gives the held session's seat up without waiting for the answer, so the other players see it at once
+	 * The game is ending: cancels the player's search for a match and gives the held session's seat up, without waiting for the answers, so the other players see it at once
 	 * rather than when the server stops hearing from the player. The session ends as left, raising nothing. True when a leave
 	 * was sent. Flock calls it when its game instance shuts down, before it waits for requests on their way; a game leaves with
 	 * the session's own Leave.
 	 */
-	bool LeaveSessionForQuit();
+	bool LeaveForQuit();
 
 	bool Tick(float DeltaSeconds);
-	FFlockRequestHandle ReadQueues(TFunction<void(TFlockResult<TArray<FFlockMatchmakingQueue>>)> OnComplete);
 
 	TSharedRef<FFlockAuthSession> Session;
-	FString VersionedApiUrl;
 	TSharedRef<FFlockRepeatingCalls> RepeatingCalls;
-	TSharedPtr<FFlockMatchmakingQueueNames> QueueNames;
-	TSharedRef<FFlockParties> Parties;
+	TSharedRef<FFlockMatchmakingRequests> MatchmakingRequests;
+	/** One read of the queue list for every caller: this provider's FindQueueId and every search. */
+	TSharedRef<FFlockMatchmakingQueueNames> QueueNames;
+	/** Built in this order: the search hands a match's session to the sessions owner, and the party follows the search. */
 	TSharedRef<FFlockMultiplayerSessions> Sessions;
+	TSharedRef<FFlockMatchmaking> Matchmaking;
+	TSharedRef<FFlockParties> Parties;
 	FTSTicker::FDelegateHandle TickerHandle;
 };

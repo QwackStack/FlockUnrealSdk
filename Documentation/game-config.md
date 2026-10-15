@@ -79,7 +79,9 @@ Sdk->GetConfigProvider()->GetPlayerFeatures(FString(), OnFeatures);
 - **Reads are cached and snapshot-backed.** A config fetched once is memoized, written to the offline
   snapshot, and served without a network call next launch. Concurrent fetches of the same key are
   coalesced into one request.
-- **Player features are never cached.** They gate access, and stale access is worse than a round trip.
+- **Player features are kept in memory per player for the run, never on disk.** The first `Get Player Features` for
+  a player fetches; later ones for the same player answer from memory until `ClearCache()` or the next launch, which
+  always asks the server again.
 - **Dotted paths match exactly first, then the Pascal-cased name.** A field declared `max_health` reads
   back as `MaxHealth` in the flattened data, and both spellings resolve — so a path copied from the
   dashboard works, and so does one copied from a Break node.

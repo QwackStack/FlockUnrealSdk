@@ -112,6 +112,14 @@ void FFlockMatchmakingQueueNames::GiveUp(int32 WaiterNumber)
 	}
 }
 
+void FFlockMatchmakingQueueNames::ForgetQueue(const FString& QueueId)
+{
+	if (Queues.IsSet() && Queues->ContainsByPredicate([&](const FFlockMatchmakingQueue& Queue) { return Queue.Id.Equals(QueueId, ESearchCase::CaseSensitive); }))
+	{
+		Queues.Reset();
+	}
+}
+
 void FFlockMatchmakingQueueNames::GiveUpEveryWait()
 {
 	// A copy, since a caller's handler may ask again from inside its answer.

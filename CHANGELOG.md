@@ -5,6 +5,67 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.29.0] - 2026-10-15
+
+Matchmaking.
+
+### Added
+
+- **`FFlockMultiplayerProvider::FindMatch(QueueName, Options, OnComplete)`** searches a queue by its name (letter for letter)
+  and completes with `FFlockMatchmakingResult`: `Outcome` (`FlockMatchmakingOutcomes`: `matched`, `expired`,
+  `party_changed`, `cancelled`, an open set), the `Session` the match seats the player in, held like any other session, and
+  the matched `PlayerIds`, the longest waiting first. A search that ends without a match is an outcome, not a failure.
+  Cancelling the handle cancels the search on the server; a match that landed meanwhile gives its seat up first. A search
+  of the player's own left from an earlier launch is cancelled and replaced; a party's is never touched by a search alone.
+- **`UFlockParty::FindMatch`**, **`IsSearching()`**, **`OnSearchStarted`** and **`OnSearchEnded(Result)`**: the leader's game
+  searches as the party, matched as one group and never split; another member's `FindMatch` waits for the leader's search,
+  and every member's game hears the search start and end, from its own call or the party's refresh, before the call waiting
+  for it completes. A search from before the game first held the party is not told.
+- The search is checked every 3 seconds (2.25 to 3.75), only for the sign-in it was made under: a sign-in that ends ends
+  the search as `Cancelled` and sends nothing more, and frees the next player's `FindMatch` at once. Quitting the game cancels
+  it on the way out without waiting; a search still being made is cancelled once its ticket lands, and a match already
+  landing gives its seat up.
+- A member's wait for the leader's search ends (`Validation`) when the party ends first, or when the player comes to lead it.
+- The queue list is read once a launch; a queue deleted and made again under the same name is found by its new id.
+- `Documentation/multiplayer.md` covers matchmaking; the matchmaking error hints name `FindMatch`.
+
+### Fixed
+
+- **Cancelling a party create, join or `GetMyParty` while it read the player's search** did nothing: the cancel reached the
+  request on its way only while something else still held the call, and that last reading held nothing. A call made of
+  requests sent in turn now always reaches the one on its way; sessions' calls share the same mechanism.
+- **A player with no search** (asked by every party refresh) is traced at debug instead of as a warning.
+- **A shop item priced in real money** sent through `Purchase` now fails with its own code,
+  `EFlockErrorCode::ShopRealCurrencyNeedsCheckout`, and a hint, instead of `Unknown`: the server refuses it because the call
+  only spends game currencies from the wallet. The shop guide no longer says such a purchase can come back `pending`, nor
+  that a purchase or consume fails "immediately" offline (each is sent once and reports the connection failure); the 1.28.0
+  entry below names the status constants `FlockPurchaseStatuses`, as the code does.
+- `FFlockMultiplayerProvider` no longer hands its matchmaking a lookup that called back into the provider; the queue list
+  is one shared object, read through the matchmaking requests with the API key alone.
+
+## [1.28.1] - 2026-10-14
+
+Follow-ups to the 1.28.0 review, and keys compared letter for letter.
+
+### Changed
+
+- **Metadata keys and event property names are compared letter for letter.** `Score` and `score` are two keys. The engine's
+  map and JSON object cannot keep both (they would replace one with the other without a word), so a second spelling is not
+  added, a warning names both, and the first stays. `FFlockMetadata::Add`, the `Add Metadata ...` and `Flock Event Property
+  (...)` nodes and `FFlockCommandData::Set` all follow it; repeated-exception windows have since 1.28.0.
+- **Player ids are compared letter for letter** in the command queue's flush and reload and in the analytics events batch,
+  as every other identifier is.
+- **Player features** are documented as kept in memory per player for the run (`FFlockConfigProvider::GetPlayerFeatures`
+  and `Documentation/game-config.md`), which is what the code has done since they were added; nothing changed in behaviour.
+
+### Fixed
+
+- **An API URL of nothing but spaces and slashes** is refused at initialization with an error naming the setting; it
+  initialized and sent every request to `/v1/...`.
+- **A playtest recording whose session file cannot be read** has its cut-off video finished before it is kept, so what is
+  kept can be played.
+- The three HTTP transports claim their one answer through `FFlockCancelToken::TryClaimAnswer()` rather than each by hand.
+
 ## [1.28.0] - 2026-10-14
 
 Fixes found while writing the SDK guide, across the core, the editor, codegen and the Protokite Playtest plugin.
@@ -14,7 +75,7 @@ Fixes found while writing the SDK guide, across the core, the editor, codegen an
 - **`FFlockPlayerData::LeaderboardRefusals`**: the boards that turned away the score an update fed them (Update Player Data
   and Update Player Data Field), each with a reason (`FlockLeaderboardRefusalReasons`, an open set), whether it can be retried
   and when. An empty list after Add Game Funds or Unlock Achievement means those routes do not report refusals.
-- **`FFlockPurchaseResult::Status`** (`FlockPurchaseResultStatuses`) and `IsPaid()`, with Blueprint nodes.
+- **`FFlockPurchaseResult::Status`** (`FlockPurchaseStatuses`) and `IsPaid()`, with Blueprint nodes.
 - **Editor: Don't Open For This** on a finding that opens the Flock panel by itself; it stays listed.
 
 ### Changed

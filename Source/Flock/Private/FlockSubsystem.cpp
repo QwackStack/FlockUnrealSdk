@@ -14,7 +14,7 @@
 #include "Http/FlockHttpShutdown.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.28.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.29.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -163,8 +163,18 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		return false;
 	}
 
+	// Every request is built on the URL as trimmed; one that is nothing but spaces and slashes would send every request
+	// to "/v1/..." and fail each one with no word about why.
+	const FString ApiUrl = FFlockInitConfig::TrimApiUrl(Config.ApiUrl);
+	if (ApiUrl.IsEmpty())
+	{
+		OutError = TEXT("API URL is empty. Set it in Project Settings > Flock SDK (or in the config handed to InitializeWithConfig) ")
+			TEXT("to your Flock server's address, such as https://api.example.com.");
+		return false;
+	}
+
 	ActiveConfig = Config;
-	ActiveConfig.ApiUrl = FFlockInitConfig::TrimApiUrl(Config.ApiUrl);
+	ActiveConfig.ApiUrl = ApiUrl;
 
 	const UFlockConfig* Settings = GetDefault<UFlockConfig>();
 	FFlockRetryPolicy RetryPolicy;
@@ -487,7 +497,7 @@ void UFlockSubsystem::ShutdownSdkFor(bool bGameEnding)
 	// the wait below for requests on their way, which then covers the leave.
 	if (bGameEnding && MultiplayerProvider.IsValid())
 	{
-		MultiplayerProvider->LeaveSessionForQuit();
+		MultiplayerProvider->LeaveForQuit();
 	}
 
 	// Shut the provider down while it is still alive — its destructor deliberately will not end a

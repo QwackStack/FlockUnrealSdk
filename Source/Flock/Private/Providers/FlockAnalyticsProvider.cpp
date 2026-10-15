@@ -1605,7 +1605,7 @@ void FFlockAnalyticsProvider::SendNextEventBatch(const TSharedRef<FDeliveryPass>
 		{
 			BatchPlayer = Entry.Event.PlayerId;
 		}
-		else if (Entry.Event.PlayerId != BatchPlayer)
+		else if (!Entry.Event.PlayerId.Equals(BatchPlayer, ESearchCase::CaseSensitive))
 		{
 			continue;
 		}

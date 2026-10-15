@@ -73,11 +73,10 @@ FFlockRequestHandle FFlockHttpModuleAdapter::SendAsync(const FFlockHttpRequest& 
 	HttpRequest->OnProcessRequestComplete().BindLambda(
 		[OnComplete, Token](FHttpRequestPtr HttpRequestPtr, FHttpResponsePtr HttpResponse, bool bConnectedSuccessfully)
 		{
-			if (Token->bAnswered || !OnComplete)
+			if (!OnComplete || !Token->TryClaimAnswer())
 			{
 				return;
 			}
-			Token->bAnswered = true;
 
 			FFlockHttpResponse Out;
 
@@ -120,9 +119,8 @@ FFlockRequestHandle FFlockHttpModuleAdapter::SendAsync(const FFlockHttpRequest& 
 
 	// A request the engine refuses to start may already have been answered through the completion above (UE 5.5 answers
 	// it before ProcessRequest returns), so this answers only when that did not.
-	if (!HttpRequest->ProcessRequest() && !Token->bAnswered)
+	if (!HttpRequest->ProcessRequest() && Token->TryClaimAnswer())
 	{
-		Token->bAnswered = true;
 		FFlockHttpResponse Out;
 		Out.Result = EFlockHttpResult::ConnectionError;
 		Out.Body = TEXT("Failed to start HTTP request");

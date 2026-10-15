@@ -160,3 +160,100 @@ bool FFlockMultiplayerSessionReading::FromWireObject(const TSharedRef<FJsonObjec
 	}
 	return true;
 }
+
+bool FFlockMatchmakingTicketReading::IsQueued() const
+{
+	return Status.Equals(FlockMatchmakingWireValues::TicketQueued, ESearchCase::CaseSensitive);
+}
+
+bool FFlockMatchmakingTicketReading::IsMatched() const
+{
+	return Status.Equals(FlockMatchmakingWireValues::TicketMatched, ESearchCase::CaseSensitive);
+}
+
+bool FFlockMatchmakingTicketReading::IsForParty(const FString& InPartyId) const
+{
+	return PartyId.Equals(InPartyId, ESearchCase::CaseSensitive);
+}
+
+bool FFlockMatchmakingTicketReading::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockMatchmakingTicketReading& OutStruct, FString& OutError)
+{
+	OutStruct = FFlockMatchmakingTicketReading();
+	Object->TryGetStringField(TEXT("id"), OutStruct.Id);
+	Object->TryGetStringField(TEXT("status"), OutStruct.Status);
+	if (OutStruct.Id.IsEmpty() || OutStruct.Status.IsEmpty())
+	{
+		OutError = TEXT("Invalid response from server (the answer names no search)");
+		return false;
+	}
+	Object->TryGetStringField(TEXT("queue_id"), OutStruct.QueueId);
+	Object->TryGetStringField(TEXT("player_id"), OutStruct.PlayerId);
+	// Null on the wire for a search alone, which a string read leaves empty.
+	Object->TryGetStringField(TEXT("party_id"), OutStruct.PartyId);
+	Object->TryGetStringField(TEXT("cancel_reason"), OutStruct.CancelReason);
+
+	const TSharedPtr<FJsonObject>* MatchObject = nullptr;
+	if (Object->TryGetObjectField(TEXT("match"), MatchObject) && MatchObject != nullptr && MatchObject->IsValid())
+	{
+		OutStruct.bHasMatch = true;
+		(*MatchObject)->TryGetStringField(TEXT("id"), OutStruct.Match.Id);
+		const TArray<TSharedPtr<FJsonValue>>* Players = nullptr;
+		if ((*MatchObject)->TryGetArrayField(TEXT("player_ids"), Players) && Players != nullptr)
+		{
+			for (const TSharedPtr<FJsonValue>& Player : *Players)
+			{
+				FString PlayerId;
+				if (Player.IsValid() && Player->TryGetString(PlayerId) && !PlayerId.IsEmpty())
+				{
+					OutStruct.Match.PlayerIds.Add(PlayerId);
+				}
+			}
+		}
+		const TSharedPtr<FJsonObject>* Connection = nullptr;
+		if ((*MatchObject)->TryGetObjectField(TEXT("connection_info"), Connection) && Connection != nullptr && Connection->IsValid())
+		{
+			(*Connection)->TryGetStringField(TEXT("session_id"), OutStruct.Match.SessionId);
+		}
+	}
+	return true;
+}
+
+const FFlockMatchmakingTicketReading* FFlockMatchmakingTicketsMade::FindTicketOf(const FString& PlayerId) const
+{
+	return Tickets.FindByPredicate([&](const FFlockMatchmakingTicketReading& Ticket)
+	{
+		return Ticket.PlayerId.Equals(PlayerId, ESearchCase::CaseSensitive);
+	});
+}
+
+bool FFlockMatchmakingTicketsMade::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockMatchmakingTicketsMade& OutStruct, FString& OutError)
+{
+	OutStruct = FFlockMatchmakingTicketsMade();
+	const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+	if (!Object->TryGetArrayField(TEXT("result"), Items) || Items == nullptr)
+	{
+		OutError = TEXT("Invalid response from server (missing result)");
+		return false;
+	}
+	for (const TSharedPtr<FJsonValue>& Item : *Items)
+	{
+		const TSharedPtr<FJsonObject>* TicketObject = nullptr;
+		if (!Item.IsValid() || !Item->TryGetObject(TicketObject) || TicketObject == nullptr || !TicketObject->IsValid())
+		{
+			OutError = TEXT("Invalid response from server (a search that is not one)");
+			return false;
+		}
+		FFlockMatchmakingTicketReading Ticket;
+		if (!FFlockMatchmakingTicketReading::FromWireObject((*TicketObject).ToSharedRef(), Ticket, OutError))
+		{
+			return false;
+		}
+		OutStruct.Tickets.Add(Ticket);
+	}
+	if (OutStruct.Tickets.Num() == 0)
+	{
+		OutError = TEXT("Invalid response from server (no search was made)");
+		return false;
+	}
+	return true;
+}

@@ -468,7 +468,7 @@ bool FFlockSignInOptedInCallsTest::RunTest(const FString& Parameters)
 		{ TEXT("Multiplayer/FlockPartyRequests.cpp"), TEXT("FFlockPartyRequests"), { TEXT("SendAs"), TEXT("ReadMine") }, {} },
 		// Every session route goes through SendAs (pinned by Flock.Multiplayer.Sessions.EveryRouteIsSentAsItsSignIn).
 		{ TEXT("Multiplayer/FlockMultiplayerSessionRequests.cpp"), TEXT("FFlockMultiplayerSessionRequests"), { TEXT("SendAs") }, {} },
-		{ TEXT("Providers/FlockMultiplayerProvider.cpp"), TEXT("FFlockMultiplayerProvider"), {}, { TEXT("ReadQueues") } },
+		{ TEXT("Multiplayer/FlockMatchmakingRequests.cpp"), TEXT("FFlockMatchmakingRequests"), { TEXT("SendAs") }, { TEXT("ReadQueues") } },
 	};
 
 	auto KeepsItsSignIn = [](const FString& Body)
@@ -516,7 +516,7 @@ bool FFlockSignInOptedInCallsTest::RunTest(const FString& Parameters)
 			}
 		}
 	}
-	TestEqual(TEXT("every call that acts for the player was checked"), Checked, 22);
+	TestEqual(TEXT("every call that acts for the player was checked"), Checked, 23);
 	return true;
 }
 

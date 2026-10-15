@@ -44,7 +44,9 @@ public:
 
 	/**
 	 * Per-player resolved features (empty PlayerId = the signed-in player; Validation when signed out).
-	 * Memoized per player, but never snapshotted — stale features are worse than a refetch.
+	 * Kept in memory per player for the run (PlayerFeaturesByPlayer): the first read of a player fetches, later reads of
+	 * the same player answer from memory, and ClearCache() or a new SDK instance fetches again. Never written to the
+	 * offline snapshot, so a new launch always asks the server.
 	 */
 	void GetPlayerFeatures(const FString& PlayerId, TFunction<void(TFlockResult<FFlockGameConfigSchema>)> OnComplete);
 

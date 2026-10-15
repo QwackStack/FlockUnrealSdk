@@ -334,6 +334,42 @@ bool FFlockHttpClientTraceTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── "The player's search" answered not found is an answer a party refresh gets every few seconds, so it is traced at debug ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientNoSearchTraceTest, "Flock.Http.Client.APlayerWithNoSearchIsTracedAtDebugAndNothingElseIs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientNoSearchTraceTest::RunTest(const FString& Parameters)
+{
+	const FString NoSearch = TEXT("{\"detail\":{\"code\":\"matchmaking.ticket_not_found\",\"message\":\"Ticket not found\"}}");
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> Client = MakeShared<FFlockHttpClient>(Fake, Log);
+	Fake->On(TEXT("ticket/current"), FFlockFakeTransport::Status(404, NoSearch));
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/v1/matchmaking/ticket/current"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("traced at debug, saying what it means"),
+		FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("<- 404 GET http://x/v1/matchmaking/ticket/current")));
+	TestTrue(TEXT("the player has no search"), FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("the player has no search")));
+	TestEqual(TEXT("no warning"), Log->Warnings.Num(), 0);
+
+	// Counter-cases, each still a warning: the same code from another route, and another code from this route.
+	const TSharedRef<FFlockRecordingLogger> TicketLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> TicketClient = MakeShared<FFlockHttpClient>(Fake, TicketLog);
+	Fake->On(TEXT("ticket/01TICKET"), FFlockFakeTransport::Status(404, NoSearch));
+	TicketClient->Get<FFlockGameVersionSchema>(TEXT("http://x/v1/matchmaking/ticket/01TICKET000000000000000001"), {},
+		[](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("a search read by its id and not found warns"),
+		FFlockRecordingLogger::AnyContains(TicketLog->Warnings, TEXT("<- 404 GET http://x/v1/matchmaking/ticket/01TICKET")));
+
+	const TSharedRef<FFlockRecordingLogger> OtherLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> OtherClient = MakeShared<FFlockHttpClient>(Fake, OtherLog);
+	Fake->On(TEXT("ticket/current"), FFlockFakeTransport::Status(404, TEXT("{\"detail\":{\"code\":\"request.not_found\",\"message\":\"Not Found\"}}")));
+	OtherClient->Get<FFlockGameVersionSchema>(TEXT("http://x/v1/matchmaking/ticket/current"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("another 404 from the same route warns, with its code"),
+		FFlockRecordingLogger::AnyContains(OtherLog->Warnings, TEXT("request.not_found")));
+	TestFalse(TEXT("and never says the player has no search"), FFlockRecordingLogger::AnyContains(OtherLog->Debugs, TEXT("no search")));
+	return true;
+}
+
 // ── A Retry-After the server got wrong never makes a retry wait less than nothing ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientNegativeRetryAfterTest, "Flock.Http.Client.NegativeRetryAfterMeansNow",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)

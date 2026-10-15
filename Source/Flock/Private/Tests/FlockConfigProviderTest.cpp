@@ -501,4 +501,35 @@ bool FFlockConfigProviderPlayerFeaturesNoDiskTest::RunTest(const FString& Parame
 	return true;
 }
 
+// ── A player's features are kept in memory for the run: one fetch per player, until ClearCache ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConfigProviderPlayerFeaturesKeptTest, "Flock.Config.Provider.PlayerFeaturesAreKeptPerPlayerForTheRun",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockConfigProviderPlayerFeaturesKeptTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx;
+	Fx.SignIn(TEXT("player-a"));
+	Fx.Fake->On(TEXT("player/player-a/features"), FFlockFakeTransport::Ok(ConfigBody));
+	Fx.Fake->On(TEXT("player/player-b/features"), FFlockFakeTransport::Ok(ConfigBody));
+
+	int32 Answers = 0;
+	for (int32 Read = 0; Read < 3; ++Read)
+	{
+		Fx.Provider->GetPlayerFeatures(TEXT("player-a"), [&Answers](TFlockResult<FFlockGameConfigSchema> R) { Answers += R.bSuccess ? 1 : 0; });
+	}
+	TestEqual(TEXT("three reads answer"), Answers, 3);
+	TestEqual(TEXT("from one fetch"), Fx.Fake->CountTo(TEXT("player/player-a/features")), 1);
+
+	Fx.Provider->GetPlayerFeatures(TEXT("player-b"), [](TFlockResult<FFlockGameConfigSchema>) {});
+	TestEqual(TEXT("another player fetches their own"), Fx.Fake->CountTo(TEXT("player/player-b/features")), 1);
+	TestEqual(TEXT("without touching the first's"), Fx.Fake->CountTo(TEXT("player/player-a/features")), 1);
+
+	Fx.Provider->ClearCache();
+	Fx.Provider->GetPlayerFeatures(TEXT("player-a"), [](TFlockResult<FFlockGameConfigSchema>) {});
+	TestEqual(TEXT("ClearCache forgets them, so the next read fetches"), Fx.Fake->CountTo(TEXT("player/player-a/features")), 2);
+
+	Cleanup(Fx.Dir);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

@@ -1,7 +1,8 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Providers/FlockMultiplayerProvider.h"
-#include "Http/FlockEndpoints.h"
+#include "Multiplayer/FlockMatchmaking.h"
+#include "Multiplayer/FlockMatchmakingRequests.h"
 #include "Multiplayer/FlockMultiplayerSessionRequests.h"
 #include "Multiplayer/FlockMultiplayerSessions.h"
 #include "Multiplayer/FlockParties.h"
@@ -12,14 +13,21 @@ FFlockMultiplayerProvider::FFlockMultiplayerProvider(const TSharedRef<FFlockHttp
 	double InPartyRefreshSeconds)
 	: FFlockProviderBase(InClient, InPolicy, InLogger)
 	, Session(InSession)
-	, VersionedApiUrl(InVersionedApiUrl)
 	, RepeatingCalls(MakeShared<FFlockRepeatingCalls>([InSession]() { return InSession->GetSignInNumber(); }, InLogger))
-	, Parties(MakeShared<FFlockParties>(
-		MakeShared<FFlockPartyRequests>(InClient, InPolicy, InLogger, InSession, InVersionedApiUrl),
-		RepeatingCalls, InSession, InLogger, InPartyRefreshSeconds))
+	, MatchmakingRequests(MakeShared<FFlockMatchmakingRequests>(InClient, InPolicy, InLogger, InSession, InVersionedApiUrl))
+	, QueueNames(MakeShared<FFlockMatchmakingQueueNames>(
+		[Requests = MatchmakingRequests](TFunction<void(TFlockResult<TArray<FFlockMatchmakingQueue>>)> OnRead)
+		{
+			return Requests->ReadQueues(MoveTemp(OnRead));
+		},
+		InLogger))
 	, Sessions(MakeShared<FFlockMultiplayerSessions>(
 		MakeShared<FFlockMultiplayerSessionRequests>(InClient, InPolicy, InLogger, InSession, InVersionedApiUrl),
 		RepeatingCalls, InSession, InLogger))
+	, Matchmaking(MakeShared<FFlockMatchmaking>(MatchmakingRequests, RepeatingCalls, Sessions, InSession, InLogger, QueueNames))
+	, Parties(MakeShared<FFlockParties>(
+		MakeShared<FFlockPartyRequests>(InClient, InPolicy, InLogger, InSession, InVersionedApiUrl),
+		RepeatingCalls, Matchmaking, InSession, InLogger, InPartyRefreshSeconds))
 {
 	SetAuthSession(InSession);
 }
@@ -46,18 +54,17 @@ void FFlockMultiplayerProvider::Shutdown()
 		TickerHandle.Reset();
 	}
 	Parties->StopForShutdown();
+	Matchmaking->StopForShutdown();
 	Sessions->StopForShutdown();
 	RepeatingCalls->StopAll();
 	// A read on its way is answered into a provider about to go, so whoever waits on it is told now.
-	if (QueueNames.IsValid())
-	{
-		QueueNames->GiveUpEveryWait();
-	}
+	QueueNames->GiveUpEveryWait();
 }
 
 bool FFlockMultiplayerProvider::Tick(float DeltaSeconds)
 {
 	Parties->EndIfSignInEnded();
+	Matchmaking->EndIfSignInEnded();
 	Sessions->EndIfSignInEnded();
 	RepeatingCalls->SendThoseDue();
 	return true;
@@ -84,9 +91,17 @@ FFlockRequestHandle FFlockMultiplayerProvider::GetMySession(FFlockOnMultiplayerS
 	return Sessions->GetMine(MoveTemp(OnComplete));
 }
 
-bool FFlockMultiplayerProvider::LeaveSessionForQuit()
+bool FFlockMultiplayerProvider::LeaveForQuit()
 {
+	RepeatingCalls->StopAll();
+	Matchmaking->CancelForQuit();
 	return Sessions->LeaveForQuit();
+}
+
+FFlockRequestHandle FFlockMultiplayerProvider::FindMatch(const FString& QueueName, const FFlockMatchmakingOptions& Options,
+	FFlockOnMatchmakingResult OnComplete)
+{
+	return Matchmaking->FindAlone(QueueName, Options, MoveTemp(OnComplete));
 }
 
 FFlockRequestHandle FFlockMultiplayerProvider::CreateParty(TOptional<int32> MaxSize, const FFlockCommandData& Settings, FFlockOnParty OnComplete)
@@ -110,36 +125,5 @@ FFlockRequestHandle FFlockMultiplayerProvider::FindQueueId(const FString& QueueN
 	{
 		return FFlockRequestHandle();
 	}
-	if (!QueueNames.IsValid())
-	{
-		const TWeakPtr<FFlockMultiplayerProvider> WeakSelf = AsShared();
-		QueueNames = MakeShared<FFlockMatchmakingQueueNames>(
-			[WeakSelf](TFunction<void(TFlockResult<TArray<FFlockMatchmakingQueue>>)> OnRead) -> FFlockRequestHandle
-			{
-				if (const TSharedPtr<FFlockMultiplayerProvider> Self = WeakSelf.Pin())
-				{
-					return Self->ReadQueues(MoveTemp(OnRead));
-				}
-				OnRead(TFlockResult<TArray<FFlockMatchmakingQueue>>::Fail(FFlockError::Make(EFlockErrorType::Cancelled, TEXT("Request cancelled"))));
-				return FFlockRequestHandle();
-			},
-			Logger);
-	}
 	return QueueNames->FindId(QueueName, MoveTemp(OnComplete));
-}
-
-FFlockRequestHandle FFlockMultiplayerProvider::ReadQueues(TFunction<void(TFlockResult<TArray<FFlockMatchmakingQueue>>)> OnComplete)
-{
-	const TSharedRef<FFlockHttpClient> ClientRef = Client;
-	const FString Url = FString::Printf(TEXT("%s/%s?limit=%d"), *VersionedApiUrl, FlockEndpoints::MatchmakingQueues,
-		FFlockMatchmakingQueueNames::MostQueuesListed);
-	// The API key alone: the list is the game's, so no player's token goes with it and a 401 is never a lapsed sign-in.
-	const TMap<FString, FString> Headers = Session->GetBaseHeaders();
-	return Execute<TArray<FFlockMatchmakingQueue>>(
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<TArray<FFlockMatchmakingQueue>>)> OnResult)
-		{
-			return ClientRef->GetList<FFlockMatchmakingQueue>(Url, Headers, MoveTemp(OnResult));
-		},
-		MoveTemp(OnComplete), TEXT("Read matchmaking queues"), /*bIdempotent*/ true, /*MaxRetriesOverride*/ -1,
-		/*bAllowAuthRetry*/ false);
 }

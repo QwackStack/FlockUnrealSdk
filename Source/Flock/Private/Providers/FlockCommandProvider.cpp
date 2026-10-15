@@ -326,7 +326,7 @@ void FFlockCommandProvider::FlushNextWhileSignedIn(const TSharedRef<int32>& Deli
 	// The answer just handled belonged to the queue's player whatever happened since. The next write is that player's too,
 	// and the command routes take no token, so nothing on the server would stop it going out after they signed out: the
 	// queue waits for their next sign-in instead.
-	if (Session->GetPlayerId() != QueuePlayerId)
+	if (!IsTheQueuesPlayer(Session->GetPlayerId()))
 	{
 		FinishFlush(*Delivered, MoveTemp(OnComplete));
 		return;
@@ -363,7 +363,7 @@ void FFlockCommandProvider::FlushNext(const TSharedRef<int32>& Delivered, TFunct
 			// A *different signed-in player*, specifically: this answer is still handled after a sign-out (it is the queue's
 			// player's), so a rejected write is dropped; FlushNextWhileSignedIn then stops before the next one goes out.
 			const FString LivePlayerId = Self->Session->GetPlayerId();
-			const bool bPlayerSwitched = !LivePlayerId.IsEmpty() && LivePlayerId != Self->QueuePlayerId;
+			const bool bPlayerSwitched = !LivePlayerId.IsEmpty() && !Self->IsTheQueuesPlayer(LivePlayerId);
 			if (bPlayerSwitched || !Self->HeadStillIs(Head))
 			{
 				Self->FinishFlush(*Delivered, OnComplete);
@@ -598,7 +598,7 @@ void FFlockCommandProvider::EnsureQueueLoaded()
 	// player). The previous player's in-memory writes are dropped so they can't replay under a new login;
 	// their persisted copy stays under their own scope and replays when they sign back in.
 	const FString PlayerId = Session->GetPlayerId();
-	if (bQueueLoaded && QueuePlayerId == PlayerId)
+	if (bQueueLoaded && IsTheQueuesPlayer(PlayerId))
 	{
 		return;
 	}
@@ -683,4 +683,10 @@ bool FFlockCommandProvider::HeadStillIs(const FFlockPendingCommand& Entry) const
 	return PendingWrites.Num() > 0
 		&& PendingWrites[0].Path == Entry.Path
 		&& PendingWrites[0].PayloadJson == Entry.PayloadJson;
+}
+
+bool FFlockCommandProvider::IsTheQueuesPlayer(const FString& PlayerId) const
+{
+	// Letter for letter: ids differing only in case are two players.
+	return PlayerId.Equals(QueuePlayerId, ESearchCase::CaseSensitive);
 }

@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.28.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.29.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -106,7 +106,7 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   notification, and asset-list reads are cached to disk, scoped to the game version, and served when the
   network is down; toggleable in settings.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
-- **Blueprint-friendly** — every provider call is a self-contained async node (party and session calls are C++-only for now), and the fire-and-forget
+- **Blueprint-friendly** — every provider call is a self-contained async node (party, session and matchmaking calls are C++-only for now), and the fire-and-forget
   calls plus auth/session state are one-node too (no "Get Flock Subsystem" needed). Events, error types,
   and structured data all read from Blueprint.
 
@@ -446,7 +446,7 @@ so you can read only the half you work in.
 | [Leaderboards](Documentation/leaderboards.md) | Boards by name, standings, a player's own rank, windows and score formatting, why there is no submit call |
 | [Notifications](Documentation/notifications.md) | The inbox, scheduled reminders, the template catalog, push device tokens and what push delivery needs |
 | [Android push setup](Documentation/push-setup-android.md) | Step-by-step: Firebase project, the two JSON files and where each goes, the plugin, the token hookup, dashboard credentials, and what to check when nothing arrives |
-| [Multiplayer](Documentation/multiplayer.md) | Parties and sessions: create or host, join by code, the party and session objects and their events, heartbeats, join tokens, how each ends |
+| [Multiplayer](Documentation/multiplayer.md) | Parties, sessions and matchmaking: create or host, join by code, the party and session objects and their events, heartbeats, join tokens, searching for a match alone or as a party, how each ends |
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, screen views, gameplay events, transactions, consent — what players did (Dashboards → Game Metrics) |
 | [Diagnostics](Documentation/diagnostics.md) | Log entries, automatic exception and Blueprint exception capture, crash reporting — what went wrong (Diagnostics → Errors / Events) |
@@ -547,7 +547,9 @@ the whole playtest**, including a form of your own, setup findings when Play sta
 carrying a playtest, and reports a crash once rather than three times. **1.26.0 adds parties**, the first multiplayer
 feature: create, join by invite code, get the player's party back after a restart, and the leader's calls, with events
 when the party changes. **1.27.0 adds sessions**: host, join by code, my session after a restart, the host's calls,
-join tokens, and heartbeats that keep the seat and keep the session current.
+join tokens, and heartbeats that keep the seat and keep the session current. **1.29.0 adds matchmaking**: search a queue by
+its name alone or as a party, every member's game told when the party's search starts and ends, and a match handing over
+the session it seats the player in.
 
 Deliberate omissions and known gaps:
 
@@ -556,9 +558,9 @@ Deliberate omissions and known gaps:
   `Flock Download Asset File` is the documented path for audio.
 - **A few surfaces are C++-only.** Config *patch* reads (all patches, by id, by config) and configs by
   version tag — in Blueprint, `Flock Resolve Config Data` already returns the patched-or-base values,
-  which is what most graphs want. Provider cache clearing is also C++-only. **Party and session calls** (create or host,
-  join, get, get mine and the objects' own calls) are C++-only for now; a party's or session's state and its events
-  already read from Blueprint.
+  which is what most graphs want. Provider cache clearing is also C++-only. **Party, session and matchmaking calls** (create or
+  host, join, get, get mine, find match and the objects' own calls) are C++-only for now; a party's or session's state and
+  its events, the party's search included, already read from Blueprint.
 - **Asset uploads are not included.** The SDK reads and downloads assets; publishing them is a dashboard
   operation.
 - **Leave `framegrabber.framelatency` at 0 while Protokite Playtest records video.** Changing that engine console

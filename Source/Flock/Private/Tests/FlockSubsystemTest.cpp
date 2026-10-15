@@ -408,4 +408,20 @@ bool FFlockSubsystemRescuesNotificationStateTest::RunTest(const FString& Paramet
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemRefusesAnEmptyApiUrlTest, "Flock.Runtime.Subsystem.RefusesAnApiUrlOfNothing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSubsystemRefusesAnEmptyApiUrlTest::RunTest(const FString& Parameters)
+{
+	AddExpectedError(TEXT("Initialize failed"), EAutomationExpectedErrorFlags::Contains, 1);
+	FFlockTestSdk Test;
+	FFlockInitConfig Config = MakeValidConfig();
+	// Spaces and slashes alone trim to nothing, which would send every request to "/v1/...".
+	Config.ApiUrl = TEXT("  // ");
+	Test->InitializeWithConfig(Config);
+	TestFalse(TEXT("The SDK does not initialize on a URL of nothing"), Test->IsInitialized());
+	TestTrue(TEXT("And says so"), Test->GetInitializationError().Contains(TEXT("API URL is empty"), ESearchCase::CaseSensitive));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

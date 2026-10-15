@@ -7,7 +7,8 @@
 
 /**
  * One cancel handle for a call made of several requests sent in turn (join a party, then read it). Cancelling the handle
- * cancels the request on its way; the call checks IsCancelled() before sending the next. Game-thread only.
+ * cancels the request on its way, whoever still holds this object; the call checks IsCancelled() before sending the next.
+ * Game-thread only.
  */
 class FLOCK_API FFlockRequestsInTurn : public TSharedFromThis<FFlockRequestsInTurn>
 {
@@ -15,19 +16,19 @@ public:
 	static TSharedRef<FFlockRequestsInTurn> Make()
 	{
 		const TSharedRef<FFlockRequestsInTurn> Requests = MakeShared<FFlockRequestsInTurn>();
-		const TWeakPtr<FFlockRequestsInTurn> WeakRequests = Requests;
-		Requests->Token->Canceller = [WeakRequests]()
+		// The handle reaches the request on its way through this cell, not through this object: a request's completion
+		// need not hold this object, and a cancel must still reach the request once nothing else does.
+		const TSharedRef<FFlockRequestHandle> OnItsWay = Requests->Current;
+		Requests->Token->Canceller = [OnItsWay]()
 		{
-			if (const TSharedPtr<FFlockRequestsInTurn> Pinned = WeakRequests.Pin())
-			{
-				Pinned->Current.Cancel();
-			}
+			OnItsWay->Cancel();
 		};
 		return Requests;
 	}
 
 	FFlockRequestsInTurn()
 		: Token(MakeShared<FFlockCancelToken>())
+		, Current(MakeShared<FFlockRequestHandle>())
 	{
 	}
 
@@ -45,12 +46,12 @@ public:
 		FFlockRequestHandle Handle = SendRequest();
 		if (ThisRequest == RequestsSent)
 		{
-			Current = Handle;
+			*Current = Handle;
 		}
 	}
 
 private:
 	TSharedRef<FFlockCancelToken> Token;
-	FFlockRequestHandle Current;
+	TSharedRef<FFlockRequestHandle> Current;
 	int32 RequestsSent = 0;
 };

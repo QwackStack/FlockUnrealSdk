@@ -4,6 +4,12 @@
 #include "Auth/FlockAuthSession.h"
 #include "Multiplayer/FlockParties.h"
 
+bool UFlockParty::IsSearching() const
+{
+	const TSharedPtr<FFlockParties> Pinned = Owner.Pin();
+	return Pinned.IsValid() && Pinned->IsSearching(this);
+}
+
 EFlockPartyEndReason UFlockParty::GetEndReason() const
 {
 	if (EndReasonSet != EFlockPartyEndReason::None)
@@ -64,6 +70,20 @@ FFlockRequestHandle UFlockParty::Disband(FFlockOnParty OnComplete)
 	return RefuseWithoutOwner(OnComplete);
 }
 
+FFlockRequestHandle UFlockParty::FindMatch(const FString& QueueName, const FFlockMatchmakingOptions& Options, FFlockOnMatchmakingResult OnComplete)
+{
+	if (const TSharedPtr<FFlockParties> Pinned = Owner.Pin())
+	{
+		return Pinned->FindMatch(this, QueueName, Options, MoveTemp(OnComplete));
+	}
+	if (OnComplete)
+	{
+		OnComplete(TFlockResult<FFlockMatchmakingResult>::Fail(FFlockError::Make(EFlockErrorType::Validation,
+			TEXT("This party has ended (SignedOut): Flock has shut down."))));
+	}
+	return FFlockRequestHandle();
+}
+
 void UFlockParty::Begin(const TWeakPtr<FFlockParties>& InOwner, const TSharedRef<FFlockAuthSession>& InSession, int32 InSignInNumber,
 	const FString& InPlayerId, const FFlockPartyReading& Reading, const TArray<FString>& MemberIds)
 {
@@ -75,24 +95,39 @@ void UFlockParty::Begin(const TWeakPtr<FFlockParties>& InOwner, const TSharedRef
 	CopyFrom(Reading, MemberIds);
 }
 
-void UFlockParty::TakeReading(const FFlockPartyReading& Reading, const TArray<FString>& MemberIds)
+FFlockPartyChanges UFlockParty::TakeReading(const FFlockPartyReading& Reading, const TArray<FString>& MemberIds)
 {
-	bool bMembersChanged = Members.Num() != MemberIds.Num();
-	for (int32 Index = 0; !bMembersChanged && Index < MemberIds.Num(); ++Index)
+	FFlockPartyChanges Changes;
+	Changes.bMembers = Members.Num() != MemberIds.Num();
+	for (int32 Index = 0; !Changes.bMembers && Index < MemberIds.Num(); ++Index)
 	{
-		bMembersChanged = !Members[Index].PlayerId.Equals(MemberIds[Index], ESearchCase::CaseSensitive);
+		Changes.bMembers = !Members[Index].PlayerId.Equals(MemberIds[Index], ESearchCase::CaseSensitive);
 	}
-	const bool bLeaderChanged = !LeaderPlayerId.Equals(Reading.LeaderPlayerId, ESearchCase::CaseSensitive);
+	Changes.bLeader = !LeaderPlayerId.Equals(Reading.LeaderPlayerId, ESearchCase::CaseSensitive);
 	CopyFrom(Reading, MemberIds);
+	return Changes;
+}
 
-	if (bMembersChanged)
+void UFlockParty::RaiseChanges(const FFlockPartyChanges& Changes)
+{
+	if (Changes.bMembers)
 	{
 		OnMembersChanged.Broadcast();
 	}
-	if (bLeaderChanged)
+	if (Changes.bLeader)
 	{
 		OnLeaderChanged.Broadcast();
 	}
+}
+
+void UFlockParty::RaiseSearchStarted()
+{
+	OnSearchStarted.Broadcast();
+}
+
+void UFlockParty::RaiseSearchEnded(const FFlockMatchmakingResult& Result)
+{
+	OnSearchEnded.Broadcast(Result);
 }
 
 void UFlockParty::End(EFlockPartyEndReason Reason, bool bRaise)

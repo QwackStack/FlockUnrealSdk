@@ -18,8 +18,19 @@ class UFlockParty;
 /** A party call's completion: the party as it stands once the call is done (ended, after a leave or disband). */
 using FFlockOnParty = TFunction<void(TFlockResult<UFlockParty*>)>;
 
+/** A search's completion: how it ended (matched, with the session, or how it ended without a match), or a failure; the game's own cancel completes it as Cancelled. */
+using FFlockOnMatchmakingResult = TFunction<void(TFlockResult<FFlockMatchmakingResult>)>;
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockPartyChanged);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockPartyEnded, EFlockPartyEndReason, Reason);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockPartySearchEnded, const FFlockMatchmakingResult&, Result);
+
+/** What a reading changed about a party, raised once everything is in place. */
+struct FFlockPartyChanges
+{
+	bool bMembers = false;
+	bool bLeader = false;
+};
 
 /**
  * The player's party, read again every Party Refresh Seconds (Project Settings > Flock; 0 turns that off), after each change
@@ -77,6 +88,26 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Flock|Multiplayer")
 	FFlockPartyEnded OnEnded;
 
+	/** True while the party searches for a match, as this game knows: its own FindMatch, or the leader's search seen by the party's refresh. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Multiplayer")
+	bool IsSearching() const;
+
+	/** The party started searching for a match. Every member's game hears it: the leader's from its call, the others' from the party's refresh (Party Refresh Seconds) or their own FindMatch. */
+	UPROPERTY(BlueprintAssignable, Category = "Flock|Multiplayer")
+	FFlockPartyChanged OnSearchStarted;
+
+	/** The party's search ended: matched, with the session the match seats this player in, or how it ended without a match. Raised before the FindMatch call waiting for it completes. */
+	UPROPERTY(BlueprintAssignable, Category = "Flock|Multiplayer")
+	FFlockPartySearchEnded OnSearchEnded;
+
+	/**
+	 * Searches for a match as the party, matched as one unit and never split. The leader's game starts the search in the queue
+	 * named QueueName (letter case included); another member's game waits for the leader's search (it may pass an empty name)
+	 * and gets the same match; the wait ends (Validation) if the party ends first, or if the player comes to lead it. A player joining or leaving the party during the search stops it (party_changed). Cancelling
+	 * the handle cancels the party's search on the server, for every member, and completes the call as Cancelled.
+	 */
+	FFlockRequestHandle FindMatch(const FString& QueueName, const FFlockMatchmakingOptions& Options, FFlockOnMatchmakingResult OnComplete);
+
 	/** Leaves the party. If the server says the player is already out of it, that counts as leaving. When the leader leaves, the first of the others leads; the last one out disbands it. */
 	FFlockRequestHandle Leave(FFlockOnParty OnComplete);
 
@@ -94,13 +125,17 @@ public:
 
 private:
 	friend class FFlockParties;
+	friend class FFlockMatchmaking;
 
 	/** Fills a party the owner has just made; called once, before anyone else sees it. */
 	void Begin(const TWeakPtr<FFlockParties>& InOwner, const TSharedRef<FFlockAuthSession>& InSession, int32 InSignInNumber,
 		const FString& InPlayerId, const FFlockPartyReading& Reading, const TArray<FString>& MemberIds);
 
-	/** Takes a newer reading, then says what changed; events are raised once everything is in place. */
-	void TakeReading(const FFlockPartyReading& Reading, const TArray<FString>& MemberIds);
+	/** Takes a newer reading and says what changed; the owner raises the changes once everything else (the search's state) is in place. */
+	FFlockPartyChanges TakeReading(const FFlockPartyReading& Reading, const TArray<FString>& MemberIds);
+	void RaiseChanges(const FFlockPartyChanges& Changes);
+	void RaiseSearchStarted();
+	void RaiseSearchEnded(const FFlockMatchmakingResult& Result);
 
 	/** Set once, by the owner. */
 	void End(EFlockPartyEndReason Reason, bool bRaise);

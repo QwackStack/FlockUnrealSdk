@@ -1,12 +1,12 @@
 # Multiplayer
 
 Flock's multiplayer is player-hosted: players group up in **parties**, find each other through **matchmaking** or a
-join code, and one of them hosts the game session. This guide covers what ships today: **parties** and **sessions**.
-Matchmaking, and connecting the players' games to each other, follow in later releases.
+join code, and one of them hosts the game session. This guide covers what ships today: **parties**, **sessions** and
+**matchmaking**. Connecting the players' games to each other follows in a later release.
 
 Everything here goes through `FFlockMultiplayerProvider`, from `UFlockSubsystem::GetMultiplayerProvider()`. Make its
-calls from the game thread. Every party and session call needs a signed-in player and fails with `Auth` when there is
-none, without a request.
+calls from the game thread. Every party, session and matchmaking call needs a signed-in player and fails with `Auth` when
+there is none, without a request.
 
 ## Parties
 
@@ -50,7 +50,9 @@ Multiplayer->GetMyParty([this](TFlockResult<UFlockParty*> Result) { /* Result.Va
 | `GetMyParty(OnComplete)` | The player's party, read now, or null. The same object each time while it lasts. |
 
 Each call returns an `FFlockRequestHandle`; cancelling it stops the request on its way. A create or join the server had
-already taken still answers `Cancelled`, with the player now in the party: `GetMyParty` returns it.
+already taken can still answer `Cancelled`, with the player now in the party: `GetMyParty` returns it. A cancel that lands
+once the SDK holds the party (while it reads the player's search for a match, each call's last step) hands the party over
+instead.
 
 ### The party object
 
@@ -257,3 +259,127 @@ Every session request is sent only for the sign-in it was made under, so a retry
 | `MultiplayerTargetNotAParticipant` | that player holds no seat in it |
 | `MultiplayerInvalidJoinToken` | a wrong, expired or other session's join token |
 | `MultiplayerSessionNotFound` | the session is over, or the player holds no seat in it; the SDK ends it with the reason a reading gives |
+
+## Matchmaking
+
+Each mode of your game is a **queue** with a smallest and largest number of players, made in the Flock dashboard. A
+player, or a whole party, searches in a queue by its name (letter for letter, case included); once the queue holds enough
+players, Flock makes a match and seats the players in a session. A party is matched as one group and never split. Players
+are matched in the order they search, and the longest waiting hosts. A search that ends without a match is an outcome,
+not a failure.
+
+```cpp
+#include "FlockSubsystem.h"
+#include "Multiplayer/FlockParty.h"
+
+FFlockMultiplayerProvider* Multiplayer = GetGameInstance()->GetSubsystem<UFlockSubsystem>()->GetMultiplayerProvider();
+
+Searching = Multiplayer->FindMatch(TEXT("coop-4"), FFlockMatchmakingOptions(),
+    [this](TFlockResult<FFlockMatchmakingResult> Result)
+    {
+        if (!Result.IsSuccess())
+        {
+            // Cancelled when the game cancelled the handle (the search is cancelled on the server too);
+            // MatchmakingQueueNotFound when no queue has that name.
+            ShowLobby();
+            return;
+        }
+        if (Result.Value.IsMatched() && Result.Value.Session != nullptr)
+        {
+            Play(Result.Value.Session);            // held like any other session: heartbeats, events, Leave
+        }
+        else if (Result.Value.Outcome == FlockMatchmakingOutcomes::Expired)
+        {
+            ShowMessage(TEXT("Nobody found in 5 minutes. Search again?"));
+        }
+        else
+        {
+            ShowMessage(TEXT("The search stopped."));
+        }
+    });
+
+// The player gives up: the search is cancelled on the server, and the call completes as Cancelled.
+Searching.Cancel();
+```
+
+Search as a party with the party's own `FindMatch`. The leader's game starts the search; another member's game hears it
+through the party, so handle the result in one place. `OnSearchEnded` is raised on every member's game, the leader's
+included, and before the `FindMatch` call waiting for that search completes.
+
+```cpp
+Party->OnSearchStarted.AddDynamic(this, &AMyLobby::ShowSearching);
+Party->OnSearchEnded.AddDynamic(this, &AMyLobby::HandleSearchEnded);   // void HandleSearchEnded(const FFlockMatchmakingResult& Result)
+
+if (Party->IsLeader())
+{
+    Party->FindMatch(TEXT("coop-4"), FFlockMatchmakingOptions(), nullptr);
+}
+```
+
+| Call | Does |
+|---|---|
+| `FindMatch(QueueName, Options, OnComplete)` on the provider | Searches alone. A search of the player's own left from an earlier launch is cancelled first and this one takes its place. |
+| `FindMatch(QueueName, Options, OnComplete)` on a party | The leader's game searches as the party. Another member's game waits for the leader's search (it may pass an empty name) and completes with the same match; it makes no search of its own. The wait ends (`Validation`) if the party ends first, or if the player comes to lead it: the new leader then searches with a queue name. |
+| `IsSearching()` on a party | True while the party searches, as this game knows: its own `FindMatch`, or the leader's search seen by the party's refresh. |
+
+Each `FindMatch` returns an `FFlockRequestHandle`. Cancelling it cancels the search on the server (a party's, for every
+member) and completes the call as `Cancelled`; a match that landed while the cancel was on its way gives its seat up
+first. `FFlockMatchmakingOptions::Attributes` passes your own data with a search, keys as written; matching does not use
+it yet.
+
+| Event on the party | Raised when |
+|---|---|
+| `OnSearchStarted` | the party started searching: the leader's game from its call, another member's from the party's refresh (**Party Refresh Seconds**) or its own `FindMatch` |
+| `OnSearchEnded(Result)` | the party's search ended, with the same result the call gets |
+
+A member's game learns of the leader's search from the party's refresh, so with Party Refresh Seconds at 0 it hears of it
+only through its own `FindMatch`. A search from before the game first held the party is not told; the next one is.
+
+### How a search ends
+
+The SDK checks a search every 3 seconds (2.25 to 3.75, so players do not ask in step). `FFlockMatchmakingResult` holds how
+it ended:
+
+| `Outcome` | When |
+|---|---|
+| `FlockMatchmakingOutcomes::Matched` | `Session` is where the players play, held like any other session; `PlayerIds` lists them, the longest waiting first. `Session` is null when reading it failed (`GetMySession` finds it) or when "Create a session when a match forms" is off in the dashboard, which logs one warning a match; your game then makes the session itself. |
+| `FlockMatchmakingOutcomes::Expired` | nobody was found within 5 minutes |
+| `FlockMatchmakingOutcomes::PartyChanged` | a player joined or left the party during the search, so the server stopped it; the leader searches again |
+| `FlockMatchmakingOutcomes::Cancelled` | another game stopped it: a party member's, or the player's own on another device |
+
+The outcomes are strings, because the server can add more: compare with `IsMatched()` or the constants, and treat any
+other as ended without a match. A party the player has left raises nothing more, though a call waiting on its search still
+completes with how it ended.
+
+### One search at a time
+
+A player searches once at a time per game, in any queue. A second `FindMatch` while one runs here is refused
+(`Validation`) without a request, and so is a second call waiting for the same party search. A search alone while the
+player's party searches is refused `MatchmakingAlreadyQueued` and leaves the party's search alone: one member's cancel
+would stop it for everyone.
+
+### Sign-ins, quitting and shutting down
+
+Every matchmaking request is sent only for the sign-in it was made under. When the player signs out or another player
+signs in, the search ends as `Cancelled` on the next frame and nothing more is sent for it; it stays on the server until it
+is matched or expires.
+
+When the game quits (its game instance shuts down, Play In Editor stopping included), the search is cancelled on the way out
+without waiting for the answer, so nobody who has gone is matched, and the call completes as `Cancelled`. A search still being
+made is cancelled once its ticket lands, and a match already landing gives its seat up, while Flock waits for the requests on
+their way. A game that shuts
+Flock down itself (`ShutdownSdk`) ends the search here as `Cancelled` with no event and sends nothing; the next `FindMatch`
+after initializing again replaces it.
+
+### Common refusals
+
+| Code | Means |
+|---|---|
+| `MatchmakingQueueNotFound` | no queue by that name in this game. The list of queues is read once a launch; a queue deleted and made again under the same name is found by its new id |
+| `MatchmakingAlreadyQueued` | a player in the search already searches: the party's search, or a member searching alone |
+| `MatchmakingPartyTooLarge` | the party has more players than the queue takes |
+| `MatchmakingNotPartyLeader` | only the leader's game can queue the party; leadership moved before the search went out |
+| `MatchmakingPlayerNotEligible` | a player is outside the queue's allowed segments |
+| `MatchmakingVersionMismatch` | on a "Same game version only" queue, a member's game is on another Game Version, or has not read the party yet: each member's version comes from their game's last party read, so have every member's game call `GetMyParty` once it is running |
+
+Every refusal carries a hint naming the fix; see [Errors](errors.md).

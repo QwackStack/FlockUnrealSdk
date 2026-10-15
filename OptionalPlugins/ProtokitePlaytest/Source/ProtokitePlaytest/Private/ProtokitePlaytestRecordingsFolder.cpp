@@ -322,17 +322,11 @@ FProtokitePlaytestWhatEndedRunsLeft FProtokitePlaytestRecordingsFolder::FinishWh
 		const bool bForThePlaytest = Run->GetKind() == EProtokitePlaytestRecordingKind::Playtest;
 
 		// A session file that cannot be read: the recording is kept, since deleting it cannot be undone, and the disk budget
-		// still deletes it when room is needed.
-		if (bForThePlaytest && Run->HasUnreadableSessionFile())
-		{
-			UE_LOG(LogProtokitePlaytest, Warning, TEXT("%s keeps a playtest recording whose session file cannot be read, so it cannot be uploaded. It is kept, and deleted only when the recordings need the room."),
-				*Run->GetFolder());
-			++Result.RecordingsWithAnUnreadableSessionKept;
-			continue;
-		}
+		// still deletes it when room is needed. Its video is still finished below, so what is kept can be played.
+		const bool bSessionUnreadable = bForThePlaytest && Run->HasUnreadableSessionFile();
 
 		// No session was started for it, so it can never be uploaded, and is not worth finishing.
-		if (bForThePlaytest && Run->LoadSession().IsEmpty())
+		if (bForThePlaytest && !bSessionUnreadable && Run->LoadSession().IsEmpty())
 		{
 			const bool bHadVideo = FileManager.FileExists(*VideoPath) || FileManager.FileExists(*UnfinishedPath);
 			if (Run->DeleteEverything(Result.FilesLeftForTheNextLaunch) && bHadVideo)
@@ -383,6 +377,13 @@ FProtokitePlaytestWhatEndedRunsLeft FProtokitePlaytestRecordingsFolder::FinishWh
 		{
 			// Nothing whole was recorded, so the run leaves nothing worth keeping.
 			Run->DeleteEverything(Result.FilesLeftForTheNextLaunch);
+			continue;
+		}
+		if (bSessionUnreadable)
+		{
+			UE_LOG(LogProtokitePlaytest, Warning, TEXT("%s keeps a playtest recording whose session file cannot be read, so it cannot be uploaded. It is kept, and deleted only when the recordings need the room."),
+				*Run->GetFolder());
+			++Result.RecordingsWithAnUnreadableSessionKept;
 			continue;
 		}
 		if (bForThePlaytest)

@@ -1668,6 +1668,34 @@ bool FFlockAnalyticsTrackEventRefusedPlayerTest::RunTest(const FString& Paramete
 	return true;
 }
 
+// ── Player ids are compared letter for letter: two players spelled otherwise are two batches ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsTrackEventPlayersSpelledOtherwiseTest, "Flock.Analytics.Provider.TrackEvent.PlayersSpelledOtherwiseAreTwoBatches",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsTrackEventPlayersSpelledOtherwiseTest::RunTest(const FString& Parameters)
+{
+	FFixture Fix;
+	Fix.Provider->Initialize();
+	Fix.Provider->TrackEvent(TEXT("from_lower"));
+	FString TokenError;
+	Fix.Session->SetTokens(MakeTestJwt(TEXT("P-FIXTURE")), TEXT("r-b"), TokenError);
+	Fix.Provider->TrackEvent(TEXT("from_upper"));
+	Fix.Fake->On(TEXT("analytics/events"), FFlockFakeTransport::Ok(TEXT("{\"ok\":true}")));
+
+	bool bFlushed = false;
+	Fix.Provider->Flush([&bFlushed](TFlockResult<FFlockAnalyticsAck> Result) { bFlushed = Result.bSuccess; });
+	TestTrue(TEXT("the flush succeeded"), bFlushed);
+	const TArray<TArray<TSharedPtr<FJsonObject>>> Batches = Fix.SentEventBatches();
+	if (TestEqual(TEXT("one batch a player: the ids differ only in case and are two players"), Batches.Num(), 2))
+	{
+		TestEqualSensitive(TEXT("the first batch is the first player's"),
+			JsonString(FlockTestAt(FlockTestAt(Batches, 0), 0), TEXT("player_id")), FString(TEXT("p-fixture")));
+		TestEqualSensitive(TEXT("the second the other's"),
+			JsonString(FlockTestAt(FlockTestAt(Batches, 1), 0), TEXT("player_id")), FString(TEXT("P-FIXTURE")));
+	}
+	return true;
+}
+
 /**
  * A build that did not check lengths may have queued an event the server cannot store. It is dropped when found, never
  * sent: the server fails the whole request for it, so every event beside it would be held back until its attempts ran out.

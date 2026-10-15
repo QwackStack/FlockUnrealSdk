@@ -48,6 +48,13 @@ public:
 	}
 
 	/**
+	 * The spelling Keys already holds of Key when it differs from Key only in letter case, else empty (Key is there as
+	 * it is spelled, or not at all). Keys are compared letter for letter, which this engine's string maps and JSON
+	 * objects cannot do by themselves: they would take `score` for `Score` and replace one with the other.
+	 */
+	static FString OtherSpellingOf(const TArray<FString>& Keys, const FString& Key);
+
+	/**
 	 * The field names of a JSON object, in author spelling, in map order.
 	 *
 	 * The one JSON operation with no engine API behind it, which is why it is worth centralising: every

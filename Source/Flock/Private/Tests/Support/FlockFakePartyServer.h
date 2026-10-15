@@ -57,6 +57,9 @@ public:
 	TArray<FParty> Parties;
 	TArray<FFlockHttpRequest> Requests;
 
+	/** Told the party's id whenever its players change, as the backend then stops the party's search for a match. */
+	TFunction<void(const FString&)> RosterChanged;
+
 	/** Holds the next request of Route; it is answered (as when it arrived) by Release, or as cancelled by a cancel. */
 	TSharedRef<FHeld> HoldNext(ERoute Route)
 	{
@@ -123,6 +126,7 @@ public:
 		if (FParty* Party = PartyById(PartyId))
 		{
 			Party->Members.Add(PlayerId);
+			TellRosterChanged(PartyId);
 		}
 	}
 
@@ -132,6 +136,7 @@ public:
 		if (FParty* Party = PartyById(PartyId))
 		{
 			RemoveMember(*Party, PlayerId);
+			TellRosterChanged(PartyId);
 		}
 	}
 
@@ -140,6 +145,7 @@ public:
 		if (FParty* Party = PartyById(PartyId))
 		{
 			Party->bActive = false;
+			TellRosterChanged(PartyId);
 		}
 	}
 
@@ -281,6 +287,14 @@ private:
 	TMap<ERoute, TArray<FFlockHttpResponse>> AnswerQueue;
 	int32 PartiesMade = 0;
 
+	void TellRosterChanged(const FString& PartyId) const
+	{
+		if (RosterChanged)
+		{
+			RosterChanged(PartyId);
+		}
+	}
+
 	static TSharedRef<FJsonObject> PartyObject(const FParty& Party, bool bWithMembers)
 	{
 		const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
@@ -398,6 +412,7 @@ private:
 				return Refused(409, TEXT("party.full"));
 			}
 			Party->Members.Add(Player);
+			TellRosterChanged(Party->Id);
 			return Enveloped(*Party, false);
 		}
 		case ERoute::Mine:
@@ -434,6 +449,7 @@ private:
 				return Refused(404, TEXT("party.not_a_member"));
 			}
 			RemoveMember(*Party, Player);
+			TellRosterChanged(Party->Id);
 			return Enveloped(*Party, false);
 		}
 		case ERoute::Update:
@@ -487,6 +503,7 @@ private:
 					return Refused(404, TEXT("party.target_not_a_member"));
 				}
 				RemoveMember(*Party, Target);
+				TellRosterChanged(Party->Id);
 			}
 			else if (Route == ERoute::MakeLeader)
 			{
@@ -499,10 +516,16 @@ private:
 			else
 			{
 				Party->bActive = false;
+				TellRosterChanged(Party->Id);
 			}
 			return Enveloped(*Party, false);
 		}
 		default:
+			// The player's search, read with every party refresh: none here, answered as the backend answers a player who never searched.
+			if (Request.Url.Contains(TEXT("/v1/matchmaking/ticket/current"), ESearchCase::CaseSensitive))
+			{
+				return Refused(404, TEXT("matchmaking.ticket_not_found"));
+			}
 			return Refused(404, TEXT("not_found"));
 		}
 	}

@@ -1028,4 +1028,32 @@ bool FFlockCommandClearQueueTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── A player id differing only in letter case is another player: the queue's writes do not go out as theirs ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCommandFlushStopsForAnotherSpellingTest, "Flock.Command.Provider.AFlushStopsWhenAPlayerSpelledOtherwiseSignsIn",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCommandFlushStopsForAnotherSpellingTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx;
+	Fx.SignIn(TEXT("player-a"));
+	Fx.bReachable = false;
+	Fx.Commands->UpdatePlayerData(TEXT("pd-1"), FFlockCommandData().Set(TEXT("coins"), 1), nullptr);
+	Fx.Commands->UpdatePlayerDataField(TEXT("pd-1"), TEXT("coins"), 2, nullptr);
+	Fx.bReachable = true;
+	Fx.Fake->On(TEXT("game_command"), FFlockFakeTransport::Ok(PlayerDataObj(TEXT("pd-1"), TEXT("tmpl-1"), TEXT("player-a"), 2)));
+	Fx.Fake->bDeferred = true;
+
+	Fx.Commands->FlushPendingWrites();
+	TestEqual(TEXT("Precondition: the first write is on its way"), Fx.Fake->Requests.Num(), 1);
+	// Ids are compared letter for letter, so this is another player, whose sign-in must not send player-a's second write.
+	Fx.Session->ClearTokens();
+	Fx.SignIn(TEXT("PLAYER-A"));
+	Fx.Fake->FlushPending();
+	Fx.Fake->FlushPending();
+	TestEqual(TEXT("The second write is not sent for a player spelled otherwise"), Fx.Fake->Requests.Num(), 1);
+
+	Cleanup(Fx.Dir);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

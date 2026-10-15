@@ -145,6 +145,9 @@ shop_item.shop_not_found
 # multiplayer.join_code_unavailable - 500 when creating a session finds no free join code after 8 tries.
 # multiplayer.already_in_session - 409 when two requests seat one player at the same moment (a database
 #                          race). Both read in the backend's code, not seen live.
+# shop.real_currency_needs_checkout - 422 from the purchase route for an item priced in a currency the game's
+#                          currency config lists as real money; the route's documented responses leave it out.
+#                          Read in the backend's shop settlement code on 2026-10-15.
 # multiplayer.seat_mint_limit - 429 when one seat has drawn its relay credentials 10 times (the default).
 #                          Defined and declared in the spec on the backend's feat/cloudflare-relay branch (the relay
 #                          on the dev cluster), read there on 2026-10-13; main's spec does not have it yet.
@@ -156,6 +159,7 @@ analytics.currency_not_found
 multiplayer.join_code_unavailable
 multiplayer.already_in_session
 multiplayer.seat_mint_limit
+shop.real_currency_needs_checkout
 
 [waived]
 # Documented, but for features this SDK does not call — there is no surface for the error to reach.

@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Http/FlockHttpClient.h"
+#include "Http/FlockEndpoints.h"
 #include "Http/FlockHttpModuleAdapter.h"
 
 namespace
@@ -176,6 +177,14 @@ void FFlockHttpClient::LogResponse(const FString& Method, const FString& Url, co
 	{
 		Logger->LogWarning(FString::Printf(TEXT("<- %s %s [%s] failed to reach the server after %.0f ms: %s"),
 			*Method, *Url, *Origin, ElapsedMs, *Detail));
+		return;
+	}
+	// "The player's search" answered not found means the player has none, which a party refresh asks every few seconds:
+	// an answer, not a failure, so it stays out of the warning channel.
+	if (Response.StatusCode == 404 && Url.EndsWith(FString(TEXT("/")) + FlockEndpoints::MatchmakingTicketCurrent, ESearchCase::CaseSensitive)
+		&& Response.Body.Contains(TEXT("matchmaking.ticket_not_found"), ESearchCase::CaseSensitive))
+	{
+		Logger->LogDebug(FString::Printf(TEXT("<- 404 %s %s (%.0f ms) [%s]: the player has no search"), *Method, *Url, ElapsedMs, *Origin));
 		return;
 	}
 	Logger->LogWarning(FString::Printf(TEXT("<- %d %s %s (%.0f ms) [%s]: %s"),
