@@ -121,6 +121,40 @@ public:
 	/** Checks a token a connecting player sent and answers that player's id; refused coded multiplayer.invalid_join_token when it is not good for this session. Host only. */
 	FFlockRequestHandle VerifyJoinToken(const FString& Token, TFunction<void(TFlockResult<FString>)> OnComplete);
 
+	/**
+	 * Publishes how to reach this device directly on Port, the port its game listens on: its public address (one request to
+	 * the STUN server Flock lists) or, when that is unknown, its LAN address, with both as found. Host only. Outside a LAN,
+	 * players reach it only when the port is forwarded to this device. Travel To Session does this for a host itself.
+	 */
+	FFlockRequestHandle PublishDirectConnection(int32 Port, FFlockOnMultiplayerSession OnComplete);
+
+	/**
+	 * Waits for the host to publish how to reach it, reading the session every 2 s meanwhile, and answers the session: Has
+	 * Connection is true once the host has published, Has Ended once the session ended, and neither when TimeoutSeconds ran
+	 * out. A host change clears the address without ending the wait. Answers at once when the host has already published.
+	 */
+	FFlockRequestHandle WaitForConnection(float TimeoutSeconds, FFlockOnMultiplayerSession OnComplete);
+
+	/**
+	 * Where this device connects to reach the host's direct connection: the host's LAN address when this device shares its
+	 * public address (one request to the STUN server Flock lists says), the published address otherwise. Its Address is empty
+	 * when the host published no direct IPv4 address and port.
+	 */
+	FFlockRequestHandle FindDirectAddress(TFunction<void(TFlockResult<FFlockDirectAddress>)> OnComplete);
+
+	/**
+	 * Brings this game into the session's game. The host opens Options.HostLevel listening for players (the engine's ?listen)
+	 * and, once it listens, publishes how to reach it on the port its level listens on. A player waits for that (Wait For Host
+	 * Seconds), travels to the host's LAN address when both share a public address and to the published address otherwise,
+	 * and completes once the host has let it in. Either way the completion runs in the new level: everything of the level the
+	 * call was made from is gone by then. How it ended is the result's Outcome (FlockTravelToSessionOutcomes); it fails only
+	 * for a mistake (no world, an ended session, this game already connected or hosting, a travel already under way), a
+	 * publish the server refused (the host stops listening first), or a cancel. Cancelling the handle stops a host listening
+	 * and a player's connection still being made. WorldContextObject is anything in the game's world, such as an actor.
+	 */
+	FFlockRequestHandle TravelToSession(UObject* WorldContextObject, const FFlockTravelToSessionOptions& Options,
+		TFunction<void(TFlockResult<FFlockTravelToSessionResult>)> OnComplete);
+
 private:
 	friend class FFlockMultiplayerSessions;
 

@@ -7,9 +7,11 @@
 #include "FlockLogger.h"
 #include "Http/FlockRequestsInTurn.h"
 #include "Models/FlockMultiplayerModels.h"
+#include "Multiplayer/FlockDirectAddresses.h"
 #include "Multiplayer/FlockMultiplayerSession.h"
 #include "Multiplayer/FlockMultiplayerSessionRequests.h"
 #include "Multiplayer/FlockRepeatingCalls.h"
+#include "Multiplayer/FlockTravelToSession.h"
 #include "UObject/StrongObjectPtr.h"
 
 /** One reading of a session, numbered when it was sent; bFound false means "my session" found the player seated nowhere. */
@@ -31,6 +33,9 @@ class FFlockMultiplayerSessions : public TSharedFromThis<FFlockMultiplayerSessio
 {
 public:
 	static constexpr const TCHAR* HeartbeatCallName = TEXT("Session heartbeat");
+	/** The session read while a call waits for the host's address: heartbeats come every 20 s, too slow to wait on. */
+	static constexpr const TCHAR* ConnectionWaitCallName = TEXT("Session connection wait");
+	static constexpr double DefaultConnectionWaitSeconds = 2.0;
 	/** A read overtaken this many times in a row means the session is changing faster than it can be read. */
 	static constexpr int32 MostReadsWhileTheSessionChanges = 5;
 
@@ -53,8 +58,35 @@ public:
 	FFlockRequestHandle RequestJoinToken(UFlockMultiplayerSession* Session, TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnComplete);
 	FFlockRequestHandle VerifyJoinToken(UFlockMultiplayerSession* Session, const FString& Token, TFunction<void(TFlockResult<FString>)> OnComplete);
 
+	/** Publishes how to reach this device directly on Port: its public address or, unknown, its LAN address, and both as found. */
+	FFlockRequestHandle PublishDirectConnection(UFlockMultiplayerSession* Session, int32 Port, FFlockOnMultiplayerSession OnComplete);
+
+	/**
+	 * Answers the session once the host has published how to reach it, once the session has ended, or with neither once
+	 * TimeoutSeconds have passed; the session is read every 2 s meanwhile. A host change clears the address without ending it.
+	 */
+	FFlockRequestHandle WaitForConnection(UFlockMultiplayerSession* Session, double TimeoutSeconds, FFlockOnMultiplayerSession OnComplete);
+
+	/** Where this device connects to reach the session's direct host: its LAN address when sharing its public address, the published one otherwise. */
+	FFlockRequestHandle FindDirectAddress(UFlockMultiplayerSession* Session, TFunction<void(TFlockResult<FFlockDirectAddress>)> OnComplete);
+
+	/** The host opens its level listening and publishes; a player waits for that and travels to the host (FFlockTravels). */
+	FFlockRequestHandle TravelToSession(UFlockMultiplayerSession* Session, UObject* WorldContextObject, const FFlockTravelToSessionOptions& Options,
+		TFunction<void(TFlockResult<FFlockTravelToSessionResult>)> OnComplete);
+
+	/** The one owner of travels, made on first use. */
+	FFlockTravels& GetTravels();
+
 	/** Ends the session of a sign-in that has ended; run once a frame. */
 	void EndIfSignInEnded();
+
+	/** Answers the waits whose time has run out and moves the address searches on; run once a frame. */
+	void MoveConnectingOn();
+
+	FFlockDirectAddresses& GetDirectAddressesForTesting() { return *DirectAddresses; }
+	void SetConnectionWaitSecondsForTesting(double Seconds) { ConnectionWaitSeconds = Seconds; }
+	const TSharedPtr<FFlockRepeatingCall>& GetConnectionWaitForTesting() const { return ConnectionWait; }
+	int32 GetConnectionWaitCountForTesting() const { return ConnectionWaiters.Num(); }
 
 	/**
 	 * The game is ending: gives the seat up without waiting, so the others see it at once rather than when the server stops
@@ -103,9 +135,29 @@ private:
 	void StopHeartbeating();
 	/** A heartbeat's answer is a reading like any other: numbered when sent, so an older one changes nothing. */
 	FFlockRequestHandle HeartbeatNumbered(int32 SignInNumber, const FString& SessionId, TFunction<void(TFlockResult<FFlockNumberedSessionReading>)> OnRead);
-	void TakeHeartbeat(const FFlockNumberedSessionReading& Read);
+	/** A heartbeat's or a waiting read's answer: a reading like any other, numbered when sent, so an older one changes nothing. */
+	void TakeRepeatedReading(const FFlockNumberedSessionReading& Read);
 	/** A seat the server no longer has ends the session, read once to learn why; any other refusal leaves the seat to time out. */
 	void HeartbeatStopped(const FString& SessionId, const FFlockError& Failure);
+
+	/** One call waiting for the host's address; it keeps its session alive until it is answered. */
+	struct FConnectionWaiter
+	{
+		TStrongObjectPtr<UFlockMultiplayerSession> Session;
+		double Deadline = 0.0;
+		FFlockOnMultiplayerSession OnComplete;
+	};
+	using FConnectionWaiterRef = TSharedRef<FConnectionWaiter>;
+
+	/** Answers every wait whose session has the host's address or has ended; run after each reading is taken and each end. */
+	void SettleWaits();
+	/** Takes the waiter out, stops the reads when none is left, then answers it. */
+	void AnswerWait(const FConnectionWaiterRef& Waiter, const TFlockResult<UFlockMultiplayerSession*>& Result);
+	/** Reads the held session every 2 s while any call waits for its address; its answers are readings like a heartbeat's. */
+	void KeepReadingForConnection();
+	void StopReadingForConnection();
+	/** A seat the server no longer has ends the session; any other refusal leaves the wait to the heartbeats' answers. */
+	void ConnectionWaitStopped(const FString& SessionId, const FFlockError& Failure);
 
 	/** The leave of this session has its answer; a leave of another session started since stays remembered. */
 	void ForgetLeaveOf(const FString& SessionId);
@@ -132,6 +184,11 @@ private:
 	/** Kept alive by this while it is the player's. */
 	TStrongObjectPtr<UFlockMultiplayerSession> Held;
 	TSharedPtr<FFlockRepeatingCall> Heartbeat;
+	TSharedRef<FFlockDirectAddresses> DirectAddresses;
+	TArray<FConnectionWaiterRef> ConnectionWaiters;
+	TSharedPtr<FFlockRepeatingCall> ConnectionWait;
+	double ConnectionWaitSeconds = DefaultConnectionWaitSeconds;
+	TSharedPtr<FFlockTravels> Travels;
 	int32 ReadsSent = 0;
 	/** Reads numbered at or below this change nothing when they land. */
 	int32 ReadsSettledThrough = 0;

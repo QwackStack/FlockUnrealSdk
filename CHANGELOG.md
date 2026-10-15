@@ -5,6 +5,36 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.30.0] - 2026-10-15
+
+Connecting players.
+
+### Added
+
+- **`UFlockMultiplayerSession::TravelToSession(WorldContextObject, Options, OnComplete)`** brings the game into the session's
+  game. The host opens `Options.HostLevel` (empty: the level it is in) listening for players, the engine's `?listen`, and once
+  it listens publishes how to reach it on the port its net driver bound (the engine takes the next free port when the one
+  asked for is taken, so that is the one published). A player waits for that (`WaitForHostSeconds`, 60), travels to the host's
+  LAN address when both share a public address and to the published address otherwise, and completes once the host has let it
+  in. It completes with `FFlockTravelToSessionResult`: `Outcome` (`FlockTravelToSessionOutcomes`: `started_as_host`,
+  `connected`, `host_never_published`, `session_ended`, `could_not_connect`, `could_not_start`, `not_direct`, an open set),
+  `bIsHost`, `Address`, `Port` and the host's `Connection`. A connection that fails is the engine's to give up: it takes the
+  game back to its default level, and the call completes `could_not_connect` with a warning naming the address and the port
+  forwarding a host outside the player's network needs. The completion runs in the new level.
+- **`PublishDirectConnection(Port, OnComplete)`**: the host publishes a `direct` connection, `{address, port, lan_address,
+  public_address}`: its public address from one request to the STUN server Flock lists (asked with no session, so a direct
+  connection is not counted as relay use; read once a launch, a failed read not kept), its LAN address from the route toward
+  that server, and `address` the public one when known. An unknown address is left out; a port outside 1 to 65535 is refused
+  before any request. The STUN request goes from a dual-stack socket where the platform makes one (a phone on mobile data
+  hears some STUN servers only that way), a plain IPv4 one otherwise.
+- **`WaitForConnection(TimeoutSeconds, OnComplete)`** answers the session once the host has published, once it has ended, or
+  with neither when the time runs out, reading the session every 2 s meanwhile (heartbeats come every 20 s). A host change
+  clears the address without ending the wait. **`FindDirectAddress(OnComplete)`** says which of the host's addresses this
+  game uses: only a dotted IPv4 address and a whole port from 1 to 65535 count (a port sent as text is taken).
+- A connection of the game's own (Steam, EOS) is published with `PublishConnection(Mode, Values)` as before; a player's
+  `TravelToSession` ends `not_direct` holding it.
+- `Documentation/multiplayer.md` covers connecting players.
+
 ## [1.29.0] - 2026-10-15
 
 Matchmaking.

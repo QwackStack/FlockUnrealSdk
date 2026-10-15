@@ -26,7 +26,7 @@
 class FFlockFakeSessionServer : public IFlockHttpAdapter
 {
 public:
-	enum class ERoute : uint8 { Host, Join, Current, Heartbeat, Read, Leave, End, MakeHost, Publish, JoinToken, Verify, Other };
+	enum class ERoute : uint8 { Host, Join, Current, Heartbeat, Read, Leave, End, MakeHost, Publish, JoinToken, Verify, RelayCredentials, Other };
 
 	struct FSeat
 	{
@@ -85,6 +85,12 @@ public:
 
 	/** What every session answer says about heartbeats; unset leaves the interval out, as a server from before it did. */
 	TOptional<int32> HeartbeatSeconds = 20;
+
+	/**
+	 * The STUN servers the relay route lists, answered as the backend does with no session (measured: one entry of "stun:" urls,
+	 * no login, ttl 600, relay_paused false; Libraries/Unreal/multiplayer-connecting/wire/relay.no_session.json).
+	 */
+	TArray<FString> StunUrls;
 
 	TArray<FSessionRef> Sessions;
 	TArray<FFlockHttpRequest> Requests;
@@ -208,6 +214,10 @@ public:
 			return ERoute::Other;
 		}
 		Path.Split(TEXT("?"), &Path, nullptr);
+		if (Path == TEXT("multiplayer/relay-credentials"))
+		{
+			return Request.Method == TEXT("POST") ? ERoute::RelayCredentials : ERoute::Other;
+		}
 		const FString Prefix = TEXT("multiplayer/sessions");
 		if (!Path.StartsWith(Prefix, ESearchCase::CaseSensitive))
 		{
@@ -441,6 +451,34 @@ private:
 		if (Request.bHasBody)
 		{
 			FJsonSerializer::Deserialize(TJsonReaderFactory<TCHAR>::Create(Request.JsonBody), Body);
+		}
+		if (Route == ERoute::RelayCredentials)
+		{
+			FString Named;
+			if (Body.IsValid() && Body->TryGetStringField(TEXT("session_id"), Named) && !Named.IsEmpty())
+			{
+				const TSharedPtr<FSession> Seat = ById(Named);
+				if (!Seat.IsValid() || !Seat->IsLive() || !Seat->IsSeated(Player))
+				{
+					return Refused(404, TEXT("multiplayer.session_not_found"));
+				}
+			}
+			TArray<TSharedPtr<FJsonValue>> Urls;
+			for (const FString& Url : StunUrls)
+			{
+				Urls.Add(MakeShared<FJsonValueString>(Url));
+			}
+			const TSharedRef<FJsonObject> Stun = MakeShared<FJsonObject>();
+			Stun->SetArrayField(TEXT("urls"), Urls);
+			Stun->SetField(TEXT("username"), MakeShared<FJsonValueNull>());
+			Stun->SetField(TEXT("credential"), MakeShared<FJsonValueNull>());
+			TArray<TSharedPtr<FJsonValue>> Servers;
+			Servers.Add(MakeShared<FJsonValueObject>(Stun));
+			const TSharedRef<FJsonObject> Credentials = MakeShared<FJsonObject>();
+			Credentials->SetNumberField(TEXT("ttl"), 600);
+			Credentials->SetArrayField(TEXT("ice_servers"), Servers);
+			Credentials->SetBoolField(TEXT("relay_paused"), false);
+			return Enveloped(Credentials);
 		}
 		FString SessionId;
 		{

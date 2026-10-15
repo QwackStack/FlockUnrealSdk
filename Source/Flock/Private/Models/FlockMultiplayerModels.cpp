@@ -91,6 +91,37 @@ bool FFlockVerifiedJoinToken::FromWireObject(const TSharedRef<FJsonObject>& Obje
 	return true;
 }
 
+bool FFlockStunServerList::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockStunServerList& OutStruct, FString& OutError)
+{
+	OutStruct = FFlockStunServerList();
+	const TArray<TSharedPtr<FJsonValue>>* Servers = nullptr;
+	if (!Object->TryGetArrayField(TEXT("ice_servers"), Servers) || Servers == nullptr)
+	{
+		OutError = TEXT("Invalid response from server (the answer lists no servers)");
+		return false;
+	}
+	for (const TSharedPtr<FJsonValue>& Server : *Servers)
+	{
+		const TSharedPtr<FJsonObject>* ServerObject = nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* Urls = nullptr;
+		if (!Server.IsValid() || !Server->TryGetObject(ServerObject) || ServerObject == nullptr
+			|| !(*ServerObject)->TryGetArrayField(TEXT("urls"), Urls) || Urls == nullptr)
+		{
+			continue;
+		}
+		for (const TSharedPtr<FJsonValue>& Url : *Urls)
+		{
+			FString Text;
+			// A relay entry carries a login and is for the relay alone; only the STUN servers say where this device is seen from.
+			if (Url.IsValid() && Url->TryGetString(Text) && Text.StartsWith(TEXT("stun:"), ESearchCase::IgnoreCase))
+			{
+				OutStruct.Urls.Add(Text);
+			}
+		}
+	}
+	return true;
+}
+
 TArray<FString> FFlockMultiplayerSessionReading::SeatedPlayerIds() const
 {
 	TArray<FString> Seated;

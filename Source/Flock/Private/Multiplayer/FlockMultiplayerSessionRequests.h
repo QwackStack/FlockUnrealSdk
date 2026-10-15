@@ -55,6 +55,12 @@ public:
 	FFlockRequestHandle VerifyJoinToken(int32 SignInNumber, const FString& SessionId, const FString& Token,
 		TFunction<void(TFlockResult<FFlockVerifiedJoinToken>)> OnComplete);
 
+	/**
+	 * The STUN servers Flock lists, asked with no session so a direct connection is not counted as relay use of the player's
+	 * seat. Retried: a read. Each ask takes one of the player's relay requests a minute, so ask once a launch.
+	 */
+	FFlockRequestHandle ReadStunServers(int32 SignInNumber, TFunction<void(TFlockResult<FFlockStunServerList>)> OnComplete);
+
 private:
 	FString Url(const FString& Path) const { return FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, *Path); }
 

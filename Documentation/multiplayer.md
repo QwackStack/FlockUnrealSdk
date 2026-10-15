@@ -1,8 +1,9 @@
 # Multiplayer
 
 Flock's multiplayer is player-hosted: players group up in **parties**, find each other through **matchmaking** or a
-join code, and one of them hosts the game session. This guide covers what ships today: **parties**, **sessions** and
-**matchmaking**. Connecting the players' games to each other follows in a later release.
+join code, and one of them hosts the game session. This guide covers what ships today: **parties**, **sessions**,
+**matchmaking** and **connecting players** directly or through a connection of the game's own. Flock's relay, for players
+who cannot reach each other directly, follows in a later release.
 
 Everything here goes through `FFlockMultiplayerProvider`, from `UFlockSubsystem::GetMultiplayerProvider()`. Make its
 calls from the game thread. Every party, session and matchmaking call needs a signed-in player and fails with `Auth` when
@@ -144,9 +145,7 @@ Multiplayer->HostSession(4, FFlockCommandData().Set(TEXT("map"), TEXT("dust")), 
         if (Result.IsSuccess())
         {
             Session = Result.Value;                // a UPROPERTY, so the session outlives its end if you need it to
-            ShowJoinCode(Session->GetJoinCode());
-            Session->PublishConnection(TEXT("direct"),
-                FFlockCommandData().Set(TEXT("address"), MyAddress).Set(TEXT("port"), 7777), nullptr);
+            ShowJoinCode(Session->GetJoinCode());  // then bring the players in: see Connecting players
         }
     });
 
@@ -193,6 +192,9 @@ Its calls, each completing with the session as it stands afterwards:
 
 A call on a session that has ended is refused (`Validation`) without a request. The server decides who may do what: a
 player who does not host gets `MultiplayerNotHost`, a 403 that means "not allowed", never "signed out".
+
+Bringing the players' games together adds `TravelToSession`, `PublishDirectConnection`, `WaitForConnection` and
+`FindDirectAddress`: see [Connecting players](#connecting-players).
 
 ### Keeping the seat, and keeping it current
 
@@ -383,3 +385,118 @@ after initializing again replaces it.
 | `MatchmakingVersionMismatch` | on a "Same game version only" queue, a member's game is on another Game Version, or has not read the party yet: each member's version comes from their game's last party read, so have every member's game call `GetMyParty` once it is running |
 
 Every refusal carries a hint naming the fix; see [Errors](errors.md).
+
+## Connecting players
+
+Once the players hold a session (hosted, joined by code or matched), their games connect to the host's. There are two ways:
+
+- **Direct**, over the engine's own networking: `TravelToSession` does it all. The host opens its level listening for
+  players and publishes how to reach it; every other player waits for that and travels to the host.
+- **A connection of the game's own** (Steam, EOS, anything else): the host publishes it with `PublishConnection(Mode,
+  Values)`, and the players read it back from the session's `GetConnection()`.
+
+```cpp
+#include "FlockSubsystem.h"
+#include "Multiplayer/FlockMultiplayerSession.h"
+
+// Every player's game, host included, once it holds the session (a UPROPERTY on the game instance here).
+FFlockTravelToSessionOptions Options;
+Options.HostLevel = TEXT("/Game/Maps/Arena");   // the level the host opens; players travel to whatever the host has open
+const TWeakObjectPtr<UMyGameInstance> Game = this;
+Session->TravelToSession(this, Options, [Game](TFlockResult<FFlockTravelToSessionResult> Result)
+{
+    // Runs in the level the game is in now: the level the call was made from is gone.
+    if (!Result.IsSuccess() || !Game.IsValid())
+    {
+        return;                                  // a mistake, a publish the server refused, or a cancel
+    }
+    const FString& Outcome = Result.Value.Outcome;
+    if (Outcome == FlockTravelToSessionOutcomes::StartedAsHost || Outcome == FlockTravelToSessionOutcomes::Connected)
+    {
+        Game->ShowMatchStarting();
+    }
+    else
+    {
+        Game->ShowCouldNotJoin(Outcome);         // compare with FlockTravelToSessionOutcomes and keep a default
+    }
+});
+```
+
+Pass anything in the game's world as the first argument, such as an actor or the game instance. The completion runs once
+the game is in the level it stays in, so capture what outlives a level change (the game instance, weak pointers), never an
+actor of the level the call was made from.
+
+### What Travel To Session does
+
+| Who | Does |
+|---|---|
+| host | Opens `HostLevel` (empty: the level it is in, again) with the engine's `?listen`. Once the level listens, publishes a direct connection on the port its net driver bound: when the port asked for is taken (another game on the same machine), the engine takes the next free one, and that is the one published. Completes `started_as_host`. |
+| player | Waits for the host to publish (`WaitForHostSeconds`, 60 by default), reading the session every 2 s. Travels to the host's LAN address when this device shares the host's public address, and to the published address otherwise. Completes `connected` once the host has let the player in: on a LAN, a few seconds after the host published (the next read of the session, then about two seconds of the engine's own connecting). |
+
+How it ended is the result's `Outcome`, a string because more can come; compare with `FlockTravelToSessionOutcomes`:
+
+| Outcome | Means |
+|---|---|
+| `started_as_host` | this game hosts: its level listens and how to reach it is published |
+| `connected` | this game is in the host's level, let in by the host |
+| `host_never_published` | the host did not publish within `WaitForHostSeconds`; this game traveled nowhere |
+| `session_ended` | the session ended while this game waited |
+| `could_not_connect` | connecting failed, and the engine has taken this game back to its default level; or the host published no address and port this game can use. Logged as a warning naming the address. Outside a LAN the host's port must be forwarded to it |
+| `could_not_start` | the host's level did not open listening for players on an IP address, so nothing was published |
+| `not_direct` | the host published a connection of the game's own; the result's `Connection` holds it |
+
+It fails, rather than ending with an outcome, only for a mistake (no world, an ended session, this game already connected,
+hosting or opening a level, a travel already under way), for a publish the server refused (the host stops listening first:
+nobody can reach a host that did not say where it is), and for a cancel. **Cancelling the handle** gives up a player's
+connection still being made (the game stays in its level) and stops a host listening, at once or as soon as its level has
+opened.
+
+A connection the engine cannot make is the engine's to give up: it waits out its own connection timeout (about 20 s for an
+address nobody answers), then loads the game's default level. Travel To Session connects over the engine's IP networking:
+a game whose net driver uses Steam's sockets (OnlineSubsystemSteam's `bUseSteamNetworking`, on unless set to false) cannot
+listen on an IP address, and ends `could_not_start`; such a game publishes a Steam connection of its own instead.
+
+### The pieces
+
+`TravelToSession` is built from three session calls a game can also use alone, with engine travel of its own:
+
+| Call | Who | Does |
+|---|---|---|
+| `PublishDirectConnection(Port, OnComplete)` | host | Publishes how to reach this device on `Port`, the port its game listens on. Refused (`Validation`) before any request for a port outside 1 to 65535. |
+| `WaitForConnection(TimeoutSeconds, OnComplete)` | player | Completes with the session once the host has published (`HasConnection()`), once the session has ended (`HasEnded()`), or with neither when the time runs out. Reads the session every 2 s meanwhile; a host change clears the address without ending the wait. Completes at once when the host has already published. |
+| `FindDirectAddress(OnComplete)` | player | The address and port to connect to (`FFlockDirectAddress`): the host's LAN address when this device shares its public address, the published address otherwise. `Address` is empty when the host published no dotted IPv4 address and whole port from 1 to 65535 (a port sent as text, "7777", counts). |
+
+A direct connection holds `mode` `direct` and four values; the server checks none of them, so the SDK does:
+
+| Value | Holds |
+|---|---|
+| `address` | the host's public address when it is known, its LAN address otherwise |
+| `port` | the port, a number |
+| `lan_address` | the address the host's game sends from toward the internet; left out when unknown |
+| `public_address` | the address the host is seen from on the internet; left out when unknown |
+
+The public address comes from one request to the STUN server Flock lists (`stun.l.google.com` unless the game's backend
+lists another), asked from a dual-stack socket where the platform makes one, a plain IPv4 socket otherwise. Flock's list is
+read once a launch, asked with no session so a direct connection is never counted as relay use; a list that cannot be read is
+not kept, and is warned about. When no STUN server answers within 2 s, the connection offers the LAN address alone, which
+only players on the same network can reach, with one warning per launch.
+
+### A connection of the game's own
+
+```cpp
+// Host: say how to reach it on Steam. The mode is the game's own word, 32 characters at most.
+Session->PublishConnection(TEXT("steam"), FFlockCommandData().Set(TEXT("steam_id"), MySteamId), nullptr);
+
+// Players: TravelToSession ends not_direct holding it; or read it whenever OnConnectionChanged says it changed.
+FString HostSteamId;
+if (Session->HasConnection() && Session->GetConnection().Mode.Equals(TEXT("steam"), ESearchCase::CaseSensitive)
+    && Session->GetConnection().Values.TryGetString(TEXT("steam_id"), HostSteamId))
+{
+    ConnectThroughSteam(HostSteamId);
+}
+```
+
+### Outside a LAN
+
+Players on other networks reach a direct host only when its port is forwarded to it on the host's router. Flock's relay,
+which needs no forwarding, follows in a later release.

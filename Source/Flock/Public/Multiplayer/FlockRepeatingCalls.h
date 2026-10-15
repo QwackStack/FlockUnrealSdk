@@ -158,6 +158,9 @@ public:
 	/** The calls this holds, stopped ones included until their next due time; for tests. */
 	int32 GetCallCountForTesting() const { return Calls.Num(); }
 
+	/** Seconds on the clock every call keeps time by, so a wait beside them runs out by the same clock. */
+	double Now() const { return Shared->Now(); }
+
 	/** Replaces the clock and the jitter's roll, for every call and every wait from now on; for tests that move time by hand. */
 	void SetClockForTesting(TFunction<double()> InNow, TFunction<double()> InNextRoll)
 	{

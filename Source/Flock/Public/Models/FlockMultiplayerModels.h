@@ -143,6 +143,122 @@ struct FLOCK_API FFlockMultiplayerSessionConnection
 	FFlockJsonData Values;
 };
 
+/** The connection modes the SDK publishes. An open set: a game may publish a mode of its own, such as "steam". */
+namespace FlockMultiplayerConnectionModes
+{
+	/** The host's address and port, published by Publish Direct Connection. */
+	inline constexpr const TCHAR* Direct = TEXT("direct");
+}
+
+/** The values a direct connection holds on the wire; "address" and "port" are the names the backend expects. */
+namespace FlockDirectConnectionValues
+{
+	/** The address players outside the host's network use: its public address when known, its LAN address otherwise. */
+	inline constexpr const TCHAR* Address = TEXT("address");
+	inline constexpr const TCHAR* Port = TEXT("port");
+	inline constexpr const TCHAR* LanAddress = TEXT("lan_address");
+	inline constexpr const TCHAR* PublicAddress = TEXT("public_address");
+}
+
+/** Where this game connects to reach a direct host. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockDirectAddress
+{
+	GENERATED_BODY()
+
+	/** The host's IPv4 address; empty when the host published no direct IPv4 address and port this game can use. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FString Address;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	int32 Port = 0;
+
+	/** True when this is the host's LAN address: chosen because this device shares the host's public address, or the only address the host knew. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	bool bIsLan = false;
+
+	bool IsFound() const { return !Address.IsEmpty(); }
+};
+
+/** The STUN servers the relay route lists ("stun:host:port"), as an answer asked with no session holds them. */
+USTRUCT()
+struct FLOCK_API FFlockStunServerList
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FString> Urls;
+
+	/** Reads the answer; one with no list of servers is not the server's answer, and fails the read. */
+	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockStunServerList& OutStruct, FString& OutError);
+};
+
+/** How Travel To Session ended. An open set: compare with these and keep a default. */
+namespace FlockTravelToSessionOutcomes
+{
+	/** This game hosts: its level opened listening for players, and how to reach it is published. */
+	inline constexpr const TCHAR* StartedAsHost = TEXT("started_as_host");
+	/** This game connected to the host and is in the host's level. */
+	inline constexpr const TCHAR* Connected = TEXT("connected");
+	/** The host did not publish how to reach it within Wait For Host Seconds. */
+	inline constexpr const TCHAR* HostNeverPublished = TEXT("host_never_published");
+	/** The session ended while this game waited for the host. */
+	inline constexpr const TCHAR* SessionEnded = TEXT("session_ended");
+	/**
+	 * Connecting to the host failed, and the engine has taken this game back to its default level; or the host published no
+	 * address and port this game can use, and it stayed where it was. Outside a LAN the host's port must be forwarded to it.
+	 */
+	inline constexpr const TCHAR* CouldNotConnect = TEXT("could_not_connect");
+	/** The host's level opened without listening for players (or did not open), so nothing was published. */
+	inline constexpr const TCHAR* CouldNotStart = TEXT("could_not_start");
+	/** The host published a connection of the game's own (such as "steam"); the result's Connection holds it. */
+	inline constexpr const TCHAR* NotDirect = TEXT("not_direct");
+}
+
+/** What a game can choose about Travel To Session. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockTravelToSessionOptions
+{
+	GENERATED_BODY()
+
+	/**
+	 * The level the host opens listening for players, such as "/Game/Maps/Arena"; empty opens the level it is in again. A
+	 * player travels to whatever level the host has open.
+	 */
+	UPROPERTY(BlueprintReadWrite, Category = "Flock|Multiplayer")
+	FString HostLevel;
+
+	/** How long a player waits for the host to publish how to reach it. */
+	UPROPERTY(BlueprintReadWrite, Category = "Flock|Multiplayer")
+	float WaitForHostSeconds = 60.f;
+};
+
+/** How Travel To Session ended. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockTravelToSessionResult
+{
+	GENERATED_BODY()
+
+	/** One of FlockTravelToSessionOutcomes. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FString Outcome;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	bool bIsHost = false;
+
+	/** The address published (host) or traveled to (player); empty when there was none. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FString Address;
+
+	/** The port the host's level listens on (host) or the port traveled to (player); 0 when there was none. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	int32 Port = 0;
+
+	/** The host's connection as published; its Mode is empty when the host never published. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FFlockMultiplayerSessionConnection Connection;
+};
+
 /** A short-lived proof that the player holds a seat, to show the host when connecting. */
 USTRUCT(BlueprintType)
 struct FLOCK_API FFlockMultiplayerSessionJoinToken

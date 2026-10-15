@@ -66,6 +66,7 @@ bool FFlockMultiplayerProvider::Tick(float DeltaSeconds)
 	Parties->EndIfSignInEnded();
 	Matchmaking->EndIfSignInEnded();
 	Sessions->EndIfSignInEnded();
+	Sessions->MoveConnectingOn();
 	RepeatingCalls->SendThoseDue();
 	return true;
 }

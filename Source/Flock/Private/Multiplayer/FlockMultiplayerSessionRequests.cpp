@@ -150,3 +150,10 @@ FFlockRequestHandle FFlockMultiplayerSessionRequests::VerifyJoinToken(int32 Sign
 		Url(FlockEndpoints::SessionVerifyJoinToken(SessionId)), FFlockCommandData().Set(TEXT("token"), Token).ToJsonString(),
 		MoveTemp(OnComplete));
 }
+
+FFlockRequestHandle FFlockMultiplayerSessionRequests::ReadStunServers(int32 SignInNumber,
+	TFunction<void(TFlockResult<FFlockStunServerList>)> OnComplete)
+{
+	return PostAs<FFlockStunServerList>(SignInNumber, TEXT("Read the servers to connect through"), /*bIdempotent*/ true,
+		Url(FlockEndpoints::RelayCredentials), TEXT("{}"), MoveTemp(OnComplete));
+}

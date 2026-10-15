@@ -2113,7 +2113,7 @@ bool FFlockSessionEveryRouteTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	const TCHAR* Routes[] = { TEXT("Host"), TEXT("Join"), TEXT("Read"), TEXT("ReadCurrent"), TEXT("Heartbeat"), TEXT("Leave"), TEXT("End"),
-		TEXT("MakeHost"), TEXT("PublishConnection"), TEXT("RequestJoinToken"), TEXT("VerifyJoinToken") };
+		TEXT("MakeHost"), TEXT("PublishConnection"), TEXT("RequestJoinToken"), TEXT("VerifyJoinToken"), TEXT("ReadStunServers") };
 	for (const TCHAR* Route : Routes)
 	{
 		const FString Start = FString::Printf(TEXT("FFlockRequestHandle FFlockMultiplayerSessionRequests::%s("), Route);

@@ -104,6 +104,59 @@ FFlockRequestHandle UFlockMultiplayerSession::VerifyJoinToken(const FString& Tok
 	return FFlockRequestHandle();
 }
 
+FFlockRequestHandle UFlockMultiplayerSession::PublishDirectConnection(int32 Port, FFlockOnMultiplayerSession OnComplete)
+{
+	if (const TSharedPtr<FFlockMultiplayerSessions> Pinned = Owner.Pin())
+	{
+		return Pinned->PublishDirectConnection(this, Port, MoveTemp(OnComplete));
+	}
+	if (OnComplete)
+	{
+		OnComplete(TFlockResult<UFlockMultiplayerSession*>::Fail(RefusedWithoutOwner()));
+	}
+	return FFlockRequestHandle();
+}
+
+FFlockRequestHandle UFlockMultiplayerSession::WaitForConnection(float TimeoutSeconds, FFlockOnMultiplayerSession OnComplete)
+{
+	if (const TSharedPtr<FFlockMultiplayerSessions> Pinned = Owner.Pin())
+	{
+		return Pinned->WaitForConnection(this, TimeoutSeconds, MoveTemp(OnComplete));
+	}
+	if (OnComplete)
+	{
+		OnComplete(TFlockResult<UFlockMultiplayerSession*>::Fail(RefusedWithoutOwner()));
+	}
+	return FFlockRequestHandle();
+}
+
+FFlockRequestHandle UFlockMultiplayerSession::FindDirectAddress(TFunction<void(TFlockResult<FFlockDirectAddress>)> OnComplete)
+{
+	if (const TSharedPtr<FFlockMultiplayerSessions> Pinned = Owner.Pin())
+	{
+		return Pinned->FindDirectAddress(this, MoveTemp(OnComplete));
+	}
+	if (OnComplete)
+	{
+		OnComplete(TFlockResult<FFlockDirectAddress>::Fail(RefusedWithoutOwner()));
+	}
+	return FFlockRequestHandle();
+}
+
+FFlockRequestHandle UFlockMultiplayerSession::TravelToSession(UObject* WorldContextObject, const FFlockTravelToSessionOptions& Options,
+	TFunction<void(TFlockResult<FFlockTravelToSessionResult>)> OnComplete)
+{
+	if (const TSharedPtr<FFlockMultiplayerSessions> Pinned = Owner.Pin())
+	{
+		return Pinned->TravelToSession(this, WorldContextObject, Options, MoveTemp(OnComplete));
+	}
+	if (OnComplete)
+	{
+		OnComplete(TFlockResult<FFlockTravelToSessionResult>::Fail(RefusedWithoutOwner()));
+	}
+	return FFlockRequestHandle();
+}
+
 void UFlockMultiplayerSession::Begin(const TWeakPtr<FFlockMultiplayerSessions>& InOwner, const TSharedRef<FFlockAuthSession>& InSession,
 	int32 InSignInNumber, const FString& InPlayerId, const FFlockMultiplayerSessionReading& Reading)
 {
