@@ -29,6 +29,14 @@ public:
 	static FString MakePlaytestSessionEndUrl(const FString& ProtokiteApiUrl, const FString& PlaytestSessionId);
 
 	/**
+	 * How to fix a failed Protokite call, which every call here puts in the failure's Hint. Protokite's refusals carry no
+	 * Flock error code, so the Flock SDK's own fix, which reads an answer without one as coming from somewhere else, does
+	 * not fit them: this reads the status against the refusals Protokite is measured to send, and names the playtest's
+	 * settings.
+	 */
+	static FString FixFor(const FFlockError& Error);
+
+	/**
 	 * Fetches the playtest this build's version is linked to.
 	 *
 	 * Retried when Protokite or the network fails, never when Protokite refuses (401, 404, 422): those answers

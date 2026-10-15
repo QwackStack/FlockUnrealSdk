@@ -239,5 +239,5 @@ void UFlockMultiplayerSession::CopyFrom(const FFlockMultiplayerSessionReading& R
 
 FFlockError UFlockMultiplayerSession::RefusedWithoutOwner()
 {
-	return FFlockError::Make(EFlockErrorType::Validation, TEXT("This session has ended (signed_out): Flock has shut down."));
+	return FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("This session has ended (signed_out): Flock has shut down"), TEXT("Initialize Flock again and sign the player in, then host or join a session."));
 }

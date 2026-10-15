@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Multiplayer/FlockParties.h"
+#include "Http/FlockErrorHints.h"
 #include "UObject/Package.h"
 
 void FFlockParties::Answer(const FFlockOnParty& OnComplete, const TFlockResult<UFlockParty*>& Result)
@@ -76,8 +77,8 @@ FFlockRequestHandle FFlockParties::Join(const FString& InviteCode, FFlockOnParty
 {
 	if (InviteCode.IsEmpty())
 	{
-		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-			TEXT("Invite Code cannot be null or empty"))));
+		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+			TEXT("Invite Code is empty"), TEXT("Pass the party's invite code; the leader's game reads it from the party with GetInviteCode."))));
 		return FFlockRequestHandle();
 	}
 	int32 SignInNumber = 0;
@@ -228,8 +229,8 @@ FFlockRequestHandle FFlockParties::Kick(UFlockParty* Party, const FString& Playe
 {
 	if (PlayerId.IsEmpty())
 	{
-		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-			TEXT("Player ID cannot be null or empty"))));
+		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+			TEXT("Player ID is empty"), TEXT("Pass the id of a party member, from the party's GetMembers."))));
 		return FFlockRequestHandle();
 	}
 	const TSharedRef<FFlockPartyRequests> RequestsRef = Requests;
@@ -245,8 +246,8 @@ FFlockRequestHandle FFlockParties::MakeLeader(UFlockParty* Party, const FString&
 {
 	if (PlayerId.IsEmpty())
 	{
-		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-			TEXT("Player ID cannot be null or empty"))));
+		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+			TEXT("Player ID is empty"), TEXT("Pass the id of a party member, from the party's GetMembers."))));
 		return FFlockRequestHandle();
 	}
 	const TSharedRef<FFlockPartyRequests> RequestsRef = Requests;
@@ -263,8 +264,8 @@ FFlockRequestHandle FFlockParties::Update(UFlockParty* Party, TOptional<int32> M
 {
 	if (!MaxSize.IsSet() && !Settings.IsSet())
 	{
-		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-			TEXT("Nothing to update: give the party a size, settings or both"))));
+		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+			TEXT("Nothing to update: no size or settings was given"), TEXT("Give the party a size, settings or both."))));
 		return FFlockRequestHandle();
 	}
 	const TSharedRef<FFlockPartyRequests> RequestsRef = Requests;
@@ -418,8 +419,8 @@ void FFlockParties::ReadUntilNewest(int32 SignInNumber, const FString& PartyId, 
 			}
 			if (Attempt == MostReadsWhileThePartyChanges)
 			{
-				OnRead(TFlockResult<FFlockPartyRead>::Fail(FFlockError::Make(EFlockErrorType::Network,
-					TEXT("The party kept changing while it was being read. Try again."))));
+				OnRead(TFlockResult<FFlockPartyRead>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Network,
+					TEXT("The party kept changing while it was being read"), TEXT("Read it again in a moment: it changes while players join and leave and while leadership moves."))));
 				return;
 			}
 			if (InTurn->IsCancelled())
@@ -682,15 +683,15 @@ bool FFlockParties::RequireSignedIn(int32& OutSignInNumber, FString& OutPlayerId
 {
 	if (!Session->IsAuthenticated())
 	{
-		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::Make(EFlockErrorType::Auth, TEXT("No player is signed in"))));
+		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), FFlockErrorHints::SignInFirst())));
 		return false;
 	}
 	// The player id is what tells a call's reading from a refresh's (Apply), so a sign-in that names no player sends nothing.
 	OutPlayerId = Session->GetPlayerId();
 	if (OutPlayerId.IsEmpty())
 	{
-		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::Make(EFlockErrorType::Auth,
-			TEXT("The sign-in names no player: its token carries no player id. Sign in again."))));
+		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Auth,
+			TEXT("The sign-in names no player: its token carries no player id"), TEXT("Call Logout and sign the player in again with one of Flock's sign-in calls."))));
 		return false;
 	}
 	OutSignInNumber = CurrentSignInNumber();
@@ -712,14 +713,12 @@ bool FFlockParties::RequireRunning(const UFlockParty* Party, const FFlockOnParty
 {
 	if (Party == nullptr)
 	{
-		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::Make(EFlockErrorType::Validation, TEXT("No party was given"))));
+		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("No party was given"), FFlockErrorHints::PassAHeldParty())));
 		return false;
 	}
 	if (Party->HasEnded())
 	{
-		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::Make(EFlockErrorType::Validation, FString::Printf(
-			TEXT("This party has ended (%s). Create or join another, or get the player's current one with GetMyParty."),
-			*EndReasonName(Party->GetEndReason())))));
+		Answer(OnComplete, TFlockResult<UFlockParty*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, FString::Printf(TEXT("This party has ended (%s)"), *EndReasonName(Party->GetEndReason())), FFlockErrorHints::FindAnotherParty())));
 		return false;
 	}
 	return true;

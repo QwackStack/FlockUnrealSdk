@@ -16,23 +16,28 @@ bool FFlockConnectionProbeClassifyTest::RunTest(const FString& Parameters)
 		FFlockConnectionProbe::Classify(FFlockError::Make(EFlockErrorType::Connection, TEXT("refused")))
 			== EFlockProbeState::Unreachable);
 
-	TestTrue(TEXT("An Auth failure is a rejected key"),
-		FFlockConnectionProbe::Classify(FFlockError::Make(EFlockErrorType::Auth, TEXT("nope"), 401))
-			== EFlockProbeState::KeyRejected);
+	// The answers the local backend sent on 2026-10-15: a wrong key and an unknown version name are told apart by code.
+	TestTrue(TEXT("An unknown API key is a rejected key"),
+		FFlockConnectionProbe::Classify(FFlockError::Make(EFlockErrorType::Auth, TEXT("Invalid API Key"), 401, FString(),
+			TEXT("game.invalid_api_key"), TEXT("Invalid API Key"))) == EFlockProbeState::KeyRejected);
+	TestTrue(TEXT("A blank API key is a rejected key"),
+		FFlockConnectionProbe::Classify(FFlockError::Make(EFlockErrorType::Auth, TEXT("Missing X-Flock-API-Key header"), 401, FString(),
+			TEXT("game.missing_api_key"), TEXT("Missing X-Flock-API-Key header"))) == EFlockProbeState::KeyRejected);
+	TestTrue(TEXT("An unknown version name is a missing version"),
+		FFlockConnectionProbe::Classify(FFlockError::Make(EFlockErrorType::Network, TEXT("Game version with name 'x' not found"), 404,
+			FString(), TEXT("game_version.game_version_by_name_not_found"))) == EFlockProbeState::VersionNotFound);
 
-	// 401/403 that arrived classified as something else still mean the key was refused.
-	TestTrue(TEXT("A bare 401 is a rejected key"),
-		FFlockConnectionProbe::Classify(FFlockError::Make(EFlockErrorType::Network, TEXT("nope"), 401))
-			== EFlockProbeState::KeyRejected);
-	TestTrue(TEXT("A bare 403 is a rejected key"),
-		FFlockConnectionProbe::Classify(FFlockError::Make(EFlockErrorType::Network, TEXT("nope"), 403))
-			== EFlockProbeState::KeyRejected);
-
-	// The game is identified by the API key and is never part of this request, so a 404 here can only
-	// mean the version name did not match.
-	TestTrue(TEXT("A 404 is a missing version name"),
-		FFlockConnectionProbe::Classify(FFlockError::Make(EFlockErrorType::Network, TEXT("missing"), 404))
-			== EFlockProbeState::VersionNotFound);
+	// A wrong API URL answers 404 with request.not_found (the URL ends in /v1) or 401 with no code (the URL misses
+	// the server's path): neither is the version or the key, and each reports its own reason and fix instead.
+	TestTrue(TEXT("A route that does not exist is not a missing version"),
+		FFlockConnectionProbe::Classify(FFlockError::Make(EFlockErrorType::Network, TEXT("Not Found"), 404, FString(),
+			TEXT("request.not_found"), TEXT("Not Found"))) == EFlockProbeState::Failed);
+	TestTrue(TEXT("A 401 without a code is not a rejected key"),
+		FFlockConnectionProbe::Classify(FFlockError::Make(EFlockErrorType::Auth, TEXT("Invalid token."), 401, FString(),
+			FString(), TEXT("Invalid token."))) == EFlockProbeState::Failed);
+	TestTrue(TEXT("A 403 without a code is not a rejected key"),
+		FFlockConnectionProbe::Classify(FFlockError::Make(EFlockErrorType::Auth, TEXT("The server refused to do this"), 403))
+			== EFlockProbeState::Failed);
 
 	// A timeout must not read as Unreachable: that would send a developer to edit an API URL which is
 	// very likely correct.

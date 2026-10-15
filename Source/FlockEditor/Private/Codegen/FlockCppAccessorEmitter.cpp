@@ -362,6 +362,7 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 	Source += FString::Printf(TEXT("\n#include \"%s.h\"\n\n"), *HeaderName);
 	Source += TEXT("#include \"Codegen/FlockStructBinder.h\"\n");
 	Source += TEXT("#include \"FlockSubsystem.h\"\n");
+	Source += TEXT("#include \"Http/FlockErrorHints.h\"\n");
 	Source += TEXT("#include \"Providers/FlockCommandProvider.h\"\n");
 	Source += TEXT("#include \"Providers/FlockConfigProvider.h\"\n");
 	Source += TEXT("#include \"Providers/FlockPlayerProvider.h\"\n");
@@ -372,8 +373,8 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 		TEXT("\t/** The failure every accessor reports when the SDK is not up yet. */\n")
 		TEXT("\tFFlockError NotReady()\n")
 		TEXT("\t{\n")
-		TEXT("\t\treturn FFlockError::Make(EFlockErrorType::Validation,\n")
-		TEXT("\t\t\tTEXT(\"The Flock SDK is not initialized, or the world context could not resolve it.\"));\n")
+		TEXT("\t\treturn FFlockError::MakeWithFix(EFlockErrorType::Validation,\n")
+		TEXT("\t\t\tTEXT(\"Flock is not initialized, or the world context is not in a game world\"), FFlockErrorHints::InitializeFlockFirst());\n")
 		TEXT("\t}\n")
 		TEXT("\n")
 		TEXT("\tFFlockPlayerProvider* ResolvePlayer(const UObject* WorldContextObject)\n")

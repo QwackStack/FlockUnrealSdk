@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Providers/FlockLeaderboardProvider.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Http/FlockEndpoints.h"
 #include "Http/FlockJsonUtils.h"
@@ -147,7 +148,7 @@ void FFlockLeaderboardProvider::GetMyRank(const FString& LeaderboardName, const 
 		if (OnComplete)
 		{
 			OnComplete(TFlockResult<FFlockPlayerRank>::Fail(
-				FFlockError::Make(EFlockErrorType::Auth, TEXT("No player is signed in"))));
+				FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), FFlockErrorHints::SignInFirst())));
 		}
 		return;
 	}
@@ -186,7 +187,7 @@ void FFlockLeaderboardProvider::GetAroundMe(const FString& LeaderboardName, int3
 		if (OnComplete)
 		{
 			OnComplete(TFlockResult<FFlockStandings>::Fail(
-				FFlockError::Make(EFlockErrorType::Auth, TEXT("No player is signed in"))));
+				FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), FFlockErrorHints::SignInFirst())));
 		}
 		return;
 	}

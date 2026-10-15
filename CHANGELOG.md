@@ -5,6 +5,65 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.30.1] - 2026-10-15
+
+Every failure says what is wrong and how to fix it.
+
+### Changed
+
+- **`FFlockError::Message` is what is wrong**: the server's own reason when it gave one (`Shop item with ID 'GoldItem' not
+  found`), otherwise the plain meaning of the status or the transport failure (`The server found nothing at this address`,
+  `The server did not answer in time`). It no longer reads `HTTP request failed (HTTP 404)`, `Authentication failed (HTTP 403)`
+  or `Validation failed (HTTP 422)`, and a bare 403 is a refusal, no longer called an authentication failure. It never holds
+  the status: `ToDisplayText()` tags it.
+- **`FFlockError::Hint` is never empty**: the code's advice, or the advice for the kind of failure when the code has none
+  (`FFlockErrorHints::ForFailure`): an answer without a Flock code (a proxy, a captive portal, an API URL pointing elsewhere),
+  a code newer than this SDK (named in the fix), a server failure, a timeout (a change may already have been made, so read
+  before re-sending), no connection, an unreadable success. `ToDisplayText()` always ends with its `Fix:` line.
+- **The Output Log's line for a failed call** carries the same text as `ToDisplayText()`, fix included; it held only the
+  terse message, which is what a developer saw for a purchase given the wrong id.
+- **Every failure the SDK finds itself names what to do**, built with the new `FFlockError::MakeWithFix`: an empty argument
+  says what to pass, a call with nobody signed in says to sign in, a node run before Flock initialized says how it starts,
+  a session or party that has ended names how to get another. CI fails on a Validation, Network or Auth failure built with
+  `FFlockError::Make` outside the HTTP client.
+- **A board read's 404 is the caller's mistake only when it is the board's** (`leaderboard.not_found`); a wrong API URL's
+  `request.not_found` keeps its own reason and fix rather than sending the developer to check a board name.
+- **The setup panel's connection test** tells a rejected key and an unknown Game Version by their codes. A wrong API URL
+  answers 404 or an uncoded 401, which it called "no game version by that name" or "the API Key was rejected"; it now shows
+  the error's own reason and fix.
+- `FFlockResolveResult::Fail` (editor) takes the fix with the failure.
+- **A failed download of an asset's file** names the storage that serves it and storage's own fix (a missing file is
+  uploaded again, an expired link read again), rather than calling storage's answer a wrong API URL.
+  `FFlockError::MakeWithFix` takes the status of such an answer.
+- **A failed call to Protokite** (the optional playtest plugin) says what Protokite meant and how to fix it
+  (`FProtokiteClient::FixFor`): a key Protokite does not know names API Key, a build no playtest is linked to says to link
+  the playtest to the build's Game Version, a missing form says to publish it, and an answer that is not Protokite's (a
+  captive portal, a proxy) names Protokite API URL in the playtest's settings. Protokite's refusals carry no Flock error
+  code, so the Flock SDK's fix for an answer without one, which points at the Flock API URL, no longer reaches them.
+
+### Added
+
+- `EFlockErrorCode` members for the codes the server sends on any route: `RequestNotFound` (no route at that address, or a record a route did not find; a wrong API URL lands here, as when
+  API URL ends in `/v1`), `RequestMethodNotAllowed`, `RequestValidationFailed` (a member missing from the body, named in the
+  message), `RequestUnauthorized`, `RequestForbidden`, `RequestConflict`, `RequestPayloadTooLarge`, `RequestRateLimited` and
+  `RequestFailed`; the API key check's `GameMissingApiKey` and `GameInvalidApiKey`; and the sign-in check's
+  `PlayerMissingToken`, `PlayerInvalidToken` and `PlayerExpiredToken`. Each has a hint.
+- `FFlockError::MakeWithFix`, `FFlockError::ReasonAndFix()` (the display text without the operation), and
+  `FFlockErrorHints::ForFailure` with the fixes several failures share.
+
+### Fixed
+
+- **A purchase given the item's name or the shop's id** read `HTTP request failed (HTTP 404)`. The shop item hints now say
+  a purchase takes `FFlockShopItem::Id`, read from the shop, not the item's name or the shop's id, and the shop guide shows
+  reading it.
+- **The wallet hints** told a player with no wallet, or no balance in a currency, to call Flock Add Game Funds to create it,
+  which refuses the same way: a wallet is made when the player registers, from the Game Version's currency template.
+  `ShopWalletNotFound`, `ShopCurrencyNotHeld`, `ShopRewardCurrencyNotHeld`, `ShopCurrencyTemplateNotFound` and
+  `GameCommandCurrencyNotFound` now say so.
+- `ShopShopNotFound` names the Game Version a shop belongs to, and `ShopPlayerNotFound` the player a purchase acts on.
+- **A feedback form Protokite refused with no reason of its own** could be logged as refusing a question cut out of the
+  fix that follows the reason; the question is read out of Protokite's own reason only.
+
 ## [1.30.0] - 2026-10-15
 
 Connecting players.

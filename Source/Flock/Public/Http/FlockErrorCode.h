@@ -25,8 +25,10 @@ enum class EFlockErrorCode : uint8
 	// asset.*
 	AssetAssetNotFound,
 
-	// game.*
+	// game.* (InvalidApiKey and MissingApiKey come from the API key check every /v1 route makes first)
 	GameGameNotFound,
+	GameInvalidApiKey,
+	GameMissingApiKey,
 	GameMissingStudioId,
 
 	// game_command.*
@@ -109,13 +111,14 @@ enum class EFlockErrorCode : uint8
 	PartyNotPartyLeader,
 	PartyTargetNotAMember,
 
-	// player.*
+	// player.* (MissingToken, ExpiredToken and InvalidToken come from the sign-in check of a route that acts as the player)
 	PlayerAccountAlreadyLinked,
 	PlayerAccountNotLinked,
 	PlayerAppleAccountAlreadyRegistered,
 	PlayerCannotUnlinkLastCredential,
 	PlayerDeviceAlreadyRegistered,
 	PlayerEmailAlreadyRegistered,
+	PlayerExpiredToken,
 	PlayerGameJwkNotConfigured,
 	PlayerGameVersionIdRequired,
 	PlayerGoogleAccountAlreadyRegistered,
@@ -125,7 +128,9 @@ enum class EFlockErrorCode : uint8
 	PlayerInvalidRefreshToken,
 	PlayerInvalidRegistrationRequest,
 	PlayerInvalidResetCode,
+	PlayerInvalidToken,
 	PlayerInvalidVerificationCode,
+	PlayerMissingToken,
 	PlayerNameAlreadyRegistered,
 	PlayerNoEmailAccount,
 	PlayerOauthFailed,
@@ -147,6 +152,21 @@ enum class EFlockErrorCode : uint8
 	// player_template.*
 	PlayerTemplateNotFound,
 	PlayerTemplateNotFoundByName,
+
+	// request.*
+	//
+	// The server's own codes for a failure no route raised itself: a route that does not exist, a request the framework
+	// refused before any route code ran (a member missing from the body), and the stock code for each status. Every /v1
+	// failure carries a code, so an error with none did not come from Flock's game API.
+	RequestConflict,
+	RequestFailed,
+	RequestForbidden,
+	RequestMethodNotAllowed,
+	RequestNotFound,
+	RequestPayloadTooLarge,
+	RequestRateLimited,
+	RequestUnauthorized,
+	RequestValidationFailed,
 
 	// shop.*
 	ShopCurrencyNotHeld,

@@ -104,7 +104,7 @@ namespace
 		if (!Fetched.bSuccess)
 		{
 			UE_LOG(LogFlockEditor, Error, TEXT("Flock codegen: could not fetch schemas — %s"),
-				*Fetched.Error.Message);
+				*Fetched.Error.ReasonAndFix());
 			return ExitCouldNotRun;
 		}
 

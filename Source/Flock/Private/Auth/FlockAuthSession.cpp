@@ -37,8 +37,7 @@ bool FFlockAuthSession::AdoptTokens(const FString& InAccessToken, const FString&
 		if (!FFlockJwt::Parse(InAccessToken, Parsed, ParseError))
 		{
 			Logger->LogError(FString::Printf(TEXT("Failed to parse JWT access token: %s"), *ParseError));
-			OutError = TEXT("Server returned an unparseable JWT access token. Cannot establish player session — ")
-				TEXT("the auth response was malformed. Verify ApiUrl points at a supported Flock backend.");
+			OutError = TEXT("The server's sign-in answer holds an access token that cannot be read, so no player session was made");
 			return false;
 		}
 		NewClaims = MoveTemp(Parsed);
@@ -183,7 +182,7 @@ void FFlockAuthSession::RefreshAccessToken(int32 ForSignInNumber, TFunction<void
 				}
 				else
 				{
-					Self->Logger->LogError(FString::Printf(TEXT("Token refresh failed: %s"), *Result.Error.Message));
+					Self->Logger->LogError(FString::Printf(TEXT("Renewing the sign-in failed: %s"), *Result.Error.ReasonAndFix()));
 					Self->FinishRefresh(Refresh, false);
 				}
 				return;

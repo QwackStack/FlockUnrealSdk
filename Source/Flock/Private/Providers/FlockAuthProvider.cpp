@@ -322,8 +322,8 @@ FFlockRequestHandle FFlockAuthProvider::RevokeToken(TFunction<void(TFlockResult<
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockTokenRevokeResponse>::Fail(FFlockError::Make(EFlockErrorType::Auth,
-						TEXT("Token revoke was not confirmed by the server"))));
+					OnComplete(TFlockResult<FFlockTokenRevokeResponse>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Auth,
+						TEXT("The server did not confirm the sign-in was revoked"), TEXT("Revoke it again; until the server confirms, the sign-in stays usable on the server until it expires."))));
 				}
 				return;
 			}
@@ -468,8 +468,8 @@ FFlockRequestHandle FFlockAuthProvider::LinkOAuth(EFlockCredentialProvider Provi
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockPlayerAccountsResponse>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Unknown is not a credential provider the SDK can send"))));
+			OnComplete(TFlockResult<FFlockPlayerAccountsResponse>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Unknown is not a credential provider the SDK can send"), TEXT("Pass one of the other EFlockCredentialProvider values, such as Google or Steam."))));
 		}
 		return FFlockRequestHandle();
 	}
@@ -490,8 +490,8 @@ FFlockRequestHandle FFlockAuthProvider::Unlink(EFlockCredentialProvider Provider
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockPlayerAccountsResponse>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Unknown is not a credential provider the SDK can send"))));
+			OnComplete(TFlockResult<FFlockPlayerAccountsResponse>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Unknown is not a credential provider the SDK can send"), TEXT("Pass one of the other EFlockCredentialProvider values, such as Google or Steam."))));
 		}
 		return FFlockRequestHandle();
 	}

@@ -292,7 +292,7 @@ private:
 			{
 				return TFlockResult<T>::Ok(T());
 			}
-			return TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Serialization, TEXT("Malformed response body"),
+			return TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Serialization, TEXT("The server's answer could not be read as JSON"),
 				Response.StatusCode, SuccessBody));
 		}
 
@@ -340,7 +340,7 @@ private:
 		{
 			if (OnComplete)
 			{
-				OnComplete(TFlockResult<TResp>::Fail(FFlockError::Make(EFlockErrorType::Serialization, TEXT("Failed to serialize request body"))));
+				OnComplete(TFlockResult<TResp>::Fail(FFlockError::Make(EFlockErrorType::Serialization, TEXT("The SDK could not write this request's body"))));
 			}
 			return FFlockRequestHandle();
 		}

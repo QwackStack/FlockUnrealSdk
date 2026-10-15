@@ -38,8 +38,7 @@ void FFlockHttpVersionLookup::Resolve(const FString& ApiUrl, const FString& ApiK
 			}
 			if (Result.Value.Id.IsEmpty())
 			{
-				OnComplete.ExecuteIfBound(FFlockResolveResult::FailWith(FFlockError::Make(
-					EFlockErrorType::Serialization, TEXT("Server returned no Game Version ID."))));
+				OnComplete.ExecuteIfBound(FFlockResolveResult::FailWith(FFlockError::MakeWithFix(EFlockErrorType::Serialization, TEXT("The server returned no Game Version ID"), TEXT("Check the Game Version name matches one in the Flock dashboard, and that API URL under Project Settings > Flock SDK points at the server the game lives on."))));
 				return;
 			}
 			OnComplete.ExecuteIfBound(FFlockResolveResult::Ok(Result.Value.Id));

@@ -14,11 +14,12 @@ namespace
 	/** One page of shops per request; the list is small, so this is about bounding a response, not tuning. */
 	constexpr int32 ShopPageSize = 100;
 
-	/** Names the step that failed without losing the transport's own classification or status code. */
+	/** Names the step that failed, keeping everything else the error says: its classification, status, code and fix. */
 	FFlockError Contextualize(const FString& Step, const FFlockError& Error)
 	{
-		return FFlockError::Make(Error.Type, FString::Printf(TEXT("%s: %s"), *Step, *Error.Message),
-			Error.StatusCode, Error.Body, Error.Code, Error.ServerMessage);
+		FFlockError Named = Error;
+		Named.Message = FString::Printf(TEXT("%s: %s"), *Step, *Error.Message);
+		return Named;
 	}
 
 	/**
@@ -164,8 +165,7 @@ void FFlockSchemaFetcher::Fetch(const TSharedRef<FFlockHttpClient>& Client, cons
 {
 	if (GameVersionName.IsEmpty())
 	{
-		OnComplete.ExecuteIfBound(TFlockResult<FFlockSchemaSnapshot>::Fail(FFlockError::Make(
-			EFlockErrorType::Validation, TEXT("Game Version is empty in Project Settings > Flock SDK."))));
+		OnComplete.ExecuteIfBound(TFlockResult<FFlockSchemaSnapshot>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("Game Version is empty in Project Settings > Flock SDK"), TEXT("Set Game Version there to the version's name in the Flock dashboard, then sync again."))));
 		return;
 	}
 
@@ -188,8 +188,8 @@ void FFlockSchemaFetcher::Fetch(const TSharedRef<FFlockHttpClient>& Client, cons
 			}
 			if (Result.Value.Id.IsEmpty())
 			{
-				State->Fail(TEXT("Resolve game version"), FFlockError::Make(EFlockErrorType::Validation,
-					FString::Printf(TEXT("Server returned no id for game version '%s'."), *GameVersionName)));
+				State->Fail(TEXT("Resolve game version"), FFlockError::MakeWithFix(EFlockErrorType::Validation,
+					FString::Printf(TEXT("The server returned no id for game version '%s'"), *GameVersionName), TEXT("Check the version exists in the Flock dashboard under that name, and that API URL under Project Settings > Flock SDK points at the server the game lives on.")));
 				return;
 			}
 
@@ -204,8 +204,7 @@ void FFlockSchemaFetcher::FetchFromSettings(FOnSchemaFetched OnComplete)
 	const UFlockConfig* Config = GetDefault<UFlockConfig>();
 	if (!Config)
 	{
-		OnComplete.ExecuteIfBound(TFlockResult<FFlockSchemaSnapshot>::Fail(FFlockError::Make(
-			EFlockErrorType::Validation, TEXT("Flock settings are unavailable."))));
+		OnComplete.ExecuteIfBound(TFlockResult<FFlockSchemaSnapshot>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("Flock's settings could not be read"), TEXT("Restart the editor with the Flock plugin enabled, then sync again."))));
 		return;
 	}
 
@@ -226,9 +225,8 @@ void FFlockSchemaFetcher::FetchFromSettings(FOnSchemaFetched OnComplete)
 	}
 	if (!Missing.IsEmpty())
 	{
-		OnComplete.ExecuteIfBound(TFlockResult<FFlockSchemaSnapshot>::Fail(FFlockError::Make(
-			EFlockErrorType::Validation,
-			FString::Printf(TEXT("%s is not set in Project Settings > Flock SDK."), *Missing))));
+		OnComplete.ExecuteIfBound(TFlockResult<FFlockSchemaSnapshot>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+			FString::Printf(TEXT("%s is not set in Project Settings > Flock SDK"), *Missing), TEXT("Set it there, then sync again."))));
 		return;
 	}
 

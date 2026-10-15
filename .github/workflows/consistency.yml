@@ -103,6 +103,28 @@ jobs:
           fi
           echo "$total wire error codes checked against $(wc -l < /tmp/members.txt) enum members — no drift."
 
+      - name: Every failure the SDK finds itself says how to fix it
+        run: |
+          set -euo pipefail
+
+          # Every failure a developer sees says what is wrong and how to fix it. FFlockError::Make stamps the fix
+          # from the error's code, or from its kind when the code has none: that fits a cancel, a timeout, no
+          # connection and an unreadable answer (or a body the SDK could not write) wherever they happen, and an answer
+          # from Flock's game API, which the HTTP client classifies by its status. Any other failure, the SDK's own or
+          # an answer from elsewhere (asset storage), has a cause only its call site knows, so it is built with
+          # FFlockError::MakeWithFix and states its own fix. A Make whose type is a variable is caught too.
+          hits=$(git ls-files -z -- 'Source/*.cpp' 'Source/*.h' 'OptionalPlugins/*.cpp' 'OptionalPlugins/*.h' \
+            | grep -zv -e '/Tests/' -e '^Source/Flock/Private/Http/FlockHttpClient\.cpp$' \
+                -e '^Source/Flock/Public/Http/FlockHttpClient\.h$' -e '^Source/Flock/Private/Http/FlockError\.cpp$' \
+            | xargs -0 perl -0777 -ne 'while (/FFlockError::Make\((?!\s*EFlockErrorType::(?:Cancelled|Timeout|Connection|Serialization)\b)/g) { my $line = 1 + (substr($_, 0, pos($_)) =~ tr/\n//); print "$ARGV:$line: FFlockError::Make\n"; }' \
+            || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::A failure is built with FFlockError::Make outside the HTTP client, so it carries only a generic fix. Build it with FFlockError::MakeWithFix and say how to fix it."
+            exit 1
+          fi
+          echo "Every failure the SDK finds itself states its fix."
+
   standalone:
     # Shipped code and docs present this SDK on its own: a comment that leans on another engine's SDK ("the
     # canonical SDK does it this way") tells a studio reading it nothing, and fifteen of them had crept in.

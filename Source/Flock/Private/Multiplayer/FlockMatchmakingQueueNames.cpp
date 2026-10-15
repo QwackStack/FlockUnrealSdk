@@ -183,9 +183,11 @@ FFlockError FFlockMatchmakingQueueNames::NotFound(const FString& QueueName, cons
 			TEXT("Names match exactly, letter case included.");
 	}
 
-	FFlockError Error = FFlockError::Make(EFlockErrorType::Validation,
-		FString::Printf(TEXT("No matchmaking queue in this game is named \"%s\""), *QueueName), 0, FString(), QueueNotFoundCode);
-	Error.Hint = Hint;
+	FFlockError Error = FFlockError::MakeWithFix(EFlockErrorType::Validation,
+		FString::Printf(TEXT("No matchmaking queue in this game is named \"%s\""), *QueueName), Hint);
+	// The server's own code for an unknown queue, so a game that reads ErrorCode handles both the same way.
+	Error.Code = QueueNotFoundCode;
+	Error.ErrorCode = FFlockErrorCodes::Parse(Error.Code);
 	Error.Operation = TEXT("Find matchmaking queue");
 	return Error;
 }

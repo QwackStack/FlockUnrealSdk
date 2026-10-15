@@ -182,7 +182,7 @@ FFlockMakeGameTravel FlockEngineTravel()
 		UGameInstance* Instance = World != nullptr ? World->GetGameInstance() : nullptr;
 		if (World == nullptr || !World->IsGameWorld() || Instance == nullptr || Instance->GetWorldContext() == nullptr)
 		{
-			OutRefusal = TEXT("Travel To Session needs the game's world: pass an object in it, such as an actor or the game instance.");
+			OutRefusal = TEXT("Travel To Session needs the game's world, and the object given is not in one");
 			return nullptr;
 		}
 		return MakeShared<FFlockEngineTravel>(Instance);

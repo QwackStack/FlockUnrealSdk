@@ -74,13 +74,19 @@ Sdk->GetShopProvider()->GetByName(TEXT("Starter"),
         }
     });
 
-// Buy. An empty player id resolves the signed-in player.
+// Buy. ItemId is the shop item's Id from its shop (Item.Id above): not the item's name, and not the
+// shop's id. An empty player id resolves the signed-in player.
 Sdk->GetShopProvider()->Purchase(ItemId, FString(),
     [](TFlockResult<FFlockPurchaseResult> Bought)
     {
-        if (!Bought.bSuccess && Bought.Error.ErrorCode == EFlockErrorCode::ShopInsufficientFunds)
+        if (!Bought.bSuccess)
         {
-            // The server declined — show the player, don't retry.
+            if (Bought.Error.ErrorCode == EFlockErrorCode::ShopInsufficientFunds)
+            {
+                // The server declined — show the player, don't retry.
+            }
+            // What went wrong, then a "Fix:" line saying how to fix it.
+            UE_LOG(LogTemp, Warning, TEXT("%s"), *Bought.Error.ToDisplayText());
             return;
         }
 

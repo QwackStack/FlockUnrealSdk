@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Http/FlockErrorHints.h"
 #include "Auth/FlockAuthSession.h"
 #include "FlockEvents.h"
 #include "Http/FlockProviderBase.h"
@@ -309,7 +310,7 @@ private:
 		}
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Auth, TEXT("No player is signed in"))));
+			OnComplete(TFlockResult<T>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), FFlockErrorHints::SignInFirst())));
 		}
 		return false;
 	}

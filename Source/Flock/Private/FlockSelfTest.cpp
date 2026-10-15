@@ -198,7 +198,7 @@ namespace
 						{
 							Logger->LogInfo(FString::Printf(
 								TEXT("Self-test: analytics start session -> failed (%s); skipping the rest of the sweep."),
-								*StartResult.Error.Message));
+								*StartResult.Error.ReasonAndFix()));
 							Teardown();
 							return;
 						}
@@ -256,7 +256,7 @@ namespace
 							Logger->LogInfo(bRefusedAsExpected
 								? FString(TEXT("Self-test: analytics flush -> spool drained; the unknown player's event was refused as expected (analytics.player_not_found)"))
 								: FString::Printf(TEXT("Self-test: analytics flush -> UNEXPECTED: success=%s code='%s' (%s), pending=%d, events pending=%d"),
-									FlushResult.bSuccess ? TEXT("true") : TEXT("false"), *FlushResult.Error.Code, *FlushResult.Error.Message,
+									FlushResult.bSuccess ? TEXT("true") : TEXT("false"), *FlushResult.Error.Code, *FlushResult.Error.ReasonAndFix(),
 									Analytics->GetPendingEventCount(), Analytics->GetPendingAnalyticsEventCount()));
 
 							Analytics->EndSession(EFlockSessionEndReason::Manual,
@@ -265,7 +265,7 @@ namespace
 									Logger->LogInfo(EndResult.bSuccess
 										? FString(TEXT("Self-test: analytics end session -> closed out on the backend."))
 										: FString::Printf(TEXT("Self-test: analytics end session -> failed (%s)"),
-											*EndResult.Error.Message));
+											*EndResult.Error.ReasonAndFix()));
 
 									// Consent round trip: withdrawing must stop collection and drop the
 									// queue; restoring must reopen the session (the opt-in path).
@@ -312,7 +312,7 @@ namespace
 		{
 			if (!Result.bSuccess)
 			{
-				Logger->LogInfo(FString::Printf(TEXT("Self-test: shops (paginated) -> failed (%s)"), *Result.Error.Message));
+				Logger->LogInfo(FString::Printf(TEXT("Self-test: shops (paginated) -> failed (%s)"), *Result.Error.ReasonAndFix()));
 				return;
 			}
 			Logger->LogInfo(FString::Printf(TEXT("Self-test: shops (paginated) -> %d shop(s) (total %d)."),
@@ -332,14 +332,14 @@ namespace
 			{
 				Logger->LogInfo(ByIdResult.bSuccess
 					? FString::Printf(TEXT("Self-test: shop by id %s -> name='%s'"), *ShopId, *ByIdResult.Value.Name)
-					: FString::Printf(TEXT("Self-test: shop by id %s -> failed (%s)"), *ShopId, *ByIdResult.Error.Message));
+					: FString::Printf(TEXT("Self-test: shop by id %s -> failed (%s)"), *ShopId, *ByIdResult.Error.ReasonAndFix()));
 			});
 			// Enveloped-list items-by-shop (proves the GetList path).
 			Shop->GetItemsByShop(ShopId, FString(), [ShopId, Logger](TFlockResult<TArray<FFlockShopItem>> ItemsResult)
 			{
 				Logger->LogInfo(ItemsResult.bSuccess
 					? FString::Printf(TEXT("Self-test: items for shop %s -> %d item(s)"), *ShopId, ItemsResult.Value.Num())
-					: FString::Printf(TEXT("Self-test: items for shop %s -> failed (%s)"), *ShopId, *ItemsResult.Error.Message));
+					: FString::Printf(TEXT("Self-test: items for shop %s -> failed (%s)"), *ShopId, *ItemsResult.Error.ReasonAndFix()));
 			});
 		});
 	}
@@ -415,7 +415,7 @@ namespace
 			Logger->LogInfo(ShopsResult.bSuccess
 				? FString::Printf(TEXT("Self-test: shop catalog (signed in) -> %d shop(s); purchase candidate: %s"),
 					ShopsResult.Value.Items.Num(), ItemId.IsEmpty() ? TEXT("(none found)") : *ItemName)
-				: FString::Printf(TEXT("Self-test: shop catalog (signed in) -> failed (%s)"), *ShopsResult.Error.Message));
+				: FString::Printf(TEXT("Self-test: shop catalog (signed in) -> failed (%s)"), *ShopsResult.Error.ReasonAndFix()));
 
 			// A fresh inventory read (never cached), reused after the purchase to show the new entry.
 			auto ReadInventory = [Shop, Logger, Next]()
@@ -425,7 +425,7 @@ namespace
 					Logger->LogInfo(InvResult.bSuccess
 						? FString::Printf(TEXT("Self-test: player inventory -> %d item(s) on this page (total %d)"),
 							InvResult.Value.Items.Num(), InvResult.Value.Total)
-						: FString::Printf(TEXT("Self-test: player inventory -> failed (%s)"), *InvResult.Error.Message));
+						: FString::Printf(TEXT("Self-test: player inventory -> failed (%s)"), *InvResult.Error.ReasonAndFix()));
 					Next();
 				});
 			};
@@ -455,7 +455,7 @@ namespace
 					{
 						Logger->LogInfo(FString::Printf(
 							TEXT("Self-test: purchase -> failed (%s); wiring still proven — a coded error means the request reached the backend."),
-							*PurchaseResult.Error.Message));
+							*PurchaseResult.Error.ReasonAndFix()));
 					}
 
 					// The shop provider already fired Started/Failed (or Purchased) transactions around the
@@ -483,7 +483,7 @@ namespace
 						}
 						else
 						{
-							Logger->LogInfo(FString::Printf(TEXT("Self-test: analytics transaction -> failed (%s)"), *Ack.Error.Message));
+							Logger->LogInfo(FString::Printf(TEXT("Self-test: analytics transaction -> failed (%s)"), *Ack.Error.ReasonAndFix()));
 							Logger->LogInfo(TEXT("Self-test:   the SDK sends currency_code from the shop item but cannot send currency_id ")
 								TEXT("— no /v1 currency route exists. If this is 'currency_not_found', create a currency for the game ")
 								TEXT("in the dashboard, or have the backend resolve currency_code."));
@@ -510,7 +510,7 @@ namespace
 						: FString::Printf(
 							TEXT("Self-test: pre-purchase grant -> failed (%s); the purchase will likely report insufficient funds. ")
 							TEXT("A grant needs a 'currency'-tagged template declaring '%s'."),
-							*Funded.Error.Message, *ItemCurrency));
+							*Funded.Error.ReasonAndFix(), *ItemCurrency));
 					DoPurchase();
 				});
 				return;
@@ -522,21 +522,17 @@ namespace
 	}
 
 	/**
-	 * Failure narration for the command legs. A command can fail two very different ways and the terse
-	 * message reads identically for both, so this prints the server's error code and its own wording: a
-	 * *coded* rejection (game_command.template_validation_failed) means the body was understood and the
-	 * values were refused — the wiring is proven. An uncoded 422 is FastAPI rejecting the body's shape,
-	 * which is a real SDK bug and must not be read as "the backend just didn't like my value".
+	 * Failure narration for the command legs. A command can fail two very different ways, so this shows the server's code
+	 * with its reason and fix: a game_command.* refusal (game_command.template_validation_failed) means the body was
+	 * understood and the values were refused, which proves the wiring; request.validation_failed means the body's shape
+	 * was refused, a real SDK bug that must not be read as "the backend just didn't like my value". An answer with no code
+	 * did not come from Flock's game API, so its body is shown too.
 	 */
 	FString DescribeCommandFailure(const FFlockError& Error)
 	{
-		if (Error.Code.IsEmpty())
-		{
-			return FString::Printf(
-				TEXT("%s [NO ERROR CODE — if this is a 422 the request body shape was rejected, not its values] body=%s"),
-				*Error.Message, *Error.Body.Left(300));
-		}
-		return FString::Printf(TEXT("%s [code=%s] %s"), *Error.Message, *Error.Code, *Error.ServerMessage);
+		return Error.Code.IsEmpty()
+			? FString::Printf(TEXT("%s body=%s"), *Error.ReasonAndFix(), *Error.Body.Left(300))
+			: Error.ReasonAndFix();
 	}
 
 	/**
@@ -700,7 +696,7 @@ namespace
 					? FString(TEXT("Self-test: add game funds (offline) -> UNEXPECTEDLY succeeded; money must never be sent while unreachable."))
 					: FString::Printf(TEXT("Self-test: add game funds (offline) -> refused as designed (%s: %s)"),
 						FundsResult.Error.Type == EFlockErrorType::Connection ? TEXT("Connection") : TEXT("other"),
-						*FundsResult.Error.Message));
+						*FundsResult.Error.ReasonAndFix()));
 				Logger->LogInfo(FString::Printf(
 					TEXT("Self-test: queue after the refused grant -> %d (unchanged from %d; money is never queued)."),
 					Commands->GetPendingWriteCount(), Before));
@@ -713,7 +709,7 @@ namespace
 						Logger->LogInfo(QueuedResult.bSuccess
 							? FString::Printf(TEXT("Self-test: field write (offline) -> queued, returned the optimistic row %s; pending=%d"),
 								*QueuedResult.Value.Id, Queued)
-							: FString::Printf(TEXT("Self-test: field write (offline) -> failed (%s)"), *QueuedResult.Error.Message));
+							: FString::Printf(TEXT("Self-test: field write (offline) -> failed (%s)"), *QueuedResult.Error.ReasonAndFix()));
 
 						Logger->LogInfo(TEXT("Self-test: restoring the reachability probe and flushing the queue."));
 						Commands->SetReachabilityProbe(*RealProbe);
@@ -732,7 +728,7 @@ namespace
 							}
 							else
 							{
-								Logger->LogInfo(FString::Printf(TEXT("Self-test: flush -> failed (%s)"), *FlushResult.Error.Message));
+								Logger->LogInfo(FString::Printf(TEXT("Self-test: flush -> failed (%s)"), *FlushResult.Error.ReasonAndFix()));
 							}
 							Next();
 						});
@@ -773,7 +769,7 @@ namespace
 				{
 					Logger->LogInfo(FString::Printf(
 						TEXT("Self-test: currency template (tag 'currency') -> failed (%s); skipping the commands sweep."),
-						*TemplateResult.Error.Message));
+						*TemplateResult.Error.ReasonAndFix()));
 					Next();
 					return;
 				}
@@ -790,7 +786,7 @@ namespace
 						{
 							Logger->LogInfo(FString::Printf(
 								TEXT("Self-test: wallet row (tag 'currency') -> failed (%s); skipping the commands sweep."),
-								*WalletResult.Error.Message));
+								*WalletResult.Error.ReasonAndFix()));
 							Next();
 							return;
 						}
@@ -967,7 +963,7 @@ namespace
 								{
 									Logger->LogInfo(FString::Printf(
 										TEXT("Self-test: leaderboard score projection -> write of '%s' failed (%s)"),
-										*ScoreField, *Write.Error.Message));
+										*ScoreField, *Write.Error.ReasonAndFix()));
 									Next();
 									return;
 								}
@@ -1043,7 +1039,7 @@ namespace
 				{
 					Logger->LogInfo(Result.bSuccess
 						? FString::Printf(TEXT("Self-test: unlink device -> ok (now: %s)"), *DescribeAccounts(Result.Value.Accounts))
-						: FString::Printf(TEXT("Self-test: unlink device -> failed (%s)"), *Result.Error.Message));
+						: FString::Printf(TEXT("Self-test: unlink device -> failed (%s)"), *Result.Error.ReasonAndFix()));
 					Next();
 				});
 		};
@@ -1052,7 +1048,7 @@ namespace
 		{
 			if (!Listed.bSuccess)
 			{
-				Logger->LogInfo(FString::Printf(TEXT("Self-test: list linked accounts -> failed (%s)"), *Listed.Error.Message));
+				Logger->LogInfo(FString::Printf(TEXT("Self-test: list linked accounts -> failed (%s)"), *Listed.Error.ReasonAndFix()));
 				Next();
 				return;
 			}
@@ -1068,7 +1064,7 @@ namespace
 					const bool bAlreadyLinked = Linked.Error.ErrorCode == EFlockErrorCode::PlayerAccountAlreadyLinked;
 					Logger->LogInfo(FString::Printf(TEXT("Self-test: link device -> %s (%s)"),
 						bAlreadyLinked ? TEXT("already linked from an earlier run") : TEXT("failed"),
-						*Linked.Error.Message));
+						*Linked.Error.ReasonAndFix()));
 					if (bAlreadyLinked)
 					{
 						Detach();
@@ -1165,7 +1161,7 @@ namespace
 					if (!Registered.bSuccess)
 					{
 						Logger->LogInfo(FString::Printf(TEXT("Self-test: register device token -> failed (%s)"),
-							*Registered.Error.Message));
+							*Registered.Error.ReasonAndFix()));
 						Next();
 						return;
 					}
@@ -1179,7 +1175,7 @@ namespace
 							Logger->LogInfo(Off.bSuccess
 								? FString::Printf(TEXT("Self-test: unregister device token -> ok (deactivated %s)"),
 									Off.Value.Deactivated ? TEXT("true") : TEXT("false"))
-								: FString::Printf(TEXT("Self-test: unregister device token -> failed (%s)"), *Off.Error.Message));
+								: FString::Printf(TEXT("Self-test: unregister device token -> failed (%s)"), *Off.Error.ReasonAndFix()));
 							Next();
 						});
 				});
@@ -1194,7 +1190,7 @@ namespace
 				{
 					if (!Page.bSuccess)
 					{
-						Logger->LogInfo(FString::Printf(TEXT("Self-test: notification inbox -> failed (%s)"), *Page.Error.Message));
+						Logger->LogInfo(FString::Printf(TEXT("Self-test: notification inbox -> failed (%s)"), *Page.Error.ReasonAndFix()));
 						DeviceTokens();
 						return;
 					}
@@ -1216,14 +1212,14 @@ namespace
 					{
 						Logger->LogInfo(Count.bSuccess
 							? FString::Printf(TEXT("Self-test: unread count -> ok (%d)"), Count.Value)
-							: FString::Printf(TEXT("Self-test: unread count -> failed (%s)"), *Count.Error.Message));
+							: FString::Printf(TEXT("Self-test: unread count -> failed (%s)"), *Count.Error.ReasonAndFix()));
 
 						Notifications->GetSummary([Notifications, Logger, DeviceTokens, FirstUnreadId](TFlockResult<FFlockNotificationSummary> Summary)
 						{
 							Logger->LogInfo(Summary.bSuccess
 								? FString::Printf(TEXT("Self-test: notification summary -> ok (%d unread, %d previewed)"),
 									Summary.Value.UnreadCount, Summary.Value.Items.Num())
-								: FString::Printf(TEXT("Self-test: notification summary -> failed (%s)"), *Summary.Error.Message));
+								: FString::Printf(TEXT("Self-test: notification summary -> failed (%s)"), *Summary.Error.ReasonAndFix()));
 
 							TFunction<void()> MarkAll = [Notifications, Logger, DeviceTokens]()
 							{
@@ -1231,7 +1227,7 @@ namespace
 								{
 									Logger->LogInfo(All.bSuccess
 										? FString::Printf(TEXT("Self-test: mark all notifications read -> ok (%d updated)"), All.Value.Updated)
-										: FString::Printf(TEXT("Self-test: mark all notifications read -> failed (%s)"), *All.Error.Message));
+										: FString::Printf(TEXT("Self-test: mark all notifications read -> failed (%s)"), *All.Error.ReasonAndFix()));
 									DeviceTokens();
 								});
 							};
@@ -1249,7 +1245,7 @@ namespace
 								Logger->LogInfo(Marked.bSuccess
 									? FString::Printf(TEXT("Self-test: mark notification read -> ok ('%s' now read: %s)"),
 										*FirstUnreadId, Marked.Value.IsRead() ? TEXT("true") : TEXT("false"))
-									: FString::Printf(TEXT("Self-test: mark notification read -> failed (%s)"), *Marked.Error.Message));
+									: FString::Printf(TEXT("Self-test: mark notification read -> failed (%s)"), *Marked.Error.ReasonAndFix()));
 								MarkAll();
 							});
 						});
@@ -1292,7 +1288,7 @@ namespace
 						// Most likely causes: no template by this name on the backend, or a placeholder the
 						// sweep did not fill. Narrated rather than fatal so the inbox steps still run.
 						Logger->LogInfo(FString::Printf(TEXT("Self-test: schedule notification '%s' -> failed (%s)"),
-							*TemplateName, *Scheduled.Error.Message));
+							*TemplateName, *Scheduled.Error.ReasonAndFix()));
 						Inbox();
 						return;
 					}
@@ -1317,7 +1313,7 @@ namespace
 							Logger->LogInfo(Canceled.bSuccess
 								? FString::Printf(TEXT("Self-test: cancel scheduled notification -> ok (canceled %s)"),
 									Canceled.Value.IsCanceled() ? TEXT("true") : TEXT("false"))
-								: FString::Printf(TEXT("Self-test: cancel scheduled notification -> failed (%s)"), *Canceled.Error.Message));
+								: FString::Printf(TEXT("Self-test: cancel scheduled notification -> failed (%s)"), *Canceled.Error.ReasonAndFix()));
 
 							Logger->LogInfo(FString::Printf(TEXT("Self-test: pending schedules after cancel -> %d (cancelling untracks it)"),
 								Notifications->GetPendingSchedules().Num()));
@@ -1331,7 +1327,7 @@ namespace
 									if (!Second.bSuccess)
 									{
 										Logger->LogInfo(FString::Printf(
-											TEXT("Self-test: cancel-all -> skipped (second schedule failed: %s)"), *Second.Error.Message));
+											TEXT("Self-test: cancel-all -> skipped (second schedule failed: %s)"), *Second.Error.ReasonAndFix()));
 										Inbox();
 										return;
 									}
@@ -1345,7 +1341,7 @@ namespace
 											? FString::Printf(TEXT("Self-test: cancel all scheduled -> ok (%d cancelled server-side, %d still tracked)"),
 												Cleared.Value, Notifications->GetPendingSchedules().Num())
 											: FString::Printf(TEXT("Self-test: cancel all scheduled -> failed (%s); entries stay tracked for a retry"),
-												*Cleared.Error.Message));
+												*Cleared.Error.ReasonAndFix()));
 										Inbox();
 									});
 								});
@@ -1359,7 +1355,7 @@ namespace
 		{
 			if (!Catalog.bSuccess)
 			{
-				Logger->LogInfo(FString::Printf(TEXT("Self-test: notification templates -> failed (%s)"), *Catalog.Error.Message));
+				Logger->LogInfo(FString::Printf(TEXT("Self-test: notification templates -> failed (%s)"), *Catalog.Error.ReasonAndFix()));
 				Scheduling();
 				return;
 			}
@@ -1384,7 +1380,7 @@ namespace
 						? FString::Printf(TEXT("Self-test: notification template by name '%s' -> ok (id '%s', category '%s')"),
 							*TemplateName, *ByName.Value.Id, *ByName.Value.Category)
 						: FString::Printf(TEXT("Self-test: notification template by name '%s' -> failed (%s)"),
-							*TemplateName, *ByName.Error.Message));
+							*TemplateName, *ByName.Error.ReasonAndFix()));
 					Scheduling();
 				});
 		});
@@ -1409,7 +1405,7 @@ namespace
 				if (!BoardResult.bSuccess)
 				{
 					Logger->LogInfo(FString::Printf(TEXT("Self-test: leaderboard '%s' -> failed (%s); skipping the rest of the sweep."),
-						*BoardName, *BoardResult.Error.Message));
+						*BoardName, *BoardResult.Error.ReasonAndFix()));
 					Next();
 					return;
 				}
@@ -1433,7 +1429,7 @@ namespace
 					{
 						Logger->LogInfo(IdResult.bSuccess
 							? FString::Printf(TEXT("Self-test: leaderboard resolve id -> '%s' resolves to %s"), *BoardName, *IdResult.Value)
-							: FString::Printf(TEXT("Self-test: leaderboard resolve id -> failed (%s)"), *IdResult.Error.Message));
+							: FString::Printf(TEXT("Self-test: leaderboard resolve id -> failed (%s)"), *IdResult.Error.ReasonAndFix()));
 
 						// Step 3: standings, with the top row formatted the way the board measures — a
 						// duration board reads as a clock rather than raw seconds.
@@ -1443,7 +1439,7 @@ namespace
 								if (!Standings.bSuccess)
 								{
 									Logger->LogInfo(FString::Printf(TEXT("Self-test: leaderboard standings -> failed (%s)"),
-										*Standings.Error.Message));
+										*Standings.Error.ReasonAndFix()));
 								}
 								else
 								{
@@ -1463,7 +1459,7 @@ namespace
 										if (!Rank.bSuccess)
 										{
 											Logger->LogInfo(FString::Printf(TEXT("Self-test: leaderboard my rank -> failed (%s)"),
-												*Rank.Error.Message));
+												*Rank.Error.ReasonAndFix()));
 										}
 										else
 										{
@@ -1482,7 +1478,7 @@ namespace
 													? FString::Printf(TEXT("Self-test: leaderboard around me -> +/-%d returned=%d"),
 														DemoLeaderboardNeighbours, Around.Value.Items.Num())
 													: FString::Printf(TEXT("Self-test: leaderboard around me -> failed (%s)"),
-														*Around.Error.Message));
+														*Around.Error.ReasonAndFix()));
 
 												// Step 6: a name this game does not have must be rejected. Passing
 												// means the call FAILED; a success here is the bug.
@@ -1493,7 +1489,7 @@ namespace
 														Logger->LogInfo(Unknown.bSuccess
 															? FString::Printf(TEXT("Self-test: leaderboard unknown name -> UNEXPECTED SUCCESS for '%s'; the unknown-name guard is not working"), *Bogus)
 															: FString::Printf(TEXT("Self-test: leaderboard unknown name -> '%s' rejected as expected (%s)"),
-																*Bogus, *Unknown.Error.Message));
+																*Bogus, *Unknown.Error.ReasonAndFix()));
 
 														// Step 7: the projection check (self-gating).
 														RunLeaderboardProjectionStep(Leaderboards, Players, Commands, Logger, Next);
@@ -1519,7 +1515,7 @@ namespace
 		{
 			Logger->LogInfo(Result.bSuccess
 				? FString::Printf(TEXT("Self-test: %s -> success=%s"), Label, Result.Value.Success ? TEXT("true") : TEXT("false"))
-				: FString::Printf(TEXT("Self-test: %s -> failed (%s)"), Label, *Result.Error.Message));
+				: FString::Printf(TEXT("Self-test: %s -> failed (%s)"), Label, *Result.Error.ReasonAndFix()));
 		};
 
 		// Independent one-shots that work signed out. The reset/revoke/refresh calls fail fast on their
@@ -1529,7 +1525,7 @@ namespace
 		{
 			Logger->LogInfo(Result.bSuccess
 				? FString::Printf(TEXT("Self-test: name '%s' available=%s"), DemoName, Result.Value.Available ? TEXT("true") : TEXT("false"))
-				: FString::Printf(TEXT("Self-test: name availability -> failed (%s)"), *Result.Error.Message));
+				: FString::Printf(TEXT("Self-test: name availability -> failed (%s)"), *Result.Error.ReasonAndFix()));
 		});
 		Auth->ForgotPassword(DemoEmail, [NarrateAction](TFlockResult<FFlockAuthActionResponse> Result)
 		{
@@ -1543,7 +1539,7 @@ namespace
 		{
 			Logger->LogInfo(Result.bSuccess
 				? FString::Printf(TEXT("Self-test: token revoke -> revoked=%s"), Result.Value.Revoked ? TEXT("true") : TEXT("false"))
-				: FString::Printf(TEXT("Self-test: token revoke -> failed (%s)"), *Result.Error.Message));
+				: FString::Printf(TEXT("Self-test: token revoke -> failed (%s)"), *Result.Error.ReasonAndFix()));
 		});
 		Auth->RefreshToken([Logger](bool bRefreshed)
 		{
@@ -1559,7 +1555,7 @@ namespace
 			{
 				if (!Result.bSuccess)
 				{
-					Logger->LogInfo(FString::Printf(TEXT("Self-test: email register -> failed (%s); skipping login."), *Result.Error.Message));
+					Logger->LogInfo(FString::Printf(TEXT("Self-test: email register -> failed (%s); skipping login."), *Result.Error.ReasonAndFix()));
 					Teardown();
 					return;
 				}
@@ -1574,7 +1570,7 @@ namespace
 						if (!LoginResult.bSuccess)
 						{
 							Logger->LogInfo(FString::Printf(
-								TEXT("Self-test: email login -> failed (%s); skipping the signed-in flows."), *LoginResult.Error.Message));
+								TEXT("Self-test: email login -> failed (%s); skipping the signed-in flows."), *LoginResult.Error.ReasonAndFix()));
 							Teardown();
 							return;
 						}
@@ -1667,7 +1663,7 @@ namespace
 		{
 			if (!Result.bSuccess)
 			{
-				Logger->LogInfo(FString::Printf(TEXT("Self-test: assets -> failed (%s)"), *Result.Error.Message));
+				Logger->LogInfo(FString::Printf(TEXT("Self-test: assets -> failed (%s)"), *Result.Error.ReasonAndFix()));
 				return;
 			}
 			TArray<FString> Names;
@@ -1691,7 +1687,7 @@ namespace
 			if (!Result.bSuccess)
 			{
 				Logger->LogInfo(FString::Printf(TEXT("Self-test: asset by name '%s' -> failed (%s)"),
-					*AssetName, *Result.Error.Message));
+					*AssetName, *Result.Error.ReasonAndFix()));
 				return;
 			}
 
@@ -1709,7 +1705,7 @@ namespace
 					if (!Downloaded.bSuccess)
 					{
 						Logger->LogInfo(FString::Printf(TEXT("Self-test: download asset '%s' -> failed (%s)"),
-							*AssetName, *Downloaded.Error.Message));
+							*AssetName, *Downloaded.Error.ReasonAndFix()));
 						return;
 					}
 					const int64 Received = Downloaded.Value.Num();
@@ -1737,14 +1733,14 @@ namespace
 			{
 				Logger->LogInfo(Result.bSuccess
 					? FString::Printf(TEXT("Self-test: game -> id=%s name='%s' stage=%s"), *Result.Value.Id, *Result.Value.Name, *Result.Value.Stage)
-					: FString::Printf(TEXT("Self-test: game -> failed (%s)"), *Result.Error.Message));
+					: FString::Printf(TEXT("Self-test: game -> failed (%s)"), *Result.Error.ReasonAndFix()));
 			});
 
 			Game->GetGameVersion([Logger](TFlockResult<FFlockGameVersionSchema> Result)
 			{
 				Logger->LogInfo(Result.bSuccess
 					? FString::Printf(TEXT("Self-test: game version -> id=%s name='%s'"), *Result.Value.Id, *Result.Value.Name)
-					: FString::Printf(TEXT("Self-test: game version -> failed (%s)"), *Result.Error.Message));
+					: FString::Printf(TEXT("Self-test: game version -> failed (%s)"), *Result.Error.ReasonAndFix()));
 			});
 		}
 
@@ -1755,7 +1751,7 @@ namespace
 			{
 				Logger->LogInfo(Result.bSuccess
 					? FString::Printf(TEXT("Self-test: configs by tag(Any) -> %d config(s)."), Result.Value.Num())
-					: FString::Printf(TEXT("Self-test: configs by tag(Any) -> failed (%s)"), *Result.Error.Message));
+					: FString::Printf(TEXT("Self-test: configs by tag(Any) -> failed (%s)"), *Result.Error.ReasonAndFix()));
 			});
 
 			// Pull each known config by name (game_config/by-name/{name}), then resolve its effective data
@@ -1768,7 +1764,7 @@ namespace
 					if (!Result.bSuccess)
 					{
 						Logger->LogInfo(FString::Printf(
-							TEXT("Self-test: config by name '%s' -> failed (%s)"), *ConfigName, *Result.Error.Message));
+							TEXT("Self-test: config by name '%s' -> failed (%s)"), *ConfigName, *Result.Error.ReasonAndFix()));
 						return;
 					}
 					Logger->LogInfo(FString::Printf(
@@ -1781,7 +1777,7 @@ namespace
 						if (!DataResult.bSuccess)
 						{
 							Logger->LogInfo(FString::Printf(
-								TEXT("Self-test: resolve '%s' -> failed (%s)"), *ConfigName, *DataResult.Error.Message));
+								TEXT("Self-test: resolve '%s' -> failed (%s)"), *ConfigName, *DataResult.Error.ReasonAndFix()));
 							return;
 						}
 						const FString Preview = DataResult.Value.ToJsonString().Left(300);

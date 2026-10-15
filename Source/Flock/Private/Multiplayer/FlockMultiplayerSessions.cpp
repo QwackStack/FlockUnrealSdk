@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Multiplayer/FlockMultiplayerSessions.h"
+#include "Http/FlockErrorHints.h"
 #include "UObject/Package.h"
 
 namespace
@@ -48,7 +49,7 @@ bool FFlockMultiplayerSessions::IsGiven(const FString& Value, const TCHAR* Name,
 {
 	if (Value.IsEmpty())
 	{
-		OutError = FFlockError::Make(EFlockErrorType::Validation, FString::Printf(TEXT("%s cannot be null or empty"), Name));
+		OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation, FString::Printf(TEXT("%s is empty"), Name), FString::Printf(TEXT("Pass a %s; this call cannot run without one."), Name));
 		return false;
 	}
 	return true;
@@ -321,8 +322,7 @@ FFlockRequestHandle FFlockMultiplayerSessions::PublishDirectConnection(UFlockMul
 	// The backend checks nothing of a direct connection, so what it holds is checked here, before anything is asked.
 	if (Port < 1 || Port > 65535)
 	{
-		Refused = FFlockError::Make(EFlockErrorType::Validation, FString::Printf(
-			TEXT("The port must be from 1 to 65535, not %d. Give the port the game listens on for players."), Port));
+		Refused = FFlockError::MakeWithFix(EFlockErrorType::Validation, FString::Printf(TEXT("The port must be from 1 to 65535, not %d"), Port), TEXT("Give the port the game listens on for players."));
 	}
 	if (!Refused.Message.IsEmpty() || !IsRunning(Session, Refused))
 	{
@@ -349,8 +349,8 @@ FFlockRequestHandle FFlockMultiplayerSessions::PublishDirectConnection(UFlockMul
 			}
 			if (Found.Value.Lan.IsEmpty() && Found.Value.Public.IsEmpty())
 			{
-				AnswerSessionCall(OnComplete, TFlockResult<UFlockMultiplayerSession*>::Fail(FFlockError::Make(EFlockErrorType::Network,
-					TEXT("This device has no network address to publish. Check it is connected to a network."))));
+				AnswerSessionCall(OnComplete, TFlockResult<UFlockMultiplayerSession*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Network,
+					TEXT("This device has no network address to publish"), TEXT("Connect the device to a network, then publish the connection again."))));
 				return;
 			}
 			InTurn->Send([&]()
@@ -369,7 +369,7 @@ FFlockRequestHandle FFlockMultiplayerSessions::WaitForConnection(UFlockMultiplay
 	FFlockError Refused;
 	if (!(TimeoutSeconds > 0.0))
 	{
-		Refused = FFlockError::Make(EFlockErrorType::Validation, TEXT("Give WaitForConnection a time to wait that is longer than zero."));
+		Refused = FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("WaitForConnection needs a time to wait that is longer than zero"), TEXT("Pass the number of seconds to wait for the host's connection, such as 30."));
 	}
 	if (!Refused.Message.IsEmpty() || !IsRunning(Session, Refused))
 	{
@@ -409,7 +409,7 @@ FFlockRequestHandle FFlockMultiplayerSessions::FindDirectAddress(UFlockMultiplay
 {
 	if (Session == nullptr)
 	{
-		AnswerSessionCall(OnComplete, TFlockResult<FFlockDirectAddress>::Fail(FFlockError::Make(EFlockErrorType::Validation, TEXT("No session was given"))));
+		AnswerSessionCall(OnComplete, TFlockResult<FFlockDirectAddress>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("No session was given"), FFlockErrorHints::PassAHeldSession())));
 		return FFlockRequestHandle();
 	}
 	FFlockPublishedDirectAddresses Published;
@@ -761,8 +761,8 @@ void FFlockMultiplayerSessions::ReadUntilNewest(int32 SignInNumber, const FStrin
 				}
 				if (Attempt == MostReadsWhileTheSessionChanges)
 				{
-					AnswerSessionCall(OnComplete, TFlockResult<UFlockMultiplayerSession*>::Fail(FFlockError::Make(EFlockErrorType::Network,
-						TEXT("The session kept changing while it was being read. Try again."))));
+					AnswerSessionCall(OnComplete, TFlockResult<UFlockMultiplayerSession*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Network,
+						TEXT("The session kept changing while it was being read"), TEXT("Read it again in a moment: it changes while players join and leave and while hosting moves."))));
 					return;
 				}
 				if (InTurn->IsCancelled())
@@ -1032,14 +1032,14 @@ bool FFlockMultiplayerSessions::RequireSignedIn(int32& OutSignInNumber, FString&
 {
 	if (!AuthSession->IsAuthenticated())
 	{
-		OutError = FFlockError::Make(EFlockErrorType::Auth, TEXT("No player is signed in"));
+		OutError = FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), FFlockErrorHints::SignInFirst());
 		return false;
 	}
 	// The player id is what tells a call's reading from a heartbeat's (Take), so a sign-in that names no player sends nothing.
 	OutPlayerId = AuthSession->GetPlayerId();
 	if (OutPlayerId.IsEmpty())
 	{
-		OutError = FFlockError::Make(EFlockErrorType::Auth, TEXT("The sign-in names no player: its token carries no player id. Sign in again."));
+		OutError = FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("The sign-in names no player: its token carries no player id"), TEXT("Call Logout and sign the player in again with one of Flock's sign-in calls."));
 		return false;
 	}
 	OutSignInNumber = CurrentSignInNumber();
@@ -1050,13 +1050,12 @@ bool FFlockMultiplayerSessions::IsRunning(const UFlockMultiplayerSession* Sessio
 {
 	if (Session == nullptr)
 	{
-		OutError = FFlockError::Make(EFlockErrorType::Validation, TEXT("No session was given"));
+		OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("No session was given"), FFlockErrorHints::PassAHeldSession());
 		return false;
 	}
 	if (Session->HasEnded())
 	{
-		OutError = FFlockError::Make(EFlockErrorType::Validation, FString::Printf(
-			TEXT("This session has ended (%s). Host or join another, or get the player's current one with GetMySession."), *Session->GetEndReason()));
+		OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation, FString::Printf(TEXT("This session has ended (%s)"), *Session->GetEndReason()), FFlockErrorHints::FindAnotherSession());
 		return false;
 	}
 	return true;

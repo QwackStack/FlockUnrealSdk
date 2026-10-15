@@ -346,4 +346,92 @@ bool FProtokiteClientSessionAddressesTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * Protokite's refusals carry no Flock error code, and the Flock SDK reads an answer without one as coming from somewhere
+ * else: a failed Protokite call must say what Protokite's refusal means and name the playtest's settings instead. Driven
+ * through a real call, so a call that hands its failure over without Protokite's fix fails here.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokiteClientGivesProtokitesFixTest,
+	"Protokite.Playtest.Client.AFailureSaysWhatProtokiteMeantAndHowToFixIt",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokiteClientGivesProtokitesFixTest::RunTest(const FString& Parameters)
+{
+	struct FCase
+	{
+		const TCHAR* What;
+		FFlockHttpResponse Answer;
+		const TCHAR* FixSays;
+	};
+	// The refusals measured on Protokite's SDK routes (2026-09-14), and two answers that are not Protokite's.
+	const FCase Cases[] = {
+		{ TEXT("A key Protokite does not know"), FProtokitePlaytestFakeTransport::Status(401, TEXT("{\"detail\":\"Invalid API Key\"}")),
+			TEXT("Protokite did not accept this build's Flock API key") },
+		{ TEXT("A build no playtest is linked to"), FProtokitePlaytestFakeTransport::Status(404, TEXT("{\"detail\":\"No playtest is linked to this Flock SDK version\"}")),
+			TEXT("link the playtest in the Protokite dashboard to the Game Version this build runs") },
+		{ TEXT("A captive portal's page"), FProtokitePlaytestFakeTransport::Status(200, TEXT("<html>Sign in to the Wi-Fi</html>")),
+			TEXT("The answer did not come from Protokite's API") },
+		{ TEXT("A proxy's refusal"), FProtokitePlaytestFakeTransport::Status(403, TEXT("<html>Forbidden</html>")),
+			TEXT("The answer did not come from Protokite's API") },
+	};
+	for (const FCase& Case : Cases)
+	{
+		FClientFixture Fixture;
+		Fixture.Transport->Answer(ProtokitePlaytestFixtures::PlaytestConfigRoute, Case.Answer);
+		Fixture.Fetch();
+		RunPendingPlaytestRetries();
+		if (!TestTrue(FString::Printf(TEXT("%s: failed"), Case.What), Fixture.Result->IsSet() && !Fixture.Result->GetValue().bSuccess))
+		{
+			continue;
+		}
+		const FFlockError& Error = Fixture.Result->GetValue().Error;
+		TestTrue(FString::Printf(TEXT("%s: the fix says what Protokite meant (%s)"), Case.What, *Error.Hint),
+			Error.Hint.Contains(Case.FixSays, ESearchCase::CaseSensitive));
+		TestFalse(FString::Printf(TEXT("%s: and never sends the developer to the Flock SDK's API URL"), Case.What),
+			Error.Hint.Contains(TEXT("Flock's game API"), ESearchCase::CaseSensitive)
+			|| Error.Hint.Contains(TEXT("API URL under Project Settings > Flock SDK"), ESearchCase::CaseSensitive));
+	}
+	return true;
+}
+
+/** Every refusal Protokite is measured to send has a fix of its own, and none of them reads as the Flock SDK's. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokiteClientFixForEveryRefusalTest,
+	"Protokite.Playtest.Client.EveryRefusalProtokiteSendsHasItsOwnFix",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokiteClientFixForEveryRefusalTest::RunTest(const FString& Parameters)
+{
+	const auto Refusal = [](int32 Status, const TCHAR* Reason)
+	{
+		return FFlockError::Make(Status == 401 || Status == 403 ? EFlockErrorType::Auth : EFlockErrorType::Network,
+			Reason, Status, FString(), FString(), Reason);
+	};
+	struct FCase
+	{
+		FFlockError Error;
+		const TCHAR* FixSays;
+	};
+	const FCase Cases[] = {
+		{ Refusal(400, TEXT("This playtest is no longer collecting SDK sessions")), TEXT("start a new playtest in the Protokite dashboard") },
+		{ Refusal(401, TEXT("Invalid API Key")), TEXT("Set API Key under Project Settings > Flock SDK") },
+		{ Refusal(403, TEXT("Not your playtest session")), TEXT("Protokite holds this playtest session for another game") },
+		{ Refusal(404, TEXT("No published feedback form")), TEXT("publish the playtest's form in the Protokite dashboard") },
+		{ Refusal(404, TEXT("Playtest session not found")), TEXT("the next launch starts another") },
+		{ Refusal(422, TEXT("Missing required answer 'steps'")), TEXT("A form answer it names does not fit the form as published now") },
+		{ Refusal(503, TEXT("Could not reach Flock to verify SDK key")), TEXT("Protokite, or Flock behind it, failed") },
+		{ FFlockError::Make(EFlockErrorType::Connection, TEXT("The request could not reach the server")),
+			TEXT("Protokite API URL in Project Settings > Plugins > Protokite Playtest Settings") },
+		{ FFlockError::Make(EFlockErrorType::Timeout, TEXT("The server did not answer in time")), TEXT("can reach Protokite") },
+	};
+	for (const FCase& Case : Cases)
+	{
+		const FString Fix = FProtokiteClient::FixFor(Case.Error);
+		TestTrue(FString::Printf(TEXT("HTTP %d %s: %s"), Case.Error.StatusCode, *Case.Error.Message, *Fix),
+			Fix.Contains(Case.FixSays, ESearchCase::CaseSensitive));
+		TestFalse(FString::Printf(TEXT("HTTP %d %s: not the Flock SDK's fix"), Case.Error.StatusCode, *Case.Error.Message),
+			Fix.Contains(TEXT("Flock's game API"), ESearchCase::CaseSensitive));
+	}
+	return true;
+}
+
 #endif

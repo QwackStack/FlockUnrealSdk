@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Providers/FlockAssetProvider.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Engine/Texture2D.h"
 #include "HAL/FileManager.h"
@@ -28,11 +29,13 @@ namespace
 			return FFlockError::Make(EFlockErrorType::Cancelled,
 				FString::Printf(TEXT("Download of '%s' was cancelled"), *AssetName));
 		case EFlockHttpResult::Timeout:
-			return FFlockError::Make(EFlockErrorType::Timeout,
-				FString::Printf(TEXT("Download of '%s' timed out"), *AssetName));
+			return FFlockError::MakeWithFix(EFlockErrorType::Timeout,
+				FString::Printf(TEXT("Download of '%s' timed out"), *AssetName),
+				TEXT("Check the device's network connection and download it again; a large file may need a longer Asset Download Timeout Seconds under Project Settings > Flock SDK."));
 		case EFlockHttpResult::ConnectionError:
-			return FFlockError::Make(EFlockErrorType::Connection,
-				FString::Printf(TEXT("Couldn't reach storage for '%s': %s"), *AssetName, *Outcome.ErrorDetail));
+			return FFlockError::MakeWithFix(EFlockErrorType::Connection,
+				FString::Printf(TEXT("Could not reach the storage that serves '%s': %s"), *AssetName, *Outcome.ErrorDetail),
+				FFlockErrorHints::ForStorageDownload(0));
 		default:
 			break;
 		}
@@ -50,9 +53,10 @@ namespace
 			Type = EFlockErrorType::Validation;
 		}
 
-		return FFlockError::Make(Type,
-			FString::Printf(TEXT("Download of '%s' failed with status %d: %s"), *AssetName, Status, *Outcome.ErrorDetail),
-			Status);
+		// Asset files come from storage, not the Flock server, so its answers get storage's own fixes.
+		return FFlockError::MakeWithFix(Type,
+			FString::Printf(TEXT("The storage that serves '%s' refused the download: %s"), *AssetName, *Outcome.ErrorDetail),
+			FFlockErrorHints::ForStorageDownload(Status), Status);
 	}
 
 	/** Shared tally for a preload batch; the per-asset completions all close over one of these. */
@@ -217,8 +221,8 @@ void FFlockAssetProvider::GetByName(const FString& Name, TFunction<void(TFlockRe
 			OnComplete(TFlockResult<FFlockAsset>::Fail(Result.Error));
 			return;
 		}
-		OnComplete(TFlockResult<FFlockAsset>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-			FString::Printf(TEXT("No asset named '%s'"), *Name))));
+		OnComplete(TFlockResult<FFlockAsset>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+			FString::Printf(TEXT("No asset named '%s' in this game version"), *Name), TEXT("Upload it in the Flock dashboard and publish it to this game version; names match exactly, letter case included."))));
 	});
 }
 
@@ -364,8 +368,8 @@ void FFlockAssetProvider::DownloadToPath(const FFlockAsset& Asset, FFlockAssetPr
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FString>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Asset record is empty"))));
+			OnComplete(TFlockResult<FString>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("The asset record given is empty"), TEXT("Pass an asset read from Flock (GetAll, GetById or GetByName), not a default-made one."))));
 		}
 		return;
 	}
@@ -373,8 +377,8 @@ void FFlockAssetProvider::DownloadToPath(const FFlockAsset& Asset, FFlockAssetPr
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FString>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				FString::Printf(TEXT("Asset '%s' has no download URL"), *Label))));
+			OnComplete(TFlockResult<FString>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				FString::Printf(TEXT("Asset '%s' has no download address"), *Label), TEXT("Upload the asset's file in the Flock dashboard and publish it again."))));
 		}
 		return;
 	}
@@ -607,8 +611,8 @@ void FFlockAssetProvider::DownloadBytes(const FFlockAsset& Asset, FFlockAssetPro
 
 			OnComplete(bRead
 				? TFlockResult<TArray<uint8>>::Ok(Bytes)
-				: TFlockResult<TArray<uint8>>::Fail(FFlockError::Make(EFlockErrorType::Serialization,
-					FString::Printf(TEXT("Couldn't read downloaded asset from '%s'"), *Result.Value))));
+				: TFlockResult<TArray<uint8>>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Serialization,
+					FString::Printf(TEXT("The downloaded asset could not be read back from '%s'"), *Result.Value), TEXT("Check the device has free disk space and the game may write to its saved folder, then download it again."))));
 		});
 }
 
@@ -659,8 +663,8 @@ void FFlockAssetProvider::DownloadText(const FFlockAsset& Asset, FFlockAssetProg
 
 			OnComplete(bRead
 				? TFlockResult<FString>::Ok(Text)
-				: TFlockResult<FString>::Fail(FFlockError::Make(EFlockErrorType::Serialization,
-					FString::Printf(TEXT("Couldn't read downloaded asset from '%s'"), *Result.Value))));
+				: TFlockResult<FString>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Serialization,
+					FString::Printf(TEXT("The downloaded asset could not be read back from '%s'"), *Result.Value), TEXT("Check the device has free disk space and the game may write to its saved folder, then download it again."))));
 		});
 }
 
@@ -712,8 +716,8 @@ void FFlockAssetProvider::DownloadTexture(const FFlockAsset& Asset, FFlockAssetP
 			}
 			if (!bRead)
 			{
-				OnComplete(TFlockResult<UTexture2D*>::Fail(FFlockError::Make(EFlockErrorType::Serialization,
-					FString::Printf(TEXT("Couldn't read downloaded asset from '%s'"), *Result.Value))));
+				OnComplete(TFlockResult<UTexture2D*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Serialization,
+					FString::Printf(TEXT("The downloaded asset could not be read back from '%s'"), *Result.Value), TEXT("Check the device has free disk space and the game may write to its saved folder, then download it again."))));
 				return;
 			}
 
@@ -722,8 +726,8 @@ void FFlockAssetProvider::DownloadTexture(const FFlockAsset& Asset, FFlockAssetP
 			UTexture2D* Texture = FImageUtils::ImportBufferAsTexture2D(Bytes);
 			OnComplete(Texture
 				? TFlockResult<UTexture2D*>::Ok(Texture)
-				: TFlockResult<UTexture2D*>::Fail(FFlockError::Make(EFlockErrorType::Serialization,
-					FString::Printf(TEXT("Asset '%s' isn't an image format this engine can decode"), *Label))));
+				: TFlockResult<UTexture2D*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Serialization,
+					FString::Printf(TEXT("Asset '%s' is not an image format this engine can decode"), *Label), TEXT("Upload it as a PNG, JPEG or BMP image, or read it with DownloadBytes instead."))));
 		});
 }
 
@@ -814,8 +818,8 @@ void FFlockAssetProvider::PreloadWhere(TFunction<bool(const FFlockAsset&)> Predi
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<int32>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Preload predicate cannot be null"))));
+			OnComplete(TFlockResult<int32>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("The preload predicate is empty"), TEXT("Pass a function that picks the assets to preload."))));
 		}
 		return;
 	}

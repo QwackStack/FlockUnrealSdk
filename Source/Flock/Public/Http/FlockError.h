@@ -46,7 +46,10 @@ struct FLOCK_API FFlockError
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	EFlockErrorType Type = EFlockErrorType::None;
 
-	/** Terse, error-tracker-friendly message (kept free of the payload for stable bucketing). */
+	/**
+	 * What is wrong, in one sentence: the server's own reason when it sent one, otherwise the SDK's. Never the fix
+	 * (Hint) and never the status (ToDisplayText tags it). ToDisplayText is the text to show or log.
+	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString Message;
 
@@ -66,14 +69,14 @@ struct FLOCK_API FFlockError
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	EFlockErrorCode ErrorCode = EFlockErrorCode::Unknown;
 
-	/**
-	 * Human-readable message from the server's coded-error body (`detail.message`); empty when the body
-	 * had none. The server's wording of the failure — unlike Message, which stays terse for bucketing.
-	 */
+	/** Human-readable message from the server's coded-error body (`detail.message`); empty when the body had none. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString ServerMessage;
 
-	/** SDK-authored next step for this failure; empty when the SDK has nothing to add beyond the server's reason. */
+	/**
+	 * How to fix this failure, written by the SDK: its code's advice, or the advice for its kind of failure when the
+	 * code has none (FFlockErrorHints::ForFailure). Never empty on an error built by Make or MakeWithFix.
+	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString Hint;
 
@@ -89,22 +92,29 @@ struct FLOCK_API FFlockError
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	float RetryAfterSeconds = 0.f;
 
-	/** Builds an error, parses ErrorCode from the coded string, and stamps the hint for that code. */
+	/** Builds an error, parses ErrorCode from the coded string, and stamps the fix for it (FFlockErrorHints::ForFailure). */
 	static FFlockError Make(EFlockErrorType InType, const FString& InMessage, int32 InStatusCode = 0,
 		const FString& InBody = FString(), const FString& InCode = FString(),
 		const FString& InServerMessage = FString());
 
-	/** Standard text plus the server body (so logs show the reason while Message stays terse). */
+	/**
+	 * Builds a failure the SDK classifies itself: what is wrong, and how to fix it. InStatusCode is the status of an answer
+	 * from something other than Flock's game API (asset storage), or 0 for a failure found before or without a request.
+	 */
+	static FFlockError MakeWithFix(EFlockErrorType InType, const FString& InMessage, const FString& InFix, int32 InStatusCode = 0);
+
+	/** Standard text plus the server body, for a log that needs the raw answer as well. */
 	FString ToString() const;
 
 	/**
-	 * One developer-facing line naming both the problem and the fix: the operation, the server's own
-	 * reason (or the terse Message when it sent none), a [code, HTTP n] tag, and a "Fix:" line from
-	 * Hint. Each segment is omitted when its source is empty. The status joins the tag only when the
-	 * reason came from the server, since the terse fallback already carries it. Body stays out — that
-	 * is unbounded payload, and it is what ToString() is for.
+	 * The text to show a developer or log: "<Operation> failed: <Message> [<code>, HTTP <status>]", then a
+	 * "Fix: <Hint>" line. A segment whose source is empty is left out. Body stays out: that is unbounded payload,
+	 * and it is what ToString() is for.
 	 */
 	FString ToDisplayText() const;
+
+	/** ToDisplayText without the operation, for a line that names the call itself: "<Message> [tag]", then the fix. */
+	FString ReasonAndFix() const;
 
 	/**
 	 * True when a register/login route reports this identity (email/device/OAuth) already belongs to an

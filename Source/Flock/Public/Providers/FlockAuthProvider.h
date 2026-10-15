@@ -221,7 +221,7 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 		if (OnComplete)
 		{
 			OnComplete(TFlockResult<FFlockPlayerLoginResponse>::Fail(
-				FFlockError::Make(EFlockErrorType::Serialization, TEXT("Failed to serialize request body"))));
+				FFlockError::Make(EFlockErrorType::Serialization, TEXT("The SDK could not write the request's body"))));
 		}
 		return FFlockRequestHandle();
 	}
@@ -251,8 +251,13 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 			{
 				// One code is genuinely ambiguous — invalid_login_credentials means "register this
 				// device first" for a device login but "wrong password" for email. The HTTP layer has
-				// no way to know which, so the credential refines the context-free hint here.
-				Result.Error.Hint = FFlockErrorHints::ForAuth(Result.Error.ErrorCode, Method);
+				// no way to know which, so the credential refines the context-free hint here; every other failure
+				// keeps the fix it has.
+				const FString ForCredential = FFlockErrorHints::ForAuth(Result.Error.ErrorCode, Method);
+				if (!ForCredential.IsEmpty())
+				{
+					Result.Error.Hint = ForCredential;
+				}
 				if (OnComplete)
 				{
 					OnComplete(Result);
@@ -264,8 +269,8 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockPlayerLoginResponse>::Fail(FFlockError::Make(EFlockErrorType::Auth,
-						FString::Printf(TEXT("Invalid %s response from server"), *Context.ToLower()))));
+					OnComplete(TFlockResult<FFlockPlayerLoginResponse>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Auth,
+						FString::Printf(TEXT("The server's answer to %s has no access token"), *Context.ToLower()), FFlockErrorHints::NotFlocksAnswer())));
 				}
 				return;
 			}
@@ -276,7 +281,7 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 				if (OnComplete)
 				{
 					OnComplete(TFlockResult<FFlockPlayerLoginResponse>::Fail(
-						FFlockError::Make(EFlockErrorType::Auth, SetError)));
+						FFlockError::MakeWithFix(EFlockErrorType::Auth, SetError, FFlockErrorHints::NotFlocksAnswer())));
 				}
 				return;
 			}
@@ -344,7 +349,7 @@ bool FFlockAuthProvider::RequireAuthenticated(const TFunction<void(TFlockResult<
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Auth, TEXT("No player is signed in"))));
+			OnComplete(TFlockResult<T>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), FFlockErrorHints::SignInFirst())));
 		}
 		return false;
 	}
@@ -390,7 +395,7 @@ FFlockRequestHandle FFlockAuthProvider::PostAccount(const TReq& Request, const F
 		if (OnComplete)
 		{
 			OnComplete(TFlockResult<TResp>::Fail(
-				FFlockError::Make(EFlockErrorType::Serialization, TEXT("Failed to serialize request body"))));
+				FFlockError::Make(EFlockErrorType::Serialization, TEXT("The SDK could not write the request's body"))));
 		}
 		return FFlockRequestHandle();
 	}

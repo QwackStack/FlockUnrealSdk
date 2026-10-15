@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Providers/FlockCommandProvider.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Http/FlockEndpoints.h"
 #include "Http/FlockSnapshotStore.h"
@@ -135,8 +136,8 @@ void FFlockCommandProvider::UnlockAchievement(const FString& AchievementName,
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Player provider unavailable; cannot resolve the achievements row."))));
+			OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock player data is not available, so the player's achievements record cannot be found"), FFlockErrorHints::InitializeFlockFirst())));
 		}
 		return;
 	}
@@ -163,8 +164,8 @@ void FFlockCommandProvider::UnlockAchievement(const FString& AchievementName,
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-						TEXT("No achievements data found for the current player."))));
+					OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+						TEXT("The signed-in player has no achievements record"), TEXT("The server makes it when a player registers, from the Game Version's achievement template (a player-data template tagged achievement), so a player who registered before that template existed, or under another Game Version, has none. Create the template in the Flock dashboard, then register the player under this build's Game Version."))));
 				}
 				return;
 			}
@@ -192,8 +193,8 @@ void FFlockCommandProvider::AddGameFunds(const FString& Currency, int32 Amount,
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Player provider unavailable; cannot resolve the currency template."))));
+			OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock player data is not available, so the currency template cannot be found"), FFlockErrorHints::InitializeFlockFirst())));
 		}
 		return;
 	}
@@ -234,8 +235,8 @@ void FFlockCommandProvider::AddGameFunds(const FString& Currency, int32 Amount, 
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Player provider unavailable; cannot resolve the currency wallet."))));
+			OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock player data is not available, so the player's wallet cannot be found"), FFlockErrorHints::InitializeFlockFirst())));
 		}
 		return;
 	}
@@ -262,8 +263,8 @@ void FFlockCommandProvider::AddGameFunds(const FString& Currency, int32 Amount, 
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-						TEXT("No currency wallet found for the current player."))));
+					OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+						TEXT("The signed-in player has no wallet record for that currency template"), TEXT("Check the Currency Template ID is the id of the Game Version's currency template in the Flock dashboard. The server makes a player's wallet when the player registers, so a player who registered before that template existed, or under another Game Version, has none."))));
 				}
 				return;
 			}

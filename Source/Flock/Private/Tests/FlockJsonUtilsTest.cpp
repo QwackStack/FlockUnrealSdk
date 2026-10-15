@@ -370,7 +370,7 @@ bool FFlockJsonPaginatedRefusesANonObjectItemTest::RunTest(const FString& Parame
 	FString Error;
 	const bool bRead = FFlockJsonUtils::UnwrapPaginated(TEXT("{\"items\":[{\"id\":\"v1\"},7],\"total\":2,\"page\":1,\"limit\":10}"), Page, Error);
 	TestFalse(TEXT("a number among the items fails the read"), bRead);
-	TestEqualSensitive(TEXT("saying the item is malformed"), Error, FString(TEXT("Malformed paginated item")));
+	TestEqualSensitive(TEXT("saying the item could not be read"), Error, FString(TEXT("An item in the server's answer could not be read")));
 
 	TestFalse(TEXT("null is no object"), FFlockJsonUtils::AsObjectOrNull(MakeShared<FJsonValueNull>()).IsValid());
 	TestFalse(TEXT("nor is an array"), FFlockJsonUtils::AsObjectOrNull(MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>())).IsValid());

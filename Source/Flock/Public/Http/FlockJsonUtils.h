@@ -161,7 +161,7 @@ public:
 			const TSharedRef<FJsonObject> Transformed = TransformObjectKeys(Object, /*bToPascal*/ true);
 			if (!FJsonObjectConverter::JsonObjectToUStruct(Transformed, T::StaticStruct(), &OutStruct, 0, 0))
 			{
-				OutError = TEXT("Malformed response body");
+				OutError = TEXT("The server's answer could not be read as JSON");
 				return false;
 			}
 			return true;
@@ -259,7 +259,7 @@ public:
 		TSharedPtr<FJsonObject> Root;
 		if (!TryParseObject(Json, Root) || !Root.IsValid())
 		{
-			OutError = TEXT("Malformed response body");
+			OutError = TEXT("The server's answer could not be read as JSON");
 			return false;
 		}
 		return WireObjectToStruct(Root.ToSharedRef(), OutStruct, OutError);
@@ -278,13 +278,13 @@ public:
 		TSharedPtr<FJsonObject> Root;
 		if (!TryParseObject(Body, Root) || !Root.IsValid())
 		{
-			OutError = TEXT("Malformed response body");
+			OutError = TEXT("The server's answer could not be read as JSON");
 			return false;
 		}
 		const TArray<TSharedPtr<FJsonValue>>* ResultArray = nullptr;
 		if (!Root->TryGetArrayField(TEXT("result"), ResultArray))
 		{
-			OutError = TEXT("Invalid response from server (missing result)");
+			OutError = TEXT("The server's answer has no result in it");
 			return false;
 		}
 		OutArray.Reset();
@@ -295,7 +295,7 @@ public:
 			// accept a string/number element as an empty struct.
 			if (!Elem.IsValid() || Elem->Type != EJson::Object)
 			{
-				OutError = TEXT("Malformed response element");
+				OutError = TEXT("An entry in the server's answer could not be read");
 				return false;
 			}
 			T Item;
@@ -318,13 +318,13 @@ public:
 		TSharedPtr<FJsonObject> Root;
 		if (!TryParseObject(Body, Root) || !Root.IsValid())
 		{
-			OutError = TEXT("Malformed response body");
+			OutError = TEXT("The server's answer could not be read as JSON");
 			return false;
 		}
 		const TSharedPtr<FJsonObject>* ResultObj = nullptr;
 		if (!Root->TryGetObjectField(TEXT("result"), ResultObj) || !ResultObj->IsValid())
 		{
-			OutError = TEXT("Invalid response from server (missing result)");
+			OutError = TEXT("The server's answer has no result in it");
 			return false;
 		}
 		return WireObjectToStruct((*ResultObj).ToSharedRef(), OutStruct, OutError);
@@ -343,7 +343,7 @@ public:
 		TSharedPtr<FJsonObject> Root;
 		if (!TryParseObject(Body, Root) || !Root.IsValid())
 		{
-			OutError = TEXT("Malformed response body");
+			OutError = TEXT("The server's answer could not be read as JSON");
 			return false;
 		}
 		TSharedPtr<FJsonObject> Page = Root;
@@ -355,7 +355,7 @@ public:
 		const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
 		if (!Page->TryGetArrayField(TEXT("items"), Items))
 		{
-			OutError = TEXT("Invalid paginated response (missing items)");
+			OutError = TEXT("The server's answer has no list of items in it");
 			return false;
 		}
 		for (const TSharedPtr<FJsonValue>& Elem : *Items)
@@ -363,7 +363,7 @@ public:
 			const TSharedPtr<FJsonObject> ElemObj = FFlockJsonUtils::AsObjectOrNull(Elem);
 			if (!ElemObj.IsValid())
 			{
-				OutError = TEXT("Malformed paginated item");
+				OutError = TEXT("An item in the server's answer could not be read");
 				return false;
 			}
 			T Item;

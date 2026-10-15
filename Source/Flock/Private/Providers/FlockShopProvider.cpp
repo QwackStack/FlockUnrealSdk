@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Providers/FlockShopProvider.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Http/FlockEndpoints.h"
 #include "Http/FlockJsonUtils.h"
@@ -287,7 +288,7 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 	}
 	// Default to the signed-in player; callers no longer need to pass it explicitly.
 	const FString ResolvedPlayerId = PlayerId.IsEmpty() ? Session->GetPlayerId() : PlayerId;
-	if (!RequireNotEmpty(ResolvedPlayerId, TEXT("Player ID (sign in first)"), OnComplete))
+	if (!RequireNotEmpty(ResolvedPlayerId, TEXT("Player ID"), OnComplete, FFlockErrorHints::SignInFirst()))
 	{
 		return;
 	}
@@ -330,8 +331,7 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockPurchaseResult>::Fail(FFlockError::Make(
-						EFlockErrorType::Serialization, TEXT("Failed to serialize purchase request"))));
+					OnComplete(TFlockResult<FFlockPurchaseResult>::Fail(FFlockError::Make(EFlockErrorType::Serialization, TEXT("The SDK could not write the purchase's body"))));
 				}
 				return;
 			}
@@ -428,7 +428,7 @@ void FFlockShopProvider::GetPlayerInventory(const FString& PlayerId, int32 Page,
 	TFunction<void(TFlockResult<FFlockPlayerInventoryPage>)> OnComplete)
 {
 	const FString ResolvedPlayerId = PlayerId.IsEmpty() ? Session->GetPlayerId() : PlayerId;
-	if (!RequireNotEmpty(ResolvedPlayerId, TEXT("Player ID (sign in first)"), OnComplete))
+	if (!RequireNotEmpty(ResolvedPlayerId, TEXT("Player ID"), OnComplete, FFlockErrorHints::SignInFirst()))
 	{
 		return;
 	}

@@ -18,6 +18,9 @@
 
 namespace FlockLeaderboardProviderTestHelpers
 {
+	/** The answer for a board the game does not have, as the local backend sent it on 2026-10-15. */
+	const TCHAR* const UnknownBoardBody = TEXT("{\"detail\":{\"code\":\"leaderboard.not_found\",\"message\":\"Leaderboard 'Nope' not found\"}}");
+
 	inline FFlockRetryPolicy NoRetry()
 	{
 		FFlockRetryPolicy Policy;
@@ -267,7 +270,7 @@ bool FFlockLeaderboardUnknownNameTest::RunTest(const FString& Parameters)
 	{
 		FFixture F;
 		F.SignIn();
-		F.RouteStandings(FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"missing\"}")));
+		F.RouteStandings(FFlockFakeTransport::Status(404, UnknownBoardBody));
 
 		bool bDone = false;
 		F.Provider->GetStandings(TEXT("Nope"), [&](TFlockResult<FFlockStandings> Result)
@@ -287,7 +290,7 @@ bool FFlockLeaderboardUnknownNameTest::RunTest(const FString& Parameters)
 	{
 		FFixture F;
 		F.SignIn();
-		F.RouteRank(FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"missing\"}")));
+		F.RouteRank(FFlockFakeTransport::Status(404, UnknownBoardBody));
 
 		bool bDone = false;
 		F.Provider->GetMyRank(TEXT("Nope"), [&](TFlockResult<FFlockPlayerRank> Result)
@@ -306,7 +309,7 @@ bool FFlockLeaderboardUnknownNameTest::RunTest(const FString& Parameters)
 	{
 		FFixture F;
 		F.Provider->GetStandings(TEXT("HighScoreTest"), [](TFlockResult<FFlockStandings>) {});
-		F.RouteStandings(FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"missing\"}")));
+		F.RouteStandings(FFlockFakeTransport::Status(404, UnknownBoardBody));
 
 		bool bDone = false;
 		F.Provider->GetStandings(TEXT("HighScoreTest"), [&](TFlockResult<FFlockStandings> Result)
@@ -314,6 +317,27 @@ bool FFlockLeaderboardUnknownNameTest::RunTest(const FString& Parameters)
 			bDone = true;
 			TestFalse(TEXT("propagates despite the cache"), Result.bSuccess);
 			TestTrue(TEXT("as a validation error"), Result.Error.Type == EFlockErrorType::Validation);
+		});
+		TestTrue(TEXT("completed"), bDone);
+		Cleanup(F.Dir);
+	}
+
+	// Counter-case: a 404 that is not the board's (an API URL ending in /v1 reaches no route) keeps its own reason and
+	// fix, rather than sending the developer to check a board name that is right.
+	{
+		FFixture F;
+		F.SignIn();
+		F.RouteStandings(FFlockFakeTransport::Status(404, TEXT("{\"detail\":{\"code\":\"request.not_found\",\"message\":\"Not Found\"}}")));
+
+		bool bDone = false;
+		F.Provider->GetStandings(TEXT("Nope"), [&](TFlockResult<FFlockStandings> Result)
+		{
+			bDone = true;
+			TestFalse(TEXT("fails"), Result.bSuccess);
+			TestEqual(TEXT("on its own code"), Result.Error.ErrorCode, EFlockErrorCode::RequestNotFound);
+			TestTrue(TEXT("not made the caller's mistake"), Result.Error.Type != EFlockErrorType::Validation);
+			TestFalse(TEXT("not called the board's"), Result.Error.Message.Contains(TEXT("leaderboard"), ESearchCase::IgnoreCase));
+			TestTrue(TEXT("with the fix for a wrong API URL"), Result.Error.Hint.Contains(TEXT("API URL")));
 		});
 		TestTrue(TEXT("completed"), bDone);
 		Cleanup(F.Dir);

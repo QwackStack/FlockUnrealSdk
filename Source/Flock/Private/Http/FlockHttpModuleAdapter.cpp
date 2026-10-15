@@ -111,7 +111,7 @@ FFlockRequestHandle FFlockHttpModuleAdapter::SendAsync(const FFlockHttpRequest& 
 				break;
 			default:
 				Out.Result = EFlockHttpResult::ConnectionError;
-				Out.Body = TEXT("Network request failed");
+				Out.Body = FString::Printf(TEXT("The engine's request ended with no answer (failure reason %d)"), static_cast<int32>(Reason));
 				break;
 			}
 			OnComplete(Out);

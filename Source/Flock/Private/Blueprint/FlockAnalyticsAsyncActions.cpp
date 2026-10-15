@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockAnalyticsAsyncActions.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Engine/BlueprintGeneratedClass.h"
 #include "FlockEventModels.h"
@@ -28,8 +29,8 @@ namespace
 		FFlockAnalyticsProvider* Provider = Sdk ? Sdk->GetAnalyticsProvider() : nullptr;
 		if (!Provider)
 		{
-			OutError = FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Flock analytics is not available. Initialize the SDK and make sure Analytics is enabled in settings."));
+			OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock analytics is not available: Flock is not initialized, or analytics is turned off"), FString(TEXT("Turn on Analytics Enabled under Project Settings > Flock SDK. ")) + FFlockErrorHints::InitializeFlockFirst());
 		}
 		return Provider;
 	}

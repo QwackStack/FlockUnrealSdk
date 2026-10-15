@@ -1,14 +1,15 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Multiplayer/FlockTravelToSession.h"
+#include "Http/FlockErrorHints.h"
 #include "Multiplayer/FlockMultiplayerSession.h"
 #include "Multiplayer/FlockMultiplayerSessions.h"
 
 namespace
 {
-	FFlockError TravelRefused(const FString& Message)
+	FFlockError TravelRefused(const FString& Message, const FString& Fix)
 	{
-		return FFlockError::Make(EFlockErrorType::Validation, Message);
+		return FFlockError::MakeWithFix(EFlockErrorType::Validation, Message, Fix);
 	}
 }
 
@@ -27,41 +28,43 @@ bool FFlockTravels::IsOnItsOwn(const FFlockGameNetState& State)
 FFlockRequestHandle FFlockTravels::Travel(UFlockMultiplayerSession* Session, UObject* WorldContextObject,
 	const FFlockTravelToSessionOptions& Options, FOnTravel OnComplete)
 {
-	const auto Refuse = [&OnComplete](const FString& Message)
+	const auto Refuse = [&OnComplete](const FString& Message, const FString& Fix)
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockTravelToSessionResult>::Fail(TravelRefused(Message)));
+			OnComplete(TFlockResult<FFlockTravelToSessionResult>::Fail(TravelRefused(Message, Fix)));
 		}
 		return FFlockRequestHandle();
 	};
 	if (Session == nullptr)
 	{
-		return Refuse(TEXT("No session was given"));
+		return Refuse(TEXT("No session was given"), FFlockErrorHints::PassAHeldSession());
 	}
 	if (Session->HasEnded())
 	{
-		return Refuse(FString::Printf(TEXT("This session has ended (%s). Host or join another, or get the player's current one with GetMySession."),
-			*Session->GetEndReason()));
+		return Refuse(FString::Printf(TEXT("This session has ended (%s)"),
+			*Session->GetEndReason()), FFlockErrorHints::FindAnotherSession());
 	}
 	if (Current.IsValid())
 	{
-		return Refuse(TEXT("A travel to the session is already under way. Wait for it, or cancel it, before starting another."));
+		return Refuse(TEXT("A travel to the session is already under way"),
+			TEXT("Wait for it to finish, or cancel it through its handle, before starting another."));
 	}
 	if (!Session->IsHost() && !(Options.WaitForHostSeconds > 0.f))
 	{
-		return Refuse(TEXT("Give Wait For Host Seconds a time to wait that is longer than zero."));
+		return Refuse(TEXT("Wait For Host Seconds must be longer than zero"),
+			TEXT("Give it a time to wait, such as 30, so a player who is not the host waits for the host's address."));
 	}
 	FString Refusal;
 	const TSharedPtr<IFlockGameTravel> Game = MakeGameTravel ? MakeGameTravel(WorldContextObject, Refusal) : nullptr;
 	if (!Game.IsValid())
 	{
-		return Refuse(Refusal);
+		return Refuse(Refusal, TEXT("Pass an object in the game's world as the World Context, such as an actor or the game instance."));
 	}
 	if (!IsOnItsOwn(Game->Read()))
 	{
-		return Refuse(TEXT("This game is already connected to a host, hosting, or opening a level. Travel to a level of its own, not listening "
-			"for players, before traveling to a session."));
+		return Refuse(TEXT("This game is already connected to a host, hosting, or opening a level"),
+			TEXT("Travel to a level of its own, not listening for players, before traveling to a session."));
 	}
 
 	const FTravelRef Travel = MakeShared<FTravel>();
@@ -208,7 +211,7 @@ void FFlockTravels::StartConnecting(const FTravelRef& Travel, const FFlockDirect
 	if (!IsOnItsOwn(Travel->Game->Read()))
 	{
 		Fail(Travel, TravelRefused(TEXT("This game started hosting, connecting or opening a level while it waited for the host, so it does not travel "
-			"to the session.")));
+			"to the session"), TEXT("Leave the game in a level of its own while Travel To Session waits for the host, then travel again.")));
 		return;
 	}
 	Travel->Result.Address = Address.Address;

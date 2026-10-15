@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Providers/FlockAnalyticsProvider.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Analytics/FlockAnalyticsJson.h"
 #include "Analytics/FlockAnalyticsLaunches.h"
@@ -757,8 +758,8 @@ void FFlockAnalyticsProvider::RecordTransaction(const FFlockAnalyticsTransaction
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::Make(EFlockErrorType::Auth,
-				TEXT("RecordTransaction requires a signed-in player"))));
+			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Auth,
+				TEXT("RecordTransaction needs a signed-in player, and none is"), FFlockErrorHints::SignInFirst())));
 		}
 		return;
 	}
@@ -766,8 +767,8 @@ void FFlockAnalyticsProvider::RecordTransaction(const FFlockAnalyticsTransaction
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				FString::Printf(TEXT("Transaction amount must be non-negative, got: %f"), InRequest.Amount))));
+			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				FString::Printf(TEXT("The transaction amount is below zero: %f"), InRequest.Amount), TEXT("Pass an amount of zero or more."))));
 		}
 		return;
 	}
@@ -792,7 +793,7 @@ void FFlockAnalyticsProvider::RecordTransaction(const FFlockAnalyticsTransaction
 		if (OnComplete)
 		{
 			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::Make(EFlockErrorType::Serialization,
-				TEXT("Failed to serialize transaction"))));
+				TEXT("The SDK could not write the transaction's body"))));
 		}
 		return;
 	}
@@ -828,8 +829,8 @@ void FFlockAnalyticsProvider::StartSession(const FString& InPlayerIdOrEmpty,
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FString>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Analytics is disabled or consent has not been granted"))));
+			OnComplete(TFlockResult<FString>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Analytics is not collecting: it is turned off, or the player has not given consent"), TEXT("Turn on Analytics Enabled under Project Settings > Flock SDK. With Analytics Require Explicit Consent on, also record the player's consent with SetConsent(true) before starting a session."))));
 		}
 		return;
 	}
@@ -889,8 +890,8 @@ void FFlockAnalyticsProvider::RegisterActiveSession(TFunction<void(TFlockResult<
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FString>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("No active session to register"))));
+			OnComplete(TFlockResult<FString>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("No analytics session is open to register"), TEXT("Start one with StartSession, or leave Analytics Auto Start Session on under Project Settings > Flock SDK."))));
 		}
 		return;
 	}
@@ -969,8 +970,8 @@ void FFlockAnalyticsProvider::RegisterActiveSession(TFunction<void(TFlockResult<
 				else
 				{
 					OnComplete(TFlockResult<FString>::Fail(Result.bSuccess
-						? FFlockError::Make(EFlockErrorType::Network,
-							TEXT("Session registration returned no session id"))
+						? FFlockError::MakeWithFix(EFlockErrorType::Network,
+							TEXT("The server's answer to the session registration has no session id"), FFlockErrorHints::NotFlocksAnswer())
 						: Result.Error));
 				}
 			}
@@ -1273,8 +1274,8 @@ void FFlockAnalyticsProvider::SendSpooledEnd(const FString& Handle, const FFlock
 				if (!Result.bSuccess || Result.Value.SessionId.IsEmpty())
 				{
 					const FFlockError Error = Result.bSuccess
-						? FFlockError::Make(EFlockErrorType::Network,
-							TEXT("Session registration returned no session id"))
+						? FFlockError::MakeWithFix(EFlockErrorType::Network,
+							TEXT("The server's answer to the session registration has no session id"), FFlockErrorHints::NotFlocksAnswer())
 						: Result.Error;
 					Self->HandleEndFailure(Handle, Snapshot.SessionId, Error, Delivered, OnComplete);
 					return;

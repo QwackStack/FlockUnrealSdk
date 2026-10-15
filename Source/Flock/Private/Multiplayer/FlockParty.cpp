@@ -78,8 +78,8 @@ FFlockRequestHandle UFlockParty::FindMatch(const FString& QueueName, const FFloc
 	}
 	if (OnComplete)
 	{
-		OnComplete(TFlockResult<FFlockMatchmakingResult>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-			TEXT("This party has ended (SignedOut): Flock has shut down."))));
+		OnComplete(TFlockResult<FFlockMatchmakingResult>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+			TEXT("This party has ended (SignedOut): Flock has shut down"), TEXT("Initialize Flock again and sign the player in, then create or join a party."))));
 	}
 	return FFlockRequestHandle();
 }
@@ -158,8 +158,8 @@ FFlockRequestHandle UFlockParty::RefuseWithoutOwner(const FFlockOnParty& OnCompl
 {
 	if (OnComplete)
 	{
-		OnComplete(TFlockResult<UFlockParty*>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-			TEXT("This party has ended (SignedOut): Flock has shut down."))));
+		OnComplete(TFlockResult<UFlockParty*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+			TEXT("This party has ended (SignedOut): Flock has shut down"), TEXT("Initialize Flock again and sign the player in, then create or join a party."))));
 	}
 	return FFlockRequestHandle();
 }

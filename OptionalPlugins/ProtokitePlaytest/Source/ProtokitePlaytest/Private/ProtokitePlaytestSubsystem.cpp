@@ -1617,7 +1617,7 @@ bool UProtokitePlaytestSubsystem::SendFilledInForm(const FProtokitePlaytestFormA
 			FProtokitePlaytestFormSpool::Release(*Claim, KeptAt);
 			// Protokite names the question it refused only inside the message, so it is pulled out and said plainly. A
 			// player cannot act on it -- the form has closed -- but whoever edited the form can.
-			const FString RefusedQuestion = ProtokitePlaytestFindFieldIdInComplaint(Result.Error.ToDisplayText());
+			const FString RefusedQuestion = ProtokitePlaytestFindFieldIdInComplaint(Result.Error.ServerMessage);
 			UE_LOG(LogProtokitePlaytest, Warning, TEXT("The feedback form was not sent%s%s: %s"),
 				bServerRefusedIt ? TEXT("") : TEXT(", and is kept for a later launch"),
 				RefusedQuestion.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (the question '%s' was refused)"), *RefusedQuestion),
@@ -1706,7 +1706,7 @@ void UProtokitePlaytestSubsystem::SendKeptForm(TSharedRef<TArray<TPair<FString, 
 			}
 			else
 			{
-				const FString RefusedQuestion = ProtokitePlaytestFindFieldIdInComplaint(Result.Error.ToDisplayText());
+				const FString RefusedQuestion = ProtokitePlaytestFindFieldIdInComplaint(Result.Error.ServerMessage);
 				UE_LOG(LogProtokitePlaytest, Warning, TEXT("A kept feedback form was not sent%s: %s"),
 					RefusedQuestion.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (the question '%s' was refused)"), *RefusedQuestion),
 					*Result.Error.ToDisplayText());

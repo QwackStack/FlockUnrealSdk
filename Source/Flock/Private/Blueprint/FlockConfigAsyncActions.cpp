@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockConfigAsyncActions.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Engine/BlueprintGeneratedClass.h"
 #include "FlockSubsystem.h"
@@ -27,8 +28,8 @@ namespace
 		FFlockConfigProvider* Provider = Sdk ? Sdk->GetConfigProvider() : nullptr;
 		if (!Provider)
 		{
-			OutError = FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Flock config is not available. Initialize the SDK first."));
+			OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock config is not available: Flock is not initialized"), FFlockErrorHints::InitializeFlockFirst());
 		}
 		return Provider;
 	}
@@ -39,8 +40,8 @@ namespace
 		FFlockGameProvider* Provider = Sdk ? Sdk->GetGameProvider() : nullptr;
 		if (!Provider)
 		{
-			OutError = FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Flock game info is not available. Initialize the SDK first."));
+			OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock game info is not available: Flock is not initialized"), FFlockErrorHints::InitializeFlockFirst());
 		}
 		return Provider;
 	}

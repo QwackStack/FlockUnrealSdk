@@ -128,7 +128,8 @@ protected:
 				// an identity that already exists). Logging those as errors is noise that devalues
 				// the real ones, so the caller can declare them and they drop to debug.
 				// A cancel is the game's or the SDK's own choice (a handle cancelled, a sign-in ended), so it is no failure either.
-				const FString Line = FString::Printf(TEXT("%s failed: %s"), *LoggedContext, *Result.Error.Message);
+				// What went wrong and how to fix it, as the developer reads it everywhere else.
+				const FString Line = FString::Printf(TEXT("%s failed: %s"), *LoggedContext, *Result.Error.ReasonAndFix());
 				if (Result.Error.Type == EFlockErrorType::Cancelled || (IsExpectedFailure && IsExpectedFailure(Result.Error)))
 				{
 					Log->LogDebug(Line);
@@ -302,16 +303,21 @@ protected:
 	/** True when the server is considered reachable (default: always). */
 	bool IsServerReachable() const { return !ReachabilityProbe || ReachabilityProbe(); }
 
-	/** Reports a Validation failure and returns false when a required argument is empty. */
+	/**
+	 * Reports a Validation failure and returns false when a required argument is empty. Fix says what to do about it;
+	 * without one, the failure asks for the argument by Name.
+	 */
 	template <typename T>
-	bool RequireNotEmpty(const FString& Value, const FString& Name, const TFunction<void(TFlockResult<T>)>& OnComplete) const
+	bool RequireNotEmpty(const FString& Value, const FString& Name, const TFunction<void(TFlockResult<T>)>& OnComplete,
+		const FString& Fix = FString()) const
 	{
 		if (Value.IsEmpty())
 		{
 			if (OnComplete)
 			{
-				OnComplete(TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-					FString::Printf(TEXT("%s cannot be null or empty"), *Name))));
+				OnComplete(TFlockResult<T>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+					FString::Printf(TEXT("%s is empty"), *Name),
+					Fix.IsEmpty() ? FString::Printf(TEXT("Pass a %s; this call cannot run without one."), *Name) : Fix)));
 			}
 			return false;
 		}

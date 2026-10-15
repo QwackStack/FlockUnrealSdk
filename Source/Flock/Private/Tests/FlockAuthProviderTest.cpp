@@ -422,6 +422,15 @@ bool FFlockAuthProviderFailureTextTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("tags the code"), Text.Contains(TEXT("[player.invalid_login_credentials, HTTP 401]")));
 		TestTrue(TEXT("points at device registration"), Text.Contains(TEXT("Fix: This device is not registered yet.")));
 	}
+	// A sign-in failure with no code of its own keeps the fix for its kind: the credential refines only the codes it can.
+	{
+		FProviderFixture F;
+		F.Fake->On(TEXT("player/login"), FFlockFakeTransport::Status(403, TEXT("<html>Forbidden by the proxy</html>")));
+		FFlockError Error;
+		F.Provider->LoginWithDevice(TEXT("dev-1"), [&](TFlockResult<FFlockPlayerLoginResponse> R) { Error = R.Error; });
+		TestFalse(TEXT("an uncoded sign-in failure still carries a fix"), Error.Hint.IsEmpty());
+		TestTrue(TEXT("the fix for an answer that is not Flock's"), Error.Hint.Contains(TEXT("no Flock error code")));
+	}
 	// Same code, same route family, different remedy — which is the entire reason ForAuth exists.
 	{
 		FProviderFixture F;

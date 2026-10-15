@@ -9,7 +9,7 @@ bool FFlockPartyReading::FromWireObject(const TSharedRef<FJsonObject>& Object, F
 	Object->TryGetStringField(TEXT("id"), OutStruct.Id);
 	if (OutStruct.Id.IsEmpty())
 	{
-		OutError = TEXT("Invalid response from server (the answer names no party)");
+		OutError = TEXT("The server's answer names no party");
 		return false;
 	}
 	Object->TryGetStringField(TEXT("leader_player_id"), OutStruct.LeaderPlayerId);
@@ -28,7 +28,7 @@ bool FFlockPartyReading::FromWireObject(const TSharedRef<FJsonObject>& Object, F
 			if (!Member.IsValid() || !Member->TryGetObject(MemberObject) || MemberObject == nullptr
 				|| !(*MemberObject)->TryGetStringField(TEXT("player_id"), PlayerId) || PlayerId.IsEmpty())
 			{
-				OutError = TEXT("Invalid response from server (a party member with no player id)");
+				OutError = TEXT("The server's answer has a party member with no player id");
 				return false;
 			}
 			OutStruct.MemberIds.Add(PlayerId);
@@ -43,7 +43,7 @@ bool FFlockMyPartyReading::FromWireObject(const TSharedRef<FJsonObject>& Object,
 	const TSharedPtr<FJsonValue> Result = Object->TryGetField(TEXT("result"));
 	if (!Result.IsValid())
 	{
-		OutError = TEXT("Invalid response from server (missing result)");
+		OutError = TEXT("The server's answer has no result in it");
 		return false;
 	}
 	if (Result->IsNull())
@@ -53,7 +53,7 @@ bool FFlockMyPartyReading::FromWireObject(const TSharedRef<FJsonObject>& Object,
 	const TSharedPtr<FJsonObject>* PartyObject = nullptr;
 	if (!Result->TryGetObject(PartyObject) || PartyObject == nullptr || !PartyObject->IsValid())
 	{
-		OutError = TEXT("Invalid response from server (the result is not a party)");
+		OutError = TEXT("The server's answer holds something other than a party");
 		return false;
 	}
 	if (!FFlockPartyReading::FromWireObject((*PartyObject).ToSharedRef(), OutStruct.Party, OutError))
@@ -71,7 +71,7 @@ bool FFlockMultiplayerSessionJoinToken::FromWireObject(const TSharedRef<FJsonObj
 	Object->TryGetStringField(TEXT("token"), OutStruct.Token);
 	if (OutStruct.Token.IsEmpty())
 	{
-		OutError = TEXT("Invalid response from server (the answer names no join token)");
+		OutError = TEXT("The server's answer names no join token");
 		return false;
 	}
 	Object->TryGetNumberField(TEXT("expires_in"), OutStruct.ExpiresInSeconds);
@@ -85,7 +85,7 @@ bool FFlockVerifiedJoinToken::FromWireObject(const TSharedRef<FJsonObject>& Obje
 	Object->TryGetStringField(TEXT("player_id"), OutStruct.PlayerId);
 	if (OutStruct.PlayerId.IsEmpty())
 	{
-		OutError = TEXT("Invalid response from server (the answer names no player)");
+		OutError = TEXT("The server's answer names no player");
 		return false;
 	}
 	return true;
@@ -97,7 +97,7 @@ bool FFlockStunServerList::FromWireObject(const TSharedRef<FJsonObject>& Object,
 	const TArray<TSharedPtr<FJsonValue>>* Servers = nullptr;
 	if (!Object->TryGetArrayField(TEXT("ice_servers"), Servers) || Servers == nullptr)
 	{
-		OutError = TEXT("Invalid response from server (the answer lists no servers)");
+		OutError = TEXT("The server's answer lists no servers");
 		return false;
 	}
 	for (const TSharedPtr<FJsonValue>& Server : *Servers)
@@ -147,7 +147,7 @@ bool FFlockMultiplayerSessionReading::FromWireObject(const TSharedRef<FJsonObjec
 	Object->TryGetStringField(TEXT("id"), OutStruct.Id);
 	if (OutStruct.Id.IsEmpty())
 	{
-		OutError = TEXT("Invalid response from server (the answer names no session)");
+		OutError = TEXT("The server's answer names no session");
 		return false;
 	}
 	Object->TryGetStringField(TEXT("status"), OutStruct.Status);
@@ -182,7 +182,7 @@ bool FFlockMultiplayerSessionReading::FromWireObject(const TSharedRef<FJsonObjec
 			if (!Participant.IsValid() || !Participant->TryGetObject(ParticipantObject) || ParticipantObject == nullptr
 				|| !(*ParticipantObject)->TryGetStringField(TEXT("player_id"), Seat.PlayerId) || Seat.PlayerId.IsEmpty())
 			{
-				OutError = TEXT("Invalid response from server (a seat with no player id)");
+				OutError = TEXT("The server's answer has a seat with no player id");
 				return false;
 			}
 			(*ParticipantObject)->TryGetStringField(TEXT("status"), Seat.Status);
@@ -214,7 +214,7 @@ bool FFlockMatchmakingTicketReading::FromWireObject(const TSharedRef<FJsonObject
 	Object->TryGetStringField(TEXT("status"), OutStruct.Status);
 	if (OutStruct.Id.IsEmpty() || OutStruct.Status.IsEmpty())
 	{
-		OutError = TEXT("Invalid response from server (the answer names no search)");
+		OutError = TEXT("The server's answer names no search");
 		return false;
 	}
 	Object->TryGetStringField(TEXT("queue_id"), OutStruct.QueueId);
@@ -263,7 +263,7 @@ bool FFlockMatchmakingTicketsMade::FromWireObject(const TSharedRef<FJsonObject>&
 	const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
 	if (!Object->TryGetArrayField(TEXT("result"), Items) || Items == nullptr)
 	{
-		OutError = TEXT("Invalid response from server (missing result)");
+		OutError = TEXT("The server's answer has no result in it");
 		return false;
 	}
 	for (const TSharedPtr<FJsonValue>& Item : *Items)
@@ -271,7 +271,7 @@ bool FFlockMatchmakingTicketsMade::FromWireObject(const TSharedRef<FJsonObject>&
 		const TSharedPtr<FJsonObject>* TicketObject = nullptr;
 		if (!Item.IsValid() || !Item->TryGetObject(TicketObject) || TicketObject == nullptr || !TicketObject->IsValid())
 		{
-			OutError = TEXT("Invalid response from server (a search that is not one)");
+			OutError = TEXT("The server's answer holds a search that is not one");
 			return false;
 		}
 		FFlockMatchmakingTicketReading Ticket;
@@ -283,7 +283,7 @@ bool FFlockMatchmakingTicketsMade::FromWireObject(const TSharedRef<FJsonObject>&
 	}
 	if (OutStruct.Tickets.Num() == 0)
 	{
-		OutError = TEXT("Invalid response from server (no search was made)");
+		OutError = TEXT("The server's answer says no search was made");
 		return false;
 	}
 	return true;

@@ -648,8 +648,8 @@ void FFlockNotificationProvider::WithTemplateId(const FString& TemplateName, TFu
 			{
 				// A 2xx with no id means the name does not exist for this game. That is a caller mistake,
 				// so it fails Validation rather than silently scheduling against nothing.
-				OnFailure(FFlockError::Make(EFlockErrorType::Validation,
-					FString::Printf(TEXT("No notification template named '%s'"), *TemplateName)));
+				OnFailure(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+					FString::Printf(TEXT("No notification template named '%s'"), *TemplateName), TEXT("Create it in the Flock dashboard and make it active; names match exactly, letter case included.")));
 				return;
 			}
 			Continue(Result.Value.Id);
@@ -1080,9 +1080,9 @@ void FFlockNotificationProvider::RegisterDeviceToken(const FString& Token,
 		// "push is broken" with nothing in the logs to point at.
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockDeviceToken>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				FString::Printf(TEXT("Push notifications are not available on %s. The backend accepts android, ios and web only."),
-					ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName())))));
+			OnComplete(TFlockResult<FFlockDeviceToken>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				FString::Printf(TEXT("Push notifications are not available on %s: the server takes android, ios and web only"),
+					ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName())), TEXT("Register a device token only on an Android, iOS or web build."))));
 		}
 		return;
 	}

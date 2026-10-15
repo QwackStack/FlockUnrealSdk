@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockAuthAsyncActions.h"
+#include "Http/FlockErrorHints.h"
 #include "FlockSubsystem.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Providers/FlockAuthProvider.h"
@@ -30,8 +31,8 @@ namespace
 		FFlockAuthProvider* Provider = Sdk ? Sdk->GetAuthProvider() : nullptr;
 		if (!Provider)
 		{
-			OutError = FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Flock SDK is not initialized. Initialize the SDK before calling auth nodes."));
+			OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock is not initialized, so its sign-in nodes cannot run"), FFlockErrorHints::InitializeFlockFirst());
 		}
 		return Provider;
 	}
@@ -356,7 +357,7 @@ UFlockAuthAccountAction* UFlockAuthAccountAction::RefreshToken(UObject* WorldCon
 			{
 				OnDone(bRefreshed, bRefreshed
 					? FFlockError()
-					: FFlockError::Make(EFlockErrorType::Auth, TEXT("Token refresh failed. Please log in again.")));
+					: FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("The player's sign-in could not be renewed"), TEXT("Sign the player in again. If the device was offline, wait for the connection and renew again first; the Output Log names what refused it.")));
 			});
 		});
 }

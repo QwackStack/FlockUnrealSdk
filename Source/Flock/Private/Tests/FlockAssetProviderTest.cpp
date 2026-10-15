@@ -8,6 +8,7 @@
 #include "Auth/FlockAuthSession.h"
 #include "FlockLogger.h"
 #include "HAL/FileManager.h"
+#include "Http/FlockErrorHints.h"
 #include "Http/FlockHttpClient.h"
 #include "Http/FlockSnapshotStore.h"
 #include "Misc/FileHelper.h"
@@ -275,6 +276,37 @@ bool FFlockAssetFailureLeavesNoFileTest::RunTest(const FString&)
 
 	// A truncated or error-document file surviving here would later read as a valid cache hit.
 	TestEqual(TEXT("nothing was committed to the cache"), Fx.Cache->GetTotalSizeBytes(), static_cast<int64>(0));
+
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAssetMissingFileTest, "Flock.Assets.Provider.AFileMissingFromStorageSaysSoAndHowToFixIt",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAssetMissingFileTest::RunTest(const FString&)
+{
+	// Measured 2026-10-15: local storage answers a file it no longer holds with 404 NoSuchKey. Storage answered, not the
+	// Flock server, so the fix is storage's rather than the one for a wrong API URL.
+	FFixture Fx;
+	Fx.Fake->On(TEXT("/asset"), FFlockFakeTransport::Ok(ListBody()));
+	Fx.Downloader->OnStatus(TEXT("u-old"), 404, TEXT("<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>"));
+
+	TOptional<FFlockError> Failure;
+	Fx.Provider->DownloadText(TEXT("logo"), FFlockAssetProgress(), [&Failure](TFlockResult<FString> Result)
+	{
+		if (!Result.bSuccess)
+		{
+			Failure = Result.Error;
+		}
+	});
+	if (TestTrue(TEXT("the download fails"), Failure.IsSet()))
+	{
+		TestTrue(TEXT("naming the storage"), Failure->Message.Contains(TEXT("storage")));
+		TestEqual(TEXT("with storage's status"), Failure->StatusCode, 404);
+		TestEqualSensitive(TEXT("and storage's fix"), Failure->Hint, FFlockErrorHints::ForStorageDownload(404));
+		TestFalse(TEXT("not blamed on API URL"), Failure->Hint.Contains(TEXT("API URL")));
+	}
 
 	Cleanup(Fx.Dir);
 	return true;

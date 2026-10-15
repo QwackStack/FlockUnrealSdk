@@ -14,8 +14,14 @@ Device login failed: Invalid credentials [player.invalid_login_credentials, HTTP
 Fix: This device is not registered yet. Call Flock Register With Device once to create the account, then Flock Login With Device on later launches.
 ```
 
-Each segment is dropped when there is nothing to say. A failure that never reached the server has no
-status, no code and no hint, so it composes to just its message — `Request timeout`.
+Every failure says what is wrong and how to fix it. A segment is dropped only when there is nothing to
+say: a failure that never reached the server has no status and no code, so it reads as its cause and
+its fix alone:
+
+```
+The server did not answer in time
+Fix: Check the device's network connection, then try again; the SDK retries a read by itself. A purchase or other change that timed out may still have been made, so read the result before sending it again.
+```
 
 The **raw response body is deliberately not in there**. It is unbounded payload, and it is what makes
 an error-tracker group every failure into its own bucket. Read `Error.Body` when you want it, or
@@ -26,10 +32,10 @@ an error-tracker group every failure into its own bucket. Read `Error.Body` when
 | Field | What it holds |
 |-------|---------------|
 | `Type` | `EFlockErrorType` — Auth, Validation, Network, Connection, Timeout, Serialization, Cancelled |
-| `Message` | Terse, stable text (`Validation failed (HTTP 422)`). Kept short on purpose so error trackers bucket by kind |
+| `Message` | What is wrong, in one sentence: the server's own reason when it gave one, otherwise the SDK's (`The server found nothing at this address`). Never the fix and never the status |
 | `ServerMessage` | The server's own wording of the failure, when the body carried one |
 | `Code` / `ErrorCode` | The backend's `detail.code` string, raw and as a typed `EFlockErrorCode` |
-| `Hint` | The SDK's next step for this code — the `Fix:` line above |
+| `Hint` | How to fix it — the `Fix:` line above. Never empty |
 | `Operation` | Short label of the call that failed (`Device login`, `Purchase shop item`) |
 | `StatusCode` | HTTP status when the failure came from a response; `0` for transport and client-side failures |
 | `Body` | The raw response body |
@@ -60,7 +66,7 @@ In Blueprint the same branch is `Error Code` off the broken-out struct, compared
 `EFlockErrorCode` literal — no string typing involved.
 
 `EFlockErrorCode::Unknown` means the body had no code, or one this SDK version predates. The raw string
-is still on `Error.Code`, so a newer backend code is never lost, only untyped.
+is still on `Error.Code`, so a newer backend code is never lost, only untyped, and the fix names it.
 
 ### Groups, not single codes
 
@@ -73,7 +79,22 @@ predicate wrapping a single code; compare `ErrorCode` directly for those.
 
 `Hint` is filled from a table keyed on `EFlockErrorCode`, never on message text, and it is stamped the
 moment the error is built — so any failure with a recognised code carries its remedy no matter which
-layer produced it.
+layer produced it. When the code has no advice of its own, the fix is the one for the kind of failure:
+
+| Failure | Fix |
+|---------|-----|
+| No answer in time | Check the network; a change that timed out may still have been made, so read before re-sending |
+| No connection | Check the device is online and that API URL is the server's address alone |
+| An answer with no Flock code | Something other than Flock's game API answered (a proxy, a captive portal, another server): check API URL |
+| An unreadable success | The same: a captive portal or another server answered |
+| A server failure (5xx) | Not caused by the call: try again later |
+| A code newer than this SDK | The server's reason is all there is; the fix names the code |
+| A failure the SDK finds itself | Its own fix (an empty argument names what to pass; nobody signed in says to sign in) |
+
+Every failure Flock's game API sends carries a code. `request.not_found` with a bare `Not Found` is the server saying no
+route (with any other reason it names a record the route did not find)
+answers at that address: API URL under Project Settings > Flock SDK must be the server's address alone,
+such as `https://api.example.com`, with no `/v1` or other path after it.
 
 One code is genuinely ambiguous and gets refined by the credential that hit it:
 `player.invalid_login_credentials` means *"this device has no account, register it"* for a device login
@@ -88,9 +109,11 @@ Hints name real calls only. Facebook and Discord have no registration route, so 
 The backend reports two different `detail` shapes, and both are parsed:
 
 - The game routes send a coded object — `{"detail":{"code":"...","message":"..."}}` — which fills
-  `Code` and `ServerMessage`.
-- The request-validation layer sends an **array of field errors** instead, which carries no code at
-  all. Those render into `ServerMessage` as the field path and the reason:
+  `Code` and `ServerMessage`. A request the server refuses before any route runs (a member missing from
+  the body) comes coded `request.validation_failed`, its message naming the field
+  (`body.shop_item_id: Field required`).
+- An older server's request-validation layer sends an **array of field errors** instead, which carries no
+  code at all. Those render into `ServerMessage` as the field path and the reason:
 
 ```
 Update player data failed: body.player_data: Input should be a valid dictionary [HTTP 422]
@@ -120,5 +143,6 @@ retries Auth, Validation, Serialization or Cancelled. What is left for you:
 ## Where failures show up in the log
 
 Every failing call is logged as a warning by the HTTP layer with the server's error document (first 512
-characters), and the provider logs the operation that failed. Neither needs debug logs turned on — see
+characters), and the provider logs the operation that failed with the same text `ToDisplayText()` gives,
+its `Fix:` line included. Neither needs debug logs turned on — see
 [Logging & debugging](logging.md).

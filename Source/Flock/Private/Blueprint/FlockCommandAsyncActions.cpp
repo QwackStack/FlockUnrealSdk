@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockCommandAsyncActions.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Engine/BlueprintGeneratedClass.h"
 #include "FlockSubsystem.h"
@@ -26,8 +27,8 @@ namespace
 		FFlockCommandProvider* Provider = Sdk ? Sdk->GetCommandProvider() : nullptr;
 		if (!Provider)
 		{
-			OutError = FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Flock command provider is not available. Initialize the SDK first."));
+			OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock commands are not available: Flock is not initialized"), FFlockErrorHints::InitializeFlockFirst());
 		}
 		return Provider;
 	}

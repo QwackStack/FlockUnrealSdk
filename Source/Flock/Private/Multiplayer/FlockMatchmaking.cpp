@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Multiplayer/FlockMatchmaking.h"
+#include "Http/FlockErrorHints.h"
 #include "Multiplayer/FlockMultiplayerSession.h"
 #include "Multiplayer/FlockMultiplayerSessions.h"
 
@@ -110,7 +111,7 @@ FFlockRequestHandle FFlockMatchmaking::FindForParty(UFlockParty* Party, const FS
 {
 	if (Party == nullptr)
 	{
-		Answer(OnComplete, TFlockResult<FFlockMatchmakingResult>::Fail(FFlockError::Make(EFlockErrorType::Validation, TEXT("No party was given"))));
+		Answer(OnComplete, TFlockResult<FFlockMatchmakingResult>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("No party was given"), FFlockErrorHints::PassAHeldParty())));
 		return FFlockRequestHandle();
 	}
 	if (Party->HasEnded())
@@ -244,8 +245,8 @@ void FFlockMatchmaking::TakeMade(const TSharedRef<FStart>& Making, const FFlockM
 	const FFlockMatchmakingTicketReading* Own = Made.FindTicketOf(Making->PlayerId);
 	if (Own == nullptr)
 	{
-		FinishStart(Making, TFlockResult<FFlockMatchmakingResult>::Fail(FFlockError::Make(EFlockErrorType::Network,
-			TEXT("Invalid response from server (the answer names no search for this player)"))));
+		FinishStart(Making, TFlockResult<FFlockMatchmakingResult>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Network,
+			TEXT("The server's answer names no search for this player"), TEXT("The answer does not match what this SDK sends for: keep the Flock SDK and the server on matching versions, then call FindMatch again."))));
 		return;
 	}
 	if (Making->bGivenUp)
@@ -396,8 +397,8 @@ void FFlockMatchmaking::Wait(const TSharedRef<FSearch>& Waited, const TSharedRef
 {
 	if (Waited->Caller.IsValid())
 	{
-		Call->Answer(TFlockResult<FFlockMatchmakingResult>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-			TEXT("A call already waits for this search. Wait for its result, or for the party's OnSearchEnded."))));
+		Call->Answer(TFlockResult<FFlockMatchmakingResult>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+			TEXT("A call already waits for this search"), TEXT("Wait for that call's result, or for the party's OnSearchEnded, rather than calling FindMatch again."))));
 		return;
 	}
 	Call->Starting.Reset();
@@ -442,8 +443,8 @@ void FFlockMatchmaking::StopWaiting(const TSharedRef<FSearch>& Waiting, const UF
 	}
 	StopChecking(Waiting);
 	const FFlockError Why = Party == nullptr || Party->HasEnded() ? PartyEndedError(Party)
-		: FFlockError::Make(EFlockErrorType::Validation,
-			TEXT("This player leads the party now, so nobody else will start its search: start it with the party's FindMatch and a queue name."));
+		: FFlockError::MakeWithFix(EFlockErrorType::Validation,
+			TEXT("This player leads the party now, so nobody else will start its search"), TEXT("Start it with the party's FindMatch and a queue name."));
 	AnswerCaller(Waiting, TFlockResult<FFlockMatchmakingResult>::Fail(Why));
 }
 
@@ -1069,14 +1070,14 @@ bool FFlockMatchmaking::RequireSignedIn(int32& OutSignInNumber, FString& OutPlay
 {
 	if (!Session->IsAuthenticated())
 	{
-		OutError = FFlockError::Make(EFlockErrorType::Auth, TEXT("No player is signed in"));
+		OutError = FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), FFlockErrorHints::SignInFirst());
 		return false;
 	}
 	// The player's own ticket among a party's is found by this id, so a sign-in that names no player searches for nobody.
 	OutPlayerId = Session->GetPlayerId();
 	if (OutPlayerId.IsEmpty())
 	{
-		OutError = FFlockError::Make(EFlockErrorType::Auth, TEXT("The sign-in names no player: its token carries no player id. Sign in again."));
+		OutError = FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("The sign-in names no player: its token carries no player id"), TEXT("Call Logout and sign the player in again with one of Flock's sign-in calls."));
 		return false;
 	}
 	OutSignInNumber = CurrentSignInNumber();
@@ -1087,7 +1088,7 @@ bool FFlockMatchmaking::RequireQueueName(const FString& QueueName, FFlockError& 
 {
 	if (QueueName.TrimStartAndEnd().IsEmpty())
 	{
-		OutError = FFlockError::Make(EFlockErrorType::Validation, TEXT("Queue Name cannot be null or empty"));
+		OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("Queue Name is empty"), TEXT("Pass the matchmaking queue's name as the Flock dashboard shows it, letter case included."));
 		return false;
 	}
 	return true;
@@ -1097,16 +1098,15 @@ FFlockError FFlockMatchmaking::PartyEndedError(const UFlockParty* Party)
 {
 	const FString Reason = Party != nullptr
 		? StaticEnum<EFlockPartyEndReason>()->GetNameStringByValue(static_cast<int64>(Party->GetEndReason())) : FString(TEXT("gone"));
-	return FFlockError::Make(EFlockErrorType::Validation, FString::Printf(
-		TEXT("This party has ended (%s). Create or join another, or get the player's current one with GetMyParty."), *Reason));
+	return FFlockError::MakeWithFix(EFlockErrorType::Validation, FString::Printf(TEXT("This party has ended (%s)"), *Reason), FFlockErrorHints::FindAnotherParty());
 }
 
 bool FFlockMatchmaking::RequireNoSearch(FFlockError& OutError) const
 {
 	if (Starting.IsValid() || Search.IsValid())
 	{
-		OutError = FFlockError::Make(EFlockErrorType::Validation,
-			TEXT("A search for a match is already running here: this player's own, or the party's that this game follows. Wait for its result (the party's through its FindMatch or OnSearchEnded), or cancel it through the handle FindMatch returned."));
+		OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
+			TEXT("A search for a match is already running here: this player's own, or the party's that this game follows"), TEXT("Wait for its result (the party's through its FindMatch or OnSearchEnded), or cancel it through the handle FindMatch returned."));
 		return false;
 	}
 	return true;

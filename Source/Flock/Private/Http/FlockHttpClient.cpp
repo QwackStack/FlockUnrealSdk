@@ -28,6 +28,31 @@ namespace
 		}
 		return false;
 	}
+
+	/**
+	 * What a failed status means, for an answer that gave no reason of its own. Flock's game API always gives one, so
+	 * these are mostly read on answers from something else: a proxy, a captive portal, another server.
+	 */
+	FString DescribeStatus(int32 StatusCode)
+	{
+		switch (StatusCode)
+		{
+		case 400: return TEXT("The server could not use the request");
+		case 401: return TEXT("The server did not accept the request's credentials");
+		case 403: return TEXT("The server refused to do this");
+		case 404: return TEXT("The server found nothing at this address");
+		case 405: return TEXT("The server does not take this kind of request at this address");
+		case 408: return TEXT("The server stopped waiting for the request");
+		case 409: return TEXT("The request clashes with what the server holds now");
+		case 413: return TEXT("The request is larger than the server accepts");
+		case 422: return TEXT("The server refused a value in the request");
+		case 429: return TEXT("The server is getting too many requests from this game");
+		default:
+			return StatusCode >= 500
+				? FString(TEXT("The server failed while handling the request"))
+				: FString(TEXT("The server refused the request"));
+		}
+	}
 }
 
 TSharedRef<FFlockHttpClient> FFlockHttpClient::CreateDefault(float TimeoutSeconds, const TSharedRef<IFlockLogger>& Logger)
@@ -73,13 +98,13 @@ bool FFlockHttpClient::ClassifyResponse(const FFlockHttpResponse& Response, FFlo
 	switch (Response.Result)
 	{
 	case EFlockHttpResult::Cancelled:
-		OutError = FFlockError::Make(EFlockErrorType::Cancelled, TEXT("Request cancelled"));
+		OutError = FFlockError::Make(EFlockErrorType::Cancelled, TEXT("The request was cancelled before an answer came"));
 		return false;
 	case EFlockHttpResult::Timeout:
-		OutError = FFlockError::Make(EFlockErrorType::Timeout, TEXT("Request timeout"));
+		OutError = FFlockError::Make(EFlockErrorType::Timeout, TEXT("The server did not answer in time"));
 		return false;
 	case EFlockHttpResult::ConnectionError:
-		OutError = FFlockError::Make(EFlockErrorType::Connection, TEXT("Network request failed"));
+		OutError = FFlockError::Make(EFlockErrorType::Connection, TEXT("The request could not reach the server"));
 		OutError.Body = Response.Body;
 		return false;
 	case EFlockHttpResult::Success:
@@ -94,23 +119,21 @@ bool FFlockHttpClient::ClassifyResponse(const FFlockHttpResponse& Response, FFlo
 		FFlockJsonUtils::ParseCodedError(Response.Body, Coded, ServerMessage);
 
 		EFlockErrorType Type;
-		FString Message;
 		if (Code == 401 || Code == 403)
 		{
 			Type = EFlockErrorType::Auth;
-			Message = FString::Printf(TEXT("Authentication failed (HTTP %d)"), Code);
 		}
 		else if (Code == 400 || Code == 422)
 		{
 			Type = EFlockErrorType::Validation;
-			Message = FString::Printf(TEXT("Validation failed (HTTP %d)"), Code);
 		}
 		else
 		{
 			Type = EFlockErrorType::Network;
-			Message = FString::Printf(TEXT("HTTP request failed (HTTP %d)"), Code);
 		}
 
+		// What is wrong is the server's own reason when it gave one; the status's plain meaning otherwise.
+		const FString Message = ServerMessage.IsEmpty() ? DescribeStatus(Code) : ServerMessage;
 		OutError = FFlockError::Make(Type, Message, Code, Response.Body, Coded, ServerMessage);
 
 		float Seconds = 0.f;
@@ -125,7 +148,7 @@ bool FFlockHttpClient::ClassifyResponse(const FFlockHttpResponse& Response, FFlo
 	// A read exists for its body, so a 2xx without one still fails it; a send has nothing to read.
 	if (bBodyRequired && Response.Body.IsEmpty())
 	{
-		OutError = FFlockError::Make(EFlockErrorType::Serialization, TEXT("Empty response from server"), Code);
+		OutError = FFlockError::Make(EFlockErrorType::Serialization, TEXT("The server's answer was empty, so there was nothing to read"), Code);
 		return false;
 	}
 

@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockNotificationAsyncActions.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Engine/BlueprintGeneratedClass.h"
 #include "FlockSubsystem.h"
@@ -26,8 +27,8 @@ namespace
 		FFlockNotificationProvider* Provider = Sdk ? Sdk->GetNotificationProvider() : nullptr;
 		if (!Provider)
 		{
-			OutError = FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Flock notifications are not available. Initialize the SDK first."));
+			OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock notifications are not available: Flock is not initialized"), FFlockErrorHints::InitializeFlockFirst());
 		}
 		return Provider;
 	}

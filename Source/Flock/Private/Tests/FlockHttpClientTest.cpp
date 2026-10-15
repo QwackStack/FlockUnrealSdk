@@ -81,7 +81,7 @@ bool FFlockHttpClientDeserializeTest::RunTest(const FString& Parameters)
 	Client->Get<FFlockGameVersionSchema>(Url, {}, [&](TFlockResult<FFlockGameVersionSchema> R) { EmptyType = R.Error.Type; EmptyMessage = R.Error.Message; });
 	TestEqual(TEXT("empty body -> Serialization"), static_cast<int32>(EmptyType), static_cast<int32>(EFlockErrorType::Serialization));
 	// The message says what happened, rather than reporting a parse error for a body that was never there.
-	TestTrue(TEXT("empty body -> named as empty"), EmptyMessage.Contains(TEXT("Empty response from server"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("empty body -> named as empty"), EmptyMessage.Contains(TEXT("answer was empty"), ESearchCase::CaseSensitive));
 
 	return true;
 }
@@ -163,7 +163,7 @@ bool FFlockHttpClientAcceptsNoContentTest::RunTest(const FString& Parameters)
 	Client->PostJsonRaw<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, TEXT("{}"),
 		[&RawType, &RawMessage](TFlockResult<FFlockGameVersionSchema> R) { RawType = R.Error.Type; RawMessage = R.Error.Message; });
 	TestEqual(TEXT("bare read, 204 -> Serialization"), static_cast<int32>(RawType), static_cast<int32>(EFlockErrorType::Serialization));
-	TestTrue(TEXT("bare read, 204 -> named as empty"), RawMessage.Contains(TEXT("Empty response from server"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("bare read, 204 -> named as empty"), RawMessage.Contains(TEXT("answer was empty"), ESearchCase::CaseSensitive));
 	EFlockErrorType PatchRawType = EFlockErrorType::None;
 	Client->PatchJsonRaw<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, TEXT("{}"),
 		[&PatchRawType](TFlockResult<FFlockGameVersionSchema> R) { PatchRawType = R.Error.Type; });

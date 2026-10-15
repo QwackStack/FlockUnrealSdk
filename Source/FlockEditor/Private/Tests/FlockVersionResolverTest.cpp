@@ -37,7 +37,7 @@ bool FFlockApplyResultTest::RunTest(const FString& Parameters)
 
 	// A failed result leaves the prior ID untouched.
 	TestFalse(TEXT("Failed result reports no change"),
-		FFlockVersionResolver::ApplyResult(*Config, FFlockResolveResult::Fail(TEXT("boom"))));
+		FFlockVersionResolver::ApplyResult(*Config, FFlockResolveResult::Fail(TEXT("boom"), TEXT("fix"))));
 	TestEqual(TEXT("Prior ID preserved on failure"), Config->GameVersionId, FString(TEXT("old")));
 
 	// A successful result with a new ID changes it.
@@ -95,7 +95,7 @@ bool FFlockResolveAndBakeFinishedTest::RunTest(const FString& Parameters)
 
 	AddExpectedMessagePlain(TEXT("Flock resolve failed"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
 	FFlockVersionResolver::ResolveAndBake(*Config, [&Finished]() { ++Finished; });
-	Lookup->Waiting.Execute(FFlockResolveResult::Fail(TEXT("unreachable")));
+	Lookup->Waiting.Execute(FFlockResolveResult::Fail(TEXT("unreachable"), TEXT("fix")));
 	TestEqual(TEXT("A failed lookup is an answer too"), Finished, 2);
 	return true;
 }

@@ -159,7 +159,8 @@ bool FProtokitePlaytestFormSendingRefusedTest::RunTest(const FString& Parameters
 	FPlaytestFixture Fixture;
 	Fixture.Transport->AnswerInOrder(FeedbackFormRoute, {
 		FProtokitePlaytestFakeTransport::Status(422, TEXT("{\"detail\":\"Missing required answer 'rating'\"}")),
-		FProtokitePlaytestFakeTransport::Status(404, TEXT("{\"detail\":\"Session not found for this test\"}")) });
+		FProtokitePlaytestFakeTransport::Status(404, TEXT("{\"detail\":\"Session not found for this test\"}")),
+		FProtokitePlaytestFakeTransport::Status(404, TEXT("<html>Not Found</html>")) });
 	const FString Folder = StartReadyWithItsOwnFormFolder(Fixture);
 
 	Fixture.Playtest->SendFilledInForm(FilledInAnswers());
@@ -174,6 +175,19 @@ bool FProtokitePlaytestFormSendingRefusedTest::RunTest(const FString& Parameters
 	Fixture.Playtest->SendFilledInForm(FilledInAnswers());
 	TestEqual(TEXT("Nor is a 404"), FormsKept(Folder), 0);
 	TestEqual(TEXT("Both were sent"), Fixture.Transport->CountRequestsEndingWith(FeedbackFormRoute), 2);
+
+	// A refusal with no reason of Protokite's (a proxy's page) gets the fix for an answer that is not Protokite's, which has two
+	// apostrophes ("Protokite's", "server's"): the question is read out of Protokite's own reason only, so none is named.
+	Fixture.Playtest->SendFilledInForm(FilledInAnswers());
+	TestEqual(TEXT("All three were sent"), Fixture.Transport->CountRequestsEndingWith(FeedbackFormRoute), 3);
+	const TArray<FPlaytestLogCapture::FLine> All = Log.LinesContaining(TEXT("The feedback form was not sent"));
+	if (TestEqual(TEXT("All three are logged"), All.Num(), 3))
+	{
+		TestFalse(TEXT("A refusal naming no question is logged naming none"), All[1].Message.Contains(TEXT("the question '"), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("With Protokite's fix"), All[1].Message.Contains(TEXT("Protokite has nothing for this request"), ESearchCase::CaseSensitive));
+		TestFalse(TEXT("Nor does a refusal with no reason of Protokite's"), All[2].Message.Contains(TEXT("the question '"), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("Whose fix says it is not Protokite's answer"), All[2].Message.Contains(TEXT("did not come from Protokite's API"), ESearchCase::CaseSensitive));
+	}
 	return true;
 }
 
