@@ -10,6 +10,8 @@
 #include "Models/FlockMultiplayerModels.h"
 #include "UObject/StrongObjectPtr.h"
 
+class AGameModeBase;
+class APlayerController;
 class FFlockMultiplayerSessions;
 class UFlockMultiplayerSession;
 
@@ -42,14 +44,33 @@ public:
 	virtual void MarkWorld() = 0;
 	/** Opens Level listening for players (the engine's ?listen). */
 	virtual void OpenListening(const FString& Level) = 0;
-	/** Travels to the host at Address:Port. */
-	virtual void TravelTo(const FString& Address, int32 Port) = 0;
+	/** Travels to the host at Url ("address:port?options"). */
+	virtual void TravelTo(const FString& Url) = 0;
 	/** The world stops listening; it stays in its level, on its own. */
 	virtual void StopListening() = 0;
 	/** A connection to a host still being made is given up; the game stays in its level. */
 	virtual void StopConnecting() = 0;
-	/** Hands OnFailure the engine's words for each network or travel failure of this game's world or its connection; until this object goes. */
-	virtual void WatchFailures(TFunction<void(const FString& Why)> OnFailure) = 0;
+	/**
+	 * Hands OnFailure each network or travel failure of this game's world or its connection, until this object goes: its kind
+	 * (the engine's name for it, such as PendingConnectionFailure) and the engine's words.
+	 */
+	virtual void WatchFailures(TFunction<void(const FString& Kind, const FString& Words)> OnFailure) = 0;
+
+	// ---- the host's side, read by the check of joining players ----
+
+	/**
+	 * The connection the engine is asking the game mode about: one waiting to be let in whose request carries exactly Options,
+	 * from Address, and not handed out before; 0 when there is none. Each connection keeps its number while it lasts.
+	 */
+	virtual uint64 FindJoiningConnection(const FString& Options, const FString& Address) = 0;
+	/** True while the connection is still on the host: waiting to be let in, or let in and not gone. */
+	virtual bool IsStillHere(uint64 Connection) const = 0;
+	/** The number of the connection Controller plays through, when it is one handed out; 0 otherwise (this device's own players have none). */
+	virtual uint64 ConnectionOf(const APlayerController* Controller) const = 0;
+	/** True for a player controller of this game's own, local to this device. */
+	virtual bool IsOwnPlayer(const APlayerController* Controller) const = 0;
+	/** True when the game mode runs in this game. */
+	virtual bool IsThisGame(const AGameModeBase* GameMode) const = 0;
 };
 
 /** Makes the engine side of a travel for the game WorldContextObject is in; null, with OutRefusal said, when it has no game world. */
@@ -59,10 +80,11 @@ using FFlockMakeGameTravel = TFunction<TSharedPtr<IFlockGameTravel>(UObject* Wor
 FFlockMakeGameTravel FlockEngineTravel();
 
 /**
- * The one owner of Travel To Session: one travel at a time. The host opens its level listening, then publishes how to reach it
- * on the port its net driver listens on; a player waits for that, finds which address to use, travels there and is done once
- * the host has let it in. The engine owns a failed connection (it gives the connection up and goes back to the game's default
- * level), so a travel only reads what happened. Moved on once a frame. Game-thread only.
+ * The one owner of Travel To Session: one travel at a time. The host turns on the check of joining players, opens its level
+ * listening, then publishes how to reach it on the port its net driver listens on; a player waits for that, finds which address
+ * to use, asks Flock for a join token and travels there with it, and is done once the host has let it in or turned it away.
+ * The engine owns a failed connection (it gives the connection up and goes back to the game's default level), so a travel
+ * only reads what happened. Moved on once a frame. Game-thread only.
  */
 class FFlockTravels : public TSharedFromThis<FFlockTravels>
 {
@@ -84,28 +106,35 @@ public:
 	bool IsTravelingForTesting() const { return Current.IsValid(); }
 
 private:
-	enum class EStep : uint8 { OpeningLevel, Publishing, WaitingForHost, FindingAddress, Connecting, StoppingAfterCancel, Done };
+	enum class EStep : uint8 { OpeningLevel, Publishing, WaitingForHost, FindingAddress, AskingForJoinToken, Connecting, StoppingAfterCancel, Done };
 
 	struct FTravel
 	{
 		EStep Step = EStep::OpeningLevel;
 		TStrongObjectPtr<UFlockMultiplayerSession> Session;
 		TSharedPtr<IFlockGameTravel> Game;
+		/** A host's engine side for the check of joining players, which outlives the travel. */
+		TSharedPtr<IFlockGameTravel> HostSide;
 		FFlockTravelToSessionOptions Options;
 		FString Level;
 		FFlockTravelToSessionResult Result;
 		FOnTravel OnComplete;
-		/** The publish, wait or address search on its way, cancelled with the travel. */
+		/** The publish, wait, address search or join token on its way, cancelled with the travel. */
 		FFlockRequestHandle OnItsWay;
-		/** The engine's words for the failure it told, if any. */
+		/** The kind and the engine's words of the first failure it told, if any. */
 		FString Failure;
+		/** Why the host turned this player away, when the first failure was the host's refusal. */
+		FString RefusedReason;
+		bool bRefused = false;
 	};
 	using FTravelRef = TSharedRef<FTravel>;
 
 	void StartHosting(const FTravelRef& Travel);
 	void StartWaiting(const FTravelRef& Travel);
 	void TookConnection(const FTravelRef& Travel, UFlockMultiplayerSession* Session);
+	/** Asks Flock for the join token the host checks, once the address is known: a token lasts 60 s. */
 	void StartConnecting(const FTravelRef& Travel, const FFlockDirectAddress& Address);
+	void TravelWithToken(const FTravelRef& Travel, const FString& JoinToken);
 	void MoveOpeningOn(const FTravelRef& Travel, const FFlockGameNetState& State);
 	void MoveConnectingOn(const FTravelRef& Travel, const FFlockGameNetState& State);
 	void Cancel(const FTravelRef& Travel);

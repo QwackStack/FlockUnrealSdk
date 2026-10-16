@@ -370,6 +370,49 @@ bool FFlockHttpClientNoSearchTraceTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── A join token Flock did not vouch for is an answer the host's check acts on, and anyone can send one: traced at debug ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientRefusedJoinTokenTraceTest, "Flock.Http.Client.AJoinTokenFlockDidNotVouchForIsTracedAtDebugAndNothingElseIs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientRefusedJoinTokenTraceTest::RunTest(const FString& Parameters)
+{
+	const FString NotVouched = TEXT("{\"detail\":{\"code\":\"multiplayer.invalid_join_token\",\"message\":\"Join token is not valid\"}}");
+	const FString Route = TEXT("http://x/v1/multiplayer/sessions/01SESSION/verify-join-token");
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> Client = MakeShared<FFlockHttpClient>(Fake, Log);
+	Fake->On(TEXT("verify-join-token"), FFlockFakeTransport::Status(400, NotVouched));
+	Client->Get<FFlockGameVersionSchema>(Route, {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("traced at debug, saying what it means"),
+		FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("<- 400 GET http://x/v1/multiplayer/sessions/01SESSION/verify-join-token")));
+	TestTrue(TEXT("the host turns that player away"), FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("so the host turns that player away")));
+	TestEqual(TEXT("no warning"), Log->Warnings.Num(), 0);
+
+	// Counter-cases, each still a warning: the same code from another route, another code from this route, and this route turning
+	// the host's checks away for volume (what the host's warning on an unanswered check points at).
+	const TSharedRef<FFlockRecordingLogger> TokenLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> TokenClient = MakeShared<FFlockHttpClient>(Fake, TokenLog);
+	Fake->On(TEXT("join-token-elsewhere"), FFlockFakeTransport::Status(400, NotVouched));
+	TokenClient->Get<FFlockGameVersionSchema>(TEXT("http://x/v1/multiplayer/sessions/01SESSION/join-token-elsewhere"), {},
+		[](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("the same code from another route warns"), FFlockRecordingLogger::AnyContains(TokenLog->Warnings, TEXT("multiplayer.invalid_join_token")));
+
+	const TSharedRef<FFlockRecordingLogger> OtherLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> OtherClient = MakeShared<FFlockHttpClient>(Fake, OtherLog);
+	Fake->On(TEXT("verify-join-token"), FFlockFakeTransport::Status(403, TEXT("{\"detail\":{\"code\":\"multiplayer.not_host\",\"message\":\"Not the host\"}}")));
+	OtherClient->Get<FFlockGameVersionSchema>(Route, {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("another code from this route warns, with its code"), FFlockRecordingLogger::AnyContains(OtherLog->Warnings, TEXT("multiplayer.not_host")));
+	TestFalse(TEXT("and never says the host turns a player away"), FFlockRecordingLogger::AnyContains(OtherLog->Debugs, TEXT("turns that player away")));
+
+	const TSharedRef<FFlockRecordingLogger> BusyLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> BusyClient = MakeShared<FFlockHttpClient>(Fake, BusyLog);
+	Fake->On(TEXT("verify-join-token"), FFlockFakeTransport::Status(429,
+		TEXT("{\"detail\":{\"code\":\"request.rate_limited\",\"message\":\"More than 60 join token checks a minute from this host\"}}")));
+	BusyClient->Get<FFlockGameVersionSchema>(Route, {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("checks turned away for volume warn"), FFlockRecordingLogger::AnyContains(BusyLog->Warnings, TEXT("<- 429 GET")));
+	return true;
+}
+
 // ── A Retry-After the server got wrong never makes a retry wait less than nothing ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientNegativeRetryAfterTest, "Flock.Http.Client.NegativeRetryAfterMeansNow",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)

@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
+#include "GameFramework/OnlineReplStructs.h"
 #include "Models/FlockCommandModels.h"
 #include "Models/FlockJsonData.h"
 #include "UObject/ObjectPtr.h"
@@ -213,6 +214,32 @@ namespace FlockTravelToSessionOutcomes
 	inline constexpr const TCHAR* CouldNotStart = TEXT("could_not_start");
 	/** The host published a connection of the game's own (such as "steam"); the result's Connection holds it. */
 	inline constexpr const TCHAR* NotDirect = TEXT("not_direct");
+	/** The host turned this player away; the result's Refused Reason says why, and the engine has taken this game back to its default level. */
+	inline constexpr const TCHAR* Refused = TEXT("refused");
+}
+
+/**
+ * Why a host turned a joining player away (Refused Reason). An open set: compare with these and keep a default, since the host's
+ * game gives reasons of its own, and so does the engine (such as "Server full.").
+ */
+namespace FlockTravelToSessionRefusedReasons
+{
+	/** The player sent no join token: it did not come through Travel To Session. Flock was not asked. */
+	inline constexpr const TCHAR* NoJoinToken = TEXT("no_join_token");
+	/** Flock said the token is not good for this session: made up, another session's, expired (they last 60 s), or its player gave up their seat. */
+	inline constexpr const TCHAR* JoinTokenInvalid = TEXT("join_token_invalid");
+	/** The same player is already let in through another connection; one connection a player. */
+	inline constexpr const TCHAR* AlreadyConnected = TEXT("already_connected");
+	/** The host could not check the token with Flock in time (8 s), or Flock's answer could not be read; nobody is let in unchecked. */
+	inline constexpr const TCHAR* FlockUnreachable = TEXT("flock_unreachable");
+	/** The session has ended. */
+	inline constexpr const TCHAR* SessionEnded = TEXT("session_ended");
+	/** The device reached no longer hosts the session. */
+	inline constexpr const TCHAR* NotHost = TEXT("not_host");
+	/** The host's game turned the player away with no reason of its own. */
+	inline constexpr const TCHAR* RefusedByTheGame = TEXT("refused_by_the_game");
+	/** The host's game mode does not run Flock's check of joining players (FlockJoinChecks::CheckJoiningPlayer), so nobody gets in. */
+	inline constexpr const TCHAR* JoinCheckMissing = TEXT("join_check_missing");
 }
 
 /** What a game can choose about Travel To Session. */
@@ -257,6 +284,36 @@ struct FLOCK_API FFlockTravelToSessionResult
 	/** The host's connection as published; its Mode is empty when the host never published. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
 	FFlockMultiplayerSessionConnection Connection;
+
+	/**
+	 * Why the host turned this player away when Outcome is refused: a FlockTravelToSessionRefusedReasons value, the host's game's own
+	 * reason, or the engine's (such as "Server full."); empty otherwise.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FString RefusedReason;
+};
+
+/** A joining player Flock has let in, handed to the host's game's own check (FlockJoinChecks::CheckJoiningPlayer). */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockJoiningPlayer
+{
+	GENERATED_BODY()
+
+	/** The Flock player, as Flock verified their join token. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FString PlayerId;
+
+	/** The options of the player's travel URL as the engine gave them (such as "?Name=Ann"), without Flock's join token. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FString Options;
+
+	/** The player's address, as the engine gave it. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FString Address;
+
+	/** The engine's id the player passed, as the engine gave it. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FUniqueNetIdRepl UniqueId;
 };
 
 /** A short-lived proof that the player holds a seat, to show the host when connecting. */

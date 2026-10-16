@@ -204,6 +204,26 @@ public:
 
 	void MakesHost(const FSessionRef& Session, const FString& PlayerId) { HandOver(*Session, PlayerId); }
 
+	/**
+	 * A join token for PlayerId in Session, as the server mints one for a seated player. Each is kept as minted, as the backend's
+	 * signature binds it to its session and player, so another session's token and an expired one are told apart from a good one.
+	 */
+	FString MintsJoinToken(const FSessionRef& Session, const FString& PlayerId)
+	{
+		const FString Token = FString::Printf(TEXT("token-%s-%s-%d"), *Session->Id, *PlayerId, JoinTokens.Num() + 1);
+		JoinTokens.Add(Token, FMintedJoinToken{ Session->Id, PlayerId, false });
+		return Token;
+	}
+
+	/** Every token minted so far is past its 60 s. */
+	void ExpireJoinTokens()
+	{
+		for (TPair<FString, FMintedJoinToken>& Minted : JoinTokens)
+		{
+			Minted.Value.bExpired = true;
+		}
+	}
+
 	static FFlockHttpResponse Refused(int32 Status, const FString& Code) { return FFlockFakePartyServer::Refused(Status, Code); }
 
 	static ERoute RouteOf(const FFlockHttpRequest& Request)
@@ -300,6 +320,14 @@ private:
 	TMap<ERoute, TArray<TSharedRef<FFlockFakePartyServer::FHeld>>> HoldQueue;
 	TMap<ERoute, TArray<FFlockHttpResponse>> AnswerQueue;
 	int32 SessionsMade = 0;
+
+	struct FMintedJoinToken
+	{
+		FString SessionId;
+		FString PlayerId;
+		bool bExpired = false;
+	};
+	TMap<FString, FMintedJoinToken> JoinTokens;
 
 	/** Every change of host: the old host's address is cleared and the session is open again until the new host publishes. */
 	static void HandOver(FSession& Session, const FString& PlayerId)
@@ -590,7 +618,7 @@ private:
 		if (Route == ERoute::JoinToken)
 		{
 			const TSharedRef<FJsonObject> Token = MakeShared<FJsonObject>();
-			Token->SetStringField(TEXT("token"), FString::Printf(TEXT("token-%s-%s"), *Session->Id, *Player));
+			Token->SetStringField(TEXT("token"), MintsJoinToken(Session.ToSharedRef(), Player));
 			Token->SetNumberField(TEXT("expires_in"), 60);
 			return Enveloped(Token);
 		}
@@ -644,15 +672,16 @@ private:
 			{
 				return Refused(422, TEXT("request.validation_failed"));
 			}
-			const FString Expected = FString::Printf(TEXT("token-%s-"), *Session->Id);
-			const FString Named = Token.StartsWith(Expected, ESearchCase::CaseSensitive) ? Token.Mid(Expected.Len()) : FString();
-			if (Named.IsEmpty() || !Session->IsSeated(Named))
+			// The backend's one answer for a made-up token, another session's, an expired one and one whose player gave up their seat.
+			const FMintedJoinToken* Minted = JoinTokens.Find(Token);
+			if (Minted == nullptr || !Minted->SessionId.Equals(Session->Id, ESearchCase::CaseSensitive) || Minted->bExpired
+				|| !Session->IsSeated(Minted->PlayerId))
 			{
 				return Refused(400, TEXT("multiplayer.invalid_join_token"));
 			}
 			const TSharedRef<FJsonObject> Verified = MakeShared<FJsonObject>();
 			Verified->SetStringField(TEXT("session_id"), Session->Id);
-			Verified->SetStringField(TEXT("player_id"), Named);
+			Verified->SetStringField(TEXT("player_id"), Minted->PlayerId);
 			return Enveloped(Verified);
 		}
 		default:

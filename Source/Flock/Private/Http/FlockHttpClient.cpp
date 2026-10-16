@@ -210,6 +210,16 @@ void FFlockHttpClient::LogResponse(const FString& Method, const FString& Url, co
 		Logger->LogDebug(FString::Printf(TEXT("<- 404 %s %s (%.0f ms) [%s]: the player has no search"), *Method, *Url, ElapsedMs, *Origin));
 		return;
 	}
+	// A join token a connecting player showed the host and Flock did not vouch for is Flock's answer, which the host's check turns
+	// into a refusal: no failure of the host's own call. Anyone who reaches a host can send one, so a warning here would let them
+	// fill the host's log (a flood of made-up tokens wrote one a check, 60 a minute).
+	if (Response.StatusCode == 400 && Url.EndsWith(FlockEndpoints::SessionVerifyJoinTokenEnding, ESearchCase::CaseSensitive)
+		&& Response.Body.Contains(TEXT("multiplayer.invalid_join_token"), ESearchCase::CaseSensitive))
+	{
+		Logger->LogDebug(FString::Printf(TEXT("<- 400 %s %s (%.0f ms) [%s]: Flock did not vouch for the join token, so the host turns that player away"),
+			*Method, *Url, ElapsedMs, *Origin));
+		return;
+	}
 	Logger->LogWarning(FString::Printf(TEXT("<- %d %s %s (%.0f ms) [%s]: %s"),
 		Response.StatusCode, *Method, *Url, ElapsedMs, *Origin, *Detail));
 }

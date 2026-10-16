@@ -148,7 +148,10 @@ FFlockRequestHandle FFlockMultiplayerSessionRequests::VerifyJoinToken(int32 Sign
 {
 	return PostAs<FFlockVerifiedJoinToken>(SignInNumber, TEXT("Verify join token"), /*bIdempotent*/ true,
 		Url(FlockEndpoints::SessionVerifyJoinToken(SessionId)), FFlockCommandData().Set(TEXT("token"), Token).ToJsonString(),
-		MoveTemp(OnComplete));
+		MoveTemp(OnComplete),
+		// Flock's verdict on a token someone sent the host, which the host's check turns into that player's refusal: an answer,
+		// not a failure of this device's (a stranger's made-up tokens would otherwise fill the host's log with errors).
+		[](const FFlockError& Failure) { return Failure.ErrorCode == EFlockErrorCode::MultiplayerInvalidJoinToken; });
 }
 
 FFlockRequestHandle FFlockMultiplayerSessionRequests::ReadStunServers(int32 SignInNumber,

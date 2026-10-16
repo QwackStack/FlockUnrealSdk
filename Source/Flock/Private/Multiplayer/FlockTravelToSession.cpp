@@ -3,6 +3,7 @@
 #include "Multiplayer/FlockTravelToSession.h"
 #include "Http/FlockErrorHints.h"
 #include "Multiplayer/FlockMultiplayerSession.h"
+#include "Multiplayer/FlockJoinChecksOnHost.h"
 #include "Multiplayer/FlockMultiplayerSessions.h"
 
 namespace
@@ -66,23 +67,39 @@ FFlockRequestHandle FFlockTravels::Travel(UFlockMultiplayerSession* Session, UOb
 		return Refuse(TEXT("This game is already connected to a host, hosting, or opening a level"),
 			TEXT("Travel to a level of its own, not listening for players, before traveling to a session."));
 	}
+	// The check of joining players lasts as long as the host's level listens, past this travel: an engine side of its own. A host
+	// that cannot check its players does not open its level to them.
+	TSharedPtr<IFlockGameTravel> HostSide;
+	if (Session->IsHost())
+	{
+		HostSide = MakeGameTravel(WorldContextObject, Refusal);
+		if (!HostSide.IsValid())
+		{
+			return Refuse(Refusal, TEXT("Pass an object in the game's world as the World Context, such as an actor or the game instance."));
+		}
+	}
 
 	const FTravelRef Travel = MakeShared<FTravel>();
 	Travel->Session.Reset(Session);
 	Travel->Game = Game;
+	Travel->HostSide = HostSide;
 	Travel->Options = Options;
 	Travel->OnComplete = MoveTemp(OnComplete);
 	Travel->Result.bIsHost = Session->IsHost();
 	Current = Travel;
 
 	const TWeakPtr<FTravel> WeakTravel = Travel;
-	Game->WatchFailures([WeakTravel](const FString& Why)
+	Game->WatchFailures([WeakTravel](const FString& Kind, const FString& Words)
 	{
 		const TSharedPtr<FTravel> Pinned = WeakTravel.Pin();
-		if (Pinned.IsValid() && Pinned->Failure.IsEmpty())
+		if (!Pinned.IsValid() || !Pinned->Failure.IsEmpty())
 		{
-			Pinned->Failure = Why;
+			return;
 		}
+		Pinned->Failure = FString::Printf(TEXT("%s: %s"), *Kind, *Words);
+		// A host turning a waiting player away fails the connection being made with the host's words; a host closing its
+		// connections fails it the same way with the engine's own words, so only a refusal of a host's check counts (measured).
+		Pinned->bRefused = Kind.Equals(TEXT("PendingConnectionFailure"), ESearchCase::CaseSensitive) && FlockHostRefusals::TryRead(Words, Pinned->RefusedReason);
 	});
 	const TSharedRef<FFlockCancelToken> Token = MakeShared<FFlockCancelToken>();
 	const TWeakPtr<FFlockTravels> WeakSelf = AsShared();
@@ -111,6 +128,12 @@ void FFlockTravels::StartHosting(const FTravelRef& Travel)
 	Travel->Level = Travel->Options.HostLevel.IsEmpty() ? Travel->Game->CurrentLevel() : Travel->Options.HostLevel;
 	Travel->Step = EStep::OpeningLevel;
 	Travel->Failure.Reset();
+	// Checking from before the level listens, so no player reaches it unchecked; it ends once the game no longer listens.
+	const TSharedPtr<FFlockMultiplayerSessions> Owner = Sessions.Pin();
+	if (Owner.IsValid() && Travel->HostSide.IsValid())
+	{
+		Owner->GetJoinChecks().StartHosting(Travel->Session.Get(), Travel->HostSide.ToSharedRef());
+	}
 	Travel->Game->MarkWorld();
 	Travel->Game->OpenListening(Travel->Level);
 }
@@ -216,11 +239,56 @@ void FFlockTravels::StartConnecting(const FTravelRef& Travel, const FFlockDirect
 	}
 	Travel->Result.Address = Address.Address;
 	Travel->Result.Port = Address.Port;
+	const TSharedPtr<FFlockMultiplayerSessions> Owner = Sessions.Pin();
+	if (!Owner.IsValid())
+	{
+		Fail(Travel, FFlockError::Make(EFlockErrorType::Cancelled, TEXT("Flock shut down while traveling to the session")));
+		return;
+	}
+	// A token lasts 60 s, so it is asked for once the host is known; the host lets in only a player whose token Flock verifies.
+	Travel->Step = EStep::AskingForJoinToken;
+	const TWeakPtr<FFlockTravels> WeakSelf = AsShared();
+	const TWeakPtr<FTravel> WeakTravel = Travel;
+	const FFlockRequestHandle Asking = Owner->RequestJoinToken(Travel->Session.Get(),
+		[WeakSelf, WeakTravel](TFlockResult<FFlockMultiplayerSessionJoinToken> Token)
+		{
+			const TSharedPtr<FFlockTravels> Self = WeakSelf.Pin();
+			const TSharedPtr<FTravel> Pinned = WeakTravel.Pin();
+			if (!Self.IsValid() || !Pinned.IsValid() || Pinned->Step != EStep::AskingForJoinToken)
+			{
+				return;
+			}
+			if (!Token.bSuccess)
+			{
+				// Nothing travels without a token: the host would turn the player away.
+				Self->Fail(Pinned.ToSharedRef(), Token.Error);
+				return;
+			}
+			Self->TravelWithToken(Pinned.ToSharedRef(), Token.Value.Token);
+		});
+	if (Travel->Step == EStep::AskingForJoinToken)
+	{
+		Travel->OnItsWay = Asking;
+	}
+}
+
+void FFlockTravels::TravelWithToken(const FTravelRef& Travel, const FString& JoinToken)
+{
+	if (!IsOnItsOwn(Travel->Game->Read()))
+	{
+		Fail(Travel, TravelRefused(TEXT("This game started hosting, connecting or opening a level while it asked for its join token, so it does not travel "
+			"to the session"), TEXT("Leave the game in a level of its own while Travel To Session runs, then travel again.")));
+		return;
+	}
 	Travel->Step = EStep::Connecting;
 	Travel->OnItsWay = FFlockRequestHandle();
+	// A failure told before the connection began, a refusal's words among them, says nothing of this connection.
 	Travel->Failure.Reset();
+	Travel->bRefused = false;
+	Travel->RefusedReason.Reset();
 	Travel->Game->MarkWorld();
-	Travel->Game->TravelTo(Address.Address, Address.Port);
+	// The engine hands the travel URL's options to the host's PreLoginAsync, ahead of its own (measured: ?FlockJoinToken=...?Name=...).
+	Travel->Game->TravelTo(FString::Printf(TEXT("%s:%d?%s=%s"), *Travel->Result.Address, Travel->Result.Port, FlockJoinChecks::JoinTokenOption, *JoinToken));
 }
 
 void FFlockTravels::Tick()
@@ -330,6 +398,14 @@ void FFlockTravels::MoveConnectingOn(const FTravelRef& Travel, const FFlockGameN
 		{
 			Complete(Travel, FlockTravelToSessionOutcomes::Connected);
 		}
+		return;
+	}
+	if (Travel->bRefused)
+	{
+		Travel->Result.RefusedReason = Travel->RefusedReason;
+		Logger->LogWarning(FString::Printf(TEXT("The host at %s:%d turned this player away (%s). %s"), *Travel->Result.Address, Travel->Result.Port,
+			*Travel->RefusedReason, *FlockHostRefusals::FixFor(Travel->RefusedReason)));
+		Complete(Travel, FlockTravelToSessionOutcomes::Refused);
 		return;
 	}
 	// Back in a level of its own: the engine gave the connection up.

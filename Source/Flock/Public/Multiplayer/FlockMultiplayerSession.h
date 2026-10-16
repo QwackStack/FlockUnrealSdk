@@ -11,6 +11,7 @@
 #include "Models/FlockMultiplayerModels.h"
 #include "FlockMultiplayerSession.generated.h"
 
+class APlayerController;
 class FFlockAuthSession;
 class FFlockMultiplayerSessions;
 class UFlockMultiplayerSession;
@@ -155,8 +156,18 @@ public:
 	FFlockRequestHandle TravelToSession(UObject* WorldContextObject, const FFlockTravelToSessionOptions& Options,
 		TFunction<void(TFlockResult<FFlockTravelToSessionResult>)> OnComplete);
 
+	/**
+	 * The Flock player behind one of this game's player controllers while it hosts this session through Travel To Session: the
+	 * player Flock verified for a joined player's connection (FlockJoinChecks::CheckJoiningPlayer), and this device's own player
+	 * for its own controller. Empty for a controller whose connection is gone or was not let in by Flock's check, and while this
+	 * game does not host this session through Travel To Session.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock|Multiplayer")
+	FString PlayerForConnection(const APlayerController* PlayerController) const;
+
 private:
 	friend class FFlockMultiplayerSessions;
+	friend class FFlockJoinChecksOnHost;
 
 	/** Fills a session the owner has just made; called once, before anyone else sees it. */
 	void Begin(const TWeakPtr<FFlockMultiplayerSessions>& InOwner, const TSharedRef<FFlockAuthSession>& InSession, int32 InSignInNumber,

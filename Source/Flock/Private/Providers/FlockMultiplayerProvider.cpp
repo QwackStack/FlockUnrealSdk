@@ -37,6 +37,11 @@ FFlockMultiplayerProvider::~FFlockMultiplayerProvider()
 	Shutdown();
 }
 
+FFlockJoinChecksOnHost& FFlockMultiplayerProvider::GetJoinChecks()
+{
+	return Sessions->GetJoinChecks();
+}
+
 void FFlockMultiplayerProvider::Start()
 {
 	if (TickerHandle.IsValid())

@@ -446,7 +446,7 @@ so you can read only the half you work in.
 | [Leaderboards](Documentation/leaderboards.md) | Boards by name, standings, a player's own rank, windows and score formatting, why there is no submit call |
 | [Notifications](Documentation/notifications.md) | The inbox, scheduled reminders, the template catalog, push device tokens and what push delivery needs |
 | [Android push setup](Documentation/push-setup-android.md) | Step-by-step: Firebase project, the two JSON files and where each goes, the plugin, the token hookup, dashboard credentials, and what to check when nothing arrives |
-| [Multiplayer](Documentation/multiplayer.md) | Parties, sessions, matchmaking and connecting players: create or host, join by code, the party and session objects and their events, heartbeats, join tokens, searching for a match alone or as a party, Travel To Session and direct connections, how each ends |
+| [Multiplayer](Documentation/multiplayer.md) | Parties, sessions, matchmaking and connecting players: create or host, join by code, the party and session objects and their events, heartbeats, join tokens, searching for a match alone or as a party, Travel To Session and direct connections, letting in only the session's players, how each ends |
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, screen views, gameplay events, transactions, consent — what players did (Dashboards → Game Metrics) |
 | [Diagnostics](Documentation/diagnostics.md) | Log entries, automatic exception and Blueprint exception capture, crash reporting — what went wrong (Diagnostics → Errors / Events) |
@@ -551,7 +551,9 @@ join tokens, and heartbeats that keep the seat and keep the session current. **1
 its name alone or as a party, every member's game told when the party's search starts and ends, and a match handing over
 the session it seats the player in. **1.30.0 connects the players**: Travel To Session opens the host's level listening
 and publishes how to reach it, and takes every other player there, to the host's LAN address when both share a public
-address; a connection of the game's own (Steam, EOS) is published and read back the same way.
+address; a connection of the game's own (Steam, EOS) is published and read back the same way. **1.31.0 checks who joins**:
+the host's game mode calls Flock's check from `PreLoginAsync`, which lets in only players whose Flock join token checks out,
+one connection a player, and says which Flock player each connection is; a player turned away learns why.
 
 Deliberate omissions and known gaps:
 

@@ -7,9 +7,12 @@
 #include "Engine/NetDriver.h"
 #include "Engine/PendingNetGame.h"
 #include "Engine/World.h"
+#include "GameFramework/GameModeBase.h"
+#include "GameFramework/PlayerController.h"
 #include "IPAddress.h"
 #include "Kismet/GameplayStatics.h"
 #include "SocketTypes.h"
+#include "UObject/ObjectKey.h"
 
 namespace
 {
@@ -88,12 +91,12 @@ namespace
 			}
 		}
 
-		virtual void TravelTo(const FString& Address, int32 Port) override
+		virtual void TravelTo(const FString& Url) override
 		{
 			const FWorldContext* Context = WorldContext();
 			if (UWorld* World = Context != nullptr ? Context->World() : nullptr)
 			{
-				GEngine->SetClientTravel(World, *FString::Printf(TEXT("%s:%d"), *Address, Port), TRAVEL_Absolute);
+				GEngine->SetClientTravel(World, *Url, TRAVEL_Absolute);
 			}
 		}
 
@@ -121,7 +124,7 @@ namespace
 			}
 		}
 
-		virtual void WatchFailures(TFunction<void(const FString& Why)> OnFailure) override
+		virtual void WatchFailures(TFunction<void(const FString& Kind, const FString& Words)> OnFailure) override
 		{
 			if (GEngine == nullptr)
 			{
@@ -142,7 +145,7 @@ namespace
 					const bool bOwnWorld = World != nullptr && World == Context->World();
 					if (bConnecting || bOwnWorld)
 					{
-						OnFailure(FString::Printf(TEXT("%s: %s"), ENetworkFailure::ToString(Type), *Error));
+						OnFailure(ENetworkFailure::ToString(Type), Error);
 					}
 				});
 			// A travel failure with no world cannot be told apart from another game instance's (Play In Editor with several clients),
@@ -154,12 +157,100 @@ namespace
 					const FWorldContext* Context = Self.IsValid() ? Self->WorldContext() : nullptr;
 					if (Context != nullptr && World != nullptr && World == Context->World())
 					{
-						OnFailure(FString::Printf(TEXT("%s: %s"), ETravelFailure::ToString(Type), *Error));
+						OnFailure(ETravelFailure::ToString(Type), Error);
 					}
 				});
 		}
 
+		virtual uint64 FindJoiningConnection(const FString& Options, const FString& Address) override
+		{
+			UNetDriver* Driver = ListeningDriver();
+			if (Driver == nullptr)
+			{
+				return 0;
+			}
+			ForgetConnectionsGone();
+			// The engine asks the game mode while it reads the player's login, so the newest connection with this request is the one asking.
+			for (int32 Index = Driver->ClientConnections.Num() - 1; Index >= 0; --Index)
+			{
+				UNetConnection* Connection = Driver->ClientConnections[Index];
+				if (Connection == nullptr || Connection->PlayerController != nullptr || Connection->GetConnectionState() == USOCK_Closed
+					|| NumberOf(Connection) != 0 || !OptionsOf(Connection->RequestURL).Equals(Options, ESearchCase::CaseSensitive)
+					|| !Connection->LowLevelGetRemoteAddress().Equals(Address, ESearchCase::CaseSensitive))
+				{
+					continue;
+				}
+				const uint64 Number = ++LastNumber;
+				Connections.Add(Number, Connection);
+				NumberByConnection.Add(FObjectKey(Connection), Number);
+				return Number;
+			}
+			return 0;
+		}
+
+		virtual bool IsStillHere(uint64 Number) const override
+		{
+			const TWeakObjectPtr<UNetConnection>* Found = Connections.Find(Number);
+			const UNetConnection* Connection = Found != nullptr ? Found->Get() : nullptr;
+			const UNetDriver* Driver = ListeningDriver();
+			return Connection != nullptr && Driver != nullptr && Connection->GetConnectionState() != USOCK_Closed && Driver->ClientConnections.Contains(Connection);
+		}
+
+		virtual uint64 ConnectionOf(const APlayerController* Controller) const override
+		{
+			return Controller != nullptr ? NumberOf(Controller->NetConnection) : 0;
+		}
+
+		virtual bool IsOwnPlayer(const APlayerController* Controller) const override
+		{
+			return Controller != nullptr && Controller->IsLocalController() && GameInstance.IsValid() && Controller->GetGameInstance() == GameInstance.Get();
+		}
+
+		virtual bool IsThisGame(const AGameModeBase* GameMode) const override
+		{
+			return GameMode != nullptr && GameInstance.IsValid() && GameMode->GetGameInstance() == GameInstance.Get();
+		}
+
 	private:
+		/** The options of a request URL as the engine hands them to PreLoginAsync: from its first '?'. */
+		static FString OptionsOf(const FString& RequestUrl)
+		{
+			int32 Start = INDEX_NONE;
+			return RequestUrl.FindChar(TEXT('?'), Start) ? RequestUrl.Mid(Start) : FString();
+		}
+
+		UNetDriver* ListeningDriver() const
+		{
+			const FWorldContext* Context = WorldContext();
+			UWorld* World = Context != nullptr ? Context->World() : nullptr;
+			return World != nullptr && World->GetNetMode() == NM_ListenServer ? World->GetNetDriver() : nullptr;
+		}
+
+		uint64 NumberOf(const UNetConnection* Connection) const
+		{
+			const uint64* Found = Connection != nullptr ? NumberByConnection.Find(FObjectKey(Connection)) : nullptr;
+			return Found != nullptr ? *Found : 0;
+		}
+
+		void ForgetConnectionsGone()
+		{
+			for (auto It = Connections.CreateIterator(); It; ++It)
+			{
+				if (!It.Value().IsValid())
+				{
+					It.RemoveCurrent();
+				}
+			}
+			// An object key is never reused, so a key of a connection gone matches nothing; it is only dropped.
+			for (auto It = NumberByConnection.CreateIterator(); It; ++It)
+			{
+				if (!Connections.Contains(It.Value()))
+				{
+					It.RemoveCurrent();
+				}
+			}
+		}
+
 		FWorldContext* WorldContext() const
 		{
 			UGameInstance* Instance = GameInstance.Get();
@@ -168,6 +259,11 @@ namespace
 
 		TWeakObjectPtr<UGameInstance> GameInstance;
 		TWeakObjectPtr<UWorld> Marked;
+		/** Each connection a join check asked about, by the number it was handed out with; numbers are never used twice. */
+		TMap<uint64, TWeakObjectPtr<UNetConnection>> Connections;
+		/** The same, the other way round. */
+		TMap<FObjectKey, uint64> NumberByConnection;
+		uint64 LastNumber = 0;
 		FDelegateHandle NetworkFailureHandle;
 		FDelegateHandle TravelFailureHandle;
 	};

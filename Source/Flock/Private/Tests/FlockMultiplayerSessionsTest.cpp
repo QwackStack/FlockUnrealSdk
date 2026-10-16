@@ -843,7 +843,7 @@ bool FFlockSessionJoinTokensTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("good for 60 s"), Token->Result.Value.ExpiresInSeconds, 60);
 
 	const TSharedRef<FPlayerAnswer> Verified = MakeShared<FPlayerAnswer>();
-	Session->VerifyJoinToken(FString::Printf(TEXT("token-%s-%s"), *Session->GetId(), *SessionPlayerB), Into(Verified));
+	Session->VerifyJoinToken(F.Server->MintsJoinToken(F.Server->Sessions[0], SessionPlayerB), Into(Verified));
 	TestTrue(TEXT("the host verifies B's token"), Verified->Succeeded());
 	TestEqualSensitive(TEXT("and learns it is B"), Verified->Result.Value, SessionPlayerB);
 

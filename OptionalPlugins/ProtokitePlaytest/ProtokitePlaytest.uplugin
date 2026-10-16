@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 50,
-	"VersionName": "1.30.1",
+	"Version": 51,
+	"VersionName": "1.31.0",
 	"FriendlyName": "Protokite Playtest",
 	"Description": "Protokite playtesting for the Flock SDK, in beta: one session per launch, screen recording, play data and a feedback form. Installed separately, and off until you turn it on.",
 	"Category": "Online Platform",

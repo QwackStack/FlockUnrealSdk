@@ -8,6 +8,7 @@
 #include "Http/FlockRequestsInTurn.h"
 #include "Models/FlockMultiplayerModels.h"
 #include "Multiplayer/FlockDirectAddresses.h"
+#include "Multiplayer/FlockJoinChecksOnHost.h"
 #include "Multiplayer/FlockMultiplayerSession.h"
 #include "Multiplayer/FlockMultiplayerSessionRequests.h"
 #include "Multiplayer/FlockRepeatingCalls.h"
@@ -76,6 +77,11 @@ public:
 
 	/** The one owner of travels, made on first use. */
 	FFlockTravels& GetTravels();
+
+	/** The one owner of the host's check of joining players, made on first use. */
+	FFlockJoinChecksOnHost& GetJoinChecks();
+	/** The host's check of joining players, or null before anything used it. */
+	const FFlockJoinChecksOnHost* FindJoinChecks() const { return JoinChecks.Get(); }
 
 	/** Ends the session of a sign-in that has ended; run once a frame. */
 	void EndIfSignInEnded();
@@ -189,6 +195,7 @@ private:
 	TSharedPtr<FFlockRepeatingCall> ConnectionWait;
 	double ConnectionWaitSeconds = DefaultConnectionWaitSeconds;
 	TSharedPtr<FFlockTravels> Travels;
+	TSharedPtr<FFlockJoinChecksOnHost> JoinChecks;
 	int32 ReadsSent = 0;
 	/** Reads numbered at or below this change nothing when they land. */
 	int32 ReadsSettledThrough = 0;

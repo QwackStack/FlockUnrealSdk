@@ -5,6 +5,48 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.31.0] - 2026-10-16
+
+Join verification: a host that travels to its session with Travel To Session lets in only the session's players.
+
+### Added
+
+- **`FlockJoinChecks::CheckJoiningPlayer(GameMode, Options, Address, UniqueId, OnComplete, ApproveJoiningPlayer)`**, called
+  from the host's game mode's `PreLoginAsync` in place of the engine's own. While the game hosts through Travel To Session, a
+  joining player is let in only once Flock has verified the join token their travel URL carries, one connection a player;
+  then the engine's own checks (`PreLogin`, such as a full game) run, then the game's own `ApproveJoiningPlayer`, which gets
+  an `FFlockJoiningPlayer` (the verified `PlayerId`, the URL's `Options` without the token, `Address`, `UniqueId`).
+  `OnComplete` is always called and the game thread never waits. While the game does not host through Travel To Session,
+  it is the engine's own `PreLoginAsync`.
+- **`UFlockMultiplayerSession::PlayerForConnection(PlayerController)`** (Blueprint pure): the Flock player behind one of the
+  host's player controllers, its own included; empty for a connection gone or never let in by Flock's check.
+- **Travel To Session's `refused` outcome** with `FFlockTravelToSessionResult::RefusedReason`, and
+  `FlockTravelToSessionRefusedReasons`: `no_join_token` (Flock not asked), `join_token_invalid` (Flock's one answer for a
+  made-up token, another session's, an expired one and one whose player gave up their seat), `already_connected` (a token
+  checks out any number of times within its 60 s, so the host itself lets one connection a player in), `flock_unreachable`
+  (no answer within 8 s, an answer that cannot be read, or the host over its checks a minute: nobody is let in unchecked),
+  `session_ended`, `not_host`, `refused_by_the_game`, and `join_check_missing` (the host's game mode does not call the
+  check, so nobody is let in; told once at Error). The reason can also be the game's own or the engine's words. A refusal is
+  logged on the joining player with its fix.
+
+### Changed
+
+- **Travel To Session asks for a join token** once the host's address is known and travels with it (`?FlockJoinToken=`); a
+  token Flock will not give fails the travel with Flock's error, before anything travels. The host turns its check of joining
+  players on before its level listens, and off once the game no longer listens (a host travel that does not start hosting
+  stops listening), at another host travel, or when Flock shuts down; every player still being checked is then turned away
+  rather than left waiting, since the engine never drops a player its game mode has not answered (measured). Flock shut down
+  while the hosted level stays open turns every joining player away (`flock_unreachable`, told once) until that level closes.
+- **A join token Flock does not vouch for is logged at Debug on the host**, not as a warning: it is Flock's answer, which the
+  host's check turns into a refusal, and anyone who reaches a host can send one (a flood of made-up tokens wrote one warning a
+  check, 60 a minute). Flock turning the host's checks away for volume, and any other answer of that route, still warns.
+
+### Fixed
+
+- **The SDK did not compile on UE 5.4 in the editor or a Development build** (since 1.30.1): three of its own test files used
+  a string check UE 5.4 does not have without the stand-in the SDK supplies for it. A check in the repository's CI now fails a
+  file that does that.
+
 ## [1.30.1] - 2026-10-15
 
 Every failure says what is wrong and how to fix it.

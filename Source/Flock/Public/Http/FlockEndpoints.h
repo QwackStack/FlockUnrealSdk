@@ -208,7 +208,9 @@ namespace FlockEndpoints
 	inline FString SessionHost(const FString& SessionId) { return SessionById(SessionId) + TEXT("/host"); }
 	inline FString SessionConnection(const FString& SessionId) { return SessionById(SessionId) + TEXT("/connection-info"); }
 	inline FString SessionJoinToken(const FString& SessionId) { return SessionById(SessionId) + TEXT("/join-token"); }
-	inline FString SessionVerifyJoinToken(const FString& SessionId) { return SessionById(SessionId) + TEXT("/verify-join-token"); }
+	/** How the host's check of a join token ends its route, whatever the session. */
+	inline constexpr const TCHAR* SessionVerifyJoinTokenEnding = TEXT("/verify-join-token");
+	inline FString SessionVerifyJoinToken(const FString& SessionId) { return SessionById(SessionId) + SessionVerifyJoinTokenEnding; }
 	/** The servers to connect through; asked with no session it lists the STUN servers alone. */
 	inline constexpr const TCHAR* RelayCredentials = TEXT("multiplayer/relay-credentials");
 }

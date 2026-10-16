@@ -839,7 +839,9 @@ static void TheLeadersEarlyMatchIsTold(FAutomationTestBase& Test, FMatchmakingFi
 	Test.TestTrue(TEXT("a match made after the game held the party is never taken for an old one"),
 		Found->Succeeded() && Found->Value().IsMatched());
 	Test.TestTrue(TEXT("the session held"), Found->Value().Session != nullptr && Found->Value().Session == F.HeldSession());
-	Test.TestEqualSensitive(TEXT("heard start and end"), Joined(Listener->SearchHeard), FString(TEXT("started,ended matched")));
+	// TestTrue, not Test.TestEqualSensitive: below UE 5.5 that check is a macro that works only unqualified, inside a test's own RunTest.
+	const FString Heard = Joined(Listener->SearchHeard);
+	Test.TestTrue(FString::Printf(TEXT("heard start and end (%s)"), *Heard), Heard.Equals(TEXT("started,ended matched"), ESearchCase::CaseSensitive));
 	Test.TestEqual(TEXT("a member's game makes no search"), F.Server->Count(ERoute::Create), 0);
 }
 

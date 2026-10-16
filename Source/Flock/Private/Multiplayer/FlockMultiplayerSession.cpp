@@ -157,6 +157,13 @@ FFlockRequestHandle UFlockMultiplayerSession::TravelToSession(UObject* WorldCont
 	return FFlockRequestHandle();
 }
 
+FString UFlockMultiplayerSession::PlayerForConnection(const APlayerController* PlayerController) const
+{
+	const TSharedPtr<FFlockMultiplayerSessions> Pinned = Owner.Pin();
+	const FFlockJoinChecksOnHost* Checks = Pinned.IsValid() ? Pinned->FindJoinChecks() : nullptr;
+	return Checks != nullptr ? Checks->PlayerFor(this, PlayerController) : FString();
+}
+
 void UFlockMultiplayerSession::Begin(const TWeakPtr<FFlockMultiplayerSessions>& InOwner, const TSharedRef<FFlockAuthSession>& InSession,
 	int32 InSignInNumber, const FString& InPlayerId, const FFlockMultiplayerSessionReading& Reading)
 {

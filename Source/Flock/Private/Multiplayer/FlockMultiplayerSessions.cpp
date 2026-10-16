@@ -472,12 +472,25 @@ FFlockTravels& FFlockMultiplayerSessions::GetTravels()
 	return *Travels;
 }
 
+FFlockJoinChecksOnHost& FFlockMultiplayerSessions::GetJoinChecks()
+{
+	if (!JoinChecks.IsValid())
+	{
+		JoinChecks = MakeShared<FFlockJoinChecksOnHost>(Logger, [Calls = RepeatingCalls]() { return Calls->Now(); });
+	}
+	return *JoinChecks;
+}
+
 void FFlockMultiplayerSessions::MoveConnectingOn()
 {
 	DirectAddresses->Tick();
 	if (Travels.IsValid())
 	{
 		Travels->Tick();
+	}
+	if (JoinChecks.IsValid())
+	{
+		JoinChecks->Tick();
 	}
 	if (ConnectionWaiters.Num() == 0)
 	{
@@ -614,6 +627,10 @@ void FFlockMultiplayerSessions::StopForShutdown()
 	if (Travels.IsValid())
 	{
 		Travels->StopForShutdown();
+	}
+	if (JoinChecks.IsValid())
+	{
+		JoinChecks->StopForShutdown();
 	}
 	// Every wait ends cancelled, as every call does at shutdown, before the held session's end could answer it as ended.
 	const TArray<FConnectionWaiterRef> Waiting = ConnectionWaiters;

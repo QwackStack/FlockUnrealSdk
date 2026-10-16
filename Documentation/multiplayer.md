@@ -2,8 +2,8 @@
 
 Flock's multiplayer is player-hosted: players group up in **parties**, find each other through **matchmaking** or a
 join code, and one of them hosts the game session. This guide covers what ships today: **parties**, **sessions**,
-**matchmaking** and **connecting players** directly or through a connection of the game's own. Flock's relay, for players
-who cannot reach each other directly, follows in a later release.
+**matchmaking**, **connecting players** directly or through a connection of the game's own, and the host **letting in only
+the session's players**. Flock's relay, for players who cannot reach each other directly, follows in a later release.
 
 Everything here goes through `FFlockMultiplayerProvider`, from `UFlockSubsystem::GetMultiplayerProvider()`. Make its
 calls from the game thread. Every party, session and matchmaking call needs a signed-in player and fails with `Auth` when
@@ -391,7 +391,9 @@ Every refusal carries a hint naming the fix; see [Errors](errors.md).
 Once the players hold a session (hosted, joined by code or matched), their games connect to the host's. There are two ways:
 
 - **Direct**, over the engine's own networking: `TravelToSession` does it all. The host opens its level listening for
-  players and publishes how to reach it; every other player waits for that and travels to the host.
+  players and publishes how to reach it; every other player waits for that and travels to the host with a Flock join token,
+  which the host checks before letting the player in (its game mode calls Flock's check: see
+  [Letting in only the session's players](#letting-in-only-the-sessions-players)).
 - **A connection of the game's own** (Steam, EOS, anything else): the host publishes it with `PublishConnection(Mode,
   Values)`, and the players read it back from the session's `GetConnection()`.
 
@@ -431,7 +433,7 @@ actor of the level the call was made from.
 | Who | Does |
 |---|---|
 | host | Opens `HostLevel` (empty: the level it is in, again) with the engine's `?listen`. Once the level listens, publishes a direct connection on the port its net driver bound: when the port asked for is taken (another game on the same machine), the engine takes the next free one, and that is the one published. Completes `started_as_host`. |
-| player | Waits for the host to publish (`WaitForHostSeconds`, 60 by default), reading the session every 2 s. Travels to the host's LAN address when this device shares the host's public address, and to the published address otherwise. Completes `connected` once the host has let the player in: on a LAN, a few seconds after the host published (the next read of the session, then about two seconds of the engine's own connecting). |
+| player | Waits for the host to publish (`WaitForHostSeconds`, 60 by default), reading the session every 2 s. Asks Flock for a join token (it lasts 60 s, so only once the host is known) and travels to the host's LAN address when this device shares the host's public address, and to the published address otherwise, with the token in the travel URL (`?FlockJoinToken=`). Completes `connected` once the host has let the player in: on a LAN, a few seconds after the host published (the next read of the session, then about two seconds of the engine's own connecting), and `refused` when the host turned the player away. |
 
 How it ended is the result's `Outcome`, a string because more can come; compare with `FlockTravelToSessionOutcomes`:
 
@@ -444,17 +446,91 @@ How it ended is the result's `Outcome`, a string because more can come; compare 
 | `could_not_connect` | connecting failed, and the engine has taken this game back to its default level; or the host published no address and port this game can use. Logged as a warning naming the address. Outside a LAN the host's port must be forwarded to it |
 | `could_not_start` | the host's level did not open listening for players on an IP address, so nothing was published |
 | `not_direct` | the host published a connection of the game's own; the result's `Connection` holds it |
+| `refused` | the host turned this player away, and the engine has taken this game back to its default level; the result's `RefusedReason` says why (see below). Logged as a warning naming the fix |
 
 It fails, rather than ending with an outcome, only for a mistake (no world, an ended session, this game already connected,
 hosting or opening a level, a travel already under way), for a publish the server refused (the host stops listening first:
-nobody can reach a host that did not say where it is), and for a cancel. **Cancelling the handle** gives up a player's
-connection still being made (the game stays in its level) and stops a host listening, at once or as soon as its level has
-opened.
+nobody can reach a host that did not say where it is), for a join token Flock would not give (nothing travels without one;
+the failure is Flock's, with its fix), and for a cancel. **Cancelling the handle** gives up a player's join token still
+being asked for or connection still being made (the game stays in its level) and stops a host listening, at once or as soon
+as its level has opened.
 
 A connection the engine cannot make is the engine's to give up: it waits out its own connection timeout (about 20 s for an
 address nobody answers), then loads the game's default level. Travel To Session connects over the engine's IP networking:
 a game whose net driver uses Steam's sockets (OnlineSubsystemSteam's `bUseSteamNetworking`, on unless set to false) cannot
 listen on an IP address, and ends `could_not_start`; such a game publishes a Steam connection of its own instead.
+
+### Letting in only the session's players
+
+A host that travels to its session with `TravelToSession` lets in only players whose Flock join token checks out, one
+connection a player, and knows which Flock player each connection is. The engine asks the game mode about each joining
+player in `PreLoginAsync`, so the host's game mode calls Flock's check there, in place of the engine's own:
+
+```cpp
+// MyGameMode.h
+virtual void PreLoginAsync(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId,
+    const FOnPreLoginCompleteDelegate& OnComplete) override;
+
+// MyGameMode.cpp
+#include "Multiplayer/FlockJoinChecks.h"
+
+void AMyGameMode::PreLoginAsync(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId,
+    const FOnPreLoginCompleteDelegate& OnComplete)
+{
+    // Flock's check, then the engine's own (PreLogin, such as a full game), then the game's own below.
+    const TWeakObjectPtr<AMyGameMode> Mode = this;
+    FlockJoinChecks::CheckJoiningPlayer(this, Options, Address, UniqueId, OnComplete,
+        [Mode](const FFlockJoiningPlayer& Player, FString& OutRefusedReason)
+        {
+            if (Mode.IsValid() && Mode->IsBanned(Player.PlayerId))
+            {
+                OutRefusedReason = TEXT("banned");   // the joining player's RefusedReason
+                return false;
+            }
+            return true;
+        });
+}
+```
+
+The game's own check is optional; it runs only for a player Flock has let in, and gets `FFlockJoiningPlayer`: the
+`PlayerId` Flock verified, the travel URL's `Options` without Flock's token, the `Address` and the `UniqueId` the engine
+gave. A refusal with no reason is told as `refused_by_the_game`. `OnComplete` is always called, and the game thread never
+waits: the answer comes once Flock has answered.
+
+Who a connection is, on the host: `Session->PlayerForConnection(PlayerController)`, such as in `PostLogin`. It answers the
+Flock player Flock verified for a joined player, this device's own player for its own controller, and an empty string for a
+controller whose connection is gone or was not let in by Flock's check, and while the game does not host that session
+through `TravelToSession`. Name players by it, never by what a player sends.
+
+A joining player is turned away for each of these reasons, its `RefusedReason`:
+
+| Reason | Means |
+|---|---|
+| `no_join_token` | the player's travel URL carried no token: it did not come through `TravelToSession`. Flock is not asked |
+| `join_token_invalid` | Flock said the token is not good for this session: made up, another session's, expired (tokens last 60 s), or its player gave up their seat. Flock gives one answer for all four |
+| `already_connected` | the same Flock player is already let in through another connection. A token checks out any number of times within its 60 s, so the host itself lets one connection a player in; a connection that is gone, or that was turned away, holds no place |
+| `flock_unreachable` | Flock did not answer within 8 s, or its answer could not be read, or the host was over its checks a minute (60 by default; the server answers `RequestRateLimited`). Nobody is let in unchecked; the host's log says why |
+| `session_ended` | the session has ended |
+| `not_host` | the device reached no longer hosts the session |
+| `refused_by_the_game` | the game's own check turned the player away without a reason of its own |
+| `join_check_missing` | the host's game mode does not call `CheckJoiningPlayer`, so nobody is let in. The host's log says so once, at Error |
+
+`RefusedReason` can also be the game's own reason (`banned` above) or the engine's (such as `Server full.`); compare with
+`FlockTravelToSessionRefusedReasons` and keep a default. A player turned away by a host that is not checking through Flock
+(its words carry no Flock reason), or by a host closing its connections, ends `could_not_connect`.
+
+How long a check may take: the engine never drops a player its game mode has not answered (measured: still waiting after
+130 s), so Flock's check gives Flock 8 s and then turns the player away with a reason. An answer that comes after the player
+left, or after the host stopped hosting, lets nobody in and is remembered nowhere; when the host's level stops listening or
+Flock shuts down, every player still being checked is turned away (`flock_unreachable`) rather than left waiting. Flock shut
+down while the hosted level stays open (listening, or opening) turns every joining player away (`flock_unreachable`, told once
+as a warning), whatever the game mode does, until that level closes or the game opens another: nobody can be checked, so
+nobody is let in. Leave the hosted level before shutting Flock down.
+
+While the game does not host through `TravelToSession`, `CheckJoiningPlayer` is the engine's own `PreLoginAsync` and the
+game's check is not run. Split-screen guests joining through a player's connection carry no token of their own, so a host
+checking players turns them away (`no_join_token`). The token travels in the clear unless the game encrypts its
+connections; it is bound to one player and one session for 60 s, and the host lets in one connection a player.
 
 ### The pieces
 

@@ -13,6 +13,7 @@
 #include "Multiplayer/FlockParty.h"
 #include "Multiplayer/FlockRepeatingCalls.h"
 
+class FFlockJoinChecksOnHost;
 class FFlockMatchmaking;
 class FFlockMatchmakingRequests;
 class FFlockMultiplayerSessions;
@@ -98,6 +99,9 @@ public:
 	 * A missing name fails Validation coded matchmaking.queue_not_found. Cancelling the handle ends this wait at once.
 	 */
 	FFlockRequestHandle FindQueueId(const FString& QueueName, TFunction<void(TFlockResult<FString>)> OnComplete);
+
+	/** The host's check of joining players, which Travel To Session turns on and FlockJoinChecks::CheckJoiningPlayer asks. */
+	FFlockJoinChecksOnHost& GetJoinChecks();
 
 	/** The calls the SDK repeats for multiplayer; the SDK's own features start them, a game does not. */
 	FFlockRepeatingCalls& GetRepeatingCalls() { return *RepeatingCalls; }
