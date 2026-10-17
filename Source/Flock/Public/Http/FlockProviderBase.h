@@ -39,24 +39,8 @@ public:
 
 	virtual ~FFlockProviderBase() = default;
 
-	/**
-	 * Where the calls being dispatched right now come from — appended to every log line as
-	 * "<Context> [<origin>]" so a log shows whether a call came from C++ or a Blueprint graph.
-	 * Defaults to "C++"; the Blueprint async nodes set it for the duration of their dispatch via
-	 * FFlockCallOriginScope. Safe because dispatch is synchronous and game-thread only: the origin is
-	 * folded into the log strings before the call returns, so overlapping async calls can't mix it up.
-	 *
-	 * Also published ambiently (FFlockCallOrigin) so the HTTP layer underneath can stamp the same origin
-	 * onto its request/response trace — otherwise a provider line names the caller and the network lines
-	 * below it do not, which is the half that matters when a call fails. FFlockCallOriginScope restores
-	 * both on the way out, because it restores through this setter.
-	 */
-	void SetCallOrigin(const FString& InOrigin)
-	{
-		CallOrigin = InOrigin;
-		FFlockCallOrigin::Set(InOrigin);
-	}
-	const FString& GetCallOrigin() const { return CallOrigin; }
+	/** The SDK's logger this provider writes to, for a Blueprint node that has something of its own to tell the developer. */
+	IFlockLogger& GetLogger() const { return *Logger; }
 
 	/**
 	 * Attaches the offline snapshot store and the game version that scopes its entries. Without this,
@@ -89,10 +73,13 @@ protected:
 	/** Enables silent refresh-on-auth-failure for this provider's calls. Unset = pass-through. */
 	void SetAuthSession(const TSharedPtr<FFlockAuthSession>& InSession) { AuthSession = InSession; }
 
-	/** "Email login" -> "Email login [Blueprint 'bpTest']". Evaluate at dispatch, not in a completion. */
+	/**
+	 * "Email login" -> "Email login [Blueprint 'bpTest']": the caller making the calls dispatched now (FFlockCallOrigin), "C++"
+	 * unless a Blueprint node's FFlockCallOriginScope is open. Evaluate at dispatch, not in a completion.
+	 */
 	FString DecorateContext(const FString& Context) const
 	{
-		return FString::Printf(TEXT("%s [%s]"), *Context, *CallOrigin);
+		return FString::Printf(TEXT("%s [%s]"), *Context, *FFlockCallOrigin::Get());
 	}
 
 	/**
@@ -419,28 +406,29 @@ private:
 	TSharedPtr<FFlockSnapshotStore> SnapshotStore;
 	FString GameVersionId;
 	TFunction<bool()> ReachabilityProbe;
-	FString CallOrigin = TEXT("C++");
 };
 
 /**
- * Tags a provider's calls with their caller for the duration of a synchronous dispatch, then restores
- * the previous origin. The Blueprint async nodes wrap their provider call in one of these so the log
- * names the graph that made the request; anything dispatched outside a scope logs as "C++".
+ * Tags the calls dispatched while it is open with their caller, then restores the previous origin. The Blueprint async nodes
+ * wrap their call in one of these so the log names the graph that made the request: every provider's line and the HTTP lines
+ * beneath it, whichever provider's requests the call goes through. Anything dispatched outside a scope logs as "C++". Safe
+ * because dispatch is synchronous and game-thread only: the origin is folded into the log strings before the call returns.
  */
 struct FLOCK_API FFlockCallOriginScope
 {
-	FFlockCallOriginScope(FFlockProviderBase& InProvider, const FString& Origin)
-		: Provider(InProvider)
-		, Previous(InProvider.GetCallOrigin())
+	explicit FFlockCallOriginScope(const FString& Origin)
+		: Previous(FFlockCallOrigin::Get())
 	{
-		Provider.SetCallOrigin(Origin);
+		FFlockCallOrigin::Set(Origin);
 	}
 
 	~FFlockCallOriginScope()
 	{
-		Provider.SetCallOrigin(Previous);
+		FFlockCallOrigin::Set(Previous);
 	}
 
-	FFlockProviderBase& Provider;
+	FFlockCallOriginScope(const FFlockCallOriginScope&) = delete;
+	FFlockCallOriginScope& operator=(const FFlockCallOriginScope&) = delete;
+
 	FString Previous;
 };

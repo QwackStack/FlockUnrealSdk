@@ -86,7 +86,7 @@ private:
 	TObjectPtr<UObject> WorldContextObject;
 
 	bool bByName = false;
-	FString Argument;
+	FString ShopIdOrName;
 };
 
 /** Fetches a single shop item by id. */

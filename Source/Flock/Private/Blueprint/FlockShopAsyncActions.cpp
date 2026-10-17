@@ -1,26 +1,14 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockShopAsyncActions.h"
+#include "Blueprint/FlockBlueprintCallOrigin.h"
 #include "Http/FlockErrorHints.h"
 
-#include "Engine/BlueprintGeneratedClass.h"
 #include "FlockSubsystem.h"
 #include "Providers/FlockShopProvider.h"
 
 namespace
 {
-	FString ResolveCallOrigin(const UObject* WorldContextObject)
-	{
-		if (const UBlueprintGeneratedClass* BlueprintClass =
-			WorldContextObject ? Cast<UBlueprintGeneratedClass>(WorldContextObject->GetClass()) : nullptr)
-		{
-			FString AssetName = BlueprintClass->GetName();
-			AssetName.RemoveFromEnd(TEXT("_C"));
-			return FString::Printf(TEXT("Blueprint '%s'"), *AssetName);
-		}
-		return TEXT("Blueprint node");
-	}
-
 	FFlockShopProvider* ResolveShop(UObject* WorldContextObject, FFlockError& OutError)
 	{
 		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
@@ -56,7 +44,7 @@ void UFlockGetAllShopsAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetAllShopsAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetAll(Page, Limit, [WeakThis](TFlockResult<FFlockShopPage> Result)
 	{
 		if (UFlockGetAllShopsAction* Self = WeakThis.Get())
@@ -86,7 +74,7 @@ UFlockGetShopAction* UFlockGetShopAction::GetShopById(UObject* WorldContextObjec
 	UFlockGetShopAction* Action = NewObject<UFlockGetShopAction>();
 	Action->WorldContextObject = WorldContextObject;
 	Action->bByName = false;
-	Action->Argument = ShopId;
+	Action->ShopIdOrName = ShopId;
 	return Action;
 }
 
@@ -95,7 +83,7 @@ UFlockGetShopAction* UFlockGetShopAction::GetShopByName(UObject* WorldContextObj
 	UFlockGetShopAction* Action = NewObject<UFlockGetShopAction>();
 	Action->WorldContextObject = WorldContextObject;
 	Action->bByName = true;
-	Action->Argument = Name;
+	Action->ShopIdOrName = Name;
 	return Action;
 }
 
@@ -110,7 +98,7 @@ void UFlockGetShopAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetShopAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	auto OnDone = [WeakThis](TFlockResult<FFlockShop> Result)
 	{
 		if (UFlockGetShopAction* Self = WeakThis.Get())
@@ -121,11 +109,11 @@ void UFlockGetShopAction::Activate()
 
 	if (bByName)
 	{
-		Provider->GetByName(Argument, OnDone);
+		Provider->GetByName(ShopIdOrName, OnDone);
 	}
 	else
 	{
-		Provider->GetById(Argument, OnDone);
+		Provider->GetById(ShopIdOrName, OnDone);
 	}
 }
 
@@ -163,7 +151,7 @@ void UFlockGetShopItemAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetShopItemAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetItem(ShopItemId, [WeakThis](TFlockResult<FFlockShopItem> Result)
 	{
 		if (UFlockGetShopItemAction* Self = WeakThis.Get())
@@ -209,7 +197,7 @@ void UFlockGetShopItemsAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetShopItemsAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetItemsByShop(ShopId, PatchId, [WeakThis](TFlockResult<TArray<FFlockShopItem>> Result)
 	{
 		if (UFlockGetShopItemsAction* Self = WeakThis.Get())
@@ -255,7 +243,7 @@ void UFlockPurchaseAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockPurchaseAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->Purchase(ShopItemId, PlayerId, [WeakThis](TFlockResult<FFlockPurchaseResult> Result)
 	{
 		if (UFlockPurchaseAction* Self = WeakThis.Get())
@@ -300,7 +288,7 @@ void UFlockConsumeInventoryAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockConsumeInventoryAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->Consume(InventoryId, [WeakThis](TFlockResult<FFlockConsumeResult> Result)
 	{
 		if (UFlockConsumeInventoryAction* Self = WeakThis.Get())
@@ -347,7 +335,7 @@ void UFlockGetPlayerInventoryAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetPlayerInventoryAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetPlayerInventory(PlayerId, Page, Limit, [WeakThis](TFlockResult<FFlockPlayerInventoryPage> Result)
 	{
 		if (UFlockGetPlayerInventoryAction* Self = WeakThis.Get())

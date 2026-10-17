@@ -68,8 +68,8 @@ private:
 		TFunction<FFlockRequestHandle(FFlockAuthProvider&, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)>)> InStart);
 	void Complete(const TFlockResult<FFlockPlayerLoginResponse>& Result);
 
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: the game instance keeps this node, which must not keep a level's object (and so its world) alive past a level change. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 
 	TFunction<FFlockRequestHandle(FFlockAuthProvider&, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)>)> Start;
 };
@@ -108,8 +108,8 @@ private:
 		TFunction<FFlockRequestHandle(FFlockAuthProvider&, TFunction<void(TFlockResult<FFlockRegisterResult>)>)> InStart);
 	void Complete(const TFlockResult<FFlockRegisterResult>& Result);
 
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: the game instance keeps this node, which must not keep a level's object (and so its world) alive past a level change. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 
 	TFunction<FFlockRequestHandle(FFlockAuthProvider&, TFunction<void(TFlockResult<FFlockRegisterResult>)>)> Start;
 };
@@ -134,8 +134,8 @@ public:
 	virtual void Activate() override;
 
 private:
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: the game instance keeps this node, which must not keep a level's object (and so its world) alive past a level change. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 };
 
 UCLASS()
@@ -175,8 +175,8 @@ private:
 		TFunction<void(FFlockAuthProvider&, TFunction<void(bool, const FFlockError&)>)> InStart);
 	void Complete(bool bSuccess, const FFlockError& Error);
 
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: the game instance keeps this node, which must not keep a level's object (and so its world) alive past a level change. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 
 	TFunction<void(FFlockAuthProvider&, TFunction<void(bool, const FFlockError&)>)> Start;
 };
@@ -232,8 +232,8 @@ private:
 		TFunction<FFlockRequestHandle(FFlockAuthProvider&, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)>)> InStart);
 	void Complete(const TFlockResult<FFlockPlayerAccountsResponse>& Result);
 
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: the game instance keeps this node, which must not keep a level's object (and so its world) alive past a level change. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 
 	TFunction<FFlockRequestHandle(FFlockAuthProvider&, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)>)> Start;
 };
@@ -257,8 +257,8 @@ public:
 	virtual void Activate() override;
 
 private:
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: the game instance keeps this node, which must not keep a level's object (and so its world) alive past a level change. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 
 	FString Name;
 };

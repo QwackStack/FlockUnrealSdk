@@ -1,27 +1,15 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockConfigAsyncActions.h"
+#include "Blueprint/FlockBlueprintCallOrigin.h"
 #include "Http/FlockErrorHints.h"
 
-#include "Engine/BlueprintGeneratedClass.h"
 #include "FlockSubsystem.h"
 #include "Providers/FlockConfigProvider.h"
 #include "Providers/FlockGameProvider.h"
 
 namespace
 {
-	FString ResolveCallOrigin(const UObject* WorldContextObject)
-	{
-		if (const UBlueprintGeneratedClass* BlueprintClass =
-			WorldContextObject ? Cast<UBlueprintGeneratedClass>(WorldContextObject->GetClass()) : nullptr)
-		{
-			FString AssetName = BlueprintClass->GetName();
-			AssetName.RemoveFromEnd(TEXT("_C"));
-			return FString::Printf(TEXT("Blueprint '%s'"), *AssetName);
-		}
-		return TEXT("Blueprint node");
-	}
-
 	FFlockConfigProvider* ResolveConfig(UObject* WorldContextObject, FFlockError& OutError)
 	{
 		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
@@ -54,7 +42,7 @@ UFlockGetConfigAction* UFlockGetConfigAction::GetConfigByName(UObject* WorldCont
 	UFlockGetConfigAction* Action = NewObject<UFlockGetConfigAction>();
 	Action->WorldContextObject = WorldContextObject;
 	Action->bByName = true;
-	Action->Argument = Name;
+	Action->ConfigIdOrName = Name;
 	return Action;
 }
 
@@ -63,7 +51,7 @@ UFlockGetConfigAction* UFlockGetConfigAction::GetConfigById(UObject* WorldContex
 	UFlockGetConfigAction* Action = NewObject<UFlockGetConfigAction>();
 	Action->WorldContextObject = WorldContextObject;
 	Action->bByName = false;
-	Action->Argument = ConfigId;
+	Action->ConfigIdOrName = ConfigId;
 	return Action;
 }
 
@@ -78,7 +66,7 @@ void UFlockGetConfigAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetConfigAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	auto OnDone = [WeakThis](TFlockResult<FFlockGameConfigSchema> Result)
 	{
 		if (UFlockGetConfigAction* Self = WeakThis.Get())
@@ -89,11 +77,11 @@ void UFlockGetConfigAction::Activate()
 
 	if (bByName)
 	{
-		Provider->GetConfigByName(Argument, OnDone);
+		Provider->GetConfigByName(ConfigIdOrName, OnDone);
 	}
 	else
 	{
-		Provider->GetConfigById(Argument, OnDone);
+		Provider->GetConfigById(ConfigIdOrName, OnDone);
 	}
 }
 
@@ -131,7 +119,7 @@ void UFlockGetConfigsByTagAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetConfigsByTagAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetConfigsByTag(Tag, [WeakThis](TFlockResult<TArray<FFlockGameConfigSchema>> Result)
 	{
 		if (UFlockGetConfigsByTagAction* Self = WeakThis.Get())
@@ -175,7 +163,7 @@ void UFlockResolveConfigDataAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockResolveConfigDataAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->ResolveConfigData(ConfigId, [WeakThis](TFlockResult<FFlockStructuredData> Result)
 	{
 		if (UFlockResolveConfigDataAction* Self = WeakThis.Get())
@@ -218,7 +206,7 @@ void UFlockGetGameAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetGameAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetGame([WeakThis](TFlockResult<FFlockGameSchema> Result)
 	{
 		if (UFlockGetGameAction* Self = WeakThis.Get())
@@ -271,7 +259,7 @@ void UFlockGetGameVersionAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetGameVersionAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	auto OnDone = [WeakThis](TFlockResult<FFlockGameVersionSchema> Result)
 	{
 		if (UFlockGetGameVersionAction* Self = WeakThis.Get())
@@ -324,7 +312,7 @@ void UFlockGetPlayerFeaturesAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetPlayerFeaturesAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetPlayerFeatures(PlayerId, [WeakThis](TFlockResult<FFlockGameConfigSchema> Result)
 	{
 		if (UFlockGetPlayerFeaturesAction* Self = WeakThis.Get())

@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.30.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.32.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -106,7 +106,7 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   notification, and asset-list reads are cached to disk, scoped to the game version, and served when the
   network is down; toggleable in settings.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
-- **Blueprint-friendly** — every provider call is a self-contained async node (party, session and matchmaking calls are C++-only for now), and the fire-and-forget
+- **Blueprint-friendly** — every provider call is a self-contained async node, and the fire-and-forget
   calls plus auth/session state are one-node too (no "Get Flock Subsystem" needed). Events, error types,
   and structured data all read from Blueprint.
 
@@ -553,7 +553,10 @@ the session it seats the player in. **1.30.0 connects the players**: Travel To S
 and publishes how to reach it, and takes every other player there, to the host's LAN address when both share a public
 address; a connection of the game's own (Steam, EOS) is published and read back the same way. **1.31.0 checks who joins**:
 the host's game mode calls Flock's check from `PreLoginAsync`, which lets in only players whose Flock join token checks out,
-one connection a player, and says which Flock player each connection is; a player turned away learns why.
+one connection a player, and says which Flock player each connection is; a player turned away learns why. **1.32.0 brings
+multiplayer to Blueprint**: a node for every party, session and matchmaking call and for Travel To Session, a node for every
+value a result carries, and ready-made game modes (`AFlockGameModeBase`, `AFlockGameMode`) that let in only the session's
+players, with the game's own check overridable in Blueprint.
 
 Deliberate omissions and known gaps:
 
@@ -562,9 +565,7 @@ Deliberate omissions and known gaps:
   `Flock Download Asset File` is the documented path for audio.
 - **A few surfaces are C++-only.** Config *patch* reads (all patches, by id, by config) and configs by
   version tag — in Blueprint, `Flock Resolve Config Data` already returns the patched-or-base values,
-  which is what most graphs want. Provider cache clearing is also C++-only. **Party, session and matchmaking calls** (create or
-  host, join, get, get mine, find match, travel to session and the objects' own calls) are C++-only for now; a party's or session's state and
-  its events, the party's search included, already read from Blueprint.
+  which is what most graphs want. Provider cache clearing is also C++-only.
 - **Asset uploads are not included.** The SDK reads and downloads assets; publishing them is a dashboard
   operation.
 - **Leave `framegrabber.framelatency` at 0 while Protokite Playtest records video.** Changing that engine console

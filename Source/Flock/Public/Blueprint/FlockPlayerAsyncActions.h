@@ -117,7 +117,7 @@ private:
 	TObjectPtr<UObject> WorldContextObject;
 
 	bool bByTag = false;
-	FString Argument;
+	FString TemplateIdOrTag;
 };
 
 /** Fetches all player templates for this game version. */
@@ -174,7 +174,7 @@ public:
 	virtual void Activate() override;
 
 private:
-	// How Argument is looked up. Kept off the wire — a plain internal selector for the three factories.
+	// How TemplateIdNameOrTag is looked up. Kept off the wire — a plain internal selector for the three factories.
 	enum class ELookup : uint8 { ById, ByName, ByTag };
 
 	void Complete(const TFlockResult<FFlockPlayerTemplateSchema>& Result);
@@ -183,7 +183,7 @@ private:
 	TObjectPtr<UObject> WorldContextObject;
 
 	ELookup Mode = ELookup::ById;
-	FString Argument;
+	FString TemplateIdNameOrTag;
 };
 
 /** Fetches all data rows for a template (across players). */

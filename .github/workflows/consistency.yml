@@ -148,6 +148,116 @@ jobs:
           fi
           echo "No shipped file names another engine's SDK."
 
+  blueprint-nodes:
+    # Three rules about Blueprint nodes that no compiler checks. Reads text files only, so it needs no engine.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: A node the game instance keeps holds its world context weakly
+        run: |
+          set -euo pipefail
+
+          # A node registered with the game instance (RegisterWithGameInstance) lives until its pin fires: seconds for a sign-in,
+          # minutes for a search or a travel. Held in a UPROPERTY, its world context (often an actor or a widget of the level that
+          # called it) keeps that level's world alive past a level change, which the engine reports as a world not cleaned up by
+          # garbage collection, and can be told to treat as fatal. The multiplayer and sign-in nodes held it so until 1.32.0.
+          BAD=""
+          CHECKED=0
+          for SOURCE in $(grep -rl --include='*.cpp' 'RegisterWithGameInstance' Source/Flock/Private/Blueprint || true); do
+            HEADER="Source/Flock/Public/Blueprint/$(basename "${SOURCE%.cpp}").h"
+            if [ ! -f "$HEADER" ]; then
+              echo "::error file=$SOURCE::$SOURCE registers nodes with the game instance, but $HEADER, where this check expects their declarations, is missing. Update this workflow with where they moved."
+              exit 1
+            fi
+            CHECKED=$((CHECKED + 1))
+            if grep -q 'TObjectPtr<UObject> WorldContextObject' "$HEADER"; then
+              BAD="$BAD $HEADER"
+            fi
+          done
+
+          if [ -n "$BAD" ]; then
+            echo "::error::These nodes are kept by the game instance and hold their world context in a UPROPERTY:$BAD. Hold it as TWeakObjectPtr<UObject>, and read it with .Get() where the node runs."
+            exit 1
+          fi
+          echo "The $CHECKED node files whose nodes the game instance keeps hold their world context weakly."
+
+      - name: Every Blueprint node finds the game's Flock through its world context
+        run: |
+          set -euo pipefail
+
+          # A node's factory names its world context input (WorldContext in its meta), so a graph in an Actor, a widget or the
+          # game instance fills it with Self and the node finds that game's Flock. Without it the input is a plain pin that
+          # defaults to nothing, the graph still compiles, and the node answers that Flock is not running in a game where it is.
+          python3 - <<'PY'
+          import glob
+          import re
+          import sys
+
+          factories = 0
+          marked = 0
+          missing = []
+          for path in sorted(glob.glob("Source/**/*.h", recursive=True) + glob.glob("OptionalPlugins/**/*.h", recursive=True)):
+              with open(path, encoding="utf-8", errors="replace") as f:
+                  text = f.read()
+              marked += text.count("BlueprintInternalUseOnly")
+              for match in re.finditer(r"UFUNCTION\(([^;{}]*?)\)\s*static\b[^;(]*?\b(\w+)\s*\(", text):
+                  meta, name = match.group(1), match.group(2)
+                  if "BlueprintInternalUseOnly" not in meta:
+                      continue
+                  factories += 1
+                  if "WorldContext" not in meta:
+                      missing.append(f"{path}: {name}")
+
+          if factories == 0 or factories != marked:
+              # A declaration this scan cannot read (a comment between UFUNCTION and static, say) would otherwise go unchecked.
+              print(f"::error::Read {factories} Blueprint node factories but BlueprintInternalUseOnly appears {marked} times. Declare each node factory as UFUNCTION(...) followed directly by static, or update this workflow to read the new form.")
+              sys.exit(1)
+          if missing:
+              for line in missing:
+                  print(f"::error::{line} has no WorldContext in its meta, so a graph cannot fill it with Self. Add WorldContext = \"WorldContextObject\" to its UFUNCTION meta.")
+              sys.exit(1)
+          print(f"Every one of the {factories} Blueprint node factories names its world context.")
+          PY
+
+      - name: Every multiplayer spelling a game compares against has a Blueprint node
+        run: |
+          set -euo pipefail
+
+          MODELS=Source/Flock/Public/Models/FlockMultiplayerModels.h
+          LIBRARY=Source/Flock/Public/Blueprint/FlockMultiplayerLibrary.h
+          for f in "$MODELS" "$LIBRARY"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::$f is missing. This check reads it; if it moved, update this workflow with it."
+              exit 1
+            fi
+          done
+
+          # The game-facing sets. The wire's own spellings (the ...WireValues namespaces) are the SDK's to read, not a game's.
+          NAMESPACES="FlockMultiplayerSessionEndReasons FlockMultiplayerConnectionModes FlockDirectConnectionValues FlockTravelToSessionOutcomes FlockTravelToSessionRefusedReasons FlockMatchmakingOutcomes"
+          MISSING=""
+          TOTAL=0
+          for NS in $NAMESPACES; do
+            NAMES=$(awk -v ns="$NS" '{ sub(/\r$/, "") } $1 == "namespace" && $2 == ns { inside = 1; next } inside && /^}/ { inside = 0 } inside { print }' "$MODELS" \
+              | grep -oE 'inline constexpr const TCHAR\* [A-Za-z]+' | awk '{ print $NF }' || true)
+            if [ -z "$NAMES" ]; then
+              echo "::error file=$MODELS::Found no constants in $NS. If it was renamed or moved, update this workflow with it."
+              exit 1
+            fi
+            for NAME in $NAMES; do
+              TOTAL=$((TOTAL + 1))
+              if ! grep -qF "$NS::$NAME;" "$LIBRARY"; then
+                MISSING="$MISSING $NS::$NAME"
+              fi
+            done
+          done
+
+          if [ -n "$MISSING" ]; then
+            echo "::error file=$LIBRARY::No Blueprint node returns:$MISSING. Add a pure node for each to UFlockMultiplayerLibrary, and its line to the test Flock.Multiplayer.Nodes.TheConstantNodes_SpellEachValueAsTheSdkDoes, so a Blueprint can compare against it without typing it."
+            exit 1
+          fi
+          echo "Every one of the $TOTAL multiplayer spellings a game compares against has a Blueprint node."
+
   version:
     # Three facts about a release have to agree and nothing mechanical links them: Flock.uplugin's
     # VersionName is what the archive is named for and what UFlockSubsystem::SdkVersion is bumped

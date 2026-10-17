@@ -5,6 +5,42 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.32.0] - 2026-10-17
+
+Blueprint support for multiplayer: a game made in Blueprint makes and joins parties and sessions, finds a match, travels into
+the session's game and lets in only the session's players.
+
+### Added
+
+- **An async node for every multiplayer call**, under *Flock | Multiplayer*: Flock Create Party, Join Party, Get My Party,
+  Leave Party, Kick From Party, Make Party Leader, Update Party, Disband Party; Flock Host Session, Join Session, Get Session,
+  Get My Session, Leave Session, End Session, Make Session Host, Publish Connection, Publish Direct Connection, Request Join
+  Token, Verify Join Token, Find Direct Address, Wait For Connection; Flock Find Match and Party Find Match (On Matched, On No
+  Match); Flock Travel To Session (On Joined, On Not Joined). Each fires one pin, the failure pin with the error; Get My Party
+  and Get My Session tell none from one; Find Match, Party Find Match, Wait For Connection and Travel To Session can be
+  cancelled from their Async Task pin, and a cancel the game asks for fires no pin. The game instance keeps a node until it
+  has fired. Travel To Session warns when called from an object of the current level, which is gone once its pins fire.
+- **A pure node for every value a multiplayer result carries** (`UFlockMultiplayerLibrary`): Flock Travel Outcome, Flock
+  Refused Reason, Flock Matchmaking Outcome and Flock Session End Reason nodes, the connection mode and direct connection
+  values, and Is Matched.
+- **`AFlockGameModeBase` and `AFlockGameMode`**, game modes that let in only the session's players while the game hosts
+  through Travel To Session: their `PreLoginAsync` runs Flock's check, the engine's own, then **Approve Joining Player**, the
+  game's own check, overridable in Blueprint.
+
+### Changed
+
+- **A Blueprint node's calls are logged under the Blueprint that made them on every line**, a call that goes through another
+  part of the SDK included: a multiplayer call's own lines read "C++" before (only the HTTP lines beneath named the Blueprint).
+  For C++ that tags its own calls: `FFlockCallOriginScope` takes the caller's name alone (`FFlockCallOriginScope Scope(TEXT("..."))`),
+  and `FFlockProviderBase::SetCallOrigin`/`GetCallOrigin` are gone; every provider reads the one `FFlockCallOrigin`.
+
+### Fixed
+
+- **A sign-in node no longer keeps the level that called it alive.** The game instance keeps a sign-in node until it answers,
+  and the node held its caller, such as a menu widget: a sign-in still on its way when the game changed level kept the old
+  level's world past the change, which the engine reports as a world not cleaned up by garbage collection. A check in the
+  repository's CI now fails a node the game instance keeps that holds its caller.
+
 ## [1.31.0] - 2026-10-16
 
 Join verification: a host that travels to its session with Travel To Session lets in only the session's players.

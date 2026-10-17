@@ -7,7 +7,8 @@ the session's players**. Flock's relay, for players who cannot reach each other 
 
 Everything here goes through `FFlockMultiplayerProvider`, from `UFlockSubsystem::GetMultiplayerProvider()`. Make its
 calls from the game thread. Every party, session and matchmaking call needs a signed-in player and fails with `Auth` when
-there is none, without a request.
+there is none, without a request. From Blueprint, every call is a node under *Flock | Multiplayer*, and a ready-made game
+mode lets in only the session's players: see [Blueprint](#blueprint).
 
 ## Parties
 
@@ -492,6 +493,10 @@ void AMyGameMode::PreLoginAsync(const FString& Options, const FString& Address, 
 }
 ```
 
+Or base the game mode on **`AFlockGameModeBase`** (on `AGameModeBase`) or **`AFlockGameMode`** (on `AGameMode`, for
+match states), as a Blueprint or in C++: their `PreLoginAsync` does exactly the above, and the game's own check is their
+**Approve Joining Player** (`ApproveJoiningPlayer`), overridable in Blueprint, which lets everyone in until overridden.
+
 The game's own check is optional; it runs only for a player Flock has let in, and gets `FFlockJoiningPlayer`: the
 `PlayerId` Flock verified, the travel URL's `Options` without Flock's token, the `Address` and the `UniqueId` the engine
 gave. A refusal with no reason is told as `refused_by_the_game`. `OnComplete` is always called, and the game thread never
@@ -576,3 +581,52 @@ if (Session->HasConnection() && Session->GetConnection().Mode.Equals(TEXT("steam
 
 Players on other networks reach a direct host only when its port is forwarded to it on the host's router. Flock's relay,
 which needs no forwarding, follows in a later release.
+
+## Blueprint
+
+Every call above is an async node under *Flock | Multiplayer*, named as the call is, and fires exactly one of its pins. The
+party and session objects' state and events are already Blueprint (a party's **On Members Changed**, a session's **On Ended**
+and the rest); the nodes add the calls.
+
+| Node | Pins |
+|---|---|
+| Flock Create Party, Flock Join Party | On Success (the party) · On Failure (the error) |
+| Flock Get My Party | On Party · On No Party · On Failure |
+| Flock Leave Party, Kick From Party, Make Party Leader, Update Party, Disband Party | On Success (the party as it stands, ended after a leave or disband) · On Failure |
+| Flock Host Session, Flock Join Session, Flock Get Session | On Success (the session) · On Failure |
+| Flock Get My Session | On Session · On No Session · On Failure |
+| Flock Leave Session, End Session, Make Session Host, Publish Connection, Publish Direct Connection | On Success (the session) · On Failure |
+| Flock Find Match, Flock Party Find Match | On Matched (the result: its Session is where the players play) · On No Match (the result: its Outcome says how the search ended) · On Failure |
+| Flock Request Join Token | On Success (the token) · On Failure |
+| Flock Verify Join Token | On Success (the player the token was given to) · On Failure |
+| Flock Find Direct Address | On Success (the address) · On Failure |
+| Flock Wait For Connection | On Connection · On Session Ended · On Timed Out · On Failure |
+| Flock Travel To Session | On Joined (started as host, or connected) · On Not Joined (the result's Outcome and Refused Reason say why) · On Failure (a mistake, such as an ended session) |
+
+Max Size and Max Players left at 0 take the server's default (a party of 4) and the game's own count from the dashboard;
+Update Party's New Max Size 0 keeps the size, and its Replace Settings off keeps the settings. A node that acts on a party or
+a session and is given none fires On Failure and sends nothing. On No Match and On Not Joined carry outcomes the server adds
+later too, so compare the result's Outcome with the nodes below and keep a default.
+
+**Cancelling.** Find Match, Party Find Match, Wait For Connection and Travel To Session hand out the node itself on their
+**Async Task** pin; its **Cancel** stops the search on the server, the wait, or the travel. A cancel the game asks for fires
+no pin; Flock shutting down while a node waits fires On Failure. The game instance keeps every node until a pin has fired, so
+a search left running by a graph that called the node again still answers.
+
+**Call Travel To Session from the Game Instance Blueprint**, where the engine's own **Network Error** and **Travel Error**
+events are. Its pins fire once the level has changed, so a widget or an actor of the current level is gone by then and never
+sees how the travel ended: a refused player included, since the engine takes it back to its default level. Called from inside
+the level, the node warns in the log, naming the caller.
+
+**Spellings.** Every value a result can carry is a pure node, so a graph compares rather than types it: **Flock Travel Outcome**
+(Started As Host, Connected, Host Never Published, Session Ended, Could Not Connect, Could Not Start, Not Direct, Refused),
+**Flock Refused Reason** (No Join Token, Join Token Invalid, Already Connected, Flock Unreachable, Session Ended, Not Host,
+Refused By The Game, Join Check Missing), **Flock Matchmaking Outcome** (Matched, Expired, Party Changed, Cancelled), **Flock
+Session End Reason** (Ended By Host, Host Left, Expired, Empty, Left, Dropped, Moved To Another Session, Signed Out), **Flock
+Connection Mode Direct** and **Flock Direct Connection Value** (Address, Port, LAN Address, Public Address), and **Is Matched**.
+
+**Letting in only the session's players.** Make the game's game mode a Blueprint based on **Flock Game Mode Base** (or **Flock
+Game Mode**, for match states) and set it in the project's Maps & Modes. To turn players away, override **Approve Joining
+Player**: it gets the Joining Player (the Player Id Flock verified, the travel's Options, the Address) after Flock's check and
+the engine's own, returns whether to let the player in, and its Refused Reason reaches the player's Travel To Session (empty
+reads as Refused By The Game). Name players by **Player For Connection** on the session, such as in **On Post Login**.

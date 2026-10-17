@@ -30,8 +30,8 @@ public:
  * request line and carries that copy into the completion, so a response landing after some other call has
  * started cannot be attributed to the wrong caller.
  *
- * Providers keep their own copy too (FFlockProviderBase::SetCallOrigin writes both), so a provider's log
- * lines and the HTTP lines underneath them always agree.
+ * Every provider stamps this same origin on its own lines (FFlockProviderBase::DecorateContext), so a provider's log
+ * lines and the HTTP lines underneath them always agree, a call made through another provider's requests included.
  */
 struct FLOCK_API FFlockCallOrigin
 {

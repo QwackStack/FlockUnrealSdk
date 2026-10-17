@@ -1,27 +1,15 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockAssetAsyncActions.h"
+#include "Blueprint/FlockBlueprintCallOrigin.h"
 #include "Http/FlockErrorHints.h"
 
-#include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Texture2D.h"
 #include "FlockSubsystem.h"
 #include "Providers/FlockAssetProvider.h"
 
 namespace
 {
-	FString ResolveCallOrigin(const UObject* WorldContextObject)
-	{
-		if (const UBlueprintGeneratedClass* BlueprintClass =
-			WorldContextObject ? Cast<UBlueprintGeneratedClass>(WorldContextObject->GetClass()) : nullptr)
-		{
-			FString AssetName = BlueprintClass->GetName();
-			AssetName.RemoveFromEnd(TEXT("_C"));
-			return FString::Printf(TEXT("Blueprint '%s'"), *AssetName);
-		}
-		return TEXT("Blueprint node");
-	}
-
 	FFlockAssetProvider* ResolveAssets(UObject* WorldContextObject, FFlockError& OutError)
 	{
 		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
@@ -73,7 +61,7 @@ void UFlockDownloadAssetTextureAction::Activate()
 		}
 	});
 
-	FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->DownloadTexture(Asset, Progress, [WeakThis](TFlockResult<UTexture2D*> Result)
 	{
 		UFlockDownloadAssetTextureAction* Self = WeakThis.Get();
@@ -127,7 +115,7 @@ void UFlockDownloadAssetTextAction::Activate()
 		}
 	});
 
-	FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->DownloadText(Asset, Progress, [WeakThis](TFlockResult<FString> Result)
 	{
 		UFlockDownloadAssetTextAction* Self = WeakThis.Get();
@@ -179,7 +167,7 @@ void UFlockDownloadAssetBytesAction::Activate()
 		}
 	});
 
-	FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->DownloadBytes(Asset, Progress, [WeakThis](TFlockResult<TArray<uint8>> Result)
 	{
 		UFlockDownloadAssetBytesAction* Self = WeakThis.Get();
@@ -231,7 +219,7 @@ void UFlockDownloadAssetFileAction::Activate()
 		}
 	});
 
-	FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->DownloadFile(Asset, Progress, [WeakThis](TFlockResult<FString> Result)
 	{
 		UFlockDownloadAssetFileAction* Self = WeakThis.Get();
@@ -272,7 +260,7 @@ void UFlockGetAssetsAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetAssetsAction> WeakThis(this);
-	FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetAll([WeakThis](TFlockResult<TArray<FFlockAsset>> Result)
 	{
 		UFlockGetAssetsAction* Self = WeakThis.Get();
@@ -314,7 +302,7 @@ void UFlockGetAssetAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetAssetAction> WeakThis(this);
-	FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetByIdOrName(Asset, [WeakThis](TFlockResult<FFlockAsset> Result)
 	{
 		UFlockGetAssetAction* Self = WeakThis.Get();
@@ -379,7 +367,7 @@ void UFlockPreloadAssetsAction::Activate()
 		}
 	};
 
-	FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	if (bAll)
 	{
 		// Remember what the batch turned out to be, so the Requested pin reports the real count.

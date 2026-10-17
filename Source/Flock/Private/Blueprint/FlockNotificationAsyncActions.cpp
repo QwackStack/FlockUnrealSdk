@@ -1,26 +1,14 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockNotificationAsyncActions.h"
+#include "Blueprint/FlockBlueprintCallOrigin.h"
 #include "Http/FlockErrorHints.h"
 
-#include "Engine/BlueprintGeneratedClass.h"
 #include "FlockSubsystem.h"
 #include "Providers/FlockNotificationProvider.h"
 
 namespace
 {
-	FString ResolveCallOrigin(const UObject* WorldContextObject)
-	{
-		if (const UBlueprintGeneratedClass* BlueprintClass =
-			WorldContextObject ? Cast<UBlueprintGeneratedClass>(WorldContextObject->GetClass()) : nullptr)
-		{
-			FString AssetName = BlueprintClass->GetName();
-			AssetName.RemoveFromEnd(TEXT("_C"));
-			return FString::Printf(TEXT("Blueprint '%s'"), *AssetName);
-		}
-		return TEXT("Blueprint node");
-	}
-
 	FFlockNotificationProvider* ResolveNotifications(UObject* WorldContextObject, FFlockError& OutError)
 	{
 		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
@@ -58,7 +46,7 @@ void UFlockGetNotificationsAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetNotificationsAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetNotifications(bUnreadOnly, Page, Limit, [WeakThis](TFlockResult<FFlockNotificationPage> Result)
 	{
 		if (UFlockGetNotificationsAction* Self = WeakThis.Get())
@@ -101,7 +89,7 @@ void UFlockGetUnreadNotificationCountAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetUnreadNotificationCountAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetUnreadCount([WeakThis](TFlockResult<int32> Result)
 	{
 		if (UFlockGetUnreadNotificationCountAction* Self = WeakThis.Get())
@@ -145,7 +133,7 @@ void UFlockGetNotificationSummaryAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetNotificationSummaryAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetSummary(Limit, [WeakThis](TFlockResult<FFlockNotificationSummary> Result)
 	{
 		if (UFlockGetNotificationSummaryAction* Self = WeakThis.Get())
@@ -190,7 +178,7 @@ void UFlockMarkNotificationReadAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockMarkNotificationReadAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->MarkRead(NotificationId, [WeakThis](TFlockResult<FFlockNotification> Result)
 	{
 		if (UFlockMarkNotificationReadAction* Self = WeakThis.Get())
@@ -233,7 +221,7 @@ void UFlockMarkAllNotificationsReadAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockMarkAllNotificationsReadAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->MarkAllRead([WeakThis](TFlockResult<FFlockMarkAllReadResult> Result)
 	{
 		if (UFlockMarkAllNotificationsReadAction* Self = WeakThis.Get())
@@ -276,7 +264,7 @@ void UFlockGetNotificationTemplatesAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetNotificationTemplatesAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetTemplates([WeakThis](TFlockResult<TArray<FFlockNotificationTemplate>> Result)
 	{
 		if (UFlockGetNotificationTemplatesAction* Self = WeakThis.Get())
@@ -322,7 +310,7 @@ void UFlockGetNotificationTemplateByNameAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetNotificationTemplateByNameAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetTemplateByName(TemplateName, Locale, [WeakThis](TFlockResult<FFlockNotificationTemplate> Result)
 	{
 		if (UFlockGetNotificationTemplateByNameAction* Self = WeakThis.Get())
@@ -371,7 +359,7 @@ void UFlockScheduleNotificationAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockScheduleNotificationAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->ScheduleByTemplateName(TemplateName, DeliverAtUtc, Variables, Channels,
 		[WeakThis](TFlockResult<FFlockScheduledNotification> Result)
 		{
@@ -417,7 +405,7 @@ void UFlockCancelScheduledNotificationAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockCancelScheduledNotificationAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->CancelScheduled(ScheduledId, [WeakThis](TFlockResult<FFlockScheduledNotification> Result)
 	{
 		if (UFlockCancelScheduledNotificationAction* Self = WeakThis.Get())
@@ -464,7 +452,7 @@ void UFlockGetScheduledNotificationsAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetScheduledNotificationsAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetScheduled(Status, Page, Limit, [WeakThis](TFlockResult<FFlockScheduledNotificationPage> Result)
 	{
 		if (UFlockGetScheduledNotificationsAction* Self = WeakThis.Get())
@@ -507,7 +495,7 @@ void UFlockCancelAllScheduledNotificationsAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockCancelAllScheduledNotificationsAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->CancelAllScheduled([WeakThis](TFlockResult<int32> Result)
 	{
 		if (UFlockCancelAllScheduledNotificationsAction* Self = WeakThis.Get())
@@ -553,7 +541,7 @@ void UFlockRegisterDeviceTokenAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockRegisterDeviceTokenAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->RegisterDeviceToken(Token, [WeakThis](TFlockResult<FFlockDeviceToken> Result)
 	{
 		if (UFlockRegisterDeviceTokenAction* Self = WeakThis.Get())
@@ -599,7 +587,7 @@ void UFlockRegisterDeviceTokenForPlatformAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockRegisterDeviceTokenForPlatformAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->RegisterDeviceToken(Platform, Token, [WeakThis](TFlockResult<FFlockDeviceToken> Result)
 	{
 		if (UFlockRegisterDeviceTokenForPlatformAction* Self = WeakThis.Get())
@@ -643,7 +631,7 @@ void UFlockUnregisterDeviceTokenAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockUnregisterDeviceTokenAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->UnregisterDeviceToken(Token, [WeakThis](TFlockResult<FFlockUnregisterDeviceTokenResult> Result)
 	{
 		if (UFlockUnregisterDeviceTokenAction* Self = WeakThis.Get())
