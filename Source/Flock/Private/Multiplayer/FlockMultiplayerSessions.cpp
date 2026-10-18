@@ -483,6 +483,12 @@ FFlockJoinChecksOnHost& FFlockMultiplayerSessions::GetJoinChecks()
 
 void FFlockMultiplayerSessions::MoveConnectingOn()
 {
+	if (Relay.IsValid() && Relay->Connection.IsValid())
+	{
+		// Held through its answers, which may close it and start another.
+		const TSharedRef<FFlockRelayConnection> Ticking = Relay->Connection.ToSharedRef();
+		Ticking->Tick();
+	}
 	DirectAddresses->Tick();
 	if (Travels.IsValid())
 	{
@@ -945,8 +951,281 @@ void FFlockMultiplayerSessions::MarkEnded(UFlockMultiplayerSession* Session, con
 		Held.Reset();
 		StopHeartbeating();
 	}
+	// The session owns its relay: given back before the game hears the session ended.
+	CloseRelayOf(Session);
 	Session->MarkEnded(Final, bRaise);
 	SettleWaits();
+}
+
+FFlockRequestHandle FFlockMultiplayerSessions::OpenRelay(UFlockMultiplayerSession* Session, const FString& Server, FOnRelayOpened OnOpened)
+{
+	FFlockError Refused;
+	if (!IsRunning(Session, Refused))
+	{
+		// Refused as every call on an ended session is, with that refusal's own fix.
+		FFlockRelayFailure Failure;
+		Failure.Reason = FlockRelayFailureReasons::NotInSession;
+		Failure.Error = Refused;
+		Failure.Error.Operation = TEXT("Open the relay");
+		OnOpened(TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(Failure));
+		return FFlockRequestHandle();
+	}
+	// Only the held session draws logins against the player's seat; a session ending is no longer held while its relay's
+	// callers are told, so one of them asking again from its answer opens nothing its end would not close.
+	if (Session != Held.Get())
+	{
+		OnOpened(TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(FFlockRelayFailure::Of(FlockRelayFailureReasons::NotInSession,
+			TEXT("This session is ending, or is not the one the player is seated in now"))));
+		return FFlockRequestHandle();
+	}
+	if (Relay.IsValid() && !HasFailed(*Relay) && !IsOn(*Relay, Server))
+	{
+		if (!Relay->bDone)
+		{
+			// Opening on another server: it makes way once its opening has ended, and this call starts again then.
+			const TWeakPtr<FFlockMultiplayerSessions> WeakSelf = AsShared();
+			const TWeakObjectPtr<UFlockMultiplayerSession> WeakSession = Session;
+			const TSharedRef<FFlockCancelToken> Token = MakeShared<FFlockCancelToken>();
+			const TSharedRef<FFlockRequestHandle> Waiting = MakeShared<FFlockRequestHandle>();
+			Token->Canceller = [Waiting]() { Waiting->Cancel(); };
+			*Waiting = WaitForRelay(Relay.ToSharedRef(), [WeakSelf, WeakSession, Server, OnOpened, Token, Waiting](TFlockRelayResult<TSharedPtr<FFlockRelayConnection>> Result) mutable
+			{
+				const TSharedPtr<FFlockMultiplayerSessions> Self = WeakSelf.Pin();
+				if (Token->bCancelled || !Self.IsValid() || !WeakSession.IsValid())
+				{
+					OnOpened(Token->bCancelled ? Result
+						: TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(FFlockRelayFailure::Cancelled(TEXT("Flock shut down while the relay opened"))));
+					return;
+				}
+				*Waiting = Self->OpenRelay(WeakSession.Get(), Server, MoveTemp(OnOpened));
+			});
+			return FFlockRequestHandle(Token);
+		}
+		// Open on another server: players reach the host only from the server it is on, so this one makes way.
+		Relay->Connection->Close();
+		Relay.Reset();
+	}
+	if (!Relay.IsValid() || HasFailed(*Relay))
+	{
+		StartRelay(Session, Server);
+	}
+	return WaitForRelay(Relay.ToSharedRef(), MoveTemp(OnOpened));
+}
+
+FFlockRequestHandle FFlockMultiplayerSessions::WaitForRelay(const FRelayOpeningRef& Opening, FOnRelayOpened OnOpened)
+{
+	if (Opening->bDone)
+	{
+		OnOpened(Opening->Result);
+		return FFlockRequestHandle();
+	}
+	const FRelayWaiterRef Waiter = MakeShared<FRelayWaiter>();
+	Waiter->OnOpened = MoveTemp(OnOpened);
+	Opening->Waiters.Add(Waiter);
+	const TSharedRef<FFlockCancelToken> Token = MakeShared<FFlockCancelToken>();
+	const TWeakPtr<FRelayOpening> WeakOpening = Opening;
+	const TWeakPtr<FRelayWaiter> WeakWaiter = Waiter;
+	// A caller that gives up leaves the opening to the others.
+	Token->Canceller = [WeakOpening, WeakWaiter]()
+	{
+		const TSharedPtr<FRelayOpening> Pinned = WeakOpening.Pin();
+		const TSharedPtr<FRelayWaiter> PinnedWaiter = WeakWaiter.Pin();
+		if (Pinned.IsValid() && PinnedWaiter.IsValid() && Pinned->Waiters.Remove(PinnedWaiter.ToSharedRef()) > 0 && PinnedWaiter->OnOpened)
+		{
+			PinnedWaiter->OnOpened(TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(
+				FFlockRelayFailure::Cancelled(TEXT("The wait for the session's relay was cancelled"))));
+		}
+	};
+	return FFlockRequestHandle(Token);
+}
+
+void FFlockMultiplayerSessions::StartRelay(UFlockMultiplayerSession* Session, const FString& Server)
+{
+	if (Relay.IsValid() && Relay->Connection.IsValid())
+	{
+		Relay->Connection->Close();
+	}
+	const FRelayOpeningRef Opening = MakeShared<FRelayOpening>();
+	Opening->SessionId = Session->Id;
+	Opening->SignInNumber = Session->SignInNumber;
+	Opening->ServerAsked = Server;
+	Relay = Opening;
+	const TWeakPtr<FFlockMultiplayerSessions> WeakSelf = AsShared();
+	const TWeakPtr<FRelayOpening> WeakOpening = Opening;
+	// Kept so the session's end cancels it: a retry waiting then never goes out for the session that ended.
+	Opening->LoginsRead = Requests->RelayLogins(Opening->SignInNumber, Opening->SessionId,
+		[WeakSelf, WeakOpening](TFlockResult<FFlockRelayLoginList> Answered)
+		{
+			const TSharedPtr<FFlockMultiplayerSessions> Self = WeakSelf.Pin();
+			const TSharedPtr<FRelayOpening> Pinned = WeakOpening.Pin();
+			if (Self.IsValid() && Pinned.IsValid())
+			{
+				Self->RelayLoginsAnswered(Pinned.ToSharedRef(), Answered);
+			}
+		});
+}
+
+void FFlockMultiplayerSessions::RelayLoginsAnswered(const FRelayOpeningRef& Opening, const TFlockResult<FFlockRelayLoginList>& Answered)
+{
+	if (!Answered.bSuccess)
+	{
+		FinishRelay(Opening, TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(RelayLoginsRefused(Answered.Error)));
+		return;
+	}
+	if (!IsStillCurrent(Opening->SignInNumber))
+	{
+		FinishRelay(Opening, TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(
+			FFlockRelayFailure::Cancelled(TEXT("The player signed out or another player signed in while the relay opened"))));
+		return;
+	}
+	if (Answered.Value.bRelayPaused)
+	{
+		FinishRelay(Opening, TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(FFlockRelayFailure::Of(FlockRelayFailureReasons::Paused,
+			TEXT("Flock paused this studio's relay until its bill is paid"))));
+		return;
+	}
+	TArray<FFlockRelayLogin> Logins = FFlockRelayLogin::InAnswer(Answered.Value);
+	if (Logins.Num() == 0)
+	{
+		FinishRelay(Opening, TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(FFlockRelayFailure::Of(FlockRelayFailureReasons::NotOffered,
+			TEXT("Flock listed no relay for this game: it is switched off for the game in the Flock dashboard, or no relay is set up"))));
+		return;
+	}
+	if (!Opening->ServerAsked.IsEmpty())
+	{
+		// Players reach the host only from the relay server it is on, since only that server's addresses share the IP it opened to.
+		const FString Asked = Opening->ServerAsked;
+		Logins.RemoveAll([&Asked](const FFlockRelayLogin& Login) { return !Login.ToString().Equals(Asked, ESearchCase::IgnoreCase); });
+		if (Logins.Num() == 0)
+		{
+			FinishRelay(Opening, TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(FFlockRelayFailure::Of(FlockRelayFailureReasons::ServerNotListed,
+				FString::Printf(TEXT("Flock does not list the relay server the host uses (%s) for this player"), *Asked))));
+			return;
+		}
+	}
+	Opening->Logins = MoveTemp(Logins);
+	// Looked up once, while the relays open: a direct link learns its own address from them, since a relay server may answer
+	// few of a device's ports.
+	for (const FFlockRelayStunServer& Server : FFlockRelayStunServer::InAnswer(Answered.Value))
+	{
+		Opening->StunServers.Add({ FFlockNameLookup::Start(Server.Host, RelayTiming.NameLookUpForTesting), Server.Port });
+	}
+	TryNextRelay(Opening);
+}
+
+void FFlockMultiplayerSessions::TryNextRelay(const FRelayOpeningRef& Opening)
+{
+	if (!Opening->Logins.IsValidIndex(Opening->NextLogin))
+	{
+		FinishRelay(Opening, TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(Opening->First.Get(FFlockRelayFailure())));
+		return;
+	}
+	const FFlockRelayLogin Login = Opening->Logins[Opening->NextLogin++];
+	const TWeakPtr<FFlockMultiplayerSessions> WeakSelf = AsShared();
+	const TWeakPtr<FRelayOpening> WeakOpening = Opening;
+	Opening->Connection = FFlockRelayConnection::Open(Login, Opening->StunServers, RelayTiming, Logger,
+		[WeakSelf, WeakOpening](TFlockRelayResult<TSharedPtr<FFlockRelayConnection>> Result)
+		{
+			const TSharedPtr<FFlockMultiplayerSessions> Self = WeakSelf.Pin();
+			const TSharedPtr<FRelayOpening> Pinned = WeakOpening.Pin();
+			if (!Self.IsValid() || !Pinned.IsValid())
+			{
+				return;
+			}
+			// Closed by the session's end: answered Cancelled, at once, from inside the close.
+			if (Result.bSuccess || Result.Failure.IsCancelled())
+			{
+				Self->FinishRelay(Pinned.ToSharedRef(), Result);
+				return;
+			}
+			if (!Pinned->First.IsSet())
+			{
+				Pinned->First = Result.Failure;
+			}
+			Self->TryNextRelay(Pinned.ToSharedRef());
+		});
+}
+
+void FFlockMultiplayerSessions::FinishRelay(const FRelayOpeningRef& Opening, const TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>& Result)
+{
+	if (Opening->bDone)
+	{
+		return;
+	}
+	Opening->bDone = true;
+	Opening->Result = Result;
+	const TArray<FRelayWaiterRef> Answering = MoveTemp(Opening->Waiters);
+	Opening->Waiters.Reset();
+	for (const FRelayWaiterRef& Waiter : Answering)
+	{
+		if (Waiter->OnOpened)
+		{
+			Waiter->OnOpened(Result);
+		}
+	}
+}
+
+void FFlockMultiplayerSessions::CloseRelayOf(const UFlockMultiplayerSession* Session)
+{
+	if (!Relay.IsValid() || Session == nullptr || !Relay->SessionId.Equals(Session->Id, ESearchCase::CaseSensitive))
+	{
+		return;
+	}
+	const FRelayOpeningRef Closing = Relay.ToSharedRef();
+	Relay.Reset();
+	// Every caller still waiting hears why first; what the cancel and the close answer after it changes nothing.
+	FinishRelay(Closing, TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(FFlockRelayFailure::Cancelled(TEXT("The session ended while its relay opened"))));
+	Closing->LoginsRead.Cancel();
+	if (Closing->Connection.IsValid())
+	{
+		Closing->Connection->Close();
+	}
+}
+
+bool FFlockMultiplayerSessions::HasFailed(const FRelayOpening& Opening)
+{
+	return Opening.bDone && (!Opening.Result.bSuccess || !Opening.Result.Value.IsValid() || Opening.Result.Value->HasStopped());
+}
+
+bool FFlockMultiplayerSessions::IsOn(const FRelayOpening& Opening, const FString& Server)
+{
+	return Server.IsEmpty() || Opening.ServerAsked.Equals(Server, ESearchCase::IgnoreCase)
+		|| (Opening.bDone && Opening.Result.bSuccess && Opening.Result.Value.IsValid() && Opening.Result.Value->GetServer().Equals(Server, ESearchCase::IgnoreCase));
+}
+
+FFlockRelayFailure FFlockMultiplayerSessions::RelayLoginsRefused(const FFlockError& Failure)
+{
+	if (Failure.Type == EFlockErrorType::Cancelled)
+	{
+		return FFlockRelayFailure::Cancelled(Failure.Message);
+	}
+	// Which allowance ran out, then the server's own words when it gave them.
+	auto Cause = [&Failure](const TCHAR* Allowance, const TCHAR* Otherwise)
+	{
+		return FString::Printf(TEXT("Flock refused relay logins %s: %s"), Allowance, Failure.ServerMessage.IsEmpty() ? Otherwise : *Failure.ServerMessage);
+	};
+	if (Failure.ErrorCode == EFlockErrorCode::MultiplayerMintRateLimited)
+	{
+		return FFlockRelayFailure::FromFlock(FlockRelayFailureReasons::TooManyLogins,
+			Cause(TEXT("for this player this minute"), TEXT("more than 12 were asked for in a minute")), Failure);
+	}
+	if (Failure.ErrorCode == EFlockErrorCode::MultiplayerSeatMintLimit)
+	{
+		return FFlockRelayFailure::FromFlock(FlockRelayFailureReasons::TooManyLogins,
+			Cause(TEXT("for this player's seat in the session"), TEXT("the seat has drawn the most one seat may")), Failure);
+	}
+	if (IsOutOfTheSession(Failure))
+	{
+		return FFlockRelayFailure::FromFlock(FlockRelayFailureReasons::NotInSession,
+			TEXT("Flock refused relay logins: the player has no seat in this session"), Failure);
+	}
+	if (Failure.StatusCode == 0)
+	{
+		return FFlockRelayFailure::FromFlock(FlockRelayFailureReasons::FlockUnreachable,
+			FString::Printf(TEXT("Flock did not answer the request for relay logins: %s"), *Failure.Message), Failure);
+	}
+	return FFlockRelayFailure::FromFlock(FlockRelayFailureReasons::LoginsRefused, FString::Printf(TEXT("Flock refused relay logins: %s"), *Failure.Message),
+		Failure);
 }
 
 void FFlockMultiplayerSessions::KeepHeartbeating()

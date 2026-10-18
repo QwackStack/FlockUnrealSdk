@@ -6,6 +6,7 @@
 #include "Misc/Guid.h"
 #include "Multiplayer/FlockMultiplayerSessionRequests.h"
 #include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockWireFields.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "SocketSubsystem.h"
@@ -34,29 +35,6 @@ namespace
 			| static_cast<uint32>(Bytes[At + 3]);
 	}
 
-	/** A key spelled exactly so (letter case counts), as a descriptor's own writer wrote it. */
-	TSharedPtr<FJsonValue> FieldSpelledExactly(const FJsonObject& Object, const TCHAR* Key)
-	{
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object.Values)
-		{
-			if (Pair.Key.Equals(Key, ESearchCase::CaseSensitive))
-			{
-				return Pair.Value;
-			}
-		}
-		return nullptr;
-	}
-
-	FString TextOf(const TSharedPtr<FJsonValue>& Value)
-	{
-		FString Text;
-		if (Value.IsValid() && Value->Type == EJson::String)
-		{
-			Value->TryGetString(Text);
-		}
-		return Text;
-	}
-
 	/** A whole port from 1 to 65535, sent as a number or as digits; 0 for anything else. */
 	int32 PortOf(const TSharedPtr<FJsonValue>& Value)
 	{
@@ -69,7 +47,7 @@ namespace
 			const double Number = Value->AsNumber();
 			return Number >= 1.0 && Number <= 65535.0 && Number == FMath::FloorToDouble(Number) ? static_cast<int32>(Number) : 0;
 		}
-		const FString Text = TextOf(Value);
+		const FString Text = FlockWireFields::TextOf(Value);
 		if (Text.IsEmpty() || Text.Len() > 10)
 		{
 			return 0;
@@ -216,57 +194,15 @@ void FFlockDirectAddresses::NextServer(const FSearchRef& Search)
 		Finish(Search);
 		return;
 	}
-	const FString Host = Search->Servers[Search->Index].Host;
-	const FString Written = Ipv4Value(Host);
-	if (!Written.IsEmpty())
-	{
-		// An address as written is taken as it is.
-		Search->ServerAddress = Written;
-		Ask(Search);
-		return;
-	}
-	if (Host.Contains(TEXT(":")) || Host.Contains(TEXT(" ")))
-	{
-		// An IPv6 address, or no name at all: the request is plain UDP to IPv4.
-		NextServer(Search);
-		return;
-	}
 	Search->Step = EStep::LookingUp;
 	// A lookup can hang for as long as the network's resolver does, so it gets the STUN wait too.
 	Search->Deadline = Now() + StunWaitSeconds;
-	const TSharedRef<FLookUpCell, ESPMode::ThreadSafe> Cell = MakeShared<FLookUpCell, ESPMode::ThreadSafe>();
-	Search->LookUp = Cell;
-	TFunction<void(const FString&)> Answer = [Cell](const FString& Ipv4)
+	Search->LookUp = FFlockNameLookup::Start(Search->Servers[Search->Index].Host, NameLookUpForTesting);
+	if (Search->LookUp->IsDone())
 	{
-		FScopeLock Locked(&Cell->Lock);
-		Cell->bDone = true;
-		Cell->Ipv4 = Ipv4;
-	};
-	if (NameLookUpForTesting)
-	{
-		NameLookUpForTesting(Host, MoveTemp(Answer));
-		return;
+		// An address as written, or one that cannot be a name: asked at once, within this frame's STUN wait.
+		Advance(Search);
 	}
-	ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-	if (Sockets == nullptr)
-	{
-		NextServer(Search);
-		return;
-	}
-	// Answered on one of the engine's threads, into the cell the game thread reads each frame.
-	Sockets->GetAddressInfoAsync([Answer](FAddressInfoResult Result)
-	{
-		FString Ipv4;
-		for (const FAddressInfoResultData& Found : Result.Results)
-		{
-			Ipv4 = Ipv4Value(Found.Address->ToString(false));
-			if (!Ipv4.IsEmpty())
-			{
-				break;
-			}
-		}
-		Answer(Ipv4);
-	}, *Host, nullptr, EAddressInfoFlags::Default, FNetworkProtocolTypes::IPv4, SOCKTYPE_Datagram);
 }
 
 void FFlockDirectAddresses::Ask(const FSearchRef& Search)
@@ -326,16 +262,9 @@ void FFlockDirectAddresses::Advance(const FSearchRef& Search)
 {
 	if (Search->Step == EStep::LookingUp)
 	{
-		bool bDone = false;
-		FString Ipv4;
+		if (Search->LookUp->IsDone())
 		{
-			FScopeLock Locked(&Search->LookUp->Lock);
-			bDone = Search->LookUp->bDone;
-			Ipv4 = Search->LookUp->Ipv4;
-		}
-		if (bDone)
-		{
-			Search->ServerAddress = Ipv4Value(Ipv4);
+			Search->ServerAddress = Search->LookUp->GetIpv4();
 			if (Search->ServerAddress.IsEmpty())
 			{
 				NextServer(Search);
@@ -624,14 +553,14 @@ bool FFlockDirectAddresses::ReadPublished(const FFlockMultiplayerSessionConnecti
 	{
 		return false;
 	}
-	OutAddresses.Port = PortOf(FieldSpelledExactly(*Values, FlockDirectConnectionValues::Port));
+	OutAddresses.Port = PortOf(FlockWireFields::SpelledExactly(*Values, FlockDirectConnectionValues::Port));
 	if (OutAddresses.Port == 0)
 	{
 		return false;
 	}
-	OutAddresses.Address = Ipv4Value(TextOf(FieldSpelledExactly(*Values, FlockDirectConnectionValues::Address)));
-	OutAddresses.Lan = Ipv4Value(TextOf(FieldSpelledExactly(*Values, FlockDirectConnectionValues::LanAddress)));
-	OutAddresses.Public = Ipv4Value(TextOf(FieldSpelledExactly(*Values, FlockDirectConnectionValues::PublicAddress)));
+	OutAddresses.Address = Ipv4Value(FlockWireFields::TextOf(FlockWireFields::SpelledExactly(*Values, FlockDirectConnectionValues::Address)));
+	OutAddresses.Lan = Ipv4Value(FlockWireFields::TextOf(FlockWireFields::SpelledExactly(*Values, FlockDirectConnectionValues::LanAddress)));
+	OutAddresses.Public = Ipv4Value(FlockWireFields::TextOf(FlockWireFields::SpelledExactly(*Values, FlockDirectConnectionValues::PublicAddress)));
 	return true;
 }
 

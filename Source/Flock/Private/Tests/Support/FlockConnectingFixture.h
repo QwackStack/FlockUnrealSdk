@@ -121,11 +121,12 @@ namespace FlockConnectingTestHelpers
 		int32 GameSidesMade = 0;
 		int32 RefuseGameSide = 0;
 
-		FConnectingFixture()
+		/** MaxRetries above 0 lets a refused request be tried again, through the core ticker: see FlockTestRetries::Pump. */
+		explicit FConnectingFixture(int32 MaxRetries = 0)
 			: Client(MakeShared<FFlockHttpClient>(Server, Log))
 			, Session(MakeShared<FFlockAuthSession>(Client, MakeShared<FFlockMemoryTokenStore>(), Log, TEXT("http://x/v1"),
 				TMap<FString, FString>{ { TEXT("X-Flock-API-Key"), TEXT("k") }, { TEXT("X-Game-Version-ID"), FFlockFakeSessionServer::GameBuild } }))
-			, Provider(MakeShared<FFlockMultiplayerProvider>(Client, Retries(), Log, Session, TEXT("http://x/v1"), 0.0))
+			, Provider(MakeShared<FFlockMultiplayerProvider>(Client, Retries(MaxRetries), Log, Session, TEXT("http://x/v1"), 0.0))
 		{
 			FFlockUdpSockets::ResetForTesting();
 			const TSharedRef<double> Clock = Now;
@@ -156,10 +157,10 @@ namespace FlockConnectingTestHelpers
 			FFlockUdpSockets::ResetForTesting();
 		}
 
-		static FFlockRetryPolicy Retries()
+		static FFlockRetryPolicy Retries(int32 MaxRetries)
 		{
 			FFlockRetryPolicy Policy;
-			Policy.MaxRetries = 0;
+			Policy.MaxRetries = MaxRetries;
 			Policy.InitialDelaySeconds = 0.f;
 			Policy.bUseJitter = false;
 			return Policy;

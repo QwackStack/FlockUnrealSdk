@@ -99,7 +99,9 @@ need a signed-in player.
 
 Gameplay events, log entries and session ends each have their own queue under the project's Saved
 directory, capped by **Analytics Max Cached Events** (oldest dropped first). They are sent in batches on an
-interval, when the app is backgrounded, or when you call Flush.
+interval, when the app is backgrounded, or when you call Flush. Each game's queues are kept apart (by its API
+URL and API key), so a project that switches to another game never sends the old game's queued entries to the
+new one; what an earlier version kept for every game is sent by the first game to start after the update.
 
 - **A send that never reached the server keeps everything queued**, however long the game is offline.
 - **A send the server answered without accepting counts against the entries it carried.** A gameplay event

@@ -22,8 +22,14 @@ public:
 	/** KeyContext feeds key derivation (pass the game id); empty FilePath uses DefaultPath(). */
 	explicit FFlockFileTokenStore(const FString& InFilePath, const FString& InKeyContext);
 
-	/** `<ProjectSavedDir>/Flock/auth.dat`. */
+	/** `<ProjectSavedDir>/Flock/auth.dat`: the sign-in every game shared before 1.33.0. */
 	static FString DefaultPath();
+
+	/** `<ProjectSavedDir>/Flock`, where the saved sign-ins are kept. */
+	static FString DefaultFolder();
+
+	/** One game's sign-in file in Folder, `auth-<game key>.dat`; `auth.dat` for the one every game shares (an empty key). */
+	static FString PathOf(const FString& Folder, const FString& GameKey);
 
 	virtual void Save(const FFlockStoredTokens& Tokens) override;
 	virtual bool Load(FFlockStoredTokens& OutTokens) override;

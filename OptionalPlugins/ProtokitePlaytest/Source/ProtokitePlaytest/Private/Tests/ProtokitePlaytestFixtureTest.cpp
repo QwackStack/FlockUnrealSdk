@@ -23,10 +23,7 @@ namespace ProtokitePlaytestFixtureTesting
 	/** The launch folders in the project's own Flock analytics folder, one per line in name order. */
 	FString ProjectLaunchFolders()
 	{
-		TArray<FString> Folders = FFlockLaunchFolder::FindFolders(
-			FPaths::Combine(FFlockAnalyticsLaunches::DefaultFolder(), FFlockAnalyticsLaunches::LaunchesFolderName));
-		Folders.Sort();
-		return FString::Join(Folders, TEXT("\n"));
+		return FString::Join(FFlockAnalyticsLaunches::FindLaunchFoldersOfEveryGame(FFlockAnalyticsLaunches::DefaultFolder()), TEXT("\n"));
 	}
 
 	/** Every file under Folder, one per line in name order. */
@@ -68,8 +65,7 @@ bool FProtokitePlaytestFixtureKeepsItsFilesTest::RunTest(const FString& Paramete
 		Fixture.StartFlock();
 		TestTrue(TEXT("Precondition: a Flock session is running"), Fixture.Flock->HasActiveAnalyticsSession());
 
-		const TArray<FString> OwnLaunches = FFlockLaunchFolder::FindFolders(
-			FPaths::Combine(Fixture.Folder, TEXT("Flock"), TEXT("analytics"), FFlockAnalyticsLaunches::LaunchesFolderName));
+		const TArray<FString> OwnLaunches = FFlockAnalyticsLaunches::FindLaunchFoldersOfEveryGame(FPaths::Combine(Fixture.Folder, TEXT("Flock"), TEXT("analytics")));
 		TestEqual(TEXT("The Flock launch is in the fixture's own folder"), OwnLaunches.Num(), 1);
 		TestFalse(TEXT("And held while the fixture runs"), OwnLaunches.Num() == 1 && FFlockLaunchFolder::ClaimEnded(OwnLaunches[0]).IsValid());
 		TestEqualSensitive(TEXT("Not one launch folder is added to the project's, or taken from it"),

@@ -5,6 +5,40 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.33.0] - 2026-10-18
+
+The relay client: the SDK reserves an address on Flock's relay for a session and carries packets through it. Games do not use
+it yet: a later release connects players through it from Travel To Session.
+
+### Added
+
+- **A relay client inside the SDK**, with no new API yet. For the held session it asks Flock for relay logins named with the
+  session, reserves an address on the first relay server Flock lists that answers, opens it to other players' relay
+  addresses, and carries packets both ways (on channels once asked, 4 bytes a packet), on a thread of its own so the game's
+  thread never waits and a packet allocates nothing on it. A relay that answers only some of a device's ports, as Cloudflare's
+  does, is reserved from whichever of 8 sockets it answers; every socket is dual-stack where the platform allows. It signs
+  again when the relay's nonce goes stale, renews what the relay keeps before it lapses, and gives the address back when the
+  session ends (before `OnEnded`), the player signs out or the game quits, its stale nonce answered too. Each failure has its
+  own reason and fix: Flock out of reach, relay logins refused (more than 12 a minute, or the seat's allowance of 10 used),
+  no seat, the studio's relay paused, no relay offered, a relay server out of reach, a wrong login, a full relay, an opening
+  refused, the relay lost.
+
+### Changed
+
+- **The STUN servers' names and the relay's are looked up by one shared lookup**, and the UDP sockets the SDK opens toward
+  the internet can be opened from any thread.
+
+### Fixed
+
+- **A project whose game changes no longer sends the old game's analytics to the new one.** Each game's crash marker,
+  live-session record and queued events are kept apart, under its backend and API key
+  (`Saved/Flock/analytics/games/<key>/`). Every game a project ran used to share one folder, and a changed game sent the old
+  one's unsent sessions and events to its own backend, which refused and dropped them. The launches an earlier build kept are
+  taken over by the first game to start after the update. Consent stays per install.
+- **A saved sign-in is restored only by the game it was made with.** Each game keeps its own file, under its backend and API
+  key (`Saved/Flock/auth-<key>.dat`); it was kept per Game Name, so two backends' games of one name restored each other's
+  player. The sign-in an earlier build kept is taken over by the first game to read one, so nobody is signed out by updating.
+
 ## [1.32.0] - 2026-10-17
 
 Blueprint support for multiplayer: a game made in Blueprint makes and joins parties and sessions, finds a match, travels into

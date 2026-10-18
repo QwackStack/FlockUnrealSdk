@@ -17,6 +17,7 @@
 #include "Tests/Support/FlockEventTestListener.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
+#include "Tests/Support/FlockTestRetries.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
 #include "Tests/Support/FlockTestSpelling.h"
 
@@ -36,14 +37,6 @@ namespace FlockNotificationProviderTestHelpers
 		Policy.MaxRetries = 2;
 		Policy.InitialDelaySeconds = 0.f;
 		return Policy;
-	}
-
-	inline void PumpRetries()
-	{
-		for (int32 Index = 0; Index < 8; ++Index)
-		{
-			FTSTicker::GetCoreTicker().Tick(1.f);
-		}
 	}
 
 	inline FString MakeTestJwt(const FString& PlayerId)
@@ -1020,14 +1013,14 @@ bool FFlockNotificationScheduleNotRetriedTest::RunTest(const FString& Parameters
 		});
 	TestTrue(TEXT("caller was told"), bDone);
 
-	PumpRetries();
+	FlockTestRetries::Pump();
 	TestEqual(TEXT("posted exactly once"), F.Fake->CountTo(TEXT("notification/schedule")), 1);
 
 	// Cancel under the same policy *does* retry, so the single attempt above is the rule at work rather
 	// than a retry policy that never fires.
 	F.Fake->On(TEXT("notification/schedule/sch-1"), FFlockFakeTransport::Status(500, TEXT("{}")));
 	F.Provider->CancelScheduled(TEXT("sch-1"), [](TFlockResult<FFlockScheduledNotification>) {});
-	PumpRetries();
+	FlockTestRetries::Pump();
 	TestTrue(TEXT("cancel is retried"), F.Fake->CountTo(TEXT("notification/schedule/sch-1")) > 1);
 
 	Cleanup(F.Dir);
@@ -1203,7 +1196,7 @@ bool FFlockDeviceTokenRetriedTest::RunTest(const FString& Parameters)
 	F.Fake->On(TEXT("device_token/register"), FFlockFakeTransport::Status(500, TEXT("{}")));
 
 	F.Provider->RegisterDeviceToken(EFlockDevicePlatform::IOS, TEXT("apns-xyz"), [](TFlockResult<FFlockDeviceToken>) {});
-	PumpRetries();
+	FlockTestRetries::Pump();
 	TestTrue(TEXT("register retries under a retrying policy"), F.Fake->CountTo(TEXT("device_token/register")) > 1);
 
 	Cleanup(F.Dir);
@@ -1903,7 +1896,7 @@ bool FFlockNotificationKeepsItsSignInTest::RunTest(const FString& Parameters)
 				F.SignIn(TEXT("player-b"));
 			}
 		}
-		PumpRetries();
+		FlockTestRetries::Pump();
 		OutRequests = bDone ? F.Fake->CountTo(TEXT("n-1/read")) : -1;
 		Cleanup(F.Dir);
 	};

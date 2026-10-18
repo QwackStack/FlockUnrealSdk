@@ -25,6 +25,7 @@
 #include "Tests/Support/FlockMemoryTokenStore.h"
 #include "Tests/Support/FlockRecordingLogger.h"
 #include "Tests/Support/FlockSessionTestListener.h"
+#include "Tests/Support/FlockTestRetries.h"
 #include "Tests/Support/FlockTestSdk.h"
 #include "Tests/Support/FlockTestSpelling.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
@@ -159,15 +160,6 @@ namespace FlockSessionsTestHelpers
 		{
 			*Now += Seconds;
 			Frame();
-		}
-
-		/** Runs the retry handler's scheduled retries, which go through the core ticker, with no provider frame between. */
-		static void PumpRetries()
-		{
-			for (int32 Index = 0; Index < 8; ++Index)
-			{
-				FTSTicker::GetCoreTicker().Tick(1.f);
-			}
 		}
 
 		FFlockMultiplayerSessions& Sessions() { return Provider->GetSessionsForTesting(); }
@@ -1368,7 +1360,7 @@ bool FFlockSessionRetryAfterSwitchTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the join's first try is on its way"), FirstTry->bArrived);
 	F.SignIn(SessionPlayerD);
 	FirstTry->Release();
-	FSessionsFixture::PumpRetries();
+	FlockTestRetries::Pump();
 	TestEqual(TEXT("a request whose sign-in ended is cancelled"), Joined->FailureType(), EFlockErrorType::Cancelled);
 	TestEqual(TEXT("the retry did not go out as the new player"), F.Server->Count(ERoute::Join), 1);
 	TestFalse(TEXT("D was never seated"), Theirs->IsSeated(SessionPlayerD));
@@ -1384,7 +1376,7 @@ bool FFlockSessionRetryControlTest::RunTest(const FString& Parameters)
 	F.SignIn(SessionPlayerA);
 	F.Server->AnswerNext(ERoute::Join, FFlockFakeSessionServer::Refused(429, TEXT("request.rate_limited")));
 	const FSessionAnswerRef Joined = F.Join(Theirs->Code);
-	FSessionsFixture::PumpRetries();
+	FlockTestRetries::Pump();
 	TestTrue(TEXT("joined on the second try"), Joined->Succeeded());
 	TestEqual(TEXT("sent twice"), F.Server->Count(ERoute::Join), 2);
 	return true;
@@ -1463,7 +1455,7 @@ bool FFlockSessionRetriesTest::RunTest(const FString& Parameters)
 		const int32 Before = F.Server->Count(Route);
 		F.Server->AnswerNext(Route, FFlockFakeSessionServer::Refused(500, TEXT("server.error")));
 		Call();
-		FSessionsFixture::PumpRetries();
+		FlockTestRetries::Pump();
 		return F.Server->Count(Route) - Before;
 	};
 	TestEqual(TEXT("host: once"), Tries(ERoute::Host, [&]() { F.Host(); }), 1);
@@ -1972,7 +1964,7 @@ bool FFlockSessionHeartbeatRetryAfterSwitchTest::RunTest(const FString& Paramete
 	F.SignIn(SessionPlayerB);
 	FirstTry->Release();
 	// Only the retry's own wait runs: no provider frame, which would end A's session and stop the heartbeat for another reason.
-	FSessionsFixture::PumpRetries();
+	FlockTestRetries::Pump();
 	TestEqual(TEXT("the retry did not go out as B"), F.Server->Count(ERoute::Heartbeat), 1);
 	TestEqualSensitive(TEXT("every heartbeat went out as A"), FString::Join(F.Server->PlayersOf(ERoute::Heartbeat), TEXT(",")), SessionPlayerA);
 	return true;
@@ -1991,7 +1983,7 @@ bool FFlockSessionHeartbeatRetryControlTest::RunTest(const FString& Parameters)
 	}
 	F.Server->AnswerNext(ERoute::Heartbeat, FFlockFakeSessionServer::Refused(503, TEXT("server.unavailable")));
 	F.Advance(20.0);
-	FSessionsFixture::PumpRetries();
+	FlockTestRetries::Pump();
 	TestEqual(TEXT("tried again"), F.Server->Count(ERoute::Heartbeat), 2);
 	return true;
 }
@@ -2113,7 +2105,7 @@ bool FFlockSessionEveryRouteTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	const TCHAR* Routes[] = { TEXT("Host"), TEXT("Join"), TEXT("Read"), TEXT("ReadCurrent"), TEXT("Heartbeat"), TEXT("Leave"), TEXT("End"),
-		TEXT("MakeHost"), TEXT("PublishConnection"), TEXT("RequestJoinToken"), TEXT("VerifyJoinToken"), TEXT("ReadStunServers") };
+		TEXT("MakeHost"), TEXT("PublishConnection"), TEXT("RequestJoinToken"), TEXT("VerifyJoinToken"), TEXT("ReadStunServers"), TEXT("RelayLogins") };
 	for (const TCHAR* Route : Routes)
 	{
 		const FString Start = FString::Printf(TEXT("FFlockRequestHandle FFlockMultiplayerSessionRequests::%s("), Route);

@@ -160,3 +160,10 @@ FFlockRequestHandle FFlockMultiplayerSessionRequests::ReadStunServers(int32 Sign
 	return PostAs<FFlockStunServerList>(SignInNumber, TEXT("Read the servers to connect through"), /*bIdempotent*/ true,
 		Url(FlockEndpoints::RelayCredentials), TEXT("{}"), MoveTemp(OnComplete));
 }
+
+FFlockRequestHandle FFlockMultiplayerSessionRequests::RelayLogins(int32 SignInNumber, const FString& SessionId,
+	TFunction<void(TFlockResult<FFlockRelayLoginList>)> OnComplete)
+{
+	return PostAs<FFlockRelayLoginList>(SignInNumber, TEXT("Request relay logins"), /*bIdempotent*/ true,
+		Url(FlockEndpoints::RelayCredentials), FFlockCommandData().Set(TEXT("session_id"), SessionId).ToJsonString(), MoveTemp(OnComplete));
+}

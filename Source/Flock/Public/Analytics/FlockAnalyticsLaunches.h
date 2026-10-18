@@ -18,7 +18,10 @@ struct FLOCK_API FFlockEndedLaunchRecords
 
 /**
  * The analytics files of each launch of the game, in a folder of that launch's own:
- * `<analytics folder>/launches/<UTC time>-<8 hex>/` holds its crash marker, its live-session record and its three queues.
+ * `<analytics folder>/games/<game key>/launches/<UTC time>-<8 hex>/` holds its crash marker, its live-session record and its three
+ * queues. Each game's launches are kept apart (the game key names the backend and the API key), so a project whose game changes
+ * never sends the old game's unsent analytics to the new game's backend. Builds before 1.33.0 kept every game's launches in
+ * `<analytics folder>/launches/`: the first game to start takes those over with its own.
  *
  * Two processes of one game share every folder under the project (two game clients on one machine, Play In Editor beside a
  * standalone game), so no launch may read another's files as left over while that launch still runs. Each launch holds its
@@ -36,6 +39,7 @@ class FLOCK_API FFlockAnalyticsLaunches
 {
 public:
 	static constexpr const TCHAR* LaunchesFolderName = TEXT("launches");
+	static constexpr const TCHAR* GamesFolderName = TEXT("games");
 	static constexpr const TCHAR* SessionStateFileName = TEXT("session_state.json");
 	static constexpr const TCHAR* TerminationMarkerFileName = TEXT("termination_marker.json");
 	static constexpr const TCHAR* LogEventsQueueName = TEXT("log_events");
@@ -45,14 +49,24 @@ public:
 	static constexpr const TCHAR* EarlierBuildFilesLockName = TEXT("earlier-build-files.lock");
 
 	/**
-	 * Makes this launch's folder under AnalyticsFolder, holds its lock, and takes over every launch that has ended, and the files
-	 * of an earlier build. When the lock cannot be taken, this launch has no folder (GetFolder is empty), keeps nothing on disk
-	 * and takes over nothing: a folder with no lock would never be taken over or deleted by a later launch.
+	 * Makes this launch's folder among its game's under AnalyticsFolder, holds its lock, and takes over every launch of the game
+	 * that has ended, the launches an earlier build kept for every game, and the files of a still earlier build. When the lock
+	 * cannot be taken, this launch has no folder (GetFolder is empty), keeps nothing on disk and takes over nothing: a folder with
+	 * no lock would never be taken over or deleted by a later launch.
 	 */
-	static TSharedRef<FFlockAnalyticsLaunches> Start(const FString& AnalyticsFolder);
+	static TSharedRef<FFlockAnalyticsLaunches> Start(const FString& AnalyticsFolder, const FString& GameKey);
 
 	/** `<ProjectSavedDir>/Flock/analytics`, as a full path. */
 	static FString DefaultFolder();
+
+	/** Where one game's launches are kept, as a full path. */
+	static FString LaunchesFolderOf(const FString& AnalyticsFolder, const FString& GameKey);
+
+	/** Where builds before 1.33.0 kept the launches of every game, as a full path. */
+	static FString EveryGamesLaunchesFolder(const FString& AnalyticsFolder);
+
+	/** Every launch folder under AnalyticsFolder, of every game and of builds before 1.33.0, in name order. */
+	static TArray<FString> FindLaunchFoldersOfEveryGame(const FString& AnalyticsFolder);
 
 	~FFlockAnalyticsLaunches();
 
@@ -87,6 +101,9 @@ private:
 
 	/** Moves every queued entry in FromFolder's queues into this launch's queues. False when one could not be moved. */
 	bool TakeOverQueues(const FString& FromFolder);
+
+	/** Takes over every launch in LaunchesFolder whose lock can be claimed. */
+	void TakeOverEndedLaunches(const FString& LaunchesFolder);
 
 	void TakeOverEarlierBuildFiles();
 

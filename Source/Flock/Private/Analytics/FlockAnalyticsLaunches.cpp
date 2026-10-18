@@ -52,10 +52,34 @@ FString FFlockAnalyticsLaunches::DefaultFolder()
 	return FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Flock"), TEXT("analytics")));
 }
 
-TSharedRef<FFlockAnalyticsLaunches> FFlockAnalyticsLaunches::Start(const FString& AnalyticsFolder)
+FString FFlockAnalyticsLaunches::LaunchesFolderOf(const FString& AnalyticsFolder, const FString& GameKey)
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::Combine(AnalyticsFolder, GamesFolderName, GameKey, LaunchesFolderName));
+}
+
+FString FFlockAnalyticsLaunches::EveryGamesLaunchesFolder(const FString& AnalyticsFolder)
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::Combine(AnalyticsFolder, LaunchesFolderName));
+}
+
+TArray<FString> FFlockAnalyticsLaunches::FindLaunchFoldersOfEveryGame(const FString& AnalyticsFolder)
+{
+	TArray<FString> Folders = FFlockLaunchFolder::FindFolders(EveryGamesLaunchesFolder(AnalyticsFolder));
+	TArray<FString> Games;
+	IFileManager::Get().FindFiles(Games, *FPaths::Combine(FPaths::ConvertRelativePathToFull(AnalyticsFolder), GamesFolderName, TEXT("*")),
+		/*Files*/ false, /*Directories*/ true);
+	for (const FString& Game : Games)
+	{
+		Folders.Append(FFlockLaunchFolder::FindFolders(LaunchesFolderOf(AnalyticsFolder, Game)));
+	}
+	Folders.Sort();
+	return Folders;
+}
+
+TSharedRef<FFlockAnalyticsLaunches> FFlockAnalyticsLaunches::Start(const FString& AnalyticsFolder, const FString& GameKey)
 {
 	const TSharedRef<FFlockAnalyticsLaunches> Launches = MakeShareable(new FFlockAnalyticsLaunches(AnalyticsFolder));
-	const FString LaunchesFolder = FPaths::Combine(Launches->AnalyticsFolder, LaunchesFolderName);
+	const FString LaunchesFolder = LaunchesFolderOf(Launches->AnalyticsFolder, GameKey);
 
 	Launches->ThisLaunch = FFlockLaunchFolder::Create(LaunchesFolder);
 	if (!Launches->ThisLaunch.IsValid())
@@ -67,7 +91,16 @@ TSharedRef<FFlockAnalyticsLaunches> FFlockAnalyticsLaunches::Start(const FString
 	Launches->Folder = Launches->ThisLaunch->GetPath();
 
 	Launches->TakeOverEarlierBuildFiles();
-	// This launch's own folder is among these; its own lock refuses the claim.
+	// Those an earlier build kept for every game, then the game's own, so the oldest come first: nearly every project only ever had
+	// one game, and a launch still running under an earlier build holds its lock, so its files stay its own.
+	Launches->TakeOverEndedLaunches(EveryGamesLaunchesFolder(Launches->AnalyticsFolder));
+	Launches->TakeOverEndedLaunches(LaunchesFolder);
+	return Launches;
+}
+
+void FFlockAnalyticsLaunches::TakeOverEndedLaunches(const FString& LaunchesFolder)
+{
+	// This launch's own folder is among its game's; its own lock refuses the claim.
 	for (const FString& LaunchFolder : FFlockLaunchFolder::FindFolders(LaunchesFolder))
 	{
 		const TSharedPtr<FFlockLaunchFolder> Ended = FFlockLaunchFolder::ClaimEnded(LaunchFolder);
@@ -75,12 +108,11 @@ TSharedRef<FFlockAnalyticsLaunches> FFlockAnalyticsLaunches::Start(const FString
 		{
 			continue;
 		}
-		const bool bEveryEntryMoved = Launches->TakeOverQueues(LaunchFolder);
-		Launches->EndedLaunches.Add(Ended);
-		Launches->EndedRecords.Add({ FPaths::Combine(LaunchFolder, SessionStateFileName), FPaths::Combine(LaunchFolder, TerminationMarkerFileName),
+		const bool bEveryEntryMoved = TakeOverQueues(LaunchFolder);
+		EndedLaunches.Add(Ended);
+		EndedRecords.Add({ FPaths::Combine(LaunchFolder, SessionStateFileName), FPaths::Combine(LaunchFolder, TerminationMarkerFileName),
 			!bEveryEntryMoved });
 	}
-	return Launches;
 }
 
 bool FFlockAnalyticsLaunches::IsHoldingItsFolder() const

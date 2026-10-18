@@ -13,6 +13,7 @@
 #include "Multiplayer/FlockMultiplayerSessionRequests.h"
 #include "Multiplayer/FlockRepeatingCalls.h"
 #include "Multiplayer/FlockTravelToSession.h"
+#include "Multiplayer/Relay/FlockRelayConnection.h"
 #include "UObject/StrongObjectPtr.h"
 
 /** One reading of a session, numbered when it was sent; bFound false means "my session" found the player seated nowhere. */
@@ -74,6 +75,20 @@ public:
 	/** The host opens its level listening and publishes; a player waits for that and travels to the host (FFlockTravels). */
 	FFlockRequestHandle TravelToSession(UFlockMultiplayerSession* Session, UObject* WorldContextObject, const FFlockTravelToSessionOptions& Options,
 		TFunction<void(TFlockResult<FFlockTravelToSessionResult>)> OnComplete);
+
+	using FOnRelayOpened = TFunction<void(TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>)>;
+
+	/**
+	 * The player's address on Flock's relay for this session, opened once and shared by every caller until it fails or the
+	 * session ends, which closes it before Ended is raised. On Server ("name:port") when one is named (the server the host
+	 * uses), else on the first relay Flock lists that answers. Cancelling a caller's handle stops only its own wait. Internal:
+	 * for the engine plug-in and the harness's real-player probe (exported, its header private).
+	 */
+	FLOCK_API FFlockRequestHandle OpenRelay(UFlockMultiplayerSession* Session, const FString& Server, FOnRelayOpened OnOpened);
+
+	void SetRelayTimingForTesting(const FFlockRelayTiming& Timing) { RelayTiming = Timing; }
+	/** The relay of the session that opened one, open, opening or stopped; null when none. */
+	TSharedPtr<FFlockRelayConnection> GetRelayForTesting() const { return Relay.IsValid() ? Relay->Connection : nullptr; }
 
 	/** The one owner of travels, made on first use. */
 	FFlockTravels& GetTravels();
@@ -165,6 +180,51 @@ private:
 	/** A seat the server no longer has ends the session; any other refusal leaves the wait to the heartbeats' answers. */
 	void ConnectionWaitStopped(const FString& SessionId, const FFlockError& Failure);
 
+	/** One caller waiting for the session's relay. */
+	struct FRelayWaiter
+	{
+		FOnRelayOpened OnOpened;
+	};
+	using FRelayWaiterRef = TSharedRef<FRelayWaiter>;
+
+	/** The session's relay: Flock's logins, then each relay server Flock lists in turn (or the one named), until one opens. */
+	struct FRelayOpening
+	{
+		FString SessionId;
+		int32 SignInNumber = 0;
+		/** The server named by the caller who started it, or empty for any. */
+		FString ServerAsked;
+		bool bDone = false;
+		TFlockRelayResult<TSharedPtr<FFlockRelayConnection>> Result;
+		/** The relay open, or the one being opened. */
+		TSharedPtr<FFlockRelayConnection> Connection;
+		TArray<FFlockRelayLogin> Logins;
+		int32 NextLogin = 0;
+		/** The STUN servers Flock listed, looked up once for every relay server tried. */
+		TArray<FFlockRelayStunLookUp> StunServers;
+		/** The first server Flock lists is its main one, so its reason is the one told when none opens. */
+		TOptional<FFlockRelayFailure> First;
+		FFlockRequestHandle LoginsRead;
+		TArray<FRelayWaiterRef> Waiters;
+	};
+	using FRelayOpeningRef = TSharedRef<FRelayOpening>;
+
+	/** Waits for Opening, answering OnOpened through its own waiter; the handle cancels this wait alone. */
+	FFlockRequestHandle WaitForRelay(const FRelayOpeningRef& Opening, FOnRelayOpened OnOpened);
+	void StartRelay(UFlockMultiplayerSession* Session, const FString& Server);
+	void RelayLoginsAnswered(const FRelayOpeningRef& Opening, const TFlockResult<FFlockRelayLoginList>& Answered);
+	/** Opens on the next relay server Flock lists; with none left, the first one's reason is told. */
+	void TryNextRelay(const FRelayOpeningRef& Opening);
+	void FinishRelay(const FRelayOpeningRef& Opening, const TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>& Result);
+	/** The session's end gives its relay back: the logins' request cancelled, the relay closed, every caller answered Cancelled. */
+	void CloseRelayOf(const UFlockMultiplayerSession* Session);
+	/** An opening that failed, or one whose relay has since stopped, opens again on the next call. */
+	static bool HasFailed(const FRelayOpening& Opening);
+	/** Whether an opening serves a caller who needs the relay on Server; any server does for one who named none. */
+	static bool IsOn(const FRelayOpening& Opening, const FString& Server);
+	/** Why Flock's refusal of relay logins keeps the relay closed, each cause with its own reason. */
+	static FFlockRelayFailure RelayLoginsRefused(const FFlockError& Failure);
+
 	/** The leave of this session has its answer; a leave of another session started since stays remembered. */
 	void ForgetLeaveOf(const FString& SessionId);
 
@@ -196,6 +256,9 @@ private:
 	double ConnectionWaitSeconds = DefaultConnectionWaitSeconds;
 	TSharedPtr<FFlockTravels> Travels;
 	TSharedPtr<FFlockJoinChecksOnHost> JoinChecks;
+	/** The relay of the session that opened one; the session's end closes it. */
+	TSharedPtr<FRelayOpening> Relay;
+	FFlockRelayTiming RelayTiming;
 	int32 ReadsSent = 0;
 	/** Reads numbered at or below this change nothing when they land. */
 	int32 ReadsSettledThrough = 0;

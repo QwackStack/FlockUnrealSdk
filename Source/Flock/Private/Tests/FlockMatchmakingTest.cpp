@@ -26,6 +26,7 @@
 #include "Tests/Support/FlockMemoryTokenStore.h"
 #include "Tests/Support/FlockPartyTestListener.h"
 #include "Tests/Support/FlockRecordingLogger.h"
+#include "Tests/Support/FlockTestRetries.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
 #include "Tests/Support/FlockTestSdk.h"
 #include "Tests/Support/FlockTestSpelling.h"
@@ -422,7 +423,7 @@ bool FFlockMatchmakingRetryAfterSwitchTest::RunTest(const FString& Parameters)
 			F.SignIn(PlayerC);
 		}
 		// The retry's wait ends before the next frame could end the search, as after a long frame (a level load).
-		FMatchmakingFixture::PumpRetries();
+		FlockTestRetries::Pump();
 		TestEqual(FString::Printf(TEXT("%s: checks sent"), *Case), F.Server->Count(ERoute::ReadTicket), bSwitch ? 1 : 2);
 		for (const FString& Player : F.Server->PlayersOf(ERoute::ReadTicket))
 		{
@@ -1139,14 +1140,14 @@ bool FFlockMatchmakingWatchReadOnceTest::RunTest(const FString& Parameters)
 	F.Server->AnswerNext(ERoute::Current, FServer::Refused(503, TEXT("server.unavailable")));
 	const FPartyCallRef Mine = F.GetMine();
 	TestTrue(TEXT("the party is handed over without waiting for a retry"), Mine->Succeeded());
-	FMatchmakingFixture::PumpRetries();
+	FlockTestRetries::Pump();
 	TestEqual(TEXT("the reading was not tried again"), F.Server->Count(ERoute::Current), 1);
 
 	// Control: a check of a search by its id is still tried again.
 	const FSearchAnswerRef Found = F.Find(FServer::Duel);
 	F.Server->AnswerNext(ERoute::ReadTicket, FServer::Refused(503, TEXT("server.unavailable")));
 	F.Advance(3.0);
-	FMatchmakingFixture::PumpRetries();
+	FlockTestRetries::Pump();
 	TestEqual(TEXT("control: the check was tried again"), F.Server->Count(ERoute::ReadTicket), 2);
 	Found->Handle.Cancel();
 	return true;

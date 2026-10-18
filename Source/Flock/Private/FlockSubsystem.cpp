@@ -7,6 +7,8 @@
 #include "Flock.h"
 #include "FlockEvents.h"
 #include "Auth/FlockFileTokenStore.h"
+#include "Auth/FlockGameTokenStore.h"
+#include "Config/FlockGameKey.h"
 #include "Config/FlockConfig.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -14,7 +16,7 @@
 #include "Http/FlockHttpShutdown.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.32.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.33.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -191,10 +193,21 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	// Only a test names a folder for every file this SDK saves, so that it is never one more launch of the game.
 	const bool bSavesInTestFolder = !TestSavedFilesFolder.IsEmpty();
 
-	TokenStore = TestTokenStore.IsValid()
-		? TestTokenStore
-		: TSharedPtr<IFlockTokenStore>(MakeShared<FFlockFileTokenStore>(bSavesInTestFolder
-			? FPaths::Combine(TestSavedFilesFolder, TEXT("auth.dat")) : FFlockFileTokenStore::DefaultPath(), Config.GameId));
+	// Each game's saved sign-in and analytics are kept apart, named by the backend and the API key, so a project whose game changes
+	// never restores or sends the old one's.
+	const FString GameKey = FFlockGameKey::Of(ActiveConfig.ApiUrl, Config.ApiKey);
+	if (TestTokenStore.IsValid())
+	{
+		TokenStore = TestTokenStore;
+	}
+	else
+	{
+		// The Game Name still keys the file's encryption, as before, so the sign-in an earlier build kept reads back.
+		const FString SignInFolder = bSavesInTestFolder ? TestSavedFilesFolder : FFlockFileTokenStore::DefaultFolder();
+		TokenStore = MakeShared<FFlockGameTokenStore>(
+			MakeShared<FFlockFileTokenStore>(FFlockFileTokenStore::PathOf(SignInFolder, GameKey), Config.GameId),
+			MakeShared<FFlockFileTokenStore>(FFlockFileTokenStore::PathOf(SignInFolder, FString()), Config.GameId));
+	}
 
 	AuthSession = MakeShared<FFlockAuthSession>(HttpClient.ToSharedRef(), TokenStore, LoggerRef,
 		GetVersionedApiUrl(), Config.GetBaseHeaders());
@@ -242,7 +255,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		// reported as crashed, has its session ended, or has its queued entries sent a second time.
 		const FString AnalyticsFolder = bSavesInTestFolder
 			? FPaths::Combine(TestSavedFilesFolder, TEXT("analytics")) : FFlockAnalyticsLaunches::DefaultFolder();
-		const TSharedRef<FFlockAnalyticsLaunches> Launches = FFlockAnalyticsLaunches::Start(AnalyticsFolder);
+		const TSharedRef<FFlockAnalyticsLaunches> Launches = FFlockAnalyticsLaunches::Start(AnalyticsFolder, GameKey);
 		// A launch that could not hold a folder keeps nothing on disk: entries go straight out, and no session record or crash
 		// marker is written, since no later launch could ever tell them apart from a running game's.
 		const bool bKeepsFiles = Launches->IsHoldingItsFolder();

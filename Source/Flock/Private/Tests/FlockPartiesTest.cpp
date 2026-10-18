@@ -23,6 +23,7 @@
 #include "Tests/Support/FlockMemoryTokenStore.h"
 #include "Tests/Support/FlockPartyTestListener.h"
 #include "Tests/Support/FlockRecordingLogger.h"
+#include "Tests/Support/FlockTestRetries.h"
 #include "Tests/Support/FlockTestSdk.h"
 #include "Tests/Support/FlockTestSpelling.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
@@ -142,15 +143,6 @@ namespace FlockPartiesTestHelpers
 		{
 			*Now += Seconds;
 			Frame();
-		}
-
-		/** Runs the retry handler's scheduled retries, which go through the core ticker. */
-		static void PumpRetries()
-		{
-			for (int32 Index = 0; Index < 8; ++Index)
-			{
-				FTSTicker::GetCoreTicker().Tick(1.f);
-			}
 		}
 
 		FFlockParties& Parties() { return Provider->GetPartiesForTesting(); }
@@ -700,7 +692,7 @@ bool FFlockPartyRetryAfterSwitchTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the kick's first try is on its way"), FirstTry->bArrived);
 	F.SignIn(PlayerD);
 	FirstTry->Release();
-	FPartiesFixture::PumpRetries();
+	FlockTestRetries::Pump();
 
 	TestEqual(TEXT("a request whose sign-in ended is cancelled"), Kicked->FailureType(), EFlockErrorType::Cancelled);
 	TestEqual(TEXT("the retry did not go out as the new player"), F.Server->Count(ERoute::Kick), 1);
@@ -722,7 +714,7 @@ bool FFlockPartyRetryControlTest::RunTest(const FString& Parameters)
 	F.Server->AnswerNext(ERoute::Kick, FFlockFakePartyServer::Refused(429, TEXT("request.rate_limited")));
 	const FPartyAnswerRef Kicked = MakeShared<FPartyAnswer>();
 	Party->Kick(PlayerB, Into(Kicked));
-	FPartiesFixture::PumpRetries();
+	FlockTestRetries::Pump();
 	TestTrue(TEXT("the kick went through on its second try"), Kicked->Succeeded());
 	TestEqual(TEXT("two tries, both as A"), Joined(F.Server->PlayersOf(ERoute::Kick)), Joined({ PlayerA, PlayerA }));
 	return true;
@@ -1587,7 +1579,7 @@ bool FFlockPartyRetriesTest::RunTest(const FString& Parameters)
 		const int32 Before = F.Server->Count(Route);
 		F.Server->AnswerNext(Route, FFlockFakePartyServer::Refused(500, TEXT("server.error")));
 		Call();
-		FPartiesFixture::PumpRetries();
+		FlockTestRetries::Pump();
 		return F.Server->Count(Route) - Before;
 	};
 	const FPartyAnswerRef Ignored = MakeShared<FPartyAnswer>();

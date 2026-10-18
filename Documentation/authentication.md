@@ -173,6 +173,9 @@ Four coded errors are worth handling in-game:
 - **Token storage is an AES-encrypted file** under the project's Saved directory, keyed to the machine,
   user, and game. It defeats casual copying and inspection, not code running as the same user. Implement
   `IFlockTokenStore` to plug in platform keychain storage instead.
+- **Each game keeps its own saved sign-in**, named by its API URL and API key, so a project that switches to
+  another game (or another backend) never restores a player of the old one. The sign-in an earlier version kept
+  is taken over by the first game that reads one, so updating signs nobody out.
 - **The email-verification routes need a bearer.** It rides along automatically when a player is signed
   in, and the server requires it — so those calls fail with a 401 when signed out.
 - **A call made for a player stays that player's.** A call that acts as the signed-in player (the inbox, a

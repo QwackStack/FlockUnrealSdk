@@ -7,6 +7,7 @@
 #include "Http/FlockProviderBase.h"
 #include "Models/FlockCommandModels.h"
 #include "Models/FlockMultiplayerModels.h"
+#include "Multiplayer/Relay/FlockRelayLogin.h"
 
 /**
  * The multiplayer session routes on the wire, each sent as the sign-in it was asked for or not at all: every attempt, retries
@@ -60,6 +61,13 @@ public:
 	 * seat. Retried: a read. Each ask takes one of the player's relay requests a minute, so ask once a launch.
 	 */
 	FFlockRequestHandle ReadStunServers(int32 SignInNumber, TFunction<void(TFlockResult<FFlockStunServerList>)> OnComplete);
+
+	/**
+	 * Relay logins named with the session, counted against the player's seat (measured 2026-10-17): 429 seat_mint_limit past the
+	 * seat's allowance, 429 mint_rate_limited past 12 asks a minute (every ask counts, refused ones too), 404 session_not_found
+	 * when the player is not seated in it. Retried by the shared policy, as a read.
+	 */
+	FFlockRequestHandle RelayLogins(int32 SignInNumber, const FString& SessionId, TFunction<void(TFlockResult<FFlockRelayLoginList>)> OnComplete);
 
 private:
 	FString Url(const FString& Path) const { return FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, *Path); }

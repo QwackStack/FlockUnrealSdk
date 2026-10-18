@@ -1,6 +1,8 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Auth/FlockFileTokenStore.h"
+
+#include "Config/FlockGameKey.h"
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "Misc/AES.h"
@@ -123,7 +125,17 @@ FFlockFileTokenStore::FFlockFileTokenStore(const FString& InFilePath, const FStr
 
 FString FFlockFileTokenStore::DefaultPath()
 {
-	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Flock"), TEXT("auth.dat"));
+	return PathOf(DefaultFolder(), FString());
+}
+
+FString FFlockFileTokenStore::DefaultFolder()
+{
+	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Flock"));
+}
+
+FString FFlockFileTokenStore::PathOf(const FString& Folder, const FString& GameKey)
+{
+	return FPaths::Combine(Folder, FFlockGameKey::Named(TEXT("auth"), GameKey) + TEXT(".dat"));
 }
 
 void FFlockFileTokenStore::Save(const FFlockStoredTokens& Tokens)

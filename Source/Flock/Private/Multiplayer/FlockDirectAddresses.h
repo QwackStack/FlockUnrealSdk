@@ -8,6 +8,7 @@
 #include "Http/FlockResult.h"
 #include "Models/FlockCommandModels.h"
 #include "Models/FlockMultiplayerModels.h"
+#include "Multiplayer/FlockNameLookup.h"
 
 class FFlockMultiplayerSessionRequests;
 class FSocket;
@@ -41,7 +42,7 @@ public:
 	static constexpr int32 DefaultStunPort = 3478;
 
 	/** Stands in for the system's name lookup: hands Answer the host's first IPv4 address (empty for none), on any thread, or never. */
-	using FNameLookUp = TFunction<void(const FString& Host, TFunction<void(const FString& Ipv4)> Answer)>;
+	using FNameLookUp = FFlockNameLookup::FLookUp;
 
 	/** @param InCurrentSignInNumber The sign-in now current: a search whose own one ended while the servers were read ends Cancelled. */
 	FFlockDirectAddresses(const TSharedRef<FFlockMultiplayerSessionRequests>& InRequests, TFunction<double()> InNow,
@@ -98,14 +99,6 @@ private:
 		int32 Port = DefaultStunPort;
 	};
 
-	/** A name being looked up on another thread; read on the game thread once it says it is done. */
-	struct FLookUpCell
-	{
-		FCriticalSection Lock;
-		bool bDone = false;
-		FString Ipv4;
-	};
-
 	enum class EStep : uint8 { ReadingServers, LookingUp, Asking, Done };
 
 	struct FSearch
@@ -120,7 +113,8 @@ private:
 		FString FirstServerAddress;
 		FString ServerAddress;
 		FString Public;
-		TSharedPtr<FLookUpCell, ESPMode::ThreadSafe> LookUp;
+		/** The name being looked up on another thread; read on the game thread once it says it is done. */
+		TSharedPtr<FFlockNameLookup, ESPMode::ThreadSafe> LookUp;
 		FSocket* Socket = nullptr;
 		TArray<uint8> Transaction;
 		double Deadline = 0.0;

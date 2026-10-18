@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.32.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.33.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -556,7 +556,8 @@ the host's game mode calls Flock's check from `PreLoginAsync`, which lets in onl
 one connection a player, and says which Flock player each connection is; a player turned away learns why. **1.32.0 brings
 multiplayer to Blueprint**: a node for every party, session and matchmaking call and for Travel To Session, a node for every
 value a result carries, and ready-made game modes (`AFlockGameModeBase`, `AFlockGameMode`) that let in only the session's
-players, with the game's own check overridable in Blueprint.
+players, with the game's own check overridable in Blueprint. **1.33.0 builds Flock's relay client into the SDK**, which a
+later release connects players through.
 
 Deliberate omissions and known gaps:
 

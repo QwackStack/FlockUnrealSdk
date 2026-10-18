@@ -25,6 +25,7 @@
 #include "Providers/FlockPlayerProvider.h"
 #include "Providers/FlockShopProvider.h"
 #include "Tests/Support/FlockFakeTransport.h"
+#include "Tests/Support/FlockTestRetries.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
 #include "Tests/Support/FlockMemoryEventCache.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
@@ -56,21 +57,6 @@ namespace FlockShopProviderTestHelpers
 		Payload.ReplaceInline(TEXT("/"), TEXT("_"));
 		Payload.ReplaceInline(TEXT("="), TEXT(""));
 		return FString::Printf(TEXT("h.%s.s"), *Payload);
-	}
-
-	/**
-	 * Runs retries that the handler scheduled on the core ticker.
-	 *
-	 * A retry is never synchronous even at a zero delay — it goes through FTSTicker — so a test that only
-	 * calls and asserts sees the first attempt and nothing else, and would read a working retry as an
-	 * absent one.
-	 */
-	inline void PumpRetries()
-	{
-		for (int32 Index = 0; Index < 8; ++Index)
-		{
-			FTSTicker::GetCoreTicker().Tick(1.f);
-		}
 	}
 
 	inline FString TempRoot()
@@ -594,7 +580,7 @@ bool FFlockShopRealMoneyItemTest::RunTest(const FString& Parameters)
 
 	TOptional<TFlockResult<FFlockPurchaseResult>> Answer;
 	Fx.Provider->Purchase(TEXT("item-1"), FString(), [&Answer](TFlockResult<FFlockPurchaseResult> R) { Answer = R; });
-	PumpRetries();
+	FlockTestRetries::Pump();
 	if (!TestTrue(TEXT("answered"), Answer.IsSet()))
 	{
 		Cleanup(Fx.Dir);
@@ -627,21 +613,21 @@ bool FFlockShopOfflineMoneyTest::RunTest(const FString& Parameters)
 	Fx.Provider->Purchase(TEXT("item-1"), FString(), [&PurchaseFailure](TFlockResult<FFlockPurchaseResult> R) { PurchaseFailure = R.bSuccess ? EFlockErrorType::None : R.Error.Type; });
 	EFlockErrorType ConsumeFailure = EFlockErrorType::None;
 	Fx.Provider->Consume(TEXT("inv-1"), [&ConsumeFailure](TFlockResult<FFlockConsumeResult> R) { ConsumeFailure = R.bSuccess ? EFlockErrorType::None : R.Error.Type; });
-	PumpRetries();
+	FlockTestRetries::Pump();
 	TestEqual(TEXT("the purchase fails as unreachable"), PurchaseFailure, EFlockErrorType::Connection);
 	TestEqual(TEXT("so does the consume"), ConsumeFailure, EFlockErrorType::Connection);
 
 	// The network comes back: nothing held back is sent.
 	Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(PurchaseResultBody()));
 	Fx.Fake->On(TEXT("player_inventory/inv-1/consume"), FFlockFakeTransport::Ok(ConsumeResultBody()));
-	PumpRetries();
+	FlockTestRetries::Pump();
 	TestEqual(TEXT("the purchase was sent once"), Fx.Fake->CountTo(TEXT("shop/transaction")), 1);
 	TestEqual(TEXT("the consume was sent once"), Fx.Fake->CountTo(TEXT("player_inventory/inv-1/consume")), 1);
 
 	// Contrast: a read made with the server unreachable is tried again under the same policy.
 	Fx.Fake->On(TEXT("player_inventory/player/player-a"), FFlockFakeTransport::Offline());
 	Fx.Provider->GetPlayerInventory(FString(), 1, 100, [](TFlockResult<FFlockPlayerInventoryPage>) {});
-	PumpRetries();
+	FlockTestRetries::Pump();
 	TestTrue(TEXT("contrast: a read is tried again"), Fx.Fake->CountTo(TEXT("player_inventory/player/player-a")) > 1);
 	Cleanup(Fx.Dir);
 	return true;
@@ -1008,7 +994,7 @@ bool FFlockShopConsumeMoneySafetyTest::RunTest(const FString& Parameters)
 		Fx.Provider->Consume(TEXT("inv-1"), [&](TFlockResult<FFlockConsumeResult> R) { bFailed = !R.bSuccess; });
 		// Pumped even though nothing should be scheduled: without this, "one attempt" would also pass
 		// against a version that *had* queued a retry and simply never got to run it.
-		PumpRetries();
+		FlockTestRetries::Pump();
 
 		TestTrue(TEXT("the failure surfaces"), bFailed);
 		TestEqual(TEXT("a money mutation is not retried on a 5xx"),
@@ -1023,7 +1009,7 @@ bool FFlockShopConsumeMoneySafetyTest::RunTest(const FString& Parameters)
 
 		bool bOk = false;
 		Fx.Provider->Consume(TEXT("inv-1"), [&](TFlockResult<FFlockConsumeResult> R) { bOk = R.bSuccess; });
-		PumpRetries();
+		FlockTestRetries::Pump();
 
 		TestTrue(TEXT("a provably-unprocessed failure is retried and succeeds"), bOk);
 		TestEqual(TEXT("which took two attempts"),

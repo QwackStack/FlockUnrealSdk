@@ -17,6 +17,7 @@
 #include "Providers/FlockPlayerProvider.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
+#include "Tests/Support/FlockTestRetries.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
 
 namespace FlockCommandProviderTestHelpers
@@ -158,18 +159,6 @@ namespace FlockCommandProviderTestHelpers
 	inline void Cleanup(const FString& Dir)
 	{
 		IFileManager::Get().DeleteDirectory(*Dir, false, true);
-	}
-
-	/**
-	 * Runs the core ticker so the retry handler's scheduled attempts actually fire. Without this a retry is
-	 * merely queued and every call looks un-retried, which would make a "not retried" assertion vacuous.
-	 */
-	inline void PumpRetries()
-	{
-		for (int32 Index = 0; Index < 8; ++Index)
-		{
-			FTSTicker::GetCoreTicker().Tick(1.f);
-		}
 	}
 }
 
@@ -330,7 +319,7 @@ bool FFlockCommandFundsNotRetriedTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("caller was told"), bCompleted);
 	// Pumped, so a scheduled resend would have landed by now — the count is a real absence, not a pending one.
-	PumpRetries();
+	FlockTestRetries::Pump();
 	TestEqual(TEXT("posted exactly once"), Fx.Fake->CountTo(TEXT("add_game_funds")), 1);
 	TestEqual(TEXT("still nothing queued"), Fx.Commands->GetPendingWriteCount(), 0);
 
@@ -338,7 +327,7 @@ bool FFlockCommandFundsNotRetriedTest::RunTest(const FString& Parameters)
 	// and not simply a retry policy that never fires.
 	Fx.Fake->On(TEXT("game_command/update_player_data_key"), FFlockFakeTransport::Status(500, TEXT("{}")));
 	Fx.Commands->UpdatePlayerDataField(TEXT("pd-1"), TEXT("coins"), 1, nullptr);
-	PumpRetries();
+	FlockTestRetries::Pump();
 	TestTrue(TEXT("a data write is retried"), Fx.Fake->CountTo(TEXT("update_player_data_key")) > 1);
 	TestEqual(TEXT("and the money call still went once"), Fx.Fake->CountTo(TEXT("add_game_funds")), 1);
 

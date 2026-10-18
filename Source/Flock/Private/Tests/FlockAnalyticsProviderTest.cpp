@@ -41,6 +41,9 @@ namespace FlockAnalyticsProviderTestHelpers
 		return Policy;
 	}
 
+	/** The game every fixture's launches are kept for. */
+	const TCHAR* const AnalyticsTestGame = TEXT("0123456789abcdef");
+
 	/** Minimal signed-in-looking token so the auth session can report a player id. */
 	inline FString MakeTestJwt(const FString& PlayerId)
 	{
@@ -100,7 +103,7 @@ namespace FlockAnalyticsProviderTestHelpers
 			EventCache = MakeShared<FFlockMemoryEventCache>(Config.MaxCachedEvents);
 			Deps.AnalyticsEventCache = EventCache;
 			// Each fixture is one launch of the game, with an analytics folder of its own under Dir.
-			Deps.Launches = FFlockAnalyticsLaunches::Start(Dir);
+			Deps.Launches = FFlockAnalyticsLaunches::Start(Dir, AnalyticsTestGame);
 			Deps.Session = MakeShared<FFlockSession>(Config, Deps.Launches->GetSessionStatePath());
 			Deps.TerminationTracker = MakeShared<FFlockTerminationTracker>(true, Deps.Launches->GetTerminationMarkerPath());
 			Deps.ConsentStore = MakeShared<FFlockConsentStore>(FPaths::Combine(Dir, TEXT("consent.json")));
@@ -124,7 +127,7 @@ namespace FlockAnalyticsProviderTestHelpers
 		static void SaveInAnEndedLaunch(const FString& ParentDir, const FString& FileName, const FString& Contents)
 		{
 			const TSharedPtr<FFlockLaunchFolder> Ended =
-				FFlockLaunchFolder::Create(FPaths::Combine(ParentDir, FFlockAnalyticsLaunches::LaunchesFolderName));
+				FFlockLaunchFolder::Create(FFlockAnalyticsLaunches::LaunchesFolderOf(ParentDir, AnalyticsTestGame));
 			if (Ended.IsValid())
 			{
 				FFileHelper::SaveStringToFile(Contents, *FPaths::Combine(Ended->GetPath(), FileName));

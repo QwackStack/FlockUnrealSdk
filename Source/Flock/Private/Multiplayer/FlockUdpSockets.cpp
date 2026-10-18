@@ -5,9 +5,10 @@
 #include "SocketSubsystem.h"
 #include "Sockets.h"
 
-bool FFlockUdpSockets::bDualStackRefusedForTesting = false;
-bool FFlockUdpSockets::bDualStackSendRefusedForTesting = false;
-bool FFlockUdpSockets::bDualStackRefused = false;
+std::atomic<bool> FFlockUdpSockets::bDualStackRefusedForTesting{ false };
+std::atomic<bool> FFlockUdpSockets::bDualStackSendRefusedForTesting{ false };
+std::atomic<bool> FFlockUdpSockets::bDualStackConnectRefusedForTesting{ false };
+std::atomic<bool> FFlockUdpSockets::bDualStackRefused{ false };
 
 namespace
 {
@@ -24,12 +25,22 @@ namespace
 		Anywhere->SetPort(0);
 		return Socket.Bind(*Anywhere) && Socket.SetNonBlocking(true);
 	}
+
+	bool ConnectTo(FSocket& Socket, const FString& Ipv4Address, int32 Port)
+	{
+		if (FFlockUdpSockets::bDualStackConnectRefusedForTesting && FFlockUdpSockets::IsDualStack(Socket))
+		{
+			return false;
+		}
+		return Socket.Connect(*FFlockUdpSockets::Toward(Socket, Ipv4Address, Port));
+	}
 }
 
 void FFlockUdpSockets::ResetForTesting()
 {
 	bDualStackRefusedForTesting = false;
 	bDualStackSendRefusedForTesting = false;
+	bDualStackConnectRefusedForTesting = false;
 	bDualStackRefused = false;
 }
 
@@ -83,6 +94,33 @@ FSocket* FFlockUdpSockets::OpenIpv4(const TCHAR* Description)
 	return Ipv4;
 }
 
+FSocket* FFlockUdpSockets::OpenConnectedTo(const FString& Ipv4Address, int32 Port, const TCHAR* Description)
+{
+	FSocket* Socket = Open(Description);
+	if (Socket == nullptr)
+	{
+		return nullptr;
+	}
+	if (ConnectTo(*Socket, Ipv4Address, Port))
+	{
+		return Socket;
+	}
+	const bool bWasDualStack = IsDualStack(*Socket);
+	Close(Socket);
+	if (!bWasDualStack)
+	{
+		return nullptr;
+	}
+	// A platform that makes a dual-stack socket but cannot connect it to an IPv4 address gets a plain IPv4 socket instead.
+	FSocket* Ipv4 = OpenIpv4(Description);
+	if (Ipv4 != nullptr && !ConnectTo(*Ipv4, Ipv4Address, Port))
+	{
+		Close(Ipv4);
+		return nullptr;
+	}
+	return Ipv4;
+}
+
 void FFlockUdpSockets::Close(FSocket* Socket)
 {
 	if (Socket == nullptr)
@@ -114,4 +152,9 @@ TSharedRef<FInternetAddr> FFlockUdpSockets::Toward(const FSocket& Socket, const 
 TSharedRef<FInternetAddr> FFlockUdpSockets::AnySender(const FSocket& Socket)
 {
 	return FlockSockets()->CreateInternetAddr(Socket.GetProtocol());
+}
+
+int32 FFlockUdpSockets::LocalPortOf(FSocket& Socket)
+{
+	return Socket.GetPortNo();
 }

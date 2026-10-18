@@ -180,15 +180,6 @@ namespace FlockMatchmakingTestHelpers
 			Frame();
 		}
 
-		/** Runs the retry handler's scheduled retries, which go through the core ticker, with no provider frame between. */
-		static void PumpRetries()
-		{
-			for (int32 Index = 0; Index < 8; ++Index)
-			{
-				FTSTicker::GetCoreTicker().Tick(1.f);
-			}
-		}
-
 		FFlockMatchmaking& Matchmaking() { return Provider->GetMatchmakingForTesting(); }
 		UFlockMultiplayerSession* HeldSession() { return Provider->GetSessionsForTesting().GetHeld(); }
 		UFlockParty* HeldParty() { return Provider->GetPartiesForTesting().GetHeld(); }

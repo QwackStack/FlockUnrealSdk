@@ -92,6 +92,17 @@ public:
 	 */
 	TArray<FString> StunUrls;
 
+	/**
+	 * The relay servers a seat's logins list, as the backend answers a session_id the player is seated in (measured 2026-10-17:
+	 * one entry holding the server's udp and tcp urls and a login "<expiry>:<game>:<player>", then the STUN entry;
+	 * Libraries/Unreal/multiplayer-relay/results/relay-rules.txt). Empty lists STUN alone, as for a game with the relay off.
+	 */
+	TArray<FString> RelayUrls;
+	/** The password every relay login carries; the fake relay checks the same one. */
+	FString RelayPassword = TEXT("minted-for-the-test");
+	/** The studio's relay is paused: STUN alone, relay_paused true. */
+	bool bRelayPaused = false;
+
 	TArray<FSessionRef> Sessions;
 	TArray<FFlockHttpRequest> Requests;
 
@@ -483,6 +494,7 @@ private:
 		if (Route == ERoute::RelayCredentials)
 		{
 			FString Named;
+			bool bSeated = false;
 			if (Body.IsValid() && Body->TryGetStringField(TEXT("session_id"), Named) && !Named.IsEmpty())
 			{
 				const TSharedPtr<FSession> Seat = ById(Named);
@@ -490,22 +502,37 @@ private:
 				{
 					return Refused(404, TEXT("multiplayer.session_not_found"));
 				}
+				bSeated = true;
 			}
-			TArray<TSharedPtr<FJsonValue>> Urls;
-			for (const FString& Url : StunUrls)
+			auto UrlsOf = [](const TArray<FString>& Listed)
 			{
-				Urls.Add(MakeShared<FJsonValueString>(Url));
+				TArray<TSharedPtr<FJsonValue>> Urls;
+				for (const FString& Url : Listed)
+				{
+					Urls.Add(MakeShared<FJsonValueString>(Url));
+				}
+				return Urls;
+			};
+			TArray<TSharedPtr<FJsonValue>> Servers;
+			// The relay is for players in a game: only a seat draws it, and a paused studio gets STUN alone.
+			if (bSeated && !bRelayPaused && RelayUrls.Num() > 0)
+			{
+				const TSharedRef<FJsonObject> Relay = MakeShared<FJsonObject>();
+				Relay->SetArrayField(TEXT("urls"), UrlsOf(RelayUrls));
+				Relay->SetStringField(TEXT("username"), TEXT("1760000000:game:") + Player);
+				Relay->SetStringField(TEXT("credential"), RelayPassword);
+				Servers.Add(MakeShared<FJsonValueObject>(Relay));
 			}
 			const TSharedRef<FJsonObject> Stun = MakeShared<FJsonObject>();
-			Stun->SetArrayField(TEXT("urls"), Urls);
+			Stun->SetArrayField(TEXT("urls"), UrlsOf(StunUrls));
 			Stun->SetField(TEXT("username"), MakeShared<FJsonValueNull>());
 			Stun->SetField(TEXT("credential"), MakeShared<FJsonValueNull>());
-			TArray<TSharedPtr<FJsonValue>> Servers;
 			Servers.Add(MakeShared<FJsonValueObject>(Stun));
 			const TSharedRef<FJsonObject> Credentials = MakeShared<FJsonObject>();
 			Credentials->SetNumberField(TEXT("ttl"), 600);
 			Credentials->SetArrayField(TEXT("ice_servers"), Servers);
-			Credentials->SetBoolField(TEXT("relay_paused"), false);
+			// Said with or without a session, as the backend's route does (a studio past due is paused for every call).
+			Credentials->SetBoolField(TEXT("relay_paused"), bRelayPaused);
 			return Enveloped(Credentials);
 		}
 		FString SessionId;
