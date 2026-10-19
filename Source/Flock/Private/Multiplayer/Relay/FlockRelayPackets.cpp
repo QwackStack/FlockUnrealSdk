@@ -78,7 +78,7 @@ bool FFlockRelayPackets::HandArrivalsTo(const TSharedRef<IFlockRelayReceiver, ES
 void FFlockRelayPackets::StopHandingArrivalsTo(const TSharedRef<IFlockRelayReceiver, ESPMode::ThreadSafe>& InReceiver)
 {
 	FScopeLock Locked(&ReceiverLock);
-	if (Receiver == InReceiver)
+	if (Receiver.Pin() == InReceiver)
 	{
 		Receiver.Reset();
 	}
@@ -227,7 +227,7 @@ void FFlockRelayPackets::Arrive(const FFlockRelayPeer& From, const uint8* Packet
 	TSharedPtr<IFlockRelayReceiver, ESPMode::ThreadSafe> HandTo;
 	{
 		FScopeLock Locked(&ReceiverLock);
-		HandTo = Receiver;
+		HandTo = Receiver.Pin();
 	}
 	if (HandTo.IsValid())
 	{

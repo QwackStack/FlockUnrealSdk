@@ -22,6 +22,8 @@ public:
 	int32 HostChanged = 0;
 	int32 ConnectionChanged = 0;
 	TArray<FString> Ended;
+	/** Each On Relay Lost's reason, in order. */
+	TArray<FString> RelayLost;
 	/** What the session's own state said inside each handler, so an event raised before the session took its reading shows. */
 	TArray<bool> EndedSawSessionOver;
 	TArray<int32> PlayersSeen;
@@ -37,6 +39,7 @@ public:
 		InSession->OnHostChanged.AddDynamic(this, &UFlockSessionTestListener::HandleHostChanged);
 		InSession->OnConnectionChanged.AddDynamic(this, &UFlockSessionTestListener::HandleConnectionChanged);
 		InSession->OnEnded.AddDynamic(this, &UFlockSessionTestListener::HandleEnded);
+		InSession->OnRelayLost.AddDynamic(this, &UFlockSessionTestListener::HandleRelayLost);
 	}
 
 	FString EndedAs() const { return FString::Join(Ended, TEXT(",")); }
@@ -79,6 +82,16 @@ public:
 	{
 		Ended.Add(Reason);
 		EndedSawSessionOver.Add(Session.IsValid() && Session->HasEnded());
+		if (AlsoInHandler)
+		{
+			AlsoInHandler();
+		}
+	}
+
+	UFUNCTION()
+	void HandleRelayLost(const FString& Reason)
+	{
+		RelayLost.Add(Reason);
 		if (AlsoInHandler)
 		{
 			AlsoInHandler();

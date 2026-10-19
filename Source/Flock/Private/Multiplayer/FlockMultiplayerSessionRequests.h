@@ -50,8 +50,16 @@ public:
 	FFlockRequestHandle PublishConnection(int32 SignInNumber, const FString& SessionId, const FFlockCommandData& Connection,
 		FOnSession OnComplete);
 
+	/**
+	 * How to reach the signed-in player for its own seat, as {"mode": ..., ...}; only the host and the player read it, and it
+	 * survives a host change. Sent once, never retried: the player connects whatever the answer.
+	 */
+	FFlockRequestHandle PublishSeatConnection(int32 SignInNumber, const FString& SessionId, const FFlockCommandData& Connection,
+		FOnSession OnComplete);
+
+	/** A failure IsExpectedFailure accepts is logged at Debug, not as an error. */
 	FFlockRequestHandle RequestJoinToken(int32 SignInNumber, const FString& SessionId,
-		TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnComplete);
+		TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnComplete, TFunction<bool(const FFlockError&)> IsExpectedFailure = nullptr);
 
 	FFlockRequestHandle VerifyJoinToken(int32 SignInNumber, const FString& SessionId, const FString& Token,
 		TFunction<void(TFlockResult<FFlockVerifiedJoinToken>)> OnComplete);
@@ -72,16 +80,19 @@ public:
 private:
 	FString Url(const FString& Path) const { return FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, *Path); }
 
-	/** Sends one enveloped request as the given sign-in, under the retry policy, with the token read at each attempt. */
+	/**
+	 * Sends one enveloped request as the given sign-in, under the retry policy (MaxRetriesOverride 0 sends it once), with the
+	 * token read at each attempt.
+	 */
 	template <typename T>
 	FFlockRequestHandle SendAs(int32 SignInNumber, const FString& Context, bool bIdempotent,
 		TFunction<FFlockRequestHandle(const TMap<FString, FString>& Headers, TFunction<void(TFlockResult<T>)> OnResult)> Send,
-		TFunction<void(TFlockResult<T>)> OnComplete, TFunction<bool(const FFlockError&)> IsExpectedFailure = nullptr);
+		TFunction<void(TFlockResult<T>)> OnComplete, TFunction<bool(const FFlockError&)> IsExpectedFailure = nullptr, int32 MaxRetriesOverride = -1);
 
 	/** A POST of Json to RequestUrl, answered with the enveloped T. */
 	template <typename T>
 	FFlockRequestHandle PostAs(int32 SignInNumber, const FString& Context, bool bIdempotent, const FString& RequestUrl, const FString& Json,
-		TFunction<void(TFlockResult<T>)> OnComplete, TFunction<bool(const FFlockError&)> IsExpectedFailure = nullptr);
+		TFunction<void(TFlockResult<T>)> OnComplete, TFunction<bool(const FFlockError&)> IsExpectedFailure = nullptr, int32 MaxRetriesOverride = -1);
 
 	TSharedRef<FFlockAuthSession> Session;
 	FString VersionedApiUrl;

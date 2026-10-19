@@ -127,6 +127,13 @@ public:
 		DropsLeft.Add(Method, Times);
 	}
 
+	/** Nothing more from this client port reaches the relay, as a router that moved a device to another port leaves it; packets for it still go out. */
+	void StopHearing(int32 ClientPort)
+	{
+		FScopeLock Locked(&Lock);
+		PortsNoLongerHeard.Add(ClientPort);
+	}
+
 	/** The next signed requests are answered 438 with a new nonce; -1 answers every one so. */
 	void AnswerStaleNonce(int32 Times)
 	{
@@ -382,6 +389,10 @@ private:
 	void Handle(const uint8* Packet, int32 Length, int32 ClientPort)
 	{
 		FScopeLock Locked(&Lock);
+		if (PortsNoLongerHeard.Contains(ClientPort))
+		{
+			return;
+		}
 		if (!PortsHeard.Contains(ClientPort))
 		{
 			PortsHeard.Add(ClientPort, PortsHeard.Num() + 1);
@@ -753,6 +764,7 @@ private:
 	int32 NextPort = 50000;
 	int32 ReservationsMade = 0;
 	TMap<int32, int32> PortsHeard;
+	TSet<int32> PortsNoLongerHeard;
 	TArray<TPair<TArray<uint8>, int32>> HeldAnswers;
 	TArray<FLater> Later;
 };

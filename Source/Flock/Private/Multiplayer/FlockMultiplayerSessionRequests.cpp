@@ -16,7 +16,7 @@ FFlockMultiplayerSessionRequests::FFlockMultiplayerSessionRequests(const TShared
 template <typename T>
 FFlockRequestHandle FFlockMultiplayerSessionRequests::SendAs(int32 SignInNumber, const FString& Context, bool bIdempotent,
 	TFunction<FFlockRequestHandle(const TMap<FString, FString>& Headers, TFunction<void(TFlockResult<T>)> OnResult)> Send,
-	TFunction<void(TFlockResult<T>)> OnComplete, TFunction<bool(const FFlockError&)> IsExpectedFailure)
+	TFunction<void(TFlockResult<T>)> OnComplete, TFunction<bool(const FFlockError&)> IsExpectedFailure, int32 MaxRetriesOverride)
 {
 	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	// The token is read at each attempt, so a refresh's replay carries the new one; the sign-in rule stops every attempt
@@ -24,12 +24,13 @@ FFlockRequestHandle FFlockMultiplayerSessionRequests::SendAs(int32 SignInNumber,
 	return Execute<T>(
 		ForSignInOnly<T>(SessionRef, SignInNumber,
 			[SessionRef, Send](TFunction<void(TFlockResult<T>)> OnResult) { return Send(SessionRef->GetAuthHeaders(), MoveTemp(OnResult)); }),
-		MoveTemp(OnComplete), Context, bIdempotent, /*MaxRetriesOverride*/ -1, /*bAllowAuthRetry*/ true, MoveTemp(IsExpectedFailure));
+		MoveTemp(OnComplete), Context, bIdempotent, MaxRetriesOverride, /*bAllowAuthRetry*/ true, MoveTemp(IsExpectedFailure));
 }
 
 template <typename T>
 FFlockRequestHandle FFlockMultiplayerSessionRequests::PostAs(int32 SignInNumber, const FString& Context, bool bIdempotent,
-	const FString& RequestUrl, const FString& Json, TFunction<void(TFlockResult<T>)> OnComplete, TFunction<bool(const FFlockError&)> IsExpectedFailure)
+	const FString& RequestUrl, const FString& Json, TFunction<void(TFlockResult<T>)> OnComplete, TFunction<bool(const FFlockError&)> IsExpectedFailure,
+	int32 MaxRetriesOverride)
 {
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	return SendAs<T>(SignInNumber, Context, bIdempotent,
@@ -37,7 +38,7 @@ FFlockRequestHandle FFlockMultiplayerSessionRequests::PostAs(int32 SignInNumber,
 		{
 			return ClientRef->PostJson<T>(RequestUrl, Headers, Json, MoveTemp(OnResult));
 		},
-		MoveTemp(OnComplete), MoveTemp(IsExpectedFailure));
+		MoveTemp(OnComplete), MoveTemp(IsExpectedFailure), MaxRetriesOverride);
 }
 
 FFlockRequestHandle FFlockMultiplayerSessionRequests::Host(int32 SignInNumber, TOptional<int32> MaxPlayers, const FFlockCommandData& Data,
@@ -136,11 +137,20 @@ FFlockRequestHandle FFlockMultiplayerSessionRequests::PublishConnection(int32 Si
 		FFlockCommandData().SetRawJson(TEXT("connection_info"), Connection.ToJsonString()).ToJsonString(), MoveTemp(OnComplete));
 }
 
+FFlockRequestHandle FFlockMultiplayerSessionRequests::PublishSeatConnection(int32 SignInNumber, const FString& SessionId,
+	const FFlockCommandData& Connection, FOnSession OnComplete)
+{
+	return PostAs<FFlockMultiplayerSessionReading>(SignInNumber, TEXT("Publish seat connection"), /*bIdempotent*/ true,
+		Url(FlockEndpoints::SessionSeatConnection(SessionId)),
+		FFlockCommandData().SetRawJson(TEXT("connection_info"), Connection.ToJsonString()).ToJsonString(), MoveTemp(OnComplete),
+		/*IsExpectedFailure*/ nullptr, /*MaxRetriesOverride*/ 0);
+}
+
 FFlockRequestHandle FFlockMultiplayerSessionRequests::RequestJoinToken(int32 SignInNumber, const FString& SessionId,
-	TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnComplete)
+	TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnComplete, TFunction<bool(const FFlockError&)> IsExpectedFailure)
 {
 	return PostAs<FFlockMultiplayerSessionJoinToken>(SignInNumber, TEXT("Request join token"), /*bIdempotent*/ true,
-		Url(FlockEndpoints::SessionJoinToken(SessionId)), TEXT("{}"), MoveTemp(OnComplete));
+		Url(FlockEndpoints::SessionJoinToken(SessionId)), TEXT("{}"), MoveTemp(OnComplete), MoveTemp(IsExpectedFailure));
 }
 
 FFlockRequestHandle FFlockMultiplayerSessionRequests::VerifyJoinToken(int32 SignInNumber, const FString& SessionId, const FString& Token,

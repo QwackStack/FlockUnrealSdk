@@ -9,7 +9,9 @@
 #include "Dom/JsonObject.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Engine/NetConnection.h"
 #include "Engine/NetDriver.h"
+#include "Engine/PendingNetGame.h"
 #include "Engine/World.h"
 #include "HAL/PlatformProcess.h"
 #include "Http/FlockHttpClient.h"
@@ -1140,7 +1142,7 @@ bool FFlockTravelBackWithoutAWordTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-FLOCK_CONNECTING_TEST(FFlockTravelMistakesTest, "Travel.MistakesAreRefusedAtOnce")
+FLOCK_CONNECTING_TEST(FFlockTravelMistakesTest, "Travel.MistakesAreRefused_ALevelOpeningIsWaitedFor_AndASecondTravelTakesOver")
 bool FFlockTravelMistakesTest::RunTest(const FString& Parameters)
 {
 	FConnectingFixture F;
@@ -1160,8 +1162,11 @@ bool FFlockTravelMistakesTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("already hosting"), Hosting->FailedAs(EFlockErrorType::Validation) && Hosting->Result.Error.Message.Contains(TEXT("already")));
 	F.Game->State.NetMode = NM_Standalone;
 	F.Game->State.bChangingLevel = true;
-	const TSharedRef<FTravelAnswer> Opening = F.Travel(Session);
-	TestTrue(TEXT("a level opening"), Opening->FailedAs(EFlockErrorType::Validation));
+	FFlockRequestHandle OpeningHandle;
+	const TSharedRef<FTravelAnswer> Opening = F.Travel(Session, FFlockTravelToSessionOptions(), &OpeningHandle);
+	TestFalse(TEXT("a level opening is waited for, not refused"), Opening->bAnswered);
+	OpeningHandle.Cancel();
+	TestTrue(TEXT("and cancelled while it waits"), Opening->FailedAs(EFlockErrorType::Cancelled));
 	F.Game->State.bChangingLevel = false;
 
 	FFlockTravelToSessionOptions NoWait;
@@ -1171,13 +1176,14 @@ bool FFlockTravelMistakesTest::RunTest(const FString& Parameters)
 
 	const TSharedRef<FTravelAnswer> First = F.Travel(Session);
 	const TSharedRef<FTravelAnswer> Second = F.Travel(Session);
-	TestFalse(TEXT("the first goes on"), First->bAnswered);
-	TestTrue(TEXT("a second while one is under way"), Second->FailedAs(EFlockErrorType::Validation)
-		&& Second->Result.Error.Message.Contains(TEXT("already under way")));
+	TestTrue(TEXT("a second while one is under way takes over: the first is restarted"), First->Succeeded()
+		&& First->Result.Value.Outcome.Equals(FlockTravelToSessionOutcomes::Restarted, ESearchCase::CaseSensitive));
+	TestFalse(TEXT("the second goes on"), Second->bAnswered);
 
 	const TSharedRef<FSessionAnswer> Left = MakeShared<FSessionAnswer>();
 	Session->Leave(Into(Left));
-	TestEqualSensitive(TEXT("the first ended with the session"), First->Result.Value.Outcome, FString(FlockTravelToSessionOutcomes::SessionEnded));
+	TestEqualSensitive(TEXT("the second ended with the session"), Second->Result.Value.Outcome, FString(FlockTravelToSessionOutcomes::SessionEnded));
+	TestEqual(TEXT("the first answered once"), First->Times, 1);
 	const TSharedRef<FTravelAnswer> Ended = F.Travel(Session);
 	TestTrue(TEXT("an ended session"), Ended->FailedAs(EFlockErrorType::Validation) && Ended->Result.Error.Message.Contains(TEXT("has ended")));
 	TestEqual(TEXT("the engine was asked nothing"), F.Game->TraveledTo.Num() + F.Game->Opened.Num(), 0);
@@ -1237,14 +1243,486 @@ bool FFlockTravelCancelOpeningTest::RunTest(const FString& Parameters)
 	Handle.Cancel();
 	TestTrue(TEXT("cancelled at once"), Travel->FailedAs(EFlockErrorType::Cancelled));
 	const TSharedRef<FTravelAnswer> Meanwhile = F.Travel(Session);
-	TestTrue(TEXT("no other travel while the cancelled one still stops: told it is under way, not only that a level opens"),
-		Meanwhile->FailedAs(EFlockErrorType::Validation) && Meanwhile->Result.Error.Message.Contains(TEXT("already under way")));
-	F.Game->Opens(7777);
 	F.Frame();
-	TestEqual(TEXT("it stopped listening once open"), F.Game->StoppedListening, 1);
-	TestEqual(TEXT("nothing published"), F.Server->Count(ERoute::Publish), 0);
+	TestFalse(TEXT("a newer travel waits while the level opens"), Meanwhile->bAnswered);
+	TestEqual(TEXT("opening nothing meanwhile"), F.Game->Opened.Num(), 1);
+	F.Game->Opens(7777);
+	F.FramesUntil([&]() { return Meanwhile->bAnswered; });
 	TestEqual(TEXT("answered once"), Travel->Times, 1);
-	TestFalse(TEXT("another travel may start now"), F.Sessions().GetTravels().IsTravelingForTesting());
+	// The newer travel decides once the level is open: it hosts on that level, which nobody stops or opens again.
+	TestEqualSensitive(TEXT("the newer hosts"), Meanwhile->Result.Value.Outcome, FString(FlockTravelToSessionOutcomes::StartedAsHost));
+	TestEqual(TEXT("on the level that opened, not stopped"), F.Game->StoppedListening, 0);
+	TestEqual(TEXT("nor opened twice"), F.Game->Opened.Num(), 1);
+	TestEqual(TEXT("published by the newer one alone"), F.Server->Count(ERoute::Publish), 1);
+	// Cancelled with no newer travel, the level stops listening once open.
+	FConnectingFixture G;
+	G.SignIn(PlayerA);
+	UFlockMultiplayerSession* Alone = G.Hosted(*this);
+	if (Alone == nullptr)
+	{
+		return false;
+	}
+	FFlockRequestHandle AloneHandle;
+	G.Travel(Alone, FFlockTravelToSessionOptions(), &AloneHandle);
+	G.Frame();
+	AloneHandle.Cancel();
+	G.Game->Opens(7777);
+	G.Frame();
+	TestEqual(TEXT("a cancel alone stops it listening once open"), G.Game->StoppedListening, 1);
+	TestEqual(TEXT("and publishes nothing"), G.Server->Count(ERoute::Publish), 0);
+	return true;
+}
+
+// ---- Travel To Session again: a newer travel takes over, and a host change or a lost relay is this device's part done again ----
+
+namespace FlockTravelRestartHelpers
+{
+	/** The session as Flock answers it now, read into the held one (its next heartbeat would bring it). */
+	void ReadAgain(FConnectingFixture& F, UFlockMultiplayerSession* Session)
+	{
+		F.Provider->GetSession(Session->GetId(), [](TFlockResult<UFlockMultiplayerSession*>) {});
+	}
+
+	/** This game as B, connected directly to A in Level; the travel's answer. */
+	TSharedRef<FTravelAnswer> ConnectedToA(FAutomationTestBase& Test, FConnectingFixture& F, FFlockFakeSessionServer::FSessionRef& OutServed,
+		UFlockMultiplayerSession*& OutSession, const FString& Level = TEXT("/Game/Maps/Arena"))
+	{
+		OutSession = F.JoinedAsB(Test, OutServed);
+		if (OutSession == nullptr)
+		{
+			return MakeShared<FTravelAnswer>();
+		}
+		const TSharedRef<FTravelAnswer> Travel = F.Travel(OutSession);
+		F.Server->Publishes(OutServed, Direct(Text(HostsPublicAddress), Number(7777)));
+		F.Advance(0.25);
+		F.FramesUntil([&]() { return F.Game->TraveledTo.Num() > 0; });
+		F.Game->Level = Level;
+		F.Game->Arrives(true);
+		F.Frame();
+		Test.TestTrue(TEXT("precondition: connected to A"), Travel->Succeeded()
+			&& Travel->Result.Value.Outcome.Equals(FlockTravelToSessionOutcomes::Connected, ESearchCase::CaseSensitive));
+		return Travel;
+	}
+}
+
+using namespace FlockTravelRestartHelpers;
+
+FLOCK_CONNECTING_TEST(FFlockTravelRestartFromAnswerTest, "Travel.Restart.ATravelStartedFromTheRestartedOnesAnswer_TakesOverInTurn")
+bool FFlockTravelRestartFromAnswerTest::RunTest(const FString& Parameters)
+{
+	FConnectingFixture F;
+	FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
+	UFlockMultiplayerSession* Session = F.JoinedAsB(*this, Served);
+	if (Session == nullptr)
+	{
+		return false;
+	}
+	TSharedPtr<FTravelAnswer> Third;
+	int32 FirstAnswers = 0;
+	Session->TravelToSession(nullptr, FFlockTravelToSessionOptions(), [&F, Session, &Third, &FirstAnswers](TFlockResult<FFlockTravelToSessionResult>)
+	{
+		++FirstAnswers;
+		// The game travels again from the restarted answer: that one takes over from the second in turn.
+		Third = F.Travel(Session);
+	});
+	const TSharedRef<FTravelAnswer> Second = F.Travel(Session);
+	TestEqual(TEXT("the first answered once"), FirstAnswers, 1);
+	TestTrue(TEXT("the second, begun from nothing, is restarted at once by the one started from the first's answer"), Second->Succeeded()
+		&& Second->Result.Value.Outcome.Equals(FlockTravelToSessionOutcomes::Restarted, ESearchCase::CaseSensitive));
+	if (!TestTrue(TEXT("the third goes on"), Third.IsValid() && !Third->bAnswered))
+	{
+		return false;
+	}
+	F.Server->Publishes(Served, Direct(Text(HostsPublicAddress), Number(7777)));
+	F.Advance(0.25);
+	F.FramesUntil([&]() { return F.Game->TraveledTo.Num() > 0; });
+	F.Game->Arrives(true);
+	F.Frame();
+	TestEqual(TEXT("one travel to the host in all"), F.Game->TraveledTo.Num(), 1);
+	TestEqualSensitive(TEXT("the third connected"), Third->Result.Value.Outcome, FString(FlockTravelToSessionOutcomes::Connected));
+	return true;
+}
+
+FLOCK_CONNECTING_TEST(FFlockTravelRestartSettleTest, "Travel.Restart.ATravelAskedWhileALevelOpens_BeginsOnceItHasOpened_OrIsRefused30sOn")
+bool FFlockTravelRestartSettleTest::RunTest(const FString& Parameters)
+{
+	{
+		FConnectingFixture F;
+		FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
+		UFlockMultiplayerSession* Session = F.JoinedAsB(*this, Served);
+		if (Session == nullptr)
+		{
+			return false;
+		}
+		// The engine's own way out of a lost connection, back to the default level, takes a frame.
+		F.Game->State.bChangingLevel = true;
+		const TSharedRef<FTravelAnswer> Travel = F.Travel(Session);
+		F.Advance(29.0);
+		TestFalse(TEXT("waits while the level opens"), Travel->bAnswered);
+		TestEqual(TEXT("asking nothing meanwhile"), F.Sessions().GetConnectionWaitCountForTesting(), 0);
+		F.Game->State.bChangingLevel = false;
+		F.Frame();
+		TestEqual(TEXT("then begins: waits for the host"), F.Sessions().GetConnectionWaitCountForTesting(), 1);
+		F.Server->Publishes(Served, Direct(Text(HostsPublicAddress), Number(7777)));
+		F.Advance(0.25);
+		F.FramesUntil([&]() { return F.Game->TraveledTo.Num() > 0; });
+		TestEqual(TEXT("and travels to it"), F.Game->TraveledTo.Num(), 1);
+	}
+	FConnectingFixture G;
+	FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
+	UFlockMultiplayerSession* Session = G.JoinedAsB(*this, Served);
+	if (Session == nullptr)
+	{
+		return false;
+	}
+	G.Game->State.bChangingLevel = true;
+	const TSharedRef<FTravelAnswer> Stuck = G.Travel(Session);
+	G.Advance(30.0);
+	TestTrue(TEXT("a level that never finishes opening: refused 30 s on, saying so"), Stuck->FailedAs(EFlockErrorType::Validation)
+		&& Stuck->Result.Error.Message.Contains(TEXT("still opening a level")));
+	TestEqual(TEXT("the engine was asked nothing"), G.Game->TraveledTo.Num() + G.Game->Opened.Num(), 0);
+	return true;
+}
+
+FLOCK_CONNECTING_TEST(FFlockTravelRestartSettleConnectTest, "Travel.Restart.APlayerWhoseEngineChangesLevelAsItConnects_WaitsForIt_ThenTravels")
+bool FFlockTravelRestartSettleConnectTest::RunTest(const FString& Parameters)
+{
+	{
+		FConnectingFixture F;
+		FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
+		const TSharedRef<FTravelAnswer> Travel = PlayerTravel(*this, F, Served);
+		F.Advance(0.5);
+		// The engine's own way out of a lost connection takes a frame: it is under way as the host's address comes.
+		F.Game->State.bChangingLevel = true;
+		F.Server->Publishes(Served, Direct(Text(HostsPublicAddress), Number(7777)));
+		F.Advance(0.25);
+		F.FramesUntil([&]() { return Travel->bAnswered || F.Game->TraveledTo.Num() > 0; });
+		TestFalse(TEXT("before asking for its token: waits for the engine, not refused"), Travel->bAnswered);
+		TestEqual(TEXT("asking nothing meanwhile"), F.Server->Count(ERoute::JoinToken), 0);
+		F.Game->State.bChangingLevel = false;
+		F.FramesUntil([&]() { return F.Game->TraveledTo.Num() > 0; });
+		TestEqual(TEXT("then travels"), F.Game->TraveledTo.Num(), 1);
+	}
+	FConnectingFixture F;
+	FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
+	const TSharedRef<FTravelAnswer> Travel = PlayerTravel(*this, F, Served);
+	const TSharedRef<FFlockFakePartyServer::FHeld> Token = F.Server->HoldNext(ERoute::JoinToken);
+	F.Server->Publishes(Served, Direct(Text(HostsPublicAddress), Number(7777)));
+	F.Advance(0.25);
+	F.FramesUntil([&]() { return F.Server->Count(ERoute::JoinToken) > 0; });
+	// The token comes while the engine is on its way out of a lost connection.
+	F.Game->State.bChangingLevel = true;
+	Token->Release();
+	F.FramesUntil([&]() { return Travel->bAnswered || F.Game->TraveledTo.Num() > 0; });
+	TestFalse(TEXT("with its token: waits for the engine, not refused"), Travel->bAnswered);
+	F.Game->State.bChangingLevel = false;
+	F.FramesUntil([&]() { return F.Game->TraveledTo.Num() > 0; });
+	TestEqual(TEXT("then travels with it"), F.Game->TraveledTo.Num(), 1);
+	TestFalse(TEXT("its token in the URL"), F.Game->TokensTraveledWith.Num() == 0 || F.Game->TokensTraveledWith[0].IsEmpty());
+	return true;
+}
+
+FLOCK_CONNECTING_TEST(FFlockTravelRestartPlayerTest, "Travel.Restart.APlayerWithItsOldHost_WaitsThereForTheNewHost_AndConnectsWithANewToken")
+bool FFlockTravelRestartPlayerTest::RunTest(const FString& Parameters)
+{
+	FConnectingFixture F;
+	FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
+	UFlockMultiplayerSession* Session = nullptr;
+	const TSharedRef<FTravelAnswer> First = ConnectedToA(*this, F, Served, Session);
+	if (Session == nullptr || !First->Succeeded())
+	{
+		return false;
+	}
+	F.Server->Joins(Served, PlayerC);
+	// A hands hosting to C, and the address goes with it.
+	F.Server->MakesHost(Served, PlayerC);
+	ReadAgain(F, Session);
+	if (!TestEqualSensitive(TEXT("precondition: C hosts"), Session->GetHostPlayerId(), PlayerC) || !TestFalse(TEXT("precondition: no address"), Session->HasConnection()))
+	{
+		return false;
+	}
+	const TSharedRef<FTravelAnswer> Again = F.Travel(Session);
+	F.Advance(0.5);
+	TestFalse(TEXT("waits for the new host, in the old host's level"), Again->bAnswered);
+	TestEqual(TEXT("nothing opened or stopped meanwhile"), F.Game->Opened.Num() + F.Game->StoppedListening + F.Game->StoppedConnecting, 0);
+	F.Server->Publishes(Served, Direct(Text(TEXT("198.51.100.9")), Number(7777), TEXT("192.168.1.30"), TEXT("198.51.100.9")));
+	F.Advance(0.25);
+	F.FramesUntil([&]() { return F.Game->TraveledTo.Num() > 1; });
+	if (!TestEqual(TEXT("traveled again, from the old host's level"), F.Game->TraveledTo.Num(), 2))
+	{
+		return false;
+	}
+	TestEqualSensitive(TEXT("to the new host"), F.Game->TraveledTo.Last(), FString(TEXT("198.51.100.9:7777")));
+	TestFalse(TEXT("with a new token"), F.Game->TokensTraveledWith.Last().IsEmpty() || F.Game->TokensTraveledWith.Last() == F.Game->TokensTraveledWith[0]);
+	F.Game->Arrives(true);
+	F.Frame();
+	TestEqualSensitive(TEXT("connected"), Again->Result.Value.Outcome, FString(FlockTravelToSessionOutcomes::Connected));
+	return true;
+}
+
+FLOCK_CONNECTING_TEST(FFlockTravelRestartNewHostTest, "Travel.Restart.APlayerThatBecameTheHost_OpensTheLevelItPlayed_EvenFromItsDefaultLevel")
+bool FFlockTravelRestartNewHostTest::RunTest(const FString& Parameters)
+{
+	{
+		FConnectingFixture F;
+		FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
+		UFlockMultiplayerSession* Session = nullptr;
+		if (!ConnectedToA(*this, F, Served, Session)->Succeeded())
+		{
+			return false;
+		}
+		// A changes level, B following it; then A leaves: B, seated longest of the others, hosts. The engine has taken B back to its
+		// default level meanwhile.
+		F.Game->Level = TEXT("/Game/Maps/Second");
+		F.Frame();
+		F.Server->Leaves(Served, PlayerA);
+		F.Game->GoesBackToItsDefaultLevel();
+		F.Game->Level = TEXT("/Game/Maps/Entry");
+		F.Frame();
+		ReadAgain(F, Session);
+		if (!TestTrue(TEXT("precondition: B hosts"), Session->IsHost()))
+		{
+			return false;
+		}
+		const TSharedRef<FTravelAnswer> Again = F.Travel(Session);
+		TestEqualSensitive(TEXT("the level it played with A last, not the default one it is in"), FString::Join(F.Game->Opened, TEXT(",")),
+			FString(TEXT("/Game/Maps/Second")));
+		F.Game->Opens(7777);
+		F.FramesUntil([&]() { return Again->bAnswered; });
+		TestEqualSensitive(TEXT("hosts"), Again->Result.Value.Outcome, FString(FlockTravelToSessionOutcomes::StartedAsHost));
+	}
+	{
+		FConnectingFixture F;
+		FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
+		UFlockMultiplayerSession* Session = nullptr;
+		if (!ConnectedToA(*this, F, Served, Session)->Succeeded())
+		{
+			return false;
+		}
+		// Still in A's level, connected: the level opens from there, the engine's own connection going with it.
+		F.Server->Leaves(Served, PlayerA);
+		ReadAgain(F, Session);
+		F.Travel(Session);
+		TestEqualSensitive(TEXT("from the old host's level, that level"), FString::Join(F.Game->Opened, TEXT(",")), FString(TEXT("/Game/Maps/Arena")));
+		TestEqual(TEXT("nothing stopped first"), F.Game->StoppedListening + F.Game->StoppedConnecting, 0);
+	}
+	FConnectingFixture F;
+	FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
+	UFlockMultiplayerSession* Session = nullptr;
+	if (!ConnectedToA(*this, F, Served, Session)->Succeeded())
+	{
+		return false;
+	}
+	F.Server->Leaves(Served, PlayerA);
+	F.Game->GoesBackToItsDefaultLevel();
+	F.Game->Level = TEXT("/Game/Maps/Entry");
+	F.Frame();
+	ReadAgain(F, Session);
+	FFlockTravelToSessionOptions Named;
+	Named.HostLevel = TEXT("/Game/Maps/Other");
+	F.Travel(Session, Named);
+	TestEqualSensitive(TEXT("a level the game names wins"), FString::Join(F.Game->Opened, TEXT(",")), FString(TEXT("/Game/Maps/Other")));
+	return true;
+}
+
+FLOCK_CONNECTING_TEST(FFlockTravelRestartRoleTest, "Travel.Restart.AHostChangeReadWhileTheEngineSettles_IsTaken")
+bool FFlockTravelRestartRoleTest::RunTest(const FString& Parameters)
+{
+	FConnectingFixture F;
+	FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
+	UFlockMultiplayerSession* Session = nullptr;
+	if (!ConnectedToA(*this, F, Served, Session)->Succeeded())
+	{
+		return false;
+	}
+	// The engine takes B back to its default level (A went), and B travels again while it does, still a player.
+	F.Game->State.bChangingLevel = true;
+	const TSharedRef<FTravelAnswer> Again = F.Travel(Session);
+	F.Server->Leaves(Served, PlayerA);
+	ReadAgain(F, Session);
+	if (!TestTrue(TEXT("precondition: B hosts now"), Session->IsHost()))
+	{
+		return false;
+	}
+	F.Game->GoesBackToItsDefaultLevel();
+	F.Frame();
+	TestEqual(TEXT("it hosts, as the session says once the engine settled"), F.Game->Opened.Num(), 1);
+	TestEqual(TEXT("waiting for no host"), F.Sessions().GetConnectionWaitCountForTesting(), 0);
+	return true;
+}
+
+FLOCK_CONNECTING_TEST(FFlockTravelRestartSameHostTest, "Travel.Restart.APlayerInTheGameOfTheHostTheSessionNames_TravelingAgain_IsConnectedAtOnce")
+bool FFlockTravelRestartSameHostTest::RunTest(const FString& Parameters)
+{
+	FConnectingFixture F;
+	FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
+	UFlockMultiplayerSession* Session = nullptr;
+	const TSharedRef<FTravelAnswer> First = ConnectedToA(*this, F, Served, Session);
+	if (!First->Succeeded())
+	{
+		return false;
+	}
+	const int32 Tokens = F.Server->Count(ERoute::JoinToken);
+	// Called again with nothing changed (a level's Begin Play runs on each arriving player, say).
+	const TSharedRef<FTravelAnswer> Again = F.Travel(Session);
+	TestTrue(TEXT("connected at once"), Again->Succeeded()
+		&& Again->Result.Value.Outcome.Equals(FlockTravelToSessionOutcomes::Connected, ESearchCase::CaseSensitive));
+	TestEqualSensitive(TEXT("with the host it is with"), Again->Result.Value.Address, First->Result.Value.Address);
+	TestEqual(TEXT("traveling nowhere"), F.Game->TraveledTo.Num(), 1);
+	TestEqual(TEXT("asking nothing"), F.Server->Count(ERoute::JoinToken), Tokens);
+	TestTrue(TEXT("still with its host"), F.Sessions().GetTravels().IsWithTheHostForTesting());
+	// Its token on hand is still kept, the stay with the host not started over.
+	F.Advance(41.0);
+	F.Frame();
+	TestEqual(TEXT("its token on hand still renewed"), F.Server->Count(ERoute::JoinToken), Tokens + 1);
+	// Once another player hosts, a travel is no longer answered at once: it waits for the new host.
+	F.Server->Joins(Served, PlayerC);
+	F.Server->MakesHost(Served, PlayerC);
+	ReadAgain(F, Session);
+	const TSharedRef<FTravelAnswer> ForTheNewHost = F.Travel(Session);
+	TestFalse(TEXT("control: a host change makes it wait for the new host"), ForTheNewHost->bAnswered);
+	return true;
+}
+
+FLOCK_CONNECTING_TEST(FFlockTravelRestartOtherServerTest, "Travel.Restart.AGameNowOnAServerOfItsOwn_IsRefused_ThoughItPlayedTheSession")
+bool FFlockTravelRestartOtherServerTest::RunTest(const FString& Parameters)
+{
+	FConnectingFixture F;
+	FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
+	UFlockMultiplayerSession* Session = nullptr;
+	if (!ConnectedToA(*this, F, Served, Session)->Succeeded())
+	{
+		return false;
+	}
+	// The game leaves A for a server of its own, still holding its seat.
+	F.Game->GoesBackToItsDefaultLevel();
+	F.Frame();
+	F.Game->TravelTo(TEXT("10.0.0.9:7777"));
+	F.Game->Arrives(true);
+	F.Frame();
+	F.Server->Leaves(Served, PlayerA);
+	ReadAgain(F, Session);
+	const int32 Opened = F.Game->Opened.Num();
+	const TSharedRef<FTravelAnswer> Again = F.Travel(Session);
+	TestTrue(TEXT("refused: it is connected to another server"), Again->FailedAs(EFlockErrorType::Validation)
+		&& Again->Result.Error.Message.Contains(TEXT("already connected")));
+	TestEqual(TEXT("nothing opened over it"), F.Game->Opened.Num(), Opened);
+	return true;
+}
+
+FLOCK_CONNECTING_TEST(FFlockTravelRestartKeepHostingTest, "Travel.Restart.AHostListeningForTheSession_KeepsItsLevelAndItsPlayers_AndPublishesAgain")
+bool FFlockTravelRestartKeepHostingTest::RunTest(const FString& Parameters)
+{
+	FConnectingFixture F;
+	UFlockMultiplayerSession* Session = nullptr;
+	const TSharedRef<FTravelAnswer> First = HostTravel(*this, F, Session);
+	if (Session == nullptr)
+	{
+		return false;
+	}
+	F.Game->Opens(7777);
+	F.FramesUntil([&]() { return First->bAnswered; });
+	if (!TestTrue(TEXT("precondition: hosting"), First->Succeeded()))
+	{
+		return false;
+	}
+	const TSharedRef<FTravelAnswer> Again = F.Travel(Session);
+	F.FramesUntil([&]() { return Again->bAnswered; });
+	TestEqualSensitive(TEXT("hosts"), Again->Result.Value.Outcome, FString(FlockTravelToSessionOutcomes::StartedAsHost));
+	TestEqual(TEXT("on the port it listens on"), Again->Result.Value.Port, 7777);
+	TestEqual(TEXT("its level kept: nothing opened again"), F.Game->Opened.Num(), 1);
+	TestEqual(TEXT("nor stopped: its players stay"), F.Game->StoppedListening, 0);
+	TestEqual(TEXT("published again"), F.Server->Count(ERoute::Publish), 2);
+	TestTrue(TEXT("still checking joining players"), F.Sessions().GetJoinChecks().IsHosting(Session));
+	// Its publish refused: what it published before stands, and its players stay.
+	F.Server->AnswerNext(ERoute::Publish, FFlockFakeSessionServer::Refused(503, TEXT("service.unavailable")));
+	const TSharedRef<FTravelAnswer> Refused = F.Travel(Session);
+	F.FramesUntil([&]() { return Refused->bAnswered; });
+	TestTrue(TEXT("a refused publish fails"), Refused->bAnswered && !Refused->Result.bSuccess);
+	TestEqual(TEXT("and leaves it listening"), F.Game->StoppedListening, 0);
+	// Asked again while it publishes, the older ends restarted and still nothing stops.
+	const TSharedRef<FFlockFakePartyServer::FHeld> Held = F.Server->HoldNext(ERoute::Publish);
+	const TSharedRef<FTravelAnswer> Older = F.Travel(Session);
+	F.Frame();
+	const TSharedRef<FTravelAnswer> Newer = F.Travel(Session);
+	TestTrue(TEXT("the older restarted"), Older->Succeeded() && Older->Result.Value.Outcome.Equals(FlockTravelToSessionOutcomes::Restarted, ESearchCase::CaseSensitive));
+	Held->Release();
+	F.FramesUntil([&]() { return Newer->bAnswered; });
+	TestEqualSensitive(TEXT("the newer hosts on"), Newer->Result.Value.Outcome, FString(FlockTravelToSessionOutcomes::StartedAsHost));
+	TestEqual(TEXT("its level never stopped"), F.Game->StoppedListening, 0);
+	TestEqual(TEXT("nor opened again"), F.Game->Opened.Num(), 1);
+	return true;
+}
+
+FLOCK_CONNECTING_TEST(FFlockTravelRestartWhileOpeningTest, "Travel.Restart.AHostAskedAgainWhileItsLevelOpensOrItPublishes_KeepsTheLevel")
+bool FFlockTravelRestartWhileOpeningTest::RunTest(const FString& Parameters)
+{
+	FConnectingFixture F;
+	UFlockMultiplayerSession* Session = nullptr;
+	const TSharedRef<FTravelAnswer> First = HostTravel(*this, F, Session);
+	if (Session == nullptr)
+	{
+		return false;
+	}
+	F.Frame();
+	const TSharedRef<FTravelAnswer> Again = F.Travel(Session);
+	TestTrue(TEXT("the first restarted"), First->Succeeded() && First->Result.Value.Outcome.Equals(FlockTravelToSessionOutcomes::Restarted, ESearchCase::CaseSensitive));
+	F.Game->Opens(7777);
+	F.FramesUntil([&]() { return Again->bAnswered; });
+	TestEqualSensitive(TEXT("the newer hosts"), Again->Result.Value.Outcome, FString(FlockTravelToSessionOutcomes::StartedAsHost));
+	TestEqual(TEXT("on the level the first opened, never stopped"), F.Game->StoppedListening, 0);
+	TestEqual(TEXT("nor opened twice"), F.Game->Opened.Num(), 1);
+	// The level it opened is open and the travel publishes: asked again, the level stays, for the newer one to host on.
+	FConnectingFixture G;
+	UFlockMultiplayerSession* Publishing = nullptr;
+	const TSharedRef<FTravelAnswer> Opener = HostTravel(*this, G, Publishing);
+	if (Publishing == nullptr)
+	{
+		return false;
+	}
+	const TSharedRef<FFlockFakePartyServer::FHeld> Held = G.Server->HoldNext(ERoute::Publish);
+	G.Game->Opens(7777);
+	G.FramesUntil([&]() { return G.Server->Count(ERoute::Publish) > 0; });
+	const TSharedRef<FTravelAnswer> Newer = G.Travel(Publishing);
+	TestTrue(TEXT("the opener restarted while it published"), Opener->Succeeded()
+		&& Opener->Result.Value.Outcome.Equals(FlockTravelToSessionOutcomes::Restarted, ESearchCase::CaseSensitive));
+	Held->Release();
+	G.FramesUntil([&]() { return Newer->bAnswered; });
+	TestEqualSensitive(TEXT("the newer hosts on"), Newer->Result.Value.Outcome, FString(FlockTravelToSessionOutcomes::StartedAsHost));
+	TestEqual(TEXT("on the level the opener opened, never stopped"), G.Game->StoppedListening, 0);
+	TestEqual(TEXT("nor opened again"), G.Game->Opened.Num(), 1);
+	return true;
+}
+
+FLOCK_CONNECTING_TEST(FFlockTravelRestartHostToPlayerTest, "Travel.Restart.AHostThatHandedHostingOver_StopsListening_AndJoinsTheNewHost")
+bool FFlockTravelRestartHostToPlayerTest::RunTest(const FString& Parameters)
+{
+	FConnectingFixture F;
+	UFlockMultiplayerSession* Session = nullptr;
+	const TSharedRef<FTravelAnswer> First = HostTravel(*this, F, Session);
+	if (Session == nullptr)
+	{
+		return false;
+	}
+	F.Game->Opens(7777);
+	F.FramesUntil([&]() { return First->bAnswered; });
+	const FFlockFakeSessionServer::FSessionRef Served = F.Server->ById(Session->GetId()).ToSharedRef();
+	F.Server->Joins(Served, PlayerB);
+	F.Server->MakesHost(Served, PlayerB);
+	ReadAgain(F, Session);
+	if (!TestFalse(TEXT("precondition: B hosts now"), Session->IsHost()))
+	{
+		return false;
+	}
+	const TSharedRef<FTravelAnswer> Again = F.Travel(Session);
+	TestEqual(TEXT("stopped listening at once: nobody joins it any more"), F.Game->StoppedListening, 1);
+	F.Frame();
+	TestFalse(TEXT("its check of joining players ended with it"), F.Sessions().GetJoinChecks().IsHosting(Session));
+	TestFalse(TEXT("waits for the new host"), Again->bAnswered);
+	F.Server->Publishes(Served, Direct(Text(TEXT("198.51.100.9")), Number(7777), TEXT("192.168.1.30"), TEXT("198.51.100.9")));
+	F.Advance(0.25);
+	F.FramesUntil([&]() { return F.Game->TraveledTo.Num() > 0; });
+	TestEqualSensitive(TEXT("and travels to it"), FString::Join(F.Game->TraveledTo, TEXT(",")), FString(TEXT("198.51.100.9:7777")));
 	return true;
 }
 
@@ -1336,6 +1814,40 @@ bool FFlockTravelEngineSideTest::RunTest(const FString& Parameters)
 	const TSharedPtr<const FInternetAddr> Bound = World->GetNetDriver() != nullptr ? World->GetNetDriver()->GetLocalAddr() : nullptr;
 	TestEqual(TEXT("a listen server"), static_cast<int32>(Listening.NetMode), static_cast<int32>(NM_ListenServer));
 	TestTrue(TEXT("the port the net driver bound"), Bound.IsValid() && Listening.ListeningPort == Bound->GetPort() && Listening.ListeningPort > 0);
+	TestTrue(TEXT("a host's world goes to no host"), Listening.Destination.IsEmpty());
+	TestEqual(TEXT("a connection never handed out comes from no loopback port"), Game->LoopbackPortOf(42), 0);
+	TestFalse(TEXT("nobody connects from a loopback port yet"), Game->IsAnyConnectionFromLoopbackPort(Listening.ListeningPort));
+	// A connection being made is the engine's own pending connection: a join token goes into its URL's options before its login.
+	FWorldContext* Context = GEngine->GetWorldContextFromWorld(World);
+	if (Context != nullptr && Context->PendingNetGame == nullptr)
+	{
+		TestFalse(TEXT("no connection being made: no token put"), Game->PutJoinTokenOnTheConnectionBeingMade(TEXT("none")));
+		UPendingNetGame* Pending = NewObject<UPendingNetGame>();
+		Pending->Initialize(FURL(nullptr, TEXT("127.0.0.1:9/Engine/Maps/Entry?flockjointoken=first?Name=Ann"), TRAVEL_Absolute));
+		Context->PendingNetGame = Pending;
+		const FFlockGameNetState Connecting = Game->Read();
+		TestTrue(TEXT("read as a connection being made"), Connecting.bConnecting);
+		TestEqualSensitive(TEXT("to where it goes"), Connecting.Destination, FString(TEXT("127.0.0.1:9")));
+		TestTrue(TEXT("a token put on it"), Game->PutJoinTokenOnTheConnectionBeingMade(TEXT("second")));
+		const TArray<FString> Tokens = Pending->URL.Op.FilterByPredicate([](const FString& Option) { return Option.StartsWith(TEXT("FlockJoinToken="), ESearchCase::IgnoreCase); });
+		TestTrue(TEXT("in the first one's place, whatever its letters"), Tokens.Num() == 1 && Tokens[0].Equals(TEXT("FlockJoinToken=second"), ESearchCase::CaseSensitive));
+		TestEqualSensitive(TEXT("the rest kept"), FString(Pending->URL.GetOption(TEXT("Name="), TEXT(""))), FString(TEXT("Ann")));
+		// A connection the engine makes (its own driver, toward a port nobody answers), and the host's engine answering it with its
+		// challenge: the login has gone with the URL as it was, so nothing is put. Given up as the engine gives up a connection.
+		Pending->InitNetDriver();
+		UNetConnection* ToTheHost = Pending->NetDriver != nullptr ? Pending->NetDriver->ServerConnection.Get() : nullptr;
+		if (TestNotNull(TEXT("precondition: the engine's connection being made"), ToTheHost))
+		{
+			TestFalse(TEXT("not answered yet"), Game->Read().bHostAnswered);
+			TestTrue(TEXT("a token put before the host's engine answers"), Game->PutJoinTokenOnTheConnectionBeingMade(TEXT("second")));
+			ToTheHost->Challenge = TEXT("the host's challenge");
+			TestTrue(TEXT("read as answered by the host's engine"), Game->Read().bHostAnswered);
+			TestFalse(TEXT("a token once the login has gone is put nowhere"), Game->PutJoinTokenOnTheConnectionBeingMade(TEXT("third")));
+			TestEqualSensitive(TEXT("the login's token stays"), FString(Pending->URL.GetOption(TEXT("FlockJoinToken="), TEXT(""))), FString(TEXT("second")));
+		}
+		GEngine->CancelPending(World);
+		TestFalse(TEXT("on its own again: no connection being made"), Game->Read().bConnecting);
+	}
 	Game->StopListening();
 	const FFlockGameNetState After = Game->Read();
 	TestEqual(TEXT("on its own again"), static_cast<int32>(After.NetMode), static_cast<int32>(NM_Standalone));

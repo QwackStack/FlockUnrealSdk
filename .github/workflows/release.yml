@@ -88,6 +88,10 @@ jobs:
           }
 
           require_entry flock-entries.txt FlockUnrealSdk/Flock.uplugin
+          # The Blueprint-only multiplayer sample ships in the plugin's Content (Content/Samples/Multiplayer).
+          require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Multiplayer/FlockMultiplayerSample.umap
+          require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Multiplayer/BP_FlockSampleGameInstance.uasset
+          require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Multiplayer/WBP_FlockMultiplayerSample.uasset
           if grep -E '(^|/)OptionalPlugins/|ProtokitePlaytest' flock-entries.txt; then
             echo "::error::Flock's archive contains the playtest plugin (entries above). Keep OptionalPlugins/ export-ignored in .gitattributes."
             FAILED=1

@@ -23,6 +23,23 @@ public:
 	/** A plain IPv4 socket, as Open makes where IPv6 is refused; null when none can be made. */
 	static FSocket* OpenIpv4(const TCHAR* Description);
 
+	/** The address of this device's loopback the relay bridge's sockets use. */
+	static constexpr const TCHAR* LoopbackIpv4 = TEXT("127.0.0.1");
+	static constexpr int32 LoopbackBufferBytes = 256 * 1024;
+
+	/**
+	 * A non-blocking IPv4 socket bound to 127.0.0.1 on a port of the system's choosing, through which the relay bridge hands
+	 * packets to and from the engine's own net driver on this device; null when none can be made. Never dual-stack: nothing on
+	 * the loopback crosses a network.
+	 */
+	static FSocket* OpenOnLoopback(const TCHAR* Description);
+
+	/** 127.0.0.1 on Port, as a socket from OpenOnLoopback sends to it. */
+	static TSharedRef<FInternetAddr> OnLoopback(int32 Port);
+
+	/** True for an address on this device's loopback (127.x.y.z), in IPv4 or in its IPv6 form. */
+	static bool IsLoopback(const FInternetAddr& Address);
+
 	/**
 	 * A socket from Open connected to Ipv4Address:Port, so it reads that server's packets alone and sends without an address
 	 * of its own; a dual-stack one that cannot connect to it is replaced by a plain IPv4 one. Null when none can be made or

@@ -2,6 +2,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "Misc/FlockEngineCompat.h"
+#include "Algo/AnyOf.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -2105,7 +2106,18 @@ bool FFlockSessionEveryRouteTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	const TCHAR* Routes[] = { TEXT("Host"), TEXT("Join"), TEXT("Read"), TEXT("ReadCurrent"), TEXT("Heartbeat"), TEXT("Leave"), TEXT("End"),
-		TEXT("MakeHost"), TEXT("PublishConnection"), TEXT("RequestJoinToken"), TEXT("VerifyJoinToken"), TEXT("ReadStunServers"), TEXT("RelayLogins") };
+		TEXT("MakeHost"), TEXT("PublishConnection"), TEXT("PublishSeatConnection"), TEXT("RequestJoinToken"), TEXT("VerifyJoinToken"),
+		TEXT("ReadStunServers"), TEXT("RelayLogins") };
+	// Every route the file defines is one of these, so a route added without its line here fails.
+	const FString Definition = TEXT("FFlockRequestHandle FFlockMultiplayerSessionRequests::");
+	for (int32 At = Text.Find(Definition, ESearchCase::CaseSensitive); At != INDEX_NONE;
+		At = Text.Find(Definition, ESearchCase::CaseSensitive, ESearchDir::FromStart, At + Definition.Len()))
+	{
+		const int32 NameStart = At + Definition.Len();
+		const FString Name = Text.Mid(NameStart, Text.Find(TEXT("("), ESearchCase::CaseSensitive, ESearchDir::FromStart, NameStart) - NameStart);
+		const bool bListed = Name == TEXT("SendAs") || Name == TEXT("PostAs") || Algo::AnyOf(Routes, [&Name](const TCHAR* Route) { return Name == Route; });
+		TestTrue(FString::Printf(TEXT("the route %s is checked here"), *Name), bListed);
+	}
 	for (const TCHAR* Route : Routes)
 	{
 		const FString Start = FString::Printf(TEXT("FFlockRequestHandle FFlockMultiplayerSessionRequests::%s("), Route);

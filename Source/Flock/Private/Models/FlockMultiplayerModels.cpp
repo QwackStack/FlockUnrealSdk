@@ -2,6 +2,7 @@
 
 #include "Models/FlockMultiplayerModels.h"
 #include "Dom/JsonValue.h"
+#include "Multiplayer/Relay/FlockRelayPeer.h"
 
 bool FFlockPartyReading::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockPartyReading& OutStruct, FString& OutError)
 {
@@ -186,6 +187,15 @@ bool FFlockMultiplayerSessionReading::FromWireObject(const TSharedRef<FJsonObjec
 				return false;
 			}
 			(*ParticipantObject)->TryGetStringField(TEXT("status"), Seat.Status);
+			// How the player said to reach it for its seat: only its relay address is read, the host's own reader's way.
+			const TSharedPtr<FJsonObject>* SeatConnection = nullptr;
+			FFlockRelayPeer SeatRelayAddress;
+			FString Unused;
+			if ((*ParticipantObject)->TryGetObjectField(TEXT("connection_info"), SeatConnection) && SeatConnection != nullptr && SeatConnection->IsValid()
+				&& FFlockRelayPeer::TryReadPublished(**SeatConnection, SeatRelayAddress, Unused))
+			{
+				Seat.RelayAddress = SeatRelayAddress.ToString();
+			}
 			OutStruct.Seats.Add(Seat);
 		}
 	}

@@ -34,7 +34,16 @@ struct FFlockRelayTiming
 	double RenewOpeningsEverySeconds = 240.0;
 	double RenewChannelsEverySeconds = 480.0;
 	double RetryRenewalAfterSeconds = 15.0;
-	double KeepAliveAfterSeconds = 15.0;
+	/**
+	 * The relay is asked this often (a binding request), whatever else goes: the game's packets need no answer, so they say nothing
+	 * of whether the relay still hears this device, and the ask keeps the way to the relay open through a router too.
+	 */
+	double AskTheRelayEverySeconds = 15.0;
+	/**
+	 * A relay that answered the asks and has answered nothing for this long is lost: this device's packets no longer reach it (a
+	 * router that moved this device to another port, a network that changed), though the relay's may still arrive.
+	 */
+	double RelayLostWhenSilentSeconds = 45.0;
 	/** How long the relay keeps an opening and a channel without a renewal, as the standard sets them. */
 	double OpeningLastsSeconds = 300.0;
 	double ChannelLastsSeconds = 600.0;
@@ -117,6 +126,7 @@ public:
 	/** True once the relay refused to open to Address's IP; it is not asked again. */
 	bool RefusedToOpenTo(const FFlockRelayPeer& Address) const;
 
+
 	/** Sends one packet to To through the relay; false when the relay is not open, the packet is empty or over MostBytesInAPacket, or To's IP was never opened. Any thread. */
 	bool Send(const FFlockRelayPeer& To, const uint8* Data, int32 Count);
 
@@ -141,7 +151,10 @@ public:
 	/** Gives the address back (sent from the calling thread, so it goes out even while the game quits) and stops; a call still waiting ends Cancelled. */
 	void Close();
 
-	/** Every relay thread still running is told to stop at once and waited for: Flock's module is going away. The release each one needed already went out when it was closed. */
+	/**
+	 * Every relay thread still running (each relay connection's, and each bridge loopback socket's) is told to stop at once and
+	 * waited for: Flock's module is going away. The release each relay needed already went out when it was closed.
+	 */
 	static void StopEveryRelayThread();
 
 	/** Relay threads not yet finished and cleaned up. */
@@ -149,9 +162,6 @@ public:
 
 	/** Stands in for MostOpenings when above 0, so a test can reach it with a few addresses. */
 	static int32 MostOpeningsForTesting;
-
-	/** Makes the relay's thread fail to start, as where the engine runs without threads. */
-	static bool bThreadRefusedForTesting;
 
 	int32 GetNoncesTakenForTesting() const;
 	int32 GetLocalPortForTesting() const;

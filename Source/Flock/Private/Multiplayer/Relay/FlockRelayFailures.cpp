@@ -26,6 +26,11 @@ FString FlockRelayFailureReasons::FixFor(const FString& Reason)
 	{
 		return TEXT("Turn the relay on for the game in the Flock dashboard, or connect players directly.");
 	}
+	if (Is(Reason, NotOfferedByTheHost))
+	{
+		return TEXT("Set Relay the same on every player of the game: a host whose Relay is Never, or whose relay could not be opened (its log "
+			"says why), takes nobody through the relay, so a player whose Relay is Always cannot reach it.");
+	}
 	if (Is(Reason, ServerNotListed))
 	{
 		return TEXT("The host and this player were given different relay servers; have the host connect again so both use one Flock lists for each.");

@@ -207,6 +207,8 @@ namespace FlockEndpoints
 	inline FString SessionEnd(const FString& SessionId) { return SessionById(SessionId) + TEXT("/end"); }
 	inline FString SessionHost(const FString& SessionId) { return SessionById(SessionId) + TEXT("/host"); }
 	inline FString SessionConnection(const FString& SessionId) { return SessionById(SessionId) + TEXT("/connection-info"); }
+	/** How to reach the signed-in player for its own seat, which the host reads (a relay address it lets in). */
+	inline FString SessionSeatConnection(const FString& SessionId) { return SessionById(SessionId) + TEXT("/participants/me/connection-info"); }
 	inline FString SessionJoinToken(const FString& SessionId) { return SessionById(SessionId) + TEXT("/join-token"); }
 	/** How the host's check of a join token ends its route, whatever the session. */
 	inline constexpr const TCHAR* SessionVerifyJoinTokenEnding = TEXT("/verify-join-token");

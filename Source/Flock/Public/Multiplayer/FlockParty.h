@@ -33,7 +33,7 @@ struct FFlockPartyChanges
 };
 
 /**
- * The player's party, read again every Party Refresh Seconds (Project Settings > Flock; 0 turns that off), after each change
+ * The player's party, read again every Party Refresh Seconds (Project Settings > Plugins > Flock SDK Settings > Multiplayer; 0 turns that off), after each change
  * this game makes, and by GetMyParty. The SDK keeps it alive while it is the player's; a game that keeps one past its end
  * holds it in a UPROPERTY. Game-thread only.
  */

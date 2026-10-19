@@ -38,6 +38,9 @@ public:
 	/** The session read while a call waits for the host's address: heartbeats come every 20 s, too slow to wait on. */
 	static constexpr const TCHAR* ConnectionWaitCallName = TEXT("Session connection wait");
 	static constexpr double DefaultConnectionWaitSeconds = 2.0;
+	/** The session read while its host takes players through its relay: a joining player's relay address is let in within seconds. */
+	static constexpr const TCHAR* RelayedPlayersReadCallName = TEXT("Session read for relayed players");
+	static constexpr double DefaultRelayedPlayersReadSeconds = 2.0;
 	/** A read overtaken this many times in a row means the session is changing faster than it can be read. */
 	static constexpr int32 MostReadsWhileTheSessionChanges = 5;
 
@@ -58,6 +61,12 @@ public:
 	FFlockRequestHandle PublishConnection(UFlockMultiplayerSession* Session, const FString& Mode, const FFlockCommandData& Values,
 		FFlockOnMultiplayerSession OnComplete);
 	FFlockRequestHandle RequestJoinToken(UFlockMultiplayerSession* Session, TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnComplete);
+	/**
+	 * A join token the SDK keeps on hand for a player with its host, asked for in the background: the session ending on Flock before
+	 * this game has heard (the host ended it a moment ago) is learned as the session's end, not logged as a failed call.
+	 */
+	FFlockRequestHandle RequestJoinTokenToKeepOnHand(UFlockMultiplayerSession* Session,
+		TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnComplete);
 	FFlockRequestHandle VerifyJoinToken(UFlockMultiplayerSession* Session, const FString& Token, TFunction<void(TFlockResult<FString>)> OnComplete);
 
 	/** Publishes how to reach this device directly on Port: its public address or, unknown, its LAN address, and both as found. */
@@ -71,6 +80,27 @@ public:
 
 	/** Where this device connects to reach the session's direct host: its LAN address when sharing its public address, the published one otherwise. */
 	FFlockRequestHandle FindDirectAddress(UFlockMultiplayerSession* Session, TFunction<void(TFlockResult<FFlockDirectAddress>)> OnComplete);
+
+	/**
+	 * As FindDirectAddress, also saying whether this device shares the host's public address (both known and equal): the only
+	 * sign that a player may be on the host's network, which a host that knew only its LAN address does not give.
+	 */
+	using FOnDirectAddressFound = TFunction<void(TFlockResult<FFlockDirectAddress> Found, bool bSharesTheHostsPublicAddress)>;
+	FFlockRequestHandle FindDirectAddressForTravel(UFlockMultiplayerSession* Session, FOnDirectAddressFound OnComplete);
+
+	/**
+	 * Publishes this host's address on Relay and the relay server it is on (mode relay), and with bWithDirectAddresses also how
+	 * players on its network reach it on Port, so they skip the relay. Host only.
+	 */
+	FFlockRequestHandle PublishRelayConnection(UFlockMultiplayerSession* Session, const TSharedRef<FFlockRelayConnection>& OnTheRelay, int32 Port,
+		bool bWithDirectAddresses, FFlockOnMultiplayerSession OnComplete);
+
+	/**
+	 * Publishes this player's address on Relay for its own seat, so a host's relay that gives each address an IP of its own lets
+	 * it in; answered at once when its seat already says it. Sent once, never retried.
+	 */
+	FFlockRequestHandle PublishSeatRelayAddress(UFlockMultiplayerSession* Session, const TSharedRef<FFlockRelayConnection>& OnTheRelay,
+		FFlockOnMultiplayerSession OnComplete);
 
 	/** The host opens its level listening and publishes; a player waits for that and travels to the host (FFlockTravels). */
 	FFlockRequestHandle TravelToSession(UFlockMultiplayerSession* Session, UObject* WorldContextObject, const FFlockTravelToSessionOptions& Options,
@@ -87,8 +117,14 @@ public:
 	FLOCK_API FFlockRequestHandle OpenRelay(UFlockMultiplayerSession* Session, const FString& Server, FOnRelayOpened OnOpened);
 
 	void SetRelayTimingForTesting(const FFlockRelayTiming& Timing) { RelayTiming = Timing; }
+	void SetRelayedPlayersReadSecondsForTesting(double Seconds) { RelayedPlayersReadSeconds = Seconds; }
+	const TSharedPtr<FFlockRepeatingCall>& GetRelayedPlayersReadForTesting() const { return RelayedPlayersRead; }
 	/** The relay of the session that opened one, open, opening or stopped; null when none. */
 	TSharedPtr<FFlockRelayConnection> GetRelayForTesting() const { return Relay.IsValid() ? Relay->Connection : nullptr; }
+	/** True once On Relay Lost was raised for the relay held now. */
+	bool WasRelayLostToldForTesting() const { return Relay.IsValid() && Relay->bToldLost; }
+	/** The relay bridge in use: the hosting's, or the player's to its host; null when none. Exported for the real-player probe. */
+	FLOCK_API FFlockRelayBridge::FPtr GetRelayBridgeForTesting() const;
 
 	/** The one owner of travels, made on first use. */
 	FFlockTravels& GetTravels();
@@ -123,6 +159,13 @@ public:
 	const TSharedPtr<FFlockRepeatingCall>& GetHeartbeatForTesting() const { return Heartbeat; }
 
 private:
+	/**
+	 * The host's relay lets in each seated player's relay address its seat names, so a relay that gives each address an IP of its
+	 * own carries that player's packets: an IP open, being opened or refused is skipped, and a refusal is told once. Run after
+	 * each reading of the held session, the 2 s readings while the host takes players through its relay among them.
+	 */
+	void OpenTheRelayToSeatedPlayers(UFlockMultiplayerSession* Session);
+
 	/** A change keeps the session or ends it (end, the host leaving alone): its answer is the session as it now is. */
 	FFlockRequestHandle Change(UFlockMultiplayerSession* Session,
 		TFunction<FFlockRequestHandle(FFlockMultiplayerSessionRequests::FOnSession)> Send, FFlockOnMultiplayerSession OnComplete);
@@ -180,6 +223,15 @@ private:
 	/** A seat the server no longer has ends the session; any other refusal leaves the wait to the heartbeats' answers. */
 	void ConnectionWaitStopped(const FString& SessionId, const FFlockError& Failure);
 
+	/**
+	 * While the held session's host takes players through its relay (a bridge hears what arrives), the session is read every 2 s,
+	 * so a joining player's relay address is let in within seconds; heartbeats alone come every 20 s. Run once a frame.
+	 */
+	void KeepReadingForRelayedPlayers();
+	void StopReadingForRelayedPlayers();
+	/** Not started again for this relay whatever the refusal: a seat the server no longer has ends the session; any other leaves it to the heartbeats. */
+	void RelayedPlayersReadStopped(const FString& SessionId, const TWeakPtr<FFlockRelayConnection>& ReadFor, const FFlockError& Failure);
+
 	/** One caller waiting for the session's relay. */
 	struct FRelayWaiter
 	{
@@ -198,6 +250,8 @@ private:
 		TFlockRelayResult<TSharedPtr<FFlockRelayConnection>> Result;
 		/** The relay open, or the one being opened. */
 		TSharedPtr<FFlockRelayConnection> Connection;
+		/** The session's game was told this relay stopped working (On Relay Lost), once. */
+		bool bToldLost = false;
 		TArray<FFlockRelayLogin> Logins;
 		int32 NextLogin = 0;
 		/** The STUN servers Flock listed, looked up once for every relay server tried. */
@@ -218,6 +272,17 @@ private:
 	void FinishRelay(const FRelayOpeningRef& Opening, const TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>& Result);
 	/** The session's end gives its relay back: the logins' request cancelled, the relay closed, every caller answered Cancelled. */
 	void CloseRelayOf(const UFlockMultiplayerSession* Session);
+	/** Raises On Relay Lost once for the held session's relay that stopped with a reason after it had opened; run once a frame. */
+	void TellARelayLost();
+
+public:
+	/**
+	 * The host of Session is on another relay address than the one this player's bridge reaches (it lost its relay and opened
+	 * another): On Relay Lost, so the game travels again, as for a relay of its own lost.
+	 */
+	void TellTheHostMovedOnTheRelay(UFlockMultiplayerSession* Session);
+
+private:
 	/** An opening that failed, or one whose relay has since stopped, opens again on the next call. */
 	static bool HasFailed(const FRelayOpening& Opening);
 	/** Whether an opening serves a caller who needs the relay on Server; any server does for one who named none. */
@@ -234,6 +299,8 @@ private:
 	/** Why a reading says the session is no longer the player's, or empty while they hold a seat in it. */
 	static FString EndingIn(const FFlockMultiplayerSessionReading& Reading, const FString& PlayerId);
 	static bool IsOutOfTheSession(const FFlockError& Failure);
+	FFlockRequestHandle AskForAJoinToken(UFlockMultiplayerSession* Session, TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnComplete,
+		TFunction<bool(const FFlockError&)> IsExpectedFailure);
 	static FFlockError ShutDownError();
 	/** False, with a Validation error naming the input, when the value is empty. */
 	static bool IsGiven(const FString& Value, const TCHAR* Name, FFlockError& OutError);
@@ -254,6 +321,11 @@ private:
 	TArray<FConnectionWaiterRef> ConnectionWaiters;
 	TSharedPtr<FFlockRepeatingCall> ConnectionWait;
 	double ConnectionWaitSeconds = DefaultConnectionWaitSeconds;
+	TSharedPtr<FFlockRepeatingCall> RelayedPlayersRead;
+	/** The relay the often read runs for, and one whose often read was refused (it is not started again for that relay). */
+	TWeakPtr<FFlockRelayConnection> RelayedPlayersReadFor;
+	TWeakPtr<FFlockRelayConnection> RelayedPlayersReadRefusedFor;
+	double RelayedPlayersReadSeconds = DefaultRelayedPlayersReadSeconds;
 	TSharedPtr<FFlockTravels> Travels;
 	TSharedPtr<FFlockJoinChecksOnHost> JoinChecks;
 	/** The relay of the session that opened one; the session's end closes it. */

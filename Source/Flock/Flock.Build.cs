@@ -54,8 +54,10 @@ public class Flock : ModuleRules
 			{
 				"Projects",
 				"HTTP",
-				// Only the transport tests' stalling server uses it.
+				// UDP for the STUN request, Flock's relay and its loopback bridge, and the transport tests' stalling server.
 				"Sockets",
+				// A host closing a player's earlier connection that went silent (UNetConnection::Close's close reason).
+				"NetCore",
 			}
 			);
 	}

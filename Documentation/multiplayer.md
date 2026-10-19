@@ -2,8 +2,8 @@
 
 Flock's multiplayer is player-hosted: players group up in **parties**, find each other through **matchmaking** or a
 join code, and one of them hosts the game session. This guide covers what ships today: **parties**, **sessions**,
-**matchmaking**, **connecting players** directly or through a connection of the game's own, and the host **letting in only
-the session's players**. Flock's relay, for players who cannot reach each other directly, follows in a later release.
+**matchmaking**, **connecting players** directly, through **Flock's relay** for players who cannot reach each other directly,
+or through a connection of the game's own, and the host **letting in only the session's players**.
 
 Everything here goes through `FFlockMultiplayerProvider`, from `UFlockSubsystem::GetMultiplayerProvider()`. Make its
 calls from the game thread. Every party, session and matchmaking call needs a signed-in player and fails with `Auth` when
@@ -84,7 +84,7 @@ member who does not lead gets `PartyNotPartyLeader`, a 403 that means "not allow
 
 ### Keeping it current
 
-The SDK reads a held party again every **Party Refresh Seconds** (Project Settings > Flock > Multiplayer; 10 by
+The SDK reads a held party again every **Party Refresh Seconds** (Project Settings > Plugins > Flock SDK Settings > Multiplayer; 10 by
 default, about 6 requests a minute per player; 0 turns it off), after each change the game makes, and on every
 `GetMyParty`. Only the newest reading changes the party: a reading sent before another one landed, or before one of
 the game's own changes finished, changes nothing, so the party never steps back to an older state.
@@ -391,10 +391,11 @@ Every refusal carries a hint naming the fix; see [Errors](errors.md).
 
 Once the players hold a session (hosted, joined by code or matched), their games connect to the host's. There are two ways:
 
-- **Direct**, over the engine's own networking: `TravelToSession` does it all. The host opens its level listening for
-  players and publishes how to reach it; every other player waits for that and travels to the host with a Flock join token,
-  which the host checks before letting the player in (its game mode calls Flock's check: see
-  [Letting in only the session's players](#letting-in-only-the-sessions-players)).
+- **Over the engine's own networking**, directly or through Flock's relay: `TravelToSession` does it all. The host opens
+  its level listening for players and publishes how to reach it; every other player waits for that and travels to the host
+  with a Flock join token, which the host checks before letting the player in (its game mode calls Flock's check: see
+  [Letting in only the session's players](#letting-in-only-the-sessions-players)). Players who cannot reach the host
+  directly go through Flock's relay: see [Through Flock's relay](#through-flocks-relay).
 - **A connection of the game's own** (Steam, EOS, anything else): the host publishes it with `PublishConnection(Mode,
   Values)`, and the players read it back from the session's `GetConnection()`.
 
@@ -433,8 +434,8 @@ actor of the level the call was made from.
 
 | Who | Does |
 |---|---|
-| host | Opens `HostLevel` (empty: the level it is in, again) with the engine's `?listen`. Once the level listens, publishes a direct connection on the port its net driver bound: when the port asked for is taken (another game on the same machine), the engine takes the next free one, and that is the one published. Completes `started_as_host`. |
-| player | Waits for the host to publish (`WaitForHostSeconds`, 60 by default), reading the session every 2 s. Asks Flock for a join token (it lasts 60 s, so only once the host is known) and travels to the host's LAN address when this device shares the host's public address, and to the published address otherwise, with the token in the travel URL (`?FlockJoinToken=`). Completes `connected` once the host has let the player in: on a LAN, a few seconds after the host published (the next read of the session, then about two seconds of the engine's own connecting), and `refused` when the host turned the player away. |
+| host | Opens `HostLevel` (empty: the level it is in, again, or for a player of the session that has become its host, the level it played with the old host) with the engine's `?listen`; a host already listening for the session keeps its level and its players. Once the level listens, opens its address on Flock's relay (unless `Relay` is Never) and publishes how to reach it on the port its net driver bound: when the port asked for is taken (another game on the same machine), the engine takes the next free one, and that is the one published. Completes `started_as_host`. |
+| player | Waits for the host to publish (`WaitForHostSeconds`, 60 by default), reading the session every 2 s. Asks Flock for a join token (it lasts 60 s, so only once the host is known) and travels to the host's LAN address when this device shares the host's public address, through Flock's relay when the host offers it and this device is elsewhere (or the host did not answer on its network), and to the published address otherwise, with the token in the travel URL (`?FlockJoinToken=`). Completes `connected` once the host has let the player in: on a LAN, a few seconds after the host published (the next read of the session, then about two seconds of the engine's own connecting), and `refused` when the host turned the player away. |
 
 How it ended is the result's `Outcome`, a string because more can come; compare with `FlockTravelToSessionOutcomes`:
 
@@ -444,22 +445,84 @@ How it ended is the result's `Outcome`, a string because more can come; compare 
 | `connected` | this game is in the host's level, let in by the host |
 | `host_never_published` | the host did not publish within `WaitForHostSeconds`; this game traveled nowhere |
 | `session_ended` | the session ended while this game waited |
-| `could_not_connect` | connecting failed, and the engine has taken this game back to its default level; or the host published no address and port this game can use. Logged as a warning naming the address. Outside a LAN the host's port must be forwarded to it |
+| `could_not_connect` | connecting failed, and the engine has taken this game back to its default level; or the host published no address and port this game can use. Logged as a warning naming the address. Outside a LAN, a host that offers no relay must have its port forwarded to it |
 | `could_not_start` | the host's level did not open listening for players on an IP address, so nothing was published |
 | `not_direct` | the host published a connection of the game's own; the result's `Connection` holds it |
 | `refused` | the host turned this player away, and the engine has taken this game back to its default level; the result's `RefusedReason` says why (see below). Logged as a warning naming the fix |
+| `relay_failed` | Flock's relay was needed and could not be used; the result's `RelayFailureReason` says why (see [Through Flock's relay](#through-flocks-relay)). A host with Relay Always stops listening |
+| `restarted` | the game called Travel To Session again before this one ended, and the newer one took over: nothing to do, its answer follows |
 
-It fails, rather than ending with an outcome, only for a mistake (no world, an ended session, this game already connected,
-hosting or opening a level, a travel already under way), for a publish the server refused (the host stops listening first:
+It fails, rather than ending with an outcome, only for a mistake (no world, an ended session, this game connected to another
+session's host or to a server of its own, hosting another session, a level the engine is still opening 30 s on, a player's
+`WaitForHostSeconds` of zero or less), for a publish the server refused (a host stops listening on a level it opened for this travel:
 nobody can reach a host that did not say where it is), for a join token Flock would not give (nothing travels without one;
 the failure is Flock's, with its fix), and for a cancel. **Cancelling the handle** gives up a player's join token still
-being asked for or connection still being made (the game stays in its level) and stops a host listening, at once or as soon
-as its level has opened.
+being asked for or connection still being made (the game stays in its level) and stops a host listening on a level this
+travel opened, at once or as soon as it has opened; a host that kept the level it was listening on keeps it listening.
+**Calling it again** while one is under way ends that one `restarted` and begins once the engine has settled; a level the
+engine is opening, a connection it is making, or a seamless travel is waited for (at most 30 s), and a level the restarted
+travel opened stays for the newer one.
 
 A connection the engine cannot make is the engine's to give up: it waits out its own connection timeout (about 20 s for an
 address nobody answers), then loads the game's default level. Travel To Session connects over the engine's IP networking:
 a game whose net driver uses Steam's sockets (OnlineSubsystemSteam's `bUseSteamNetworking`, on unless set to false) cannot
 listen on an IP address, and ends `could_not_start`; such a game publishes a Steam connection of its own instead.
+
+### Through Flock's relay
+
+Players on different networks rarely reach a host directly: its router lets in nothing it was not told to forward. Flock's
+relay carries their packets instead, and Travel To Session uses it with the game's networking code unchanged: the engine's own
+net driver keeps its socket, its handshake and its level changes, and the SDK stands in for the other side on this device's
+loopback. A relayed player's game travels to 127.0.0.1 on a port of the SDK's; a host gets each relayed player from a loopback
+port of its own, so the engine sees one connection a player.
+
+`Options.Relay` (`EFlockRelayUse`) says who goes through it. Set it the same on every player of a game:
+
+| Relay | The host | A player |
+|---|---|---|
+| `WhenNeeded` (default) | opens its address on the relay and publishes it with its own addresses | on the host's network (it shares the host's public address): connects to the host's LAN address, and through the relay when the host does not answer there within 3 s; anywhere else: through the relay |
+| `Always` | publishes its relay address alone, and turns away any player that reaches it another way (`relay_only`, without asking Flock) | through the relay, on the host's network too |
+| `Never` | opens no relay and publishes directly | connects to the address the host published; a host that takes players through the relay alone cannot be reached (`could_not_connect`, said in the log) |
+
+A player reserves its own address on the relay server the host is on, says it for its seat, and the host lets in each seated
+player's relay address, reading the session every 2 s while it takes players through the relay; a host's check then lets in
+only players whose join token checks out, exactly as directly, and `PlayerForConnection` says who each relayed connection is.
+The result's `bThroughRelay` says whether the travel went through the relay. When the relay was needed and could not be used,
+the travel ends `relay_failed`, and `RelayFailureReason` says why:
+
+| Relay Failure Reason | Means |
+|---|---|
+| `relay_not_offered` | Flock lists no relay: switched off for this game in the Flock dashboard, or none set up |
+| `relay_not_offered_by_host` | this player's Relay is Always, and the host takes nobody through the relay (its Relay is Never, or its relay could not be opened) |
+| `relay_server_not_listed` | Flock does not list, for this player, the relay server the host is on |
+| `relay_paused` | the studio's relay is paused until its bill is paid |
+| `relay_too_many_logins` | more than 12 requests for relay logins a minute, or the seat drew the most logins one seat may (10) |
+| `relay_not_in_session` | Flock says the player has no seat in the session |
+| `flock_unreachable`, `relay_logins_refused` | Flock did not answer the request for relay logins, or refused it for another reason |
+| `relay_unreachable`, `relay_wrong_login`, `relay_full`, `relay_open_refused`, `relay_refused` | the relay server could not be reached, refused the login, had no room, would not let the host's packets in, or refused for another reason |
+| `relay_lost`, `relay_closed` | the relay let the address go or has answered nothing for 45 s (this device's packets no longer reach it), or it was closed (the session's end) |
+| `relay_no_thread` | the relay needs threads of its own, and this launch runs without threads (`-nothreading`) |
+
+Each reason carries its own fix in the warning the log shows. A host whose relay cannot be opened publishes directly under
+When Needed (saying why, unless the relay is switched off for the game) and stops hosting under Always (`relay_failed`).
+
+What to know about relayed play:
+
+- A host takes at most 64 relayed players. A relay address the host's check has not let in within 30 s gives its place back
+  once a new one is heard, so nobody else on the relay can hold every place.
+- The relay carries packets up to 1400 bytes; the engine's own are at most 1024. Larger packets are dropped, with one warning.
+- A host's level change without seamless travel brings every player back through a new connection, carrying the join token
+  of its first travel, which lasts 60 s. So while a player is in its host's game, relayed or not, Travel To Session keeps a
+  fresh join token on hand (it asks Flock for a new one once the one it holds has less than 20 s left: about one request every
+  40 s), and puts it on that connection before it logs in. Nothing is asked of the game. When no token on hand is good (Flock
+  could not give one), a new one is asked for that connection; one that comes after the host has taken the player back (its net
+  driver's `ServerTravelPause`, 4 s by default) is too late, and the log says the first token went.
+- A relay connection holds `mode` `relay`, the direct values above when the host's Relay is When Needed, and two more:
+
+| Value | Holds |
+|---|---|
+| `relay_address` | the host's address on the relay, `a.b.c.d:port` |
+| `relay_server` | the relay server it is on, `name:port` |
 
 ### Letting in only the session's players
 
@@ -498,8 +561,8 @@ match states), as a Blueprint or in C++: their `PreLoginAsync` does exactly the 
 **Approve Joining Player** (`ApproveJoiningPlayer`), overridable in Blueprint, which lets everyone in until overridden.
 
 The game's own check is optional; it runs only for a player Flock has let in, and gets `FFlockJoiningPlayer`: the
-`PlayerId` Flock verified, the travel URL's `Options` without Flock's token, the `Address` and the `UniqueId` the engine
-gave. A refusal with no reason is told as `refused_by_the_game`. `OnComplete` is always called, and the game thread never
+`PlayerId` Flock verified, the travel URL's `Options` without Flock's token, the `Address` (127.0.0.1 for a player that came
+through Flock's relay) and the `UniqueId` the engine gave. A refusal with no reason is told as `refused_by_the_game`. `OnComplete` is always called, and the game thread never
 waits: the answer comes once Flock has answered.
 
 Who a connection is, on the host: `Session->PlayerForConnection(PlayerController)`, such as in `PostLogin`. It answers the
@@ -513,12 +576,13 @@ A joining player is turned away for each of these reasons, its `RefusedReason`:
 |---|---|
 | `no_join_token` | the player's travel URL carried no token: it did not come through `TravelToSession`. Flock is not asked |
 | `join_token_invalid` | Flock said the token is not good for this session: made up, another session's, expired (tokens last 60 s), or its player gave up their seat. Flock gives one answer for all four |
-| `already_connected` | the same Flock player is already let in through another connection. A token checks out any number of times within its 60 s, so the host itself lets one connection a player in; a connection that is gone, or that was turned away, holds no place |
+| `already_connected` | the same Flock player is already let in through another connection the host hears from. A token checks out any number of times within its 60 s, so the host itself lets one connection a player in; a connection that is gone, or that was turned away, holds no place. One the host has heard nothing from for 5 s (a lost relay, a game that stopped) gives way to the player's newer one once that is let in, and is closed; a newer one that comes sooner waits up to 5 s while the earlier stays quiet. The newer must bring a join token of its own (Travel To Session asks for one each time): the earlier connection's own token, which travels in the clear, never takes its place |
 | `flock_unreachable` | Flock did not answer within 8 s, or its answer could not be read, or the host was over its checks a minute (60 by default; the server answers `RequestRateLimited`). Nobody is let in unchecked; the host's log says why |
 | `session_ended` | the session has ended |
 | `not_host` | the device reached no longer hosts the session |
 | `refused_by_the_game` | the game's own check turned the player away without a reason of its own |
 | `join_check_missing` | the host's game mode does not call `CheckJoiningPlayer`, so nobody is let in. The host's log says so once, at Error |
+| `relay_only` | the host takes players through Flock's relay only (its Relay is Always), and this player reached it another way. Flock is not asked |
 
 `RefusedReason` can also be the game's own reason (`banned` above) or the engine's (such as `Server full.`); compare with
 `FlockTravelToSessionRefusedReasons` and keep a default. A player turned away by a host that is not checking through Flock
@@ -536,6 +600,59 @@ While the game does not host through `TravelToSession`, `CheckJoiningPlayer` is 
 game's check is not run. Split-screen guests joining through a player's connection carry no token of their own, so a host
 checking players turns them away (`no_join_token`). The token travels in the clear unless the game encrypts its
 connections; it is bound to one player and one session for 60 s, and the host lets in one connection a player.
+
+### When the host changes
+
+When the host leaves or its game stops, Flock makes the player seated longest the host and raises **On Host Changed** on every
+game. The engine cannot move a running game to a new host, so each game calls Travel To Session again with the same options:
+the new host hosts, and the others join it. Do the same on **On Relay Lost**, raised once when this device's address on Flock's
+relay stops working (its reason a `FlockRelayFailureReasons` value), and on a player when its host publishes another relay
+address (the host's own relay was lost), since the player's relay no longer reaches it. A new host's address is On Host
+Changed's alone.
+
+```cpp
+// MyGameInstance.cpp: once the session is held.
+Session->OnHostChanged.AddDynamic(this, &UMyGameInstance::PlayAgain);
+Session->OnRelayLost.AddDynamic(this, &UMyGameInstance::PlayAgainAfterRelayLost);
+
+void UMyGameInstance::PlayAgain()
+{
+    if (!Session->HasEnded())
+    {
+        Session->TravelToSession(this, TravelOptions, [](TFlockResult<FFlockTravelToSessionResult> Result)
+        {
+            // restarted: a newer call took over, and its own answer follows.
+        });
+    }
+}
+
+void UMyGameInstance::PlayAgainAfterRelayLost(const FString& Reason)
+{
+    PlayAgain();
+}
+```
+
+Called again for the session the game plays, Travel To Session does this device's part from wherever the game is:
+
+| This game was | Now | Travel To Session |
+|---|---|---|
+| the host | still the host | keeps its level and its players, opens its relay address again when it was lost, and publishes again; a refused publish, a cancel or a newer call leaves the level listening |
+| the host | a player | stops listening (its players' connections close), waits for the new host, and joins it |
+| a player | the host | opens the level it played with the old host listening, unless `HostLevel` names another (the engine may have taken it back to its default level when the old host went), and publishes |
+| a player | a player | waits for the new host in the level it is in, then connects; the engine closes the old connection as it sets off |
+| a player in the host's game | a player, the same host | answers `connected` at once and keeps its connection: a level's Begin Play that calls it runs on every player that arrives |
+
+Games hear On Host Changed within about 20 s of a host leaving (the next heartbeat brings the change) and are back in the new
+host's game about 10 s later (measured with three players through the relay: told 18 s on, back 31 s on); a host's game that stops
+without leaving is replaced a little over a minute on (Flock's host timeout of 60 s, then its sweep; measured: told 65 s on, back
+80 s on). Everything the old host held is gone: its
+actors, its game state and its level's state. Keep what a new host needs on every player, and rebuild from it.
+
+A player's connection to a host that went without a word is the engine's: it times out (a minute by default) and the engine
+raises **NetworkError** and takes the game back to its default level. Calling Travel To Session again from the Game Instance's
+NetworkError event, while the session lasts, takes the player back to the session's host, whoever that is by then. A host lets
+a player's newer connection in once it has heard nothing from the earlier one for 5 s, with the new join token Travel To
+Session brings.
 
 ### The pieces
 
@@ -579,14 +696,62 @@ if (Session->HasConnection() && Session->GetConnection().Mode.Equals(TEXT("steam
 
 ### Outside a LAN
 
-Players on other networks reach a direct host only when its port is forwarded to it on the host's router. Flock's relay,
-which needs no forwarding, follows in a later release.
+Players on other networks reach a direct host only when its port is forwarded to it on the host's router. Flock's relay needs
+no forwarding, and Travel To Session uses it for them by default: see [Through Flock's relay](#through-flocks-relay).
+
+## The multiplayer sample
+
+The plugin's **Content/Samples/Multiplayer** folder (turn on **Show Plugin Content** in the Content Browser's settings) holds a
+sample made of Blueprints only, with no C++ of its own. Every Flock call in it is a node, so it reads as the Blueprint version of
+this guide:
+
+| Asset | What it is |
+|---|---|
+| `BP_FlockSampleGameInstance` | The Game Instance. Its Event Graph signs in with a device name, hosts, joins by code, quick matches, holds the session, calls **Flock Travel To Session**, calls it again on **On Host Changed** and **On Relay Lost**, gives the seat up when a travel does not get in, and leaves. Its **Status** says what it is doing. |
+| `WBP_FlockMultiplayerSample` | A card in the screen's corner with a field and a button for each, and the Game Instance's status line. |
+| `FlockMultiplayerSample` | The level. Its World Settings run **Flock Game Mode Base**, so its host lets in only the session's players; its Level Blueprint shows the widget. |
+
+![The sample in a game: its card in the screen's corner with a field and a button for each call, the status line saying the game is in the session and showing the join code to share](images/multiplayer-sample-in-game.png)
+
+To try it:
+
+1. In **Project Settings > Maps & Modes**, set **Game Instance Class** to `BP_FlockSampleGameInstance`. Travel To Session runs in
+   the Game Instance because its pins fire once the level has changed; until it is set, the widget says so.
+2. Open the `FlockMultiplayerSample` level and start two standalone games of it (**Play > Standalone Game**, twice), or run a
+   packaged build twice.
+3. In each game, type a different device name and press **Sign In**: two copies on one computer would otherwise be one player.
+4. Press **Host** in one; type the code its status shows into the other and press **Join**. Or press **Quick Match** in both, with
+   the name of a queue your game has in the Flock dashboard.
+5. **Leave** gives the seat up and opens the sample's level again, on its own.
+
+The sample uses Travel To Session's default options (Relay When Needed), so a friend on another network joins through Flock's
+relay. To build on it, copy the folder into your project's Content and change the copies.
+
+How it works: each button of the widget calls an event of the Game Instance, and each event is one row of nodes in the Game
+Instance's Event Graph, under a comment saying what it does. Sign In, Host and Join each call one node and say how it went;
+Host and Join end in **Play** with the session they got:
+
+![The Sign In, Host and Join rows: Flock Login With Device, Flock Host Session and Flock Join Session, each On Success going on (Host and Join to Play) and each On Failure setting Status to the error's words](images/multiplayer-sample-sign-in-host-join.png)
+
+**Play** holds the session, binds its **On Host Changed** and **On Relay Lost** to Travel Again and its **On Ended** to a status
+line, then travels:
+
+![The Play row: Set Session, Bind Event to On Host Changed, On Relay Lost and On Ended, the status line with the join code, then Travel Again; below, the bound HostChanged and RelayLost events each calling Travel Again](images/multiplayer-sample-play.png)
+
+**Travel Again** is **Flock Travel To Session** for the session held, while it lasts. A travel that does not get in because a
+newer one took over (Outcome **Restarted**) needs nothing; any other gives the seat up, saying why:
+
+![The Travel Again row: two Branches (the session is held and has not ended), Flock Travel To Session with its Options, On Joined setting the status with the join code, On Not Joined comparing the Outcome with Flock Travel Outcome Restarted and otherwise leaving the session, On Failure saying the error's words and leaving](images/multiplayer-sample-travel-again.png)
+
+Quick Match searches the queue its field names and plays the session matched:
+
+![The Quick Match row: Flock Find Match, its result broken into the session for Play, On No Match saying the outcome and On Failure the error's words](images/multiplayer-sample-quick-match.png)
 
 ## Blueprint
 
 Every call above is an async node under *Flock | Multiplayer*, named as the call is, and fires exactly one of its pins. The
-party and session objects' state and events are already Blueprint (a party's **On Members Changed**, a session's **On Ended**
-and the rest); the nodes add the calls.
+party and session objects' state and events are already Blueprint (a party's **On Members Changed**, a session's **On Ended**,
+**On Host Changed**, **On Relay Lost** and the rest); the nodes add the calls.
 
 | Node | Pins |
 |---|---|
@@ -609,24 +774,30 @@ a session and is given none fires On Failure and sends nothing. On No Match and 
 later too, so compare the result's Outcome with the nodes below and keep a default.
 
 **Cancelling.** Find Match, Party Find Match, Wait For Connection and Travel To Session hand out the node itself on their
-**Async Task** pin; its **Cancel** stops the search on the server, the wait, or the travel. A cancel the game asks for fires
+**Async Action** pin; its **Cancel** stops the search on the server, the wait, or the travel. A cancel the game asks for fires
 no pin; Flock shutting down while a node waits fires On Failure. The game instance keeps every node until a pin has fired, so
 a search left running by a graph that called the node again still answers.
 
-**Call Travel To Session from the Game Instance Blueprint**, where the engine's own **Network Error** and **Travel Error**
+**Call Travel To Session from the Game Instance Blueprint**, where the engine's own **NetworkError** and **TravelError**
 events are. Its pins fire once the level has changed, so a widget or an actor of the current level is gone by then and never
 sees how the travel ended: a refused player included, since the engine takes it back to its default level. Called from inside
-the level, the node warns in the log, naming the caller.
+the level, the node warns in the log, naming the caller. **When the host changes**, bind the session's On Host Changed and On
+Relay Lost there too, each to Flock Travel To Session with the same Options (see [When the host changes](#when-the-host-changes)):
+the travel it replaces fires On Not Joined with the Outcome Restarted, which needs nothing done.
 
 **Spellings.** Every value a result can carry is a pure node, so a graph compares rather than types it: **Flock Travel Outcome**
-(Started As Host, Connected, Host Never Published, Session Ended, Could Not Connect, Could Not Start, Not Direct, Refused),
-**Flock Refused Reason** (No Join Token, Join Token Invalid, Already Connected, Flock Unreachable, Session Ended, Not Host,
-Refused By The Game, Join Check Missing), **Flock Matchmaking Outcome** (Matched, Expired, Party Changed, Cancelled), **Flock
-Session End Reason** (Ended By Host, Host Left, Expired, Empty, Left, Dropped, Moved To Another Session, Signed Out), **Flock
-Connection Mode Direct** and **Flock Direct Connection Value** (Address, Port, LAN Address, Public Address), and **Is Matched**.
+(Started As Host, Connected, Host Never Published, Session Ended, Could Not Connect, Could Not Start, Not Direct, Refused,
+Relay Failed, Restarted), **Flock Refused Reason** (No Join Token, Join Token Invalid, Already Connected, Flock Unreachable, Session
+Ended, Not Host, Refused By The Game, Join Check Missing, Relay Only), **Flock Relay Failure** (Not Offered, Not Offered By
+The Host, Server Not Listed, Paused, Too Many Logins, Not In Session, Flock Unreachable, Logins Refused, Unreachable, Wrong
+Login, Full, Open Refused, Refused, Lost, Closed, No Thread), **Flock Matchmaking Outcome** (Matched, Expired, Party Changed,
+Cancelled), **Flock Session End Reason** (Ended By Host, Host Left, Expired, Empty, Left, Dropped, Moved To Another Session,
+Signed Out), **Flock Connection Mode Direct** and **Relay**, **Flock Direct Connection Value** (Address, Port, LAN Address,
+Public Address), **Flock Relay Connection Value** (Relay Address, Relay Server), and **Is Matched**. Travel To Session's
+Options carry **Relay** (When Needed, Always or Never).
 
 **Letting in only the session's players.** Make the game's game mode a Blueprint based on **Flock Game Mode Base** (or **Flock
 Game Mode**, for match states) and set it in the project's Maps & Modes. To turn players away, override **Approve Joining
 Player**: it gets the Joining Player (the Player Id Flock verified, the travel's Options, the Address) after Flock's check and
 the engine's own, returns whether to let the player in, and its Refused Reason reaches the player's Travel To Session (empty
-reads as Refused By The Game). Name players by **Player For Connection** on the session, such as in **On Post Login**.
+reads as Refused By The Game). Name players by **Player For Connection** on the session, such as in **OnPostLogin**.

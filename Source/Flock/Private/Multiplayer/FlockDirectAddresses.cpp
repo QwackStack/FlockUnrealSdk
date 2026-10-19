@@ -544,7 +544,9 @@ bool FFlockDirectAddresses::ParseStunUrl(const FString& Url, FString& OutHost, i
 bool FFlockDirectAddresses::ReadPublished(const FFlockMultiplayerSessionConnection& Connection, FFlockPublishedDirectAddresses& OutAddresses)
 {
 	OutAddresses = FFlockPublishedDirectAddresses();
-	if (!Connection.Mode.Equals(FlockMultiplayerConnectionModes::Direct, ESearchCase::CaseSensitive))
+	// A relay connection carries the host's direct addresses too when players on its network may connect directly.
+	if (!Connection.Mode.Equals(FlockMultiplayerConnectionModes::Direct, ESearchCase::CaseSensitive)
+		&& !Connection.Mode.Equals(FlockMultiplayerConnectionModes::Relay, ESearchCase::CaseSensitive))
 	{
 		return false;
 	}

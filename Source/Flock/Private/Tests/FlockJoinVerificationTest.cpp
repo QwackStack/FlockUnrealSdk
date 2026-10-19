@@ -17,141 +17,8 @@
 #include "Misc/ScopeExit.h"
 #include "Multiplayer/FlockJoinChecksOnHost.h"
 #include "Tests/Support/FlockConnectingFixture.h"
+#include "Tests/Support/FlockJoinFixture.h"
 #include "Tests/Support/FlockTestSpelling.h"
-
-namespace FlockJoinVerificationTestHelpers
-{
-	using namespace FlockConnectingTestHelpers;
-
-	/** What the engine was handed for one joining player: empty lets them in. */
-	struct FJoinAnswer
-	{
-		bool bAnswered = false;
-		int32 Times = 0;
-		FString Refusal;
-
-		bool LetIn() const { return bAnswered && Refusal.IsEmpty(); }
-
-		/** The reason Flock's check gave, or a marker when it gave none (let in, unanswered, or words of another's). */
-		FString RefusedFor() const
-		{
-			FString Reason;
-			return bAnswered && FlockHostRefusals::TryRead(Refusal, Reason) ? Reason : FString(TEXT("<not refused by Flock's check>"));
-		}
-	};
-
-	struct FJoining
-	{
-		uint64 Connection = 0;
-		TSharedRef<FJoinAnswer> Answer = MakeShared<FJoinAnswer>();
-	};
-
-	const FString JoinersAddress = TEXT("198.51.100.20");
-
-	/** The options a joining player's travel URL carries to the host, as the engine hands them over (measured: the token first). */
-	inline FString WithToken(const FString& Token)
-	{
-		return FString::Printf(TEXT("?FlockJoinToken=%s?Name=Ann?SplitscreenCount=1"), *Token);
-	}
-
-	/** Stand-in player controllers the check never uses as players: the class defaults of two controller classes. */
-	inline const APlayerController* HostsOwnController() { return GetDefault<APlayerController>(); }
-	inline const APlayerController* JoinedController() { return GetDefault<ADebugCameraController>(); }
-
-	struct FJoinFixture : FConnectingFixture
-	{
-		FFlockFakeSessionServer::FSessionRef Served = MakeShared<FFlockFakeSessionServer::FSession>();
-		/** Every game's-check call, in order. */
-		TArray<FFlockJoiningPlayer> GameAsked;
-		/** Every engine-checks call. */
-		int32 EngineAsked = 0;
-
-		FFlockJoinChecksOnHost& Checks() { return Provider->GetJoinChecks(); }
-
-		/** This game (A) hosts a session through Travel To Session: its level listening on 7777 and its direct connection published. */
-		UFlockMultiplayerSession* HostingAsA(FAutomationTestBase& Test)
-		{
-			SignIn(PlayerA);
-			UFlockMultiplayerSession* Held = Hosted(Test);
-			if (Held == nullptr)
-			{
-				return nullptr;
-			}
-			Served = Server->ById(Held->GetId()).ToSharedRef();
-			Game->OwnPlayers.Add(HostsOwnController());
-			const TSharedRef<FTravelAnswer> Hosting = Travel(Held);
-			Test.TestTrue(TEXT("precondition: checking from before the level listens"), Checks().IsHostingForTesting());
-			Game->Opens(7777);
-			FramesUntil([&]() { return Hosting->bAnswered; });
-			if (!Test.TestTrue(TEXT("precondition: hosting"), Hosting->Succeeded()
-				&& Hosting->Result.Value.Outcome.Equals(FlockTravelToSessionOutcomes::StartedAsHost, ESearchCase::CaseSensitive)))
-			{
-				return nullptr;
-			}
-			return Held;
-		}
-
-		/** A player seated in the hosted session, and a token the server minted for them. */
-		FString SeatedWithToken(const FString& PlayerId)
-		{
-			Server->Joins(Served, PlayerId);
-			return Server->MintsJoinToken(Served, PlayerId);
-		}
-
-		/**
-		 * One player's connection reaches the host and the game mode's PreLoginAsync hands it to Flock's check, as the engine asks it.
-		 * AskedOptions is what the game mode passes, the connection's own options unless a test says otherwise.
-		 */
-		FJoining Joins(const FString& Options, FFlockApproveJoiningPlayer GamesCheck = nullptr, TFunction<FString()> EngineChecks = nullptr,
-			const TOptional<FString>& AskedOptions = TOptional<FString>())
-		{
-			FJoining Joining;
-			Joining.Connection = Game->Connects(Options, JoinersAddress);
-			FFlockJoiningRequest Request;
-			Request.Options = AskedOptions.Get(Options);
-			Request.Address = JoinersAddress;
-			Request.RunEngineChecks = [this, EngineChecks]()
-			{
-				++EngineAsked;
-				return EngineChecks ? EngineChecks() : FString();
-			};
-			const TSharedRef<FJoinAnswer> Answer = Joining.Answer;
-			Request.Answer = [Answer](const FString& Refusal)
-			{
-				Answer->bAnswered = true;
-				++Answer->Times;
-				Answer->Refusal = Refusal;
-			};
-			Request.IsAskerAlive = []() { return true; };
-			Request.ApproveJoiningPlayer = GamesCheck ? MoveTemp(GamesCheck) : FFlockApproveJoiningPlayer([this](const FFlockJoiningPlayer& Player, FString&)
-			{
-				GameAsked.Add(Player);
-				return true;
-			});
-			Checks().Check(MoveTemp(Request));
-			return Joining;
-		}
-
-		/** The connection plays through JoinedController from now on, as the engine hands a player controller to one let in. */
-		void PlaysThrough(uint64 Connection) { Game->Controllers.Add(JoinedController(), Connection); }
-
-		/** The token each verify request carried, in order. */
-		TArray<FString> TokensVerified() const
-		{
-			TArray<FString> Tokens;
-			for (const FFlockHttpRequest& Request : Server->RequestsTo(ERoute::Verify))
-			{
-				Tokens.Add(Field(BodyOf(Request), TEXT("token")));
-			}
-			return Tokens;
-		}
-
-		int32 ErrorsContaining(const FString& Needle) const
-		{
-			return Log->Errors.FilterByPredicate([&](const FString& Line) { return Line.Contains(Needle); }).Num();
-		}
-	};
-}
 
 using namespace FlockJoinVerificationTestHelpers;
 
@@ -250,6 +117,77 @@ bool FFlockJoinSamePlayerTwiceTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Flock vouched for the token both times"), F.Server->Count(ERoute::Verify), 2);
 	TestEqualSensitive(TEXT("the first keeps its place"), Session->PlayerForConnection(JoinedController()), PlayerB);
 	TestEqual(TEXT("the game was asked about the first only"), F.GameAsked.Num(), 1);
+	return true;
+}
+
+FLOCK_JOIN_TEST(FFlockJoinSilentEarlierTest, "Host.APlayersEarlierConnection_Silent5s_GivesWayToTheirNewerOneOnceLetIn")
+bool FFlockJoinSilentEarlierTest::RunTest(const FString& Parameters)
+{
+	FJoinFixture F;
+	UFlockMultiplayerSession* Session = F.HostingAsA(*this);
+	if (Session == nullptr)
+	{
+		return false;
+	}
+	const FString Token = F.SeatedWithToken(PlayerB);
+	const FJoining First = F.Joins(WithToken(Token));
+	F.PlaysThrough(First.Connection);
+	// The earlier one's own token presented again never takes its place, however long it is silent (a token stays good 60 s).
+	F.Game->SilentFor.Add(First.Connection, 30.0);
+	const FJoining Replayed = F.Joins(WithToken(Token));
+	TestEqualSensitive(TEXT("its own token again: refused"), Replayed.Answer->RefusedFor(), FString(FlockTravelToSessionRefusedReasons::AlreadyConnected));
+	TestEqual(TEXT("nothing closed"), F.Game->Closed.Num(), 0);
+	// Heard from just now: a newer one with a token of its own waits, and is refused once the earlier is heard from again.
+	F.Game->SilentFor.Add(First.Connection, 2.0);
+	const FJoining Early = F.Joins(WithToken(F.SeatedWithToken(PlayerB)));
+	TestFalse(TEXT("waits while the earlier one is quiet"), Early.Answer->bAnswered);
+	F.Game->SilentFor.Add(First.Connection, 0.1);
+	F.Frame();
+	TestEqualSensitive(TEXT("refused once it is heard from again"), Early.Answer->RefusedFor(), FString(FlockTravelToSessionRefusedReasons::AlreadyConnected));
+	// Quiet but never silent long enough within the wait: refused when the wait is up.
+	F.Game->SilentFor.Add(First.Connection, 2.0);
+	const FJoining Slow = F.Joins(WithToken(F.SeatedWithToken(PlayerB)));
+	F.Advance(5.1);
+	TestEqualSensitive(TEXT("refused when the wait is up"), Slow.Answer->RefusedFor(), FString(FlockTravelToSessionRefusedReasons::AlreadyConnected));
+	TestEqual(TEXT("still nothing closed"), F.Game->Closed.Num(), 0);
+	// Going quiet as a lost relay leaves it: the newer one waits, and is let in once the earlier one has been silent 5 s.
+	F.Game->SilentFor.Add(First.Connection, 3.0);
+	const FJoining Waits = F.Joins(WithToken(F.SeatedWithToken(PlayerB)));
+	F.Frame();
+	TestFalse(TEXT("waiting"), Waits.Answer->bAnswered);
+	F.Game->SilentFor.Add(First.Connection, 5.0);
+	F.Frame();
+	TestTrue(TEXT("let in once the earlier has been silent 5 s"), Waits.Answer->LetIn());
+	TestTrue(TEXT("the earlier closed"), F.Game->Closed.Num() == 1 && F.Game->Closed[0] == First.Connection);
+	F.PlaysThrough(Waits.Connection);
+	TestEqualSensitive(TEXT("the newer is the player's"), Session->PlayerForConnection(JoinedController()), PlayerB);
+	TestTrue(TEXT("said"), FFlockRecordingLogger::AnyContains(F.Log->Infos, TEXT("Closed a player's earlier connection")));
+	// A newer one waiting when the host's level stops listening is turned away then, as every check still waiting is.
+	F.Game->SilentFor.Add(Waits.Connection, 2.0);
+	const FJoining Stranded = F.Joins(WithToken(F.SeatedWithToken(PlayerB)));
+	TestFalse(TEXT("waiting as the hosting ends"), Stranded.Answer->bAnswered);
+	F.Game->StopListening();
+	F.Frame();
+	TestEqualSensitive(TEXT("turned away when the hosting ended"), Stranded.Answer->RefusedFor(), FString(FlockTravelToSessionRefusedReasons::FlockUnreachable));
+	F.Advance(6.0);
+	TestEqual(TEXT("answered once"), Stranded.Answer->Times, 1);
+	return true;
+}
+
+FLOCK_JOIN_TEST(FFlockJoinSilentEarlierGameRefusesTest, "Host.ANewerConnectionTheGameTurnsAway_LeavesTheSilentEarlierWhereItWas")
+bool FFlockJoinSilentEarlierGameRefusesTest::RunTest(const FString& Parameters)
+{
+	FJoinFixture F;
+	if (F.HostingAsA(*this) == nullptr)
+	{
+		return false;
+	}
+	const FJoining First = F.Joins(WithToken(F.SeatedWithToken(PlayerB)));
+	F.PlaysThrough(First.Connection);
+	F.Game->SilentFor.Add(First.Connection, 6.0);
+	const FJoining Turned = F.Joins(WithToken(F.SeatedWithToken(PlayerB)), [](const FFlockJoiningPlayer&, FString& Reason) { Reason = TEXT("full"); return false; });
+	TestEqualSensitive(TEXT("the game's own refusal"), Turned.Answer->RefusedFor(), FString(TEXT("full")));
+	TestEqual(TEXT("leaves the earlier where it was"), F.Game->Closed.Num(), 0);
 	return true;
 }
 
@@ -1066,7 +1004,8 @@ bool FFlockJoinRefusalWordsTest::RunTest(const FString& Parameters)
 	for (const TCHAR* Each : { FlockTravelToSessionRefusedReasons::NoJoinToken, FlockTravelToSessionRefusedReasons::JoinTokenInvalid,
 		FlockTravelToSessionRefusedReasons::AlreadyConnected, FlockTravelToSessionRefusedReasons::FlockUnreachable,
 		FlockTravelToSessionRefusedReasons::SessionEnded, FlockTravelToSessionRefusedReasons::NotHost,
-		FlockTravelToSessionRefusedReasons::RefusedByTheGame, FlockTravelToSessionRefusedReasons::JoinCheckMissing })
+		FlockTravelToSessionRefusedReasons::RefusedByTheGame, FlockTravelToSessionRefusedReasons::JoinCheckMissing,
+		FlockTravelToSessionRefusedReasons::RelayOnly })
 	{
 		TestFalse(*FString::Printf(TEXT("%s has a fix of its own"), Each), FlockHostRefusals::FixFor(Each) == FlockHostRefusals::FixFor(TEXT("banned")));
 	}

@@ -105,6 +105,10 @@ FString FlockHostRefusals::FixFor(const FString& Reason)
 	{
 		return TEXT("The host's game mode does not run Flock's check of joining players: its PreLoginAsync must call FlockJoinChecks::CheckJoiningPlayer.");
 	}
+	if (Is(RelayOnly))
+	{
+		return TEXT("The host takes players through Flock's relay only: travel with Travel To Session, with Relay not set to Never, which reaches it through the relay.");
+	}
 	return TEXT("The host's game turned the player away for this reason; its own rules say what lets a player in.");
 }
 
@@ -119,13 +123,24 @@ FFlockJoinChecksOnHost::~FFlockJoinChecksOnHost()
 	StopListeningForPreLogin();
 }
 
-void FFlockJoinChecksOnHost::StartHosting(UFlockMultiplayerSession* Session, const TSharedRef<IFlockGameTravel>& Game)
+void FFlockJoinChecksOnHost::StartHosting(UFlockMultiplayerSession* Session, const TSharedRef<IFlockGameTravel>& Game, bool bRelayOnly)
 {
 	StopHosting();
 	Hosting = MakeShared<FHosting>();
 	Hosting->Session.Reset(Session);
 	Hosting->Game = Game;
+	Hosting->bRelayOnly = bRelayOnly;
 	ListenForPreLogin();
+}
+
+void FFlockJoinChecksOnHost::UseRelayBridge(const UFlockMultiplayerSession* Session, const FFlockRelayBridge::FRef& Bridge)
+{
+	if (!Hosting.IsValid() || Hosting->Session.Get() != Session || Hosting->Bridge.IsValid())
+	{
+		Bridge->Close();
+		return;
+	}
+	Hosting->Bridge = Bridge;
 }
 
 void FFlockJoinChecksOnHost::StopHosting()
@@ -134,9 +149,64 @@ void FFlockJoinChecksOnHost::StopHosting()
 	{
 		return;
 	}
+	CloseRelayBridge(*Hosting);
 	Hosting.Reset();
 	StopListeningForPreLogin();
 	AnswerEveryWaitingCheck();
+}
+
+void FFlockJoinChecksOnHost::CloseRelayBridge(FHosting& InHosting)
+{
+	if (InHosting.Bridge.IsValid())
+	{
+		InHosting.Bridge->Close();
+		InHosting.Bridge.Reset();
+	}
+	InHosting.RelayedPlayers.Reset();
+}
+
+bool FFlockJoinChecksOnHost::TryGetRelayPeer(const FHosting& InHosting, uint64 Connection, FFlockRelayPeer& OutPeer)
+{
+	const int32 Port = InHosting.Game->LoopbackPortOf(Connection);
+	return InHosting.Bridge.IsValid() && Port > 0 && InHosting.Bridge->TryGetPeer(Port, OutPeer);
+}
+
+void FFlockJoinChecksOnHost::LetInThroughTheRelay(FHosting& InHosting, uint64 Connection)
+{
+	FFlockRelayPeer Peer;
+	if (TryGetRelayPeer(InHosting, Connection, Peer))
+	{
+		InHosting.RelayedPlayers.Add(Connection, Peer);
+		InHosting.Bridge->LetIn(Peer);
+	}
+}
+
+void FFlockJoinChecksOnHost::ForgetRelayedPlayersGone(FHosting& InHosting)
+{
+	if (!InHosting.Bridge.IsValid())
+	{
+		return;
+	}
+	for (auto It = InHosting.RelayedPlayers.CreateIterator(); It; ++It)
+	{
+		if (InHosting.Game->IsStillHere(It.Key()))
+		{
+			continue;
+		}
+		const FFlockRelayPeer Peer = It.Value();
+		It.RemoveCurrent();
+		// The player's game may be connecting again through the same relay address (a host's level change sends it back): that
+		// connection keeps its path, and waits to be let in as a newly heard peer does.
+		const int32 Port = InHosting.Bridge->LoopbackPortOf(Peer);
+		if (Port > 0 && InHosting.Game->IsAnyConnectionFromLoopbackPort(Port))
+		{
+			InHosting.Bridge->NoLongerLetIn(Peer);
+		}
+		else
+		{
+			InHosting.Bridge->Forget(Peer);
+		}
+	}
 }
 
 void FFlockJoinChecksOnHost::AnswerEveryWaitingCheck()
@@ -150,6 +220,13 @@ void FFlockJoinChecksOnHost::AnswerEveryWaitingCheck()
 		{
 			Refuse(Check->Request, FlockTravelToSessionRefusedReasons::FlockUnreachable);
 		}
+	}
+	// Verified, but waiting for an earlier connection of theirs to give way: turned away the same, the hosting being over.
+	const TArray<FWaitForTheEarlier> Holding = MoveTemp(WaitsForTheEarlier);
+	WaitsForTheEarlier.Reset();
+	for (const FWaitForTheEarlier& Wait : Holding)
+	{
+		Refuse(Wait.Check->Request, FlockTravelToSessionRefusedReasons::FlockUnreachable);
 	}
 }
 
@@ -170,6 +247,8 @@ void FFlockJoinChecksOnHost::StopForShutdown()
 		StopHosting();
 		return;
 	}
+	// No relay thread outlives Flock: the relayed players' path closes with it.
+	CloseRelayBridge(*Hosting);
 	// Flock shut down while the hosted level is still open to players: nobody can be checked, so nobody is let in, until that
 	// level closes. This outlives its owner, kept by the engine's ticker; the engine's PreLogin event, which the game mode's call
 	// raises with Flock not running, is where players are turned away.
@@ -225,6 +304,13 @@ void FFlockJoinChecksOnHost::Check(FFlockJoiningRequest Request)
 		Refuse(Request, FlockTravelToSessionRefusedReasons::JoinCheckMissing);
 		return;
 	}
+	// Relay Always: every player comes through the relay, so one that reached this host another way never gets in, whatever its token.
+	FFlockRelayPeer ThroughTheRelay;
+	if (Hosting->bRelayOnly && !TryGetRelayPeer(*Hosting, Connection, ThroughTheRelay))
+	{
+		Refuse(Request, FlockTravelToSessionRefusedReasons::RelayOnly);
+		return;
+	}
 
 	const FCheckRef Check = MakeShared<FCheck>();
 	Check->Hosting = Hosting;
@@ -277,11 +363,69 @@ void FFlockJoinChecksOnHost::Verified(const FCheckRef& Check, const TFlockResult
 		return;
 	}
 	const FString PlayerId = Result.Value;
-	if (IsConnectedElsewhere(Held, PlayerId, Check->Connection))
+	// One connection a player: one the host hears from keeps its place, and one presenting the earlier one's own token never takes
+	// it. A silent one gives way once the newer one is let in; one going quiet is waited for.
+	const uint64 Earlier = ConnectionElsewhere(Held, PlayerId, Check->Connection);
+	if (Earlier != 0)
 	{
-		Refuse(Check->Request, FlockTravelToSessionRefusedReasons::AlreadyConnected);
+		const FHosting::FLetIn* Was = Held.LetIn.Find(Earlier);
+		if (Was != nullptr && Was->Token.Equals(JoinTokenIn(Check->Request.Options), ESearchCase::CaseSensitive))
+		{
+			Refuse(Check->Request, FlockTravelToSessionRefusedReasons::AlreadyConnected);
+			return;
+		}
+		const double Silence = Held.Game->SecondsSinceHeardFrom(Earlier);
+		if (Silence < EarlierConnectionGivesWayAfterSeconds)
+		{
+			FWaitForTheEarlier Wait{ Check, PlayerId, Earlier, Silence, Now() + EarlierConnectionGivesWayAfterSeconds };
+			WaitsForTheEarlier.Add(MoveTemp(Wait));
+			return;
+		}
+	}
+	LetInOverTheEarlier(Check, PlayerId, Earlier);
+}
+
+void FFlockJoinChecksOnHost::MoveTheWaitsForTheEarlierOn()
+{
+	if (WaitsForTheEarlier.Num() == 0)
+	{
 		return;
 	}
+	const double Time = Now();
+	const TArray<FWaitForTheEarlier> Holding = WaitsForTheEarlier;
+	WaitsForTheEarlier.Reset();
+	for (FWaitForTheEarlier Wait : Holding)
+	{
+		const FCheckRef& Check = Wait.Check;
+		FHosting& Held = *Check->Hosting;
+		// A hosting that ended answered its waits (AnswerEveryWaitingCheck).
+		if (!Held.Game->IsStillHere(Check->Connection) || (Check->Request.IsAskerAlive && !Check->Request.IsAskerAlive()))
+		{
+			// The newer connection or the level that asked is gone: nobody waits for the answer.
+			Refuse(Check->Request, NobodyWaits);
+			continue;
+		}
+		const bool bEarlierGone = !Held.Game->IsStillHere(Wait.Earlier);
+		const double Silence = bEarlierGone ? EarlierConnectionGivesWayAfterSeconds : Held.Game->SecondsSinceHeardFrom(Wait.Earlier);
+		if (bEarlierGone || Silence >= EarlierConnectionGivesWayAfterSeconds)
+		{
+			LetInOverTheEarlier(Check, Wait.PlayerId, bEarlierGone ? 0 : Wait.Earlier);
+			continue;
+		}
+		// Heard from again (its silence started over), or still not silent long enough by the time the wait can last: it stays.
+		if (Silence < Wait.LastSilence || Time >= Wait.GiveUpAt)
+		{
+			Refuse(Check->Request, FlockTravelToSessionRefusedReasons::AlreadyConnected);
+			continue;
+		}
+		Wait.LastSilence = Silence;
+		WaitsForTheEarlier.Add(MoveTemp(Wait));
+	}
+}
+
+void FFlockJoinChecksOnHost::LetInOverTheEarlier(const FCheckRef& Check, const FString& PlayerId, uint64 Earlier)
+{
+	FHosting& Held = *Check->Hosting;
 	FString EngineRefusal;
 	if (Check->Request.RunEngineChecks)
 	{
@@ -309,8 +453,25 @@ void FFlockJoinChecksOnHost::Verified(const FCheckRef& Check, const TFlockResult
 			return;
 		}
 	}
-	// Remembered once let in, so a refused connection never holds the player's place.
-	Held.LetIn.Add(Check->Connection, PlayerId);
+	FFlockRelayPeer EarlierPeer;
+	bool bEarlierRelayed = false;
+	if (Earlier != 0)
+	{
+		// Taken out here, so the forgetting of relayed players gone leaves the newer connection's relay address alone.
+		Held.LetIn.Remove(Earlier);
+		bEarlierRelayed = Held.RelayedPlayers.RemoveAndCopyValue(Earlier, EarlierPeer);
+		Held.Game->CloseConnection(Earlier);
+		Logger->LogInfo(FString::Printf(TEXT("Closed a player's earlier connection, silent for %g s or more, for their newer one from %s."),
+			EarlierConnectionGivesWayAfterSeconds, *Check->Request.Address));
+	}
+	// Remembered once let in, so a refused connection never holds the player's place; a relayed one keeps its place on the bridge.
+	Held.LetIn.Add(Check->Connection, FHosting::FLetIn{ PlayerId, JoinTokenIn(Check->Request.Options) });
+	LetInThroughTheRelay(Held, Check->Connection);
+	if (bEarlierRelayed && Held.Bridge.IsValid() && !(Held.RelayedPlayers.Contains(Check->Connection) && Held.RelayedPlayers[Check->Connection] == EarlierPeer))
+	{
+		// The earlier one's relay address, unless the newer comes through it too.
+		Held.Bridge->Forget(EarlierPeer);
+	}
 	if (Check->Request.Answer)
 	{
 		Check->Request.Answer(FString());
@@ -335,21 +496,21 @@ FString FFlockJoinChecksOnHost::ReasonFor(const FCheckRef& Check, const FFlockEr
 	return FlockTravelToSessionRefusedReasons::FlockUnreachable;
 }
 
-bool FFlockJoinChecksOnHost::IsConnectedElsewhere(FHosting& InHosting, const FString& PlayerId, uint64 Connection)
+uint64 FFlockJoinChecksOnHost::ConnectionElsewhere(FHosting& InHosting, const FString& PlayerId, uint64 Connection)
 {
-	bool bElsewhere = false;
+	uint64 Elsewhere = 0;
 	for (auto It = InHosting.LetIn.CreateIterator(); It; ++It)
 	{
 		if (!InHosting.Game->IsStillHere(It.Key()))
 		{
 			It.RemoveCurrent();
 		}
-		else if (It.Key() != Connection && It.Value().Equals(PlayerId, ESearchCase::CaseSensitive))
+		else if (It.Key() != Connection && It.Value().PlayerId.Equals(PlayerId, ESearchCase::CaseSensitive))
 		{
-			bElsewhere = true;
+			Elsewhere = It.Key();
 		}
 	}
-	return bElsewhere;
+	return Elsewhere;
 }
 
 bool FFlockJoinChecksOnHost::Take(const FCheckRef& Check)
@@ -390,18 +551,36 @@ FString FFlockJoinChecksOnHost::PlayerFor(const UFlockMultiplayerSession* Sessio
 	{
 		return FString();
 	}
-	const FString* Found = Hosting->LetIn.Find(Connection);
-	return Found != nullptr ? *Found : FString();
+	const FHosting::FLetIn* Found = Hosting->LetIn.Find(Connection);
+	return Found != nullptr ? Found->PlayerId : FString();
 }
 
 void FFlockJoinChecksOnHost::Tick()
 {
 	// Not listening, and no level opening (the host's own, from before Travel To Session asked for it, or a later one): the engine
 	// has closed every connection, and nobody joins this hosting any more.
-	if (Hosting.IsValid() && !IsOpenToPlayers(Hosting->Game->Read()))
+	const FFlockGameNetState State = Hosting.IsValid() ? Hosting->Game->Read() : FFlockGameNetState();
+	if (Hosting.IsValid() && !IsOpenToPlayers(State))
 	{
 		StopHosting();
 	}
+	if (Hosting.IsValid() && Hosting->Bridge.IsValid())
+	{
+		FHosting& Held = *Hosting;
+		// The relay stopped (the session ended, it was lost, or another opened in its place): its players' path is gone.
+		if (Held.Bridge->GetRelay()->HasStopped())
+		{
+			CloseRelayBridge(Held);
+		}
+		else
+		{
+			// A level opened again (the host's level change) may listen on another port.
+			Held.Bridge->SetNetDriverPort(State.ListeningPort);
+			ForgetRelayedPlayersGone(Held);
+			Held.Bridge->Tick();
+		}
+	}
+	MoveTheWaitsForTheEarlierOn();
 	if (Waiting.Num() == 0)
 	{
 		return;

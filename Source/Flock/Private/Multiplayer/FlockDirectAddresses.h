@@ -84,8 +84,9 @@ public:
 	static bool ParseStunUrl(const FString& Url, FString& OutHost, int32& OutPort);
 
 	/**
-	 * Reads a direct connection: its addresses that are dotted IPv4 and its port, a whole number 1 to 65535 sent as a number or as
-	 * text ("7777" is a port, 7777.5 is not). False for another mode (letter case counts) or a descriptor with no such port.
+	 * Reads a direct connection, or the direct addresses a relay connection carries: its addresses that are dotted IPv4 and its
+	 * port, a whole number 1 to 65535 sent as a number or as text ("7777" is a port, 7777.5 is not). False for another mode (letter
+	 * case counts) or a descriptor with no such port.
 	 */
 	static bool ReadPublished(const FFlockMultiplayerSessionConnection& Connection, FFlockPublishedDirectAddresses& OutAddresses);
 

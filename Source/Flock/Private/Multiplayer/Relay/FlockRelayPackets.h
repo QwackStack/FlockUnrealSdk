@@ -120,7 +120,8 @@ private:
 
 	/** Who packets that arrive are handed to on the relay's thread, at most one; none keeps them in the store below. */
 	mutable FCriticalSection ReceiverLock;
-	TSharedPtr<IFlockRelayReceiver, ESPMode::ThreadSafe> Receiver;
+	/** Held weakly, so a receiver its owner dropped hands the arrivals back by itself (a receiver holds the relay). */
+	TWeakPtr<IFlockRelayReceiver, ESPMode::ThreadSafe> Receiver;
 
 	/** Packets that arrived, waiting for the game: one block of slots, made when the first is kept. */
 	mutable FCriticalSection ArrivedLock;

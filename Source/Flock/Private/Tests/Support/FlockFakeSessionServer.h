@@ -26,12 +26,15 @@
 class FFlockFakeSessionServer : public IFlockHttpAdapter
 {
 public:
-	enum class ERoute : uint8 { Host, Join, Current, Heartbeat, Read, Leave, End, MakeHost, Publish, JoinToken, Verify, RelayCredentials, Other };
+	enum class ERoute : uint8 { Host, Join, Current, Heartbeat, Read, Leave, End, MakeHost, Publish, PublishSeat, JoinToken, Verify, RelayCredentials, Other };
 
 	struct FSeat
 	{
 		FString PlayerId;
 		FString Status = TEXT("joined");
+		/** How the player said to reach it for its seat (participants/me/connection-info); the host and the player read it. */
+		TSharedRef<FJsonObject> Connection = MakeShared<FJsonObject>();
+		int32 ConnectionEpoch = 0;
 	};
 
 	struct FSession
@@ -215,6 +218,21 @@ public:
 
 	void MakesHost(const FSessionRef& Session, const FString& PlayerId) { HandOver(*Session, PlayerId); }
 
+	/** PlayerId says for its seat that it is at RelayAddress on the relay, as a relayed player's game does before connecting. */
+	void SeatSaysRelayAddress(const FSessionRef& Session, const FString& PlayerId, const FString& RelayAddress)
+	{
+		for (FSeat& Seat : Session->Seats)
+		{
+			if (Seat.PlayerId.Equals(PlayerId, ESearchCase::CaseSensitive) && Seat.Status == TEXT("joined"))
+			{
+				Seat.Connection = MakeShared<FJsonObject>();
+				Seat.Connection->SetStringField(TEXT("mode"), TEXT("relay"));
+				Seat.Connection->SetStringField(TEXT("relay_address"), RelayAddress);
+				++Seat.ConnectionEpoch;
+			}
+		}
+	}
+
 	/**
 	 * A join token for PlayerId in Session, as the server mints one for a seated player. Each is kept as minted, as the backend's
 	 * signature binds it to its session and player, so another session's token and an expired one are told apart from a good one.
@@ -265,6 +283,10 @@ public:
 		if (Path == Prefix + TEXT("/current"))
 		{
 			return ERoute::Current;
+		}
+		if (Path.EndsWith(TEXT("/participants/me/connection-info"), ESearchCase::CaseSensitive))
+		{
+			return ERoute::PublishSeat;
 		}
 		const TCHAR* Endings[] = { TEXT("/heartbeat"), TEXT("/leave"), TEXT("/end"), TEXT("/host"), TEXT("/connection-info"),
 			TEXT("/join-token"), TEXT("/verify-join-token") };
@@ -358,6 +380,7 @@ private:
 			if (Seat.Status == TEXT("joined"))
 			{
 				Seat.Status = TEXT("left");
+				Seat.Connection = MakeShared<FJsonObject>();
 			}
 		}
 	}
@@ -374,6 +397,8 @@ private:
 			return;
 		}
 		Seat->Status = How;
+		// A seat's own descriptor is cleared when the seat ends (read in the backend's publish_seat_connection_info_).
+		Seat->Connection = MakeShared<FJsonObject>();
 		const TArray<FString> Left = Session.Seated();
 		if (Session.HostId.Equals(PlayerId, ESearchCase::CaseSensitive))
 		{
@@ -461,8 +486,10 @@ private:
 			Row->SetField(TEXT("left_at"), MakeShared<FJsonValueNull>());
 			Row->SetStringField(TEXT("last_seen_at"), TEXT("2026-10-13T16:02:43.754626Z"));
 			Row->SetNumberField(TEXT("relay_credential_mints"), 0);
-			Row->SetObjectField(TEXT("connection_info"), MakeShared<FJsonObject>());
-			Row->SetNumberField(TEXT("connection_epoch"), 0);
+			// A seat's own descriptor is filled in only for the host (every seat's) and for the seat's own player; others get {}.
+			const bool bMayRead = Session.HostId.Equals(Reader, ESearchCase::CaseSensitive) || Seat.PlayerId.Equals(Reader, ESearchCase::CaseSensitive);
+			Row->SetObjectField(TEXT("connection_info"), bMayRead ? Seat.Connection : MakeShared<FJsonObject>());
+			Row->SetNumberField(TEXT("connection_epoch"), Seat.ConnectionEpoch);
 			Participants.Add(MakeShared<FJsonValueObject>(Row));
 		}
 		Object->SetArrayField(TEXT("participants"), Participants);
@@ -637,6 +664,32 @@ private:
 			break;
 		}
 
+		if (Route == ERoute::PublishSeat)
+		{
+			// Any seated player, the host included, replaces its own seat's descriptor wholesale.
+			const TSharedPtr<FJsonObject>* Connection = nullptr;
+			if (!bLive)
+			{
+				return Refused(404, TEXT("multiplayer.session_not_found"));
+			}
+			if (!bSeated)
+			{
+				return Refused(404, TEXT("multiplayer.not_a_participant"));
+			}
+			if (!Body.IsValid() || !Body->TryGetObjectField(TEXT("connection_info"), Connection) || Connection == nullptr)
+			{
+				return Refused(422, TEXT("request.validation_failed"));
+			}
+			for (FSeat& Seat : Session->Seats)
+			{
+				if (Seat.PlayerId.Equals(Player, ESearchCase::CaseSensitive) && Seat.Status == TEXT("joined"))
+				{
+					Seat.Connection = (*Connection).ToSharedRef();
+					++Seat.ConnectionEpoch;
+				}
+			}
+			return Enveloped(Describe(*Session, Player));
+		}
 		// The host-only and token routes: a player without a seat is told the session is not found.
 		if (!bLive || !bSeated)
 		{

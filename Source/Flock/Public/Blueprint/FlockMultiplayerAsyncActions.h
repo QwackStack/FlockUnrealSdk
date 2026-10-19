@@ -540,7 +540,11 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FFlockTravelToSessionPin OnNotJoined;
 
-	/** A mistake (no world, an ended session, this game already connected or hosting, a travel already under way) or a publish the server refused. */
+	/**
+	 * A mistake (no world, an ended session, this game connected to another session's host or to a server of its own, hosting
+	 * another session, a level still opening 30 s on), a publish the server refused, or a join token Flock would not give: the
+	 * Error says why and how to fix it.
+	 */
 	UPROPERTY(BlueprintAssignable)
 	FFlockTravelToSessionPin OnFailure;
 
@@ -548,9 +552,10 @@ public:
 	 * Brings this game into the session's game. The host opens Options' Host Level listening for players and publishes how to
 	 * reach it; a player waits for that and travels to the host, which lets it in once Flock has checked its join token.
 	 *
-	 * Its pins fire once the level has changed, so call it from the Game Instance Blueprint (where the engine's own Network
-	 * Error and Travel Error events are): a widget or an actor of the current level is gone by then, and never sees its result.
-	 * Called from one, it warns in the log. Cancel stops a host listening and a player's connection still being made.
+	 * Its pins fire once the level has changed, so call it from the Game Instance Blueprint (where the engine's own NetworkError
+	 * and TravelError events are): a widget or an actor of the current level is gone by then, and never sees its result.
+	 * Called from one, it warns in the log. Cancel stops a host listening on a level it opened and a player's connection still
+	 * being made. Called again, the newer node takes over (this one fires On Not Joined, Outcome Restarted).
 	 */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
 		DisplayName = "Flock Travel To Session", AutoCreateRefTerm = "Options"), Category = "Flock|Multiplayer")

@@ -94,14 +94,21 @@ void FFlockRelayRequests::SendAgainOrGiveUp(double Now)
 	}
 }
 
-void FFlockRelayRequests::KeepAlive(double Now)
+void FFlockRelayRequests::AskTheRelay(double Now)
 {
-	if (Now - Socket.GetLastSentAt() < Timing.KeepAliveAfterSeconds)
+	if (Now - LastAskAt < Timing.AskTheRelayEverySeconds)
 	{
 		return;
 	}
-	SendBytes(FFlockRelayWire::Write(FFlockRelayWire::BindingMethod | FFlockRelayWire::RequestClass, FFlockRelayWire::NewTransaction(),
-		TArray<FFlockRelayAttribute>(), TArray<uint8>()));
+	LastAskAt = Now;
+	AskTransaction = FFlockRelayWire::NewTransaction();
+	SendBytes(FFlockRelayWire::Write(FFlockRelayWire::BindingMethod | FFlockRelayWire::RequestClass, AskTransaction, TArray<FFlockRelayAttribute>(),
+		TArray<uint8>()));
+}
+
+bool FFlockRelayRequests::HasStoppedAnswering(double Now) const
+{
+	return bAnswersAsks && Now - LastAnsweredAt >= Timing.RelayLostWhenSilentSeconds;
 }
 
 void FFlockRelayRequests::Take(const uint8* Packet, int32 Length)
@@ -114,6 +121,12 @@ void FFlockRelayRequests::Take(const uint8* Packet, int32 Length)
 	const uint16 AnswerClass = FFlockRelayWire::ClassOf(Message.Type);
 	if (AnswerClass != FFlockRelayWire::SuccessClass && AnswerClass != FFlockRelayWire::ErrorClass)
 	{
+		return;
+	}
+	if (AskTransaction.Num() > 0 && Message.Transaction == AskTransaction)
+	{
+		bAnswersAsks = true;
+		LastAnsweredAt = FPlatformTime::Seconds();
 		return;
 	}
 	bool bAnswersTheRelease = false;
@@ -153,6 +166,7 @@ void FFlockRelayRequests::Release()
 void FFlockRelayRequests::Answer(const FFlockRelayRequestRef& Request, const FFlockRelayMessage& Message, uint16 AnswerClass)
 {
 	Waiting.Remove(Request);
+	LastAnsweredAt = FPlatformTime::Seconds();
 	if (AnswerClass == FFlockRelayWire::SuccessClass)
 	{
 		Request->Done(0, FString(), &Message);

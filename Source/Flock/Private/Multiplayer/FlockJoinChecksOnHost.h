@@ -8,6 +8,7 @@
 #include "Http/FlockResult.h"
 #include "Multiplayer/FlockJoinChecks.h"
 #include "Multiplayer/FlockTravelToSession.h"
+#include "Multiplayer/Relay/FlockRelayBridge.h"
 #include "UObject/StrongObjectPtr.h"
 
 class AGameModeBase;
@@ -51,7 +52,10 @@ struct FFlockJoiningRequest
 /**
  * The one owner of the host's check of joining players. Travel To Session's host turns it on for its game before its level
  * opens listening; it ends once the game is neither listening nor changing level (a host travel that does not start hosting
- * stops listening), at another host travel, and at Flock's shutdown. A player is let in only once Flock verified their join token, one connection a player; a connection
+ * stops listening), at another host travel, and at Flock's shutdown. Players the host takes through Flock's relay reach it from
+ * the relay bridge's loopback ports: one let in keeps its place there and gets a relay channel, and the bridge forgets it once no
+ * connection of it is left; the bridge closes with the hosting, with its relay, and at shutdown.
+ * A player is let in only once Flock verified their join token, one connection a player; a connection
  * is remembered only once let in, and one no longer on the host holds no place, so a refusal and a departure need no removal of
  * their own. Every check is answered once: by Flock's answer, by its 8 s running out, or when hosting ends; an answer landing
  * after that changes nothing. Game-thread only.
@@ -61,12 +65,32 @@ class FFlockJoinChecksOnHost : public TSharedFromThis<FFlockJoinChecksOnHost>
 public:
 	/** How long Flock has to answer: the engine never drops a waiting player itself (measured 130 s), so this bound is what tells the player why. */
 	static constexpr double DefaultCheckSeconds = 8.0;
+	/**
+	 * A player's earlier connection the host has heard nothing from for this long gives way to the player's newer one once that is
+	 * let in (it is closed): what a lost relay or a game that stopped leaves on the host until the engine's own timeout, a minute.
+	 * A newer connection that comes sooner waits for it, as long as the earlier stays quiet; one heard from keeps its place (one
+	 * connection a player). The newer must bring a token of its own: a join token stays good for its 60 s and travels in the clear,
+	 * so the earlier one's token presented again never takes its place.
+	 */
+	static constexpr double EarlierConnectionGivesWayAfterSeconds = 5.0;
 
 	FFlockJoinChecksOnHost(const TSharedRef<IFlockLogger>& InLogger, TFunction<double()> InNow);
 	~FFlockJoinChecksOnHost();
 
-	/** Session is hosted by the game Game is the engine side of; a hosting before it ends first. */
-	void StartHosting(UFlockMultiplayerSession* Session, const TSharedRef<IFlockGameTravel>& Game);
+	/**
+	 * Session is hosted by the game Game is the engine side of; a hosting before it ends first. With bRelayOnly (Relay Always),
+	 * a player not arriving through the relay bridge is turned away (relay_only) before Flock is asked.
+	 */
+	void StartHosting(UFlockMultiplayerSession* Session, const TSharedRef<IFlockGameTravel>& Game, bool bRelayOnly = false);
+
+	/** Players come in through Flock's relay by Bridge while Session is hosted; closed at once when it is not, or a bridge is in use already. */
+	void UseRelayBridge(const UFlockMultiplayerSession* Session, const FFlockRelayBridge::FRef& Bridge);
+
+	/** True while this game hosts Session through Travel To Session (its level listening, or opening). */
+	bool IsHosting(const UFlockMultiplayerSession* Session) const { return Hosting.IsValid() && Session != nullptr && Hosting->Session.Get() == Session; }
+
+	/** The relay bridge of the hosting, or null. */
+	FFlockRelayBridge::FPtr GetRelayBridge() const { return Hosting.IsValid() ? Hosting->Bridge : nullptr; }
 
 	/** The game no longer hosts through Travel To Session: every waiting check is answered as refused, and nothing is remembered. */
 	void StopHosting();
@@ -102,14 +126,24 @@ private:
 	{
 		TStrongObjectPtr<UFlockMultiplayerSession> Session;
 		TSharedPtr<IFlockGameTravel> Game;
-		/** Each connection let in, and its player. */
-		TMap<uint64, FString> LetIn;
+		/** Each connection let in: its player, and the join token it came with. */
+		struct FLetIn
+		{
+			FString PlayerId;
+			FString Token;
+		};
+		TMap<uint64, FLetIn> LetIn;
 		/** The game mode not running the check was told once. */
 		bool bToldCheckMissing = false;
 		/** Flock shut down while the level stayed open: everyone is turned away until it closes. */
 		bool bFlockStopped = false;
 		/** A player turned away for that was told once. */
 		bool bToldFlockStopped = false;
+		/** Every player comes through the relay bridge (Relay Always); anyone else is turned away. */
+		bool bRelayOnly = false;
+		/** How relayed players reach this host, and the relay peer behind each connection let in through it. */
+		FFlockRelayBridge::FPtr Bridge;
+		TMap<uint64, FFlockRelayPeer> RelayedPlayers;
 	};
 
 	struct FCheck
@@ -123,16 +157,39 @@ private:
 	};
 	using FCheckRef = TSharedRef<FCheck>;
 
+	/** A verified player's newer connection waiting for its earlier one, gone quiet, to be silent long enough to give way. */
+	struct FWaitForTheEarlier
+	{
+		FCheckRef Check;
+		FString PlayerId;
+		uint64 Earlier = 0;
+		/** How long the earlier one was silent at the last look: a shorter silence means it was heard from again. */
+		double LastSilence = 0.0;
+		double GiveUpAt = 0.0;
+	};
+
 	/** Flock's answer to a check still waiting. */
 	void Verified(const FCheckRef& Check, const TFlockResult<FString>& Result);
+	/** The rest of the check of a verified player, Earlier (0 for none) giving way once the game's own checks let the newer one in. */
+	void LetInOverTheEarlier(const FCheckRef& Check, const FString& PlayerId, uint64 Earlier);
+	/** The newer connections waiting for an earlier one, moved on once a frame. */
+	void MoveTheWaitsForTheEarlierOn();
 	/** Flock's verdict, or the host's state, as a reason; any other failure lets nobody in unchecked. */
 	FString ReasonFor(const FCheckRef& Check, const FFlockError& Failure) const;
-	/** Another connection of the player still on the host keeps its place; connections gone are forgotten here. */
-	static bool IsConnectedElsewhere(FHosting& InHosting, const FString& PlayerId, uint64 Connection);
+	/** The player's connection other than Connection still on the host, or 0; connections gone are forgotten here. */
+	static uint64 ConnectionElsewhere(FHosting& InHosting, const FString& PlayerId, uint64 Connection);
 	/** Takes the check out of the waiting ones and gives its request up; false when it was answered already. */
 	bool Take(const FCheckRef& Check);
+	/** The relay peer Connection comes through, from one of the bridge's loopback ports; false for a connection of any other kind. */
+	static bool TryGetRelayPeer(const FHosting& InHosting, uint64 Connection, FFlockRelayPeer& OutPeer);
+	/** A player let in from the bridge keeps its place there and gets a relay channel. */
+	static void LetInThroughTheRelay(FHosting& InHosting, uint64 Connection);
+	/** Relayed players whose connection is gone: their address is forgotten unless another connection still comes through it. */
+	static void ForgetRelayedPlayersGone(FHosting& InHosting);
+	static void CloseRelayBridge(FHosting& InHosting);
 	static void Refuse(const FFlockJoiningRequest& Request, const FString& Reason);
 	void AnswerEveryWaitingCheck();
+	TArray<FWaitForTheEarlier> WaitsForTheEarlier;
 	/** The engine's ticker, after a shutdown with the level open: false, ending it, once that level closes. */
 	bool RefusesUntilTheLevelCloses();
 	void ListenForPreLogin();

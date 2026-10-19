@@ -91,6 +91,14 @@ public:
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Travel Outcome Refused"), Category = "Flock|Multiplayer")
 	static FString TravelOutcomeRefused() { return FlockTravelToSessionOutcomes::Refused; }
 
+	/** Flock's relay was needed and could not be used; the result's Relay Failure Reason says why. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Travel Outcome Relay Failed"), Category = "Flock|Multiplayer")
+	static FString TravelOutcomeRelayFailed() { return FlockTravelToSessionOutcomes::RelayFailed; }
+
+	/** The game called Travel To Session again before this one ended; the newer one's answer follows. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Travel Outcome Restarted"), Category = "Flock|Multiplayer")
+	static FString TravelOutcomeRestarted() { return FlockTravelToSessionOutcomes::Restarted; }
+
 	// ── Why a host turned a joining player away (a travel result's Refused Reason) ──
 
 	/** The player sent no join token: it did not come through Travel To Session. Flock was not asked. */
@@ -125,6 +133,76 @@ public:
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Refused Reason Join Check Missing"), Category = "Flock|Multiplayer")
 	static FString RefusedReasonJoinCheckMissing() { return FlockTravelToSessionRefusedReasons::JoinCheckMissing; }
 
+	/** The host takes players through Flock's relay only (its Relay is Always), and this player reached it another way. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Refused Reason Relay Only"), Category = "Flock|Multiplayer")
+	static FString RefusedReasonRelayOnly() { return FlockTravelToSessionRefusedReasons::RelayOnly; }
+
+	// ── Why Flock's relay could not be used (a travel result's Relay Failure Reason) ──
+
+	/** Flock listed no relay: switched off for this game in the Flock dashboard, or none set up. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Not Offered"), Category = "Flock|Multiplayer")
+	static FString RelayFailureNotOffered() { return FlockRelayFailureReasons::NotOffered; }
+
+	/** The host takes no players through Flock's relay, and this player's Relay is Always. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Not Offered By The Host"), Category = "Flock|Multiplayer")
+	static FString RelayFailureNotOfferedByTheHost() { return FlockRelayFailureReasons::NotOfferedByTheHost; }
+
+	/** Flock does not list, for this player, the relay server the host uses. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Server Not Listed"), Category = "Flock|Multiplayer")
+	static FString RelayFailureServerNotListed() { return FlockRelayFailureReasons::ServerNotListed; }
+
+	/** The studio's relay is paused until its bill is paid. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Paused"), Category = "Flock|Multiplayer")
+	static FString RelayFailurePaused() { return FlockRelayFailureReasons::Paused; }
+
+	/** The player asked Flock for relay logins more than 12 times in a minute, or its seat drew the most logins one seat may (10). */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Too Many Logins"), Category = "Flock|Multiplayer")
+	static FString RelayFailureTooManyLogins() { return FlockRelayFailureReasons::TooManyLogins; }
+
+	/** Flock says the player has no seat in the session. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Not In Session"), Category = "Flock|Multiplayer")
+	static FString RelayFailureNotInSession() { return FlockRelayFailureReasons::NotInSession; }
+
+	/** Flock did not answer the request for relay logins. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Flock Unreachable"), Category = "Flock|Multiplayer")
+	static FString RelayFailureFlockUnreachable() { return FlockRelayFailureReasons::FlockUnreachable; }
+
+	/** Flock refused the request for relay logins for another reason. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Logins Refused"), Category = "Flock|Multiplayer")
+	static FString RelayFailureLoginsRefused() { return FlockRelayFailureReasons::LoginsRefused; }
+
+	/** The relay server's name could not be looked up, or the server did not answer. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Unreachable"), Category = "Flock|Multiplayer")
+	static FString RelayFailureUnreachable() { return FlockRelayFailureReasons::Unreachable; }
+
+	/** The relay refused the login Flock minted. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Wrong Login"), Category = "Flock|Multiplayer")
+	static FString RelayFailureWrongLogin() { return FlockRelayFailureReasons::WrongLogin; }
+
+	/** The relay has no room for another address. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Full"), Category = "Flock|Multiplayer")
+	static FString RelayFailureFull() { return FlockRelayFailureReasons::Full; }
+
+	/** The relay refused to let packets in from the host's relay address, or from a player's. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Open Refused"), Category = "Flock|Multiplayer")
+	static FString RelayFailureOpenRefused() { return FlockRelayFailureReasons::OpenRefused; }
+
+	/** The relay refused a request for another reason. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Refused"), Category = "Flock|Multiplayer")
+	static FString RelayFailureRefused() { return FlockRelayFailureReasons::Refused; }
+
+	/** The relay let the address go: a renewal was refused, or none was answered before it lapsed. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Lost"), Category = "Flock|Multiplayer")
+	static FString RelayFailureLost() { return FlockRelayFailureReasons::Lost; }
+
+	/** The relay connection was closed by its owner (the session's end). */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure Closed"), Category = "Flock|Multiplayer")
+	static FString RelayFailureClosed() { return FlockRelayFailureReasons::Closed; }
+
+	/** The relay needs threads of its own, and this launch of the game runs without threads. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Failure No Thread"), Category = "Flock|Multiplayer")
+	static FString RelayFailureNoThread() { return FlockRelayFailureReasons::NoThread; }
+
 	// ── How a search for a match ended (its result's Outcome) ──
 
 	/** Players were matched; the result's Session is the session the match seats them in. */
@@ -148,6 +226,18 @@ public:
 	/** The host's address and port, published by Publish Direct Connection or Travel To Session. A game may publish a mode of its own, such as "steam". */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Connection Mode Direct"), Category = "Flock|Multiplayer")
 	static FString ConnectionModeDirect() { return FlockMultiplayerConnectionModes::Direct; }
+
+	/** The host's address on Flock's relay, published by Travel To Session, with its direct addresses too when players on its network may connect directly. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Connection Mode Relay"), Category = "Flock|Multiplayer")
+	static FString ConnectionModeRelay() { return FlockMultiplayerConnectionModes::Relay; }
+
+	/** The host's address on Flock's relay ("a.b.c.d:port"). */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Connection Value Relay Address"), Category = "Flock|Multiplayer")
+	static FString RelayConnectionValueRelayAddress() { return FlockRelayConnectionValues::RelayAddress; }
+
+	/** The relay server the host's address is on ("name:port"). */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Relay Connection Value Relay Server"), Category = "Flock|Multiplayer")
+	static FString RelayConnectionValueRelayServer() { return FlockRelayConnectionValues::RelayServer; }
 
 	/** The address players outside the host's network use: its public address when known, its LAN address otherwise. */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Direct Connection Value Address"), Category = "Flock|Multiplayer")

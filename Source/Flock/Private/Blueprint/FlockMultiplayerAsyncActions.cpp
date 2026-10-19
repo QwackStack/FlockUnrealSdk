@@ -823,7 +823,7 @@ void UFlockTravelToSessionAction::Start(FFlockMultiplayerProvider* Provider)
 		const FString Caller = WorldContextObject.Get()->GetName();
 		Provider->GetLogger().LogWarning(FString::Printf(TEXT("Travel To Session was called from %s, which belongs to the current level: its "
 			"pins fire once the level has changed, when %s is gone, so nothing there sees how the travel ended. Call Flock Travel To "
-			"Session from the Game Instance Blueprint, where the engine's own Network Error and Travel Error events are."), *Caller, *Caller));
+			"Session from the Game Instance Blueprint, where the engine's own NetworkError and TravelError events are."), *Caller, *Caller));
 	}
 	const TWeakObjectPtr<UFlockTravelToSessionAction> WeakThis(this);
 	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));

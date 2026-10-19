@@ -11,11 +11,21 @@
 #include "GameFramework/PlayerController.h"
 #include "IPAddress.h"
 #include "Kismet/GameplayStatics.h"
+#include "Multiplayer/FlockJoinChecks.h"
+#include "Multiplayer/FlockUdpSockets.h"
 #include "SocketTypes.h"
 #include "UObject/ObjectKey.h"
 
 namespace
 {
+	/** "address:port" as a travel names a host: an IPv4 address inside IPv6 (a dual-stack socket's reading) written as IPv4. */
+	FString HostAndPort(const FString& Host, int32 Port)
+	{
+		const FString Mapped = TEXT("::ffff:");
+		const FString Address = Host.StartsWith(Mapped, ESearchCase::IgnoreCase) ? Host.Mid(Mapped.Len()) : Host;
+		return FString::Printf(TEXT("%s:%d"), *Address, Port);
+	}
+
 	/**
 	 * The engine's side of a travel, read from the game instance's world context: the world it is in, a level it is opening or a
 	 * host it is connecting to, and the world's net driver. Measured (UE 5.5, two game processes): a level opened with ?listen
@@ -51,7 +61,8 @@ namespace
 			State.bHasWorld = true;
 			State.bInAnotherWorld = World != Marked.Get();
 			// While a connection is being made the world it leaves already reads as a client, so the change comes first.
-			State.bChangingLevel = !Context->TravelURL.IsEmpty() || Context->PendingNetGame != nullptr || !World->NextURL.IsEmpty();
+			// A seamless travel sets none of those while it moves through its transition level.
+			State.bChangingLevel = !Context->TravelURL.IsEmpty() || Context->PendingNetGame != nullptr || !World->NextURL.IsEmpty() || World->IsInSeamlessTravel();
 			State.NetMode = World->GetNetMode();
 			UNetDriver* Driver = World->GetNetDriver();
 			if (State.NetMode == NM_ListenServer && Driver != nullptr)
@@ -65,6 +76,20 @@ namespace
 			if (State.NetMode == NM_Client && Driver != nullptr && Driver->ServerConnection != nullptr)
 			{
 				State.bLetInByHost = Driver->ServerConnection->GetConnectionState() == USOCK_Open && Driver->ServerConnection->PlayerController != nullptr;
+				const TSharedPtr<const FInternetAddr> Remote = Driver->ServerConnection->GetRemoteAddr();
+				if (Remote.IsValid())
+				{
+					State.Destination = HostAndPort(Remote->ToString(false), Remote->GetPort());
+				}
+			}
+			// A connection being made: where it goes, and whether the host's engine answered its hello with a challenge, which comes
+			// before the host's own check of the player (read in UPendingNetGame::NotifyControlMessage).
+			if (const UPendingNetGame* Pending = Context->PendingNetGame)
+			{
+				State.bConnecting = true;
+				State.Destination = HostAndPort(Pending->URL.Host, Pending->URL.Port);
+				const UNetConnection* Connecting = Pending->NetDriver != nullptr ? Pending->NetDriver->ServerConnection : nullptr;
+				State.bHostAnswered = Connecting != nullptr && !Connecting->Challenge.IsEmpty();
 			}
 			return State;
 		}
@@ -211,7 +236,76 @@ namespace
 			return GameMode != nullptr && GameInstance.IsValid() && GameMode->GetGameInstance() == GameInstance.Get();
 		}
 
+		virtual int32 LoopbackPortOf(uint64 Number) const override
+		{
+			const TWeakObjectPtr<UNetConnection>* Found = Connections.Find(Number);
+			return LoopbackPortOfConnection(Found != nullptr ? Found->Get() : nullptr);
+		}
+
+		virtual bool IsAnyConnectionFromLoopbackPort(int32 Port) const override
+		{
+			UNetDriver* Driver = ListeningDriver();
+			if (Driver == nullptr || Port <= 0)
+			{
+				return false;
+			}
+			for (UNetConnection* Connection : Driver->ClientConnections)
+			{
+				if (Connection != nullptr && Connection->GetConnectionState() != USOCK_Closed && LoopbackPortOfConnection(Connection) == Port)
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		virtual double SecondsSinceHeardFrom(uint64 Number) const override
+		{
+			const TWeakObjectPtr<UNetConnection>* Found = Connections.Find(Number);
+			const UNetConnection* Connection = Found != nullptr ? Found->Get() : nullptr;
+			if (Connection == nullptr || Connection->GetConnectionState() == USOCK_Closed)
+			{
+				return TNumericLimits<double>::Max();
+			}
+			return FPlatformTime::Seconds() - Connection->LastReceiveRealtime;
+		}
+
+		virtual void CloseConnection(uint64 Number) override
+		{
+			const TWeakObjectPtr<UNetConnection>* Found = Connections.Find(Number);
+			if (UNetConnection* Connection = Found != nullptr ? Found->Get() : nullptr)
+			{
+				Connection->Close();
+			}
+		}
+
+		virtual bool PutJoinTokenOnTheConnectionBeingMade(const FString& Token) override
+		{
+			FWorldContext* Context = WorldContext();
+			UPendingNetGame* Pending = Context != nullptr ? Context->PendingNetGame : nullptr;
+			if (Pending == nullptr)
+			{
+				return false;
+			}
+			// The login goes out with the URL's options once the host's engine has sent its challenge (UPendingNetGame::NotifyControlMessage).
+			const UNetConnection* Connecting = Pending->NetDriver != nullptr ? Pending->NetDriver->ServerConnection : nullptr;
+			if (Connecting != nullptr && !Connecting->Challenge.IsEmpty())
+			{
+				return false;
+			}
+			// In place of the option of that key, whatever its letter case, as the host's check reads it.
+			Pending->URL.AddOption(*FString::Printf(TEXT("%s=%s"), FlockJoinChecks::JoinTokenOption, *Token));
+			return true;
+		}
+
 	private:
+		/** The port of 127.0.0.1 a connection's packets come from; 0 for any other address. */
+		static int32 LoopbackPortOfConnection(UNetConnection* Connection)
+		{
+			const TSharedPtr<const FInternetAddr> Remote = Connection != nullptr ? Connection->GetRemoteAddr() : nullptr;
+			return Remote.IsValid() && FFlockUdpSockets::IsLoopback(*Remote) ? Remote->GetPort() : 0;
+		}
+
 		/** The options of a request URL as the engine hands them to PreLoginAsync: from its first '?'. */
 		static FString OptionsOf(const FString& RequestUrl)
 		{

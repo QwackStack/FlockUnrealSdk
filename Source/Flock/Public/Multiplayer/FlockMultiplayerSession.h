@@ -21,6 +21,7 @@ using FFlockOnMultiplayerSession = TFunction<void(TFlockResult<UFlockMultiplayer
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockMultiplayerSessionChanged);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockMultiplayerSessionEnded, const FString&, Reason);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockMultiplayerSessionRelayLost, const FString&, Reason);
 
 /** What a newer reading changed in a session, worked out when it is taken and raised once the SDK's own state is settled. */
 struct FFlockMultiplayerSessionChanges
@@ -101,6 +102,17 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Flock|Multiplayer")
 	FFlockMultiplayerSessionEnded OnEnded;
 
+	/**
+	 * This device's address on Flock's relay stopped working while the session lasts, raised once a relay with why (a
+	 * FlockRelayFailureReasons value, such as unreachable): whatever went through it, a host's relayed players or a player's
+	 * connection to its host, is gone. On a player, raised too when its host publishes another relay address (the host's own
+	 * relay was lost), since this player's relay no longer reaches it; a new host is On Host Changed's. Call Travel To Session
+	 * again, which opens another. Not raised for a relay the SDK gave back (the session ended, the player left, or Flock shut
+	 * down).
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Flock|Multiplayer")
+	FFlockMultiplayerSessionRelayLost OnRelayLost;
+
 	/** Gives up the player's seat. If the server says the player is already out, that counts as leaving. When the host leaves, the longest seated of the others hosts. */
 	FFlockRequestHandle Leave(FFlockOnMultiplayerSession OnComplete);
 
@@ -145,13 +157,19 @@ public:
 
 	/**
 	 * Brings this game into the session's game. The host opens Options.HostLevel listening for players (the engine's ?listen)
-	 * and, once it listens, publishes how to reach it on the port its level listens on. A player waits for that (Wait For Host
-	 * Seconds), travels to the host's LAN address when both share a public address and to the published address otherwise,
-	 * and completes once the host has let it in. Either way the completion runs in the new level: everything of the level the
-	 * call was made from is gone by then. How it ended is the result's Outcome (FlockTravelToSessionOutcomes); it fails only
-	 * for a mistake (no world, an ended session, this game already connected or hosting, a travel already under way), a
-	 * publish the server refused (the host stops listening first), or a cancel. Cancelling the handle stops a host listening
-	 * and a player's connection still being made. WorldContextObject is anything in the game's world, such as an actor.
+	 * and, once it listens, opens its address on Flock's relay (unless Options.Relay is Never) and publishes how to reach it. A
+	 * player waits for that (Wait For Host Seconds), then travels to the host's LAN address when both share a public address,
+	 * through Flock's relay when the host offers it and this device is elsewhere (or the host did not answer on its network),
+	 * and to the published address otherwise, and completes once the host has let it in. Either way the completion runs in the
+	 * new level: everything of the level the call was made from is gone by then. How it ended is the result's Outcome
+	 * (FlockTravelToSessionOutcomes); it fails only for a mistake (no world, an ended session, this game connected to another
+	 * session's host or to a server of its own, hosting another session, a level still opening 30 s on), a publish the server
+	 * refused (a host stops listening on a level it opened for this travel), a join token Flock would not give (nothing travels
+	 * without one), or a cancel. Cancelling the handle stops a host listening on a level it opened and a player's connection
+	 * still being made. Called again, a newer travel takes over (the one under way ends Restarted), doing this device's part for
+	 * the session from where the game is (a player already in the host's game is answered Connected at once): on On Host
+	 * Changed and On Relay Lost, call it again with the same options. WorldContextObject is anything in the game's world, such
+	 * as an actor.
 	 */
 	FFlockRequestHandle TravelToSession(UObject* WorldContextObject, const FFlockTravelToSessionOptions& Options,
 		TFunction<void(TFlockResult<FFlockTravelToSessionResult>)> OnComplete);
@@ -185,6 +203,9 @@ private:
 	/** Set once, by the owner. */
 	void MarkEnded(const FString& Reason, bool bRaise);
 
+	/** Raised by the owner, once a relay. */
+	void RaiseRelayLost(const FString& Reason) { OnRelayLost.Broadcast(Reason); }
+
 	void CopyFrom(const FFlockMultiplayerSessionReading& Reading);
 
 	/** The session's calls when its owner is gone (Flock shut down): refused, as for any session that has ended. */
@@ -209,4 +230,9 @@ private:
 	int32 ConnectionEpoch = 0;
 	/** How often to heartbeat, as the server says for the game's timeouts. */
 	double HeartbeatIntervalSeconds = 0.0;
+	/** The seated players whose seat names an address on Flock's relay, as the last reading says: the host reads every seat's, a player its own. */
+	TArray<FFlockMultiplayerSessionSeat> SeatsOnTheRelay;
+
+	/** The relay address Player's seat names, or empty; player ids compared letter for letter. */
+	FString SeatRelayAddressOf(const FString& Player) const;
 };

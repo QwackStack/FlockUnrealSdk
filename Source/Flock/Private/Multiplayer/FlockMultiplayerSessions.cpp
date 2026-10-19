@@ -270,6 +270,18 @@ FFlockRequestHandle FFlockMultiplayerSessions::PublishConnection(UFlockMultiplay
 FFlockRequestHandle FFlockMultiplayerSessions::RequestJoinToken(UFlockMultiplayerSession* Session,
 	TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnComplete)
 {
+	return AskForAJoinToken(Session, MoveTemp(OnComplete), nullptr);
+}
+
+FFlockRequestHandle FFlockMultiplayerSessions::RequestJoinTokenToKeepOnHand(UFlockMultiplayerSession* Session,
+	TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnComplete)
+{
+	return AskForAJoinToken(Session, MoveTemp(OnComplete), &FFlockMultiplayerSessions::IsOutOfTheSession);
+}
+
+FFlockRequestHandle FFlockMultiplayerSessions::AskForAJoinToken(UFlockMultiplayerSession* Session,
+	TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnComplete, TFunction<bool(const FFlockError&)> IsExpectedFailure)
+{
 	FFlockError Refused;
 	if (!IsRunning(Session, Refused))
 	{
@@ -281,9 +293,9 @@ FFlockRequestHandle FFlockMultiplayerSessions::RequestJoinToken(UFlockMultiplaye
 	const FString SessionId = Session->Id;
 	const TSharedRef<FFlockRequestsInTurn> InTurn = FFlockRequestsInTurn::Make();
 	Ask<FFlockMultiplayerSessionJoinToken>(Session, InTurn,
-		[RequestsRef, SignInNumber, SessionId](TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnSent)
+		[RequestsRef, SignInNumber, SessionId, IsExpectedFailure](TFunction<void(TFlockResult<FFlockMultiplayerSessionJoinToken>)> OnSent)
 		{
-			return RequestsRef->RequestJoinToken(SignInNumber, SessionId, MoveTemp(OnSent));
+			return RequestsRef->RequestJoinToken(SignInNumber, SessionId, MoveTemp(OnSent), IsExpectedFailure);
 		},
 		[OnComplete](TFlockResult<FFlockMultiplayerSessionJoinToken> Answered) { AnswerSessionCall(OnComplete, Answered); });
 	return InTurn->GetHandle();
@@ -363,6 +375,188 @@ FFlockRequestHandle FFlockMultiplayerSessions::PublishDirectConnection(UFlockMul
 	return InTurn->GetHandle();
 }
 
+FFlockRequestHandle FFlockMultiplayerSessions::PublishRelayConnection(UFlockMultiplayerSession* Session, const TSharedRef<FFlockRelayConnection>& OnTheRelay,
+	int32 Port, bool bWithDirectAddresses, FFlockOnMultiplayerSession OnComplete)
+{
+	FFlockError Refused;
+	if (!IsRunning(Session, Refused))
+	{
+		AnswerSessionCall(OnComplete, TFlockResult<UFlockMultiplayerSession*>::Fail(Refused));
+		return FFlockRequestHandle();
+	}
+	const FString RelayAddress = OnTheRelay->GetAddress().ToString();
+	const FString RelayServer = OnTheRelay->GetServer();
+	const auto RelayValues = [RelayAddress, RelayServer](FFlockCommandData Values)
+	{
+		Values.Set(FlockRelayConnectionValues::RelayAddress, RelayAddress);
+		Values.Set(FlockRelayConnectionValues::RelayServer, RelayServer);
+		return Values;
+	};
+	if (!bWithDirectAddresses)
+	{
+		return PublishConnection(Session, FlockMultiplayerConnectionModes::Relay, RelayValues(FFlockCommandData()), MoveTemp(OnComplete));
+	}
+	// Players on the host's network skip the relay; an address that cannot be found is left out.
+	const TWeakObjectPtr<UFlockMultiplayerSession> WeakSession = Session;
+	const TWeakPtr<FFlockMultiplayerSessions> WeakSelf = AsShared();
+	const TSharedRef<FFlockRequestsInTurn> InTurn = FFlockRequestsInTurn::Make();
+	InTurn->Send([&]()
+	{
+		return DirectAddresses->Find(Session->SignInNumber, [WeakSelf, WeakSession, InTurn, Port, RelayValues, OnComplete](TFlockResult<FFlockDeviceAddresses> Found)
+		{
+			const TSharedPtr<FFlockMultiplayerSessions> Self = WeakSelf.Pin();
+			if (!Self.IsValid())
+			{
+				AnswerSessionCall(OnComplete, TFlockResult<UFlockMultiplayerSession*>::Fail(ShutDownError()));
+				return;
+			}
+			if (!Found.bSuccess)
+			{
+				AnswerSessionCall(OnComplete, TFlockResult<UFlockMultiplayerSession*>::Fail(Found.Error));
+				return;
+			}
+			InTurn->Send([&]()
+			{
+				return Self->PublishConnection(WeakSession.Get(), FlockMultiplayerConnectionModes::Relay,
+					RelayValues(FFlockDirectAddresses::ValuesToPublish(Found.Value, Port)), OnComplete);
+			});
+		});
+	});
+	return InTurn->GetHandle();
+}
+
+FFlockRequestHandle FFlockMultiplayerSessions::PublishSeatRelayAddress(UFlockMultiplayerSession* Session, const TSharedRef<FFlockRelayConnection>& OnTheRelay,
+	FFlockOnMultiplayerSession OnComplete)
+{
+	FFlockError Refused;
+	if (!IsRunning(Session, Refused))
+	{
+		AnswerSessionCall(OnComplete, TFlockResult<UFlockMultiplayerSession*>::Fail(Refused));
+		return FFlockRequestHandle();
+	}
+	const FString RelayAddress = OnTheRelay->GetAddress().ToString();
+	if (Session->SeatRelayAddressOf(Session->PlayerId).Equals(RelayAddress, ESearchCase::CaseSensitive))
+	{
+		AnswerSessionCall(OnComplete, TFlockResult<UFlockMultiplayerSession*>::Ok(Session));
+		return FFlockRequestHandle();
+	}
+	FFlockCommandData Connection;
+	Connection.Set(TEXT("mode"), FlockMultiplayerConnectionModes::Relay);
+	Connection.Set(FlockRelayConnectionValues::RelayAddress, RelayAddress);
+	const TSharedRef<FFlockMultiplayerSessionRequests> RequestsRef = Requests;
+	const int32 SignInNumber = Session->SignInNumber;
+	const FString SessionId = Session->Id;
+	return Change(Session, [RequestsRef, SignInNumber, SessionId, Connection](FFlockMultiplayerSessionRequests::FOnSession OnSent)
+	{
+		return RequestsRef->PublishSeatConnection(SignInNumber, SessionId, Connection, MoveTemp(OnSent));
+	}, MoveTemp(OnComplete));
+}
+
+void FFlockMultiplayerSessions::OpenTheRelayToSeatedPlayers(UFlockMultiplayerSession* Session)
+{
+	const TSharedPtr<FFlockRelayConnection> RelayNow = Relay.IsValid() ? Relay->Connection : nullptr;
+	if (Session == nullptr || Session->HasEnded() || !Session->IsHost() || !RelayNow.IsValid() || !RelayNow->IsOpen()
+		|| !Relay->SessionId.Equals(Session->Id, ESearchCase::CaseSensitive))
+	{
+		return;
+	}
+	const TWeakPtr<FFlockMultiplayerSessions> WeakSelf = AsShared();
+	for (const FFlockMultiplayerSessionSeat& Seat : Session->SeatsOnTheRelay)
+	{
+		FFlockRelayPeer Address;
+		// An IP open or being opened is the relay's own to answer at once (one request an IP); a refused one is skipped here, so the
+		// refusal is told once rather than at every reading. One not answered is asked again at the next.
+		if (Seat.PlayerId.Equals(Session->PlayerId, ESearchCase::CaseSensitive) || !FFlockRelayPeer::TryParse(Seat.RelayAddress, Address)
+			|| RelayNow->RefusedToOpenTo(Address))
+		{
+			continue;
+		}
+		RelayNow->OpenTo(Address, [WeakSelf](TFlockRelayResult<bool> Opened)
+		{
+			const TSharedPtr<FFlockMultiplayerSessions> Self = WeakSelf.Pin();
+			if (Self.IsValid() && !Opened.bSuccess && Opened.Failure.Reason.Equals(FlockRelayFailureReasons::OpenRefused, ESearchCase::CaseSensitive))
+			{
+				Self->Logger->LogWarning(FString::Printf(TEXT("A player's relay address cannot be let in, so that player cannot join through Flock's relay: %s"),
+					*Opened.Failure.Error.ReasonAndFix()));
+			}
+		});
+	}
+}
+
+void FFlockMultiplayerSessions::KeepReadingForRelayedPlayers()
+{
+	UFlockMultiplayerSession* HeldNow = Held.Get();
+	const TSharedPtr<FFlockRelayConnection> RelayNow = Relay.IsValid() ? Relay->Connection : nullptr;
+	const bool bWanted = HeldNow != nullptr && !bStopped && HeldNow->IsHost() && RelayNow.IsValid() && RelayNow->IsOpen()
+		&& Relay->SessionId.Equals(HeldNow->Id, ESearchCase::CaseSensitive) && RelayNow->HandsArrivalsOver()
+		&& RelayedPlayersReadRefusedFor.Pin() != RelayNow;
+	if (!bWanted || RelayedPlayersReadFor.Pin() != RelayNow)
+	{
+		StopReadingForRelayedPlayers();
+	}
+	if (!bWanted || (RelayedPlayersRead.IsValid() && RelayedPlayersRead->IsRunning()))
+	{
+		return;
+	}
+	const FString SessionId = HeldNow->Id;
+	const int32 SignInNumber = HeldNow->SignInNumber;
+	const TWeakPtr<FFlockMultiplayerSessions> WeakSelf = AsShared();
+	const TWeakPtr<FFlockRelayConnection> ReadFor = RelayNow;
+	RelayedPlayersReadFor = RelayNow;
+	RelayedPlayersRead = RepeatingCalls->Start<FFlockNumberedSessionReading>(RelayedPlayersReadCallName, RelayedPlayersReadSeconds,
+		[WeakSelf, SignInNumber, SessionId](TFunction<void(TFlockResult<FFlockNumberedSessionReading>)> OnResult) -> FFlockRequestHandle
+		{
+			if (const TSharedPtr<FFlockMultiplayerSessions> Self = WeakSelf.Pin())
+			{
+				return Self->ReadNumbered(SignInNumber, SessionId, MoveTemp(OnResult));
+			}
+			OnResult(TFlockResult<FFlockNumberedSessionReading>::Fail(ShutDownError()));
+			return FFlockRequestHandle();
+		},
+		[WeakSelf](const FFlockNumberedSessionReading& Read)
+		{
+			if (const TSharedPtr<FFlockMultiplayerSessions> Self = WeakSelf.Pin())
+			{
+				Self->TakeRepeatedReading(Read);
+			}
+		},
+		[WeakSelf, SessionId, ReadFor](const FFlockError& Failure)
+		{
+			if (const TSharedPtr<FFlockMultiplayerSessions> Self = WeakSelf.Pin())
+			{
+				Self->RelayedPlayersReadStopped(SessionId, ReadFor, Failure);
+			}
+		});
+}
+
+void FFlockMultiplayerSessions::StopReadingForRelayedPlayers()
+{
+	if (RelayedPlayersRead.IsValid())
+	{
+		RelayedPlayersRead->Stop();
+		RelayedPlayersRead.Reset();
+	}
+	RelayedPlayersReadFor.Reset();
+}
+
+void FFlockMultiplayerSessions::RelayedPlayersReadStopped(const FString& SessionId, const TWeakPtr<FFlockRelayConnection>& ReadFor, const FFlockError& Failure)
+{
+	// Not started again for this relay, or the frames would send it again until the reason landed.
+	RelayedPlayersReadRefusedFor = ReadFor;
+	UFlockMultiplayerSession* HeldNow = Held.Get();
+	if (HeldNow == nullptr || !HeldNow->Id.Equals(SessionId, ESearchCase::CaseSensitive))
+	{
+		return;
+	}
+	if (IsOutOfTheSession(Failure))
+	{
+		LearnWhyItEnded(HeldNow, nullptr, []() {});
+		return;
+	}
+	Logger->LogWarning(FString::Printf(TEXT("The session is no longer read every 2 s for players joining through Flock's relay: %s. The heartbeats "
+		"still bring their relay addresses, about every 20 s."), *Failure.ReasonAndFix()));
+}
+
 FFlockRequestHandle FFlockMultiplayerSessions::WaitForConnection(UFlockMultiplayerSession* Session, double TimeoutSeconds,
 	FFlockOnMultiplayerSession OnComplete)
 {
@@ -407,15 +601,27 @@ FFlockRequestHandle FFlockMultiplayerSessions::WaitForConnection(UFlockMultiplay
 FFlockRequestHandle FFlockMultiplayerSessions::FindDirectAddress(UFlockMultiplayerSession* Session,
 	TFunction<void(TFlockResult<FFlockDirectAddress>)> OnComplete)
 {
+	return FindDirectAddressForTravel(Session, [OnComplete](TFlockResult<FFlockDirectAddress> Found, bool) { AnswerSessionCall(OnComplete, Found); });
+}
+
+FFlockRequestHandle FFlockMultiplayerSessions::FindDirectAddressForTravel(UFlockMultiplayerSession* Session, FOnDirectAddressFound OnComplete)
+{
+	const auto Answer = [&OnComplete](const TFlockResult<FFlockDirectAddress>& Found, bool bShares)
+	{
+		if (OnComplete)
+		{
+			OnComplete(Found, bShares);
+		}
+	};
 	if (Session == nullptr)
 	{
-		AnswerSessionCall(OnComplete, TFlockResult<FFlockDirectAddress>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("No session was given"), FFlockErrorHints::PassAHeldSession())));
+		Answer(TFlockResult<FFlockDirectAddress>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("No session was given"), FFlockErrorHints::PassAHeldSession())), false);
 		return FFlockRequestHandle();
 	}
 	FFlockPublishedDirectAddresses Published;
 	if (!Session->HasConnection() || !FFlockDirectAddresses::ReadPublished(Session->GetConnection(), Published))
 	{
-		AnswerSessionCall(OnComplete, TFlockResult<FFlockDirectAddress>::Ok(FFlockDirectAddress()));
+		Answer(TFlockResult<FFlockDirectAddress>::Ok(FFlockDirectAddress()), false);
 		return FFlockRequestHandle();
 	}
 	// A device whose public address is unknown may be anywhere, so only a match of both public addresses picks the LAN one.
@@ -427,16 +633,21 @@ FFlockRequestHandle FFlockMultiplayerSessions::FindDirectAddress(UFlockMultiplay
 		Address.bIsLan = !Address.Address.IsEmpty() && Address.Address.Equals(Published.Lan, ESearchCase::CaseSensitive);
 		return Address;
 	};
+	// A host that knew only one of its addresses gives no sign of sharing a network with this device.
 	if (Published.Lan.IsEmpty() || Published.Public.IsEmpty())
 	{
-		AnswerSessionCall(OnComplete, TFlockResult<FFlockDirectAddress>::Ok(Chosen()));
+		Answer(TFlockResult<FFlockDirectAddress>::Ok(Chosen()), false);
 		return FFlockRequestHandle();
 	}
 	return DirectAddresses->Find(Session->SignInNumber, [Published, Chosen, OnComplete](TFlockResult<FFlockDeviceAddresses> Found)
 	{
+		if (!OnComplete)
+		{
+			return;
+		}
 		if (!Found.bSuccess)
 		{
-			AnswerSessionCall(OnComplete, TFlockResult<FFlockDirectAddress>::Fail(Found.Error));
+			OnComplete(TFlockResult<FFlockDirectAddress>::Fail(Found.Error), false);
 			return;
 		}
 		if (Found.Value.Public.Equals(Published.Public, ESearchCase::CaseSensitive))
@@ -445,10 +656,10 @@ FFlockRequestHandle FFlockMultiplayerSessions::FindDirectAddress(UFlockMultiplay
 			Lan.Address = Published.Lan;
 			Lan.Port = Published.Port;
 			Lan.bIsLan = true;
-			AnswerSessionCall(OnComplete, TFlockResult<FFlockDirectAddress>::Ok(Lan));
+			OnComplete(TFlockResult<FFlockDirectAddress>::Ok(Lan), true);
 			return;
 		}
-		AnswerSessionCall(OnComplete, TFlockResult<FFlockDirectAddress>::Ok(Chosen()));
+		OnComplete(TFlockResult<FFlockDirectAddress>::Ok(Chosen()), false);
 	});
 }
 
@@ -467,9 +678,18 @@ FFlockTravels& FFlockMultiplayerSessions::GetTravels()
 {
 	if (!Travels.IsValid())
 	{
-		Travels = MakeShared<FFlockTravels>(AsShared(), Logger);
+		Travels = MakeShared<FFlockTravels>(AsShared(), Logger, [Calls = RepeatingCalls]() { return Calls->Now(); });
 	}
 	return *Travels;
+}
+
+FFlockRelayBridge::FPtr FFlockMultiplayerSessions::GetRelayBridgeForTesting() const
+{
+	if (JoinChecks.IsValid() && JoinChecks->GetRelayBridge().IsValid())
+	{
+		return JoinChecks->GetRelayBridge();
+	}
+	return Travels.IsValid() ? Travels->GetPlayersBridgeForTesting() : nullptr;
 }
 
 FFlockJoinChecksOnHost& FFlockMultiplayerSessions::GetJoinChecks()
@@ -488,6 +708,7 @@ void FFlockMultiplayerSessions::MoveConnectingOn()
 		// Held through its answers, which may close it and start another.
 		const TSharedRef<FFlockRelayConnection> Ticking = Relay->Connection.ToSharedRef();
 		Ticking->Tick();
+		TellARelayLost();
 	}
 	DirectAddresses->Tick();
 	if (Travels.IsValid())
@@ -498,6 +719,7 @@ void FFlockMultiplayerSessions::MoveConnectingOn()
 	{
 		JoinChecks->Tick();
 	}
+	KeepReadingForRelayedPlayers();
 	if (ConnectionWaiters.Num() == 0)
 	{
 		return;
@@ -645,6 +867,7 @@ void FFlockMultiplayerSessions::StopForShutdown()
 		AnswerWait(Waiter, TFlockResult<UFlockMultiplayerSession*>::Fail(ShutDownError()));
 	}
 	StopReadingForConnection();
+	StopReadingForRelayedPlayers();
 	DirectAddresses->StopForShutdown();
 	if (UFlockMultiplayerSession* HeldNow = Held.Get())
 	{
@@ -866,6 +1089,8 @@ UFlockMultiplayerSession* FFlockMultiplayerSessions::Take(const FFlockMultiplaye
 			// The heartbeat follows the reading before anyone hears of it, so a handler finds the SDK's own state settled too.
 			const FFlockMultiplayerSessionChanges Changes = HeldNow->TakeReading(Reading);
 			KeepHeartbeating();
+			// A host taking players through its relay lets in each seated player's relay address the reading names.
+			OpenTheRelayToSeatedPlayers(HeldNow);
 			const TStrongObjectPtr<UFlockMultiplayerSession> KeepWhileRaising(HeldNow);
 			HeldNow->RaiseChanges(Changes);
 			// The game hears the change first, then a wait for the host's address is answered.
@@ -1037,6 +1262,38 @@ FFlockRequestHandle FFlockMultiplayerSessions::WaitForRelay(const FRelayOpeningR
 		}
 	};
 	return FFlockRequestHandle(Token);
+}
+
+void FFlockMultiplayerSessions::TellARelayLost()
+{
+	if (!Relay.IsValid() || Relay->bToldLost || !Relay->bDone || !Relay->Result.bSuccess || !Relay->Connection.IsValid())
+	{
+		return;
+	}
+	const FFlockRelayConnection& Connection = *Relay->Connection;
+	// A relay the SDK closed (the session's end, a leave, another server) stops with no reason; only a failure is a loss.
+	if (!Connection.HasStopped() || Connection.GetFailureReason().IsEmpty())
+	{
+		return;
+	}
+	Relay->bToldLost = true;
+	// The relay is the held session's: its end, or another session held, closes it and forgets it first (CloseRelayOf). Told on
+	// the frame the relay's own warning said why; the next opening (Travel To Session again) reserves another.
+	if (UFlockMultiplayerSession* Session = Held.Get())
+	{
+		Session->RaiseRelayLost(Connection.GetFailureReason());
+	}
+}
+
+void FFlockMultiplayerSessions::TellTheHostMovedOnTheRelay(UFlockMultiplayerSession* Session)
+{
+	if (Session == nullptr || Session != Held.Get() || Session->HasEnded())
+	{
+		return;
+	}
+	Logger->LogWarning(TEXT("The host's address on Flock's relay changed (its relay was lost and it opened another), so this player's connection to it "
+		"through the relay is gone. On Relay Lost is raised: call Travel To Session again, which connects to the new address."));
+	Session->RaiseRelayLost(FlockRelayFailureReasons::Lost);
 }
 
 void FFlockMultiplayerSessions::StartRelay(UFlockMultiplayerSession* Session, const FString& Server)

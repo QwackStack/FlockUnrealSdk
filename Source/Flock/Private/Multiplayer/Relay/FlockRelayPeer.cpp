@@ -1,7 +1,26 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Multiplayer/Relay/FlockRelayPeer.h"
+#include "Dom/JsonObject.h"
 #include "Multiplayer/FlockDirectAddresses.h"
+#include "Multiplayer/FlockWireFields.h"
+
+bool FFlockRelayPeer::TryReadPublished(const FJsonObject& Connection, FFlockRelayPeer& OutAddress, FString& OutServer)
+{
+	OutAddress = FFlockRelayPeer();
+	OutServer.Reset();
+	if (!FlockWireFields::TextOf(FlockWireFields::SpelledExactly(Connection, TEXT("mode"))).Equals(FlockMultiplayerConnectionModes::Relay,
+		ESearchCase::CaseSensitive))
+	{
+		return false;
+	}
+	if (!TryParse(FlockWireFields::TextOf(FlockWireFields::SpelledExactly(Connection, FlockRelayConnectionValues::RelayAddress)), OutAddress))
+	{
+		return false;
+	}
+	OutServer = FlockWireFields::TextOf(FlockWireFields::SpelledExactly(Connection, FlockRelayConnectionValues::RelayServer));
+	return true;
+}
 
 bool FFlockRelayPeer::TryParse(const FString& Text, FFlockRelayPeer& OutPeer)
 {

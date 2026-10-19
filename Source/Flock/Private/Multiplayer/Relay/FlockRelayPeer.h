@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 
+class FJsonObject;
+
 /** An IPv4 address and port on the relay: a player's relay address, or where a packet came from. A value, so handing packets over allocates nothing. */
 struct FLOCK_API FFlockRelayPeer
 {
@@ -33,4 +35,11 @@ struct FLOCK_API FFlockRelayPeer
 
 	/** Reads "a.b.c.d:port", digits only; false for anything else (a sign, a space, a part over 255, a port out of range). */
 	static bool TryParse(const FString& Text, FFlockRelayPeer& OutPeer);
+
+	/**
+	 * The one reader of a connection of mode "relay" (letter case counts): the relay address it names and, on the host's, the
+	 * relay server ("name:port", empty when absent). False for another mode or no usable relay address. Reads the host's
+	 * connection for the session and a player's for its seat alike.
+	 */
+	static bool TryReadPublished(const FJsonObject& Connection, FFlockRelayPeer& OutAddress, FString& OutServer);
 };

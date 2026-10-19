@@ -62,8 +62,11 @@ public:
 	/** An answer may be lost on the way: the same bytes again, under the same transaction, so the relay knows it for a repeat; given up on after the answer wait. */
 	void SendAgainOrGiveUp(double Now);
 
-	/** Something sent at least this often keeps the way to the relay open through a router or Docker's port forwarding. */
-	void KeepAlive(double Now);
+	/** Asks the relay (a binding request) every AskTheRelayEverySeconds, whatever else goes; it also keeps the way open through a router or Docker's port forwarding. */
+	void AskTheRelay(double Now);
+
+	/** True when the relay, which answered the asks, has answered nothing for RelayLostWhenSilentSeconds: this device no longer reaches it. */
+	bool HasStoppedAnswering(double Now) const;
 
 	/** Takes one of the relay's own messages: the release's answer, or an answer to a request waiting. */
 	void Take(const uint8* Packet, int32 Length);
@@ -122,6 +125,12 @@ private:
 
 	/** The relay's thread's own. */
 	TArray<FFlockRelayRequestRef> Waiting;
+	/** The latest ask, when it went, and when the relay last answered anything; the relay's thread's own. */
+	TArray<uint8> AskTransaction;
+	double LastAskAt = 0.0;
+	double LastAnsweredAt = 0.0;
+	/** A relay may answer the reservation and never a binding request (from a socket it did not answer a binding on): its silence says nothing. */
+	bool bAnswersAsks = false;
 
 	/** The release on its way: set by the thread that stops the connection, answered on the relay's thread. */
 	mutable FCriticalSection ReleaseLock;

@@ -8,9 +8,9 @@
 class FSocket;
 
 /**
- * The UDP socket to one relay server (dual-stack where the platform allows): connected to it, never holding a sender, and
- * remembering when it last sent. Made empty and given its socket on the relay's thread once one is found; until then, and
- * once closed, sends are refused. Sends from any thread; reads and the close on the relay's thread.
+ * The UDP socket to one relay server (dual-stack where the platform allows): connected to it, and never holding a sender.
+ * Made empty and given its socket on the relay's thread once one is found; until then, and once closed, sends are refused.
+ * Sends from any thread; reads and the close on the relay's thread.
  */
 class FFlockRelaySocket
 {
@@ -32,9 +32,6 @@ public:
 
 	/** Takes a socket connected to the relay server; non-blocking, so a full send buffer drops a packet rather than holding a thread. */
 	void Attach(FSocket* Connected);
-
-	/** When something last went out, as a FPlatformTime::Seconds reading. */
-	double GetLastSentAt() const { return LastSentAt.load(); }
 
 	/** Sends one packet, from any thread; false when there is no socket yet, it was closed, or it refused the packet, which the answer wait judges. */
 	bool TrySend(const uint8* Bytes, int32 Count);
@@ -60,6 +57,5 @@ private:
 	FSocket* Socket = nullptr;
 	bool bClosed = false;
 	FName Protocol;
-	std::atomic<double> LastSentAt{ 0.0 };
 	std::atomic<int32> LocalPort{ 0 };
 };

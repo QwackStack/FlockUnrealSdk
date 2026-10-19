@@ -6,17 +6,15 @@
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTLS.h"
 #include "HAL/PlatformTime.h"
-#include "HAL/Runnable.h"
-#include "HAL/RunnableThread.h"
 #include "Multiplayer/FlockUdpSockets.h"
 #include "Multiplayer/Relay/FlockRelayRenewals.h"
 #include "Multiplayer/Relay/FlockRelayRequests.h"
 #include "Multiplayer/Relay/FlockRelaySocket.h"
+#include "Multiplayer/Relay/FlockRelayThreads.h"
 #include "Multiplayer/Relay/FlockRelayWire.h"
 #include <atomic>
 
 int32 FFlockRelayConnection::MostOpeningsForTesting = 0;
-bool FFlockRelayConnection::bThreadRefusedForTesting = false;
 
 namespace
 {
@@ -44,7 +42,7 @@ namespace
  * The part of a relay connection the relay's thread shares: its socket, requests, packets and renewals, and the state both
  * sides read. Kept alive by the thread until the thread ends, so a connection its owner dropped still gives its address back.
  */
-class FFlockRelayCore : public FRunnable
+class FFlockRelayCore : public IFlockRelayThreadWork
 {
 public:
 	// The callbacks below capture this: they are held by members of this core and run only by its own thread, so none can
@@ -105,8 +103,14 @@ public:
 		}
 	}
 
-	/** Gives up at once, sending nothing more: Flock's module is going away. */
-	void QuitNow() { bQuitNow = true; }
+	virtual bool HasEnded() const override { return bThreadDone.load(); }
+
+	/** Flock's module is going away: a relay its owner never closed gives its address back from here (one already closed sent its release then), and the thread gives up at once. */
+	virtual void EndNow() override
+	{
+		StopConnection(EState::Closed, FString(), FString());
+		bQuitNow = true;
+	}
 
 	void HandOver(const FFlockRelayRequestRef& Request)
 	{
@@ -235,7 +239,12 @@ private:
 			const double Now = FPlatformTime::Seconds();
 			Requests.SendAgainOrGiveUp(Now);
 			Renewals.RenewDue(Now);
-			Requests.KeepAlive(Now);
+			Requests.AskTheRelay(Now);
+			if (Requests.HasStoppedAnswering(Now))
+			{
+				Lose(FString::Printf(TEXT("the relay has answered nothing for %.0f s, so this device's packets no longer reach it (the network or a router "
+					"between them changed)"), Timing.RelayLostWhenSilentSeconds));
+			}
 			AnnounceOnceTheStunServersSettle(Now);
 		}
 	}
@@ -385,119 +394,18 @@ private:
 	bool bReservedNotYetAnnounced = false;
 };
 
-namespace
-{
-	/**
-	 * Every relay thread, so the game thread cleans each up once it ended and Flock's module waits for those still running
-	 * when it goes away. A thread keeps its core alive, so a connection its owner dropped still gives its address back.
-	 */
-	class FFlockRelayThreads
-	{
-	public:
-		static FFlockRelayThreads& Get()
-		{
-			static FFlockRelayThreads Threads;
-			return Threads;
-		}
-
-		void Start(const TSharedRef<FFlockRelayCore, ESPMode::ThreadSafe>& Core)
-		{
-			FRunnableThread* Thread = FFlockRelayConnection::bThreadRefusedForTesting
-				? nullptr
-				: FRunnableThread::Create(&Core.Get(), FFlockRelayConnection::ThreadName, 0, TPri_Normal);
-			if (Thread == nullptr)
-			{
-				// The engine runs without threads (a launch with -nothreading): the relay cannot work, and its opening says so.
-				Core->bThreadDone = true;
-				Core->StopConnection(EState::Failed, FlockRelayFailureReasons::NoThread,
-					TEXT("No thread could be started for the relay: this launch of the game runs without threads"));
-				return;
-			}
-			FScopeLock Locked(&Lock);
-			Running.Add({ Thread, Core });
-			if (!CleanUpHandle.IsValid())
-			{
-				CleanUpHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float)
-				{
-					FFlockRelayThreads::Get().CleanUpEnded();
-					return true;
-				}), 1.0f);
-			}
-		}
-
-		/** Deletes the threads that ended; deleting one waits for it, which is at once. */
-		void CleanUpEnded()
-		{
-			TArray<FEntry> Ended;
-			{
-				FScopeLock Locked(&Lock);
-				for (int32 Index = Running.Num() - 1; Index >= 0; --Index)
-				{
-					if (Running[Index].Core->bThreadDone)
-					{
-						Ended.Add(Running[Index]);
-						Running.RemoveAt(Index);
-					}
-				}
-			}
-			for (FEntry& Entry : Ended)
-			{
-				delete Entry.Thread;
-			}
-		}
-
-		void StopAll()
-		{
-			TArray<FEntry> All;
-			{
-				FScopeLock Locked(&Lock);
-				All = MoveTemp(Running);
-				Running.Reset();
-				if (CleanUpHandle.IsValid())
-				{
-					FTSTicker::GetCoreTicker().RemoveTicker(CleanUpHandle);
-					CleanUpHandle.Reset();
-				}
-			}
-			for (FEntry& Entry : All)
-			{
-				// A relay its owner never closed gives its address back from here; one already closed sent its release then.
-				Entry.Core->StopConnection(EState::Closed, FString(), FString());
-				Entry.Core->QuitNow();
-			}
-			for (FEntry& Entry : All)
-			{
-				// Waits for the thread, which sees the quit within one poll.
-				delete Entry.Thread;
-			}
-		}
-
-		int32 Count()
-		{
-			CleanUpEnded();
-			FScopeLock Locked(&Lock);
-			return Running.Num();
-		}
-
-	private:
-		struct FEntry
-		{
-			FRunnableThread* Thread = nullptr;
-			TSharedPtr<FFlockRelayCore, ESPMode::ThreadSafe> Core;
-		};
-
-		FCriticalSection Lock;
-		TArray<FEntry> Running;
-		FTSTicker::FDelegateHandle CleanUpHandle;
-	};
-}
-
 TSharedRef<FFlockRelayConnection> FFlockRelayConnection::Open(const FFlockRelayLogin& Login, const TArray<FFlockRelayStunLookUp>& StunServers,
 	const FFlockRelayTiming& Timing, const TSharedRef<IFlockLogger>& Logger, FOnOpened OnOpened)
 {
 	const TSharedRef<FFlockRelayCore, ESPMode::ThreadSafe> Core = MakeShared<FFlockRelayCore, ESPMode::ThreadSafe>(Login, StunServers, Timing);
 	const TSharedRef<FFlockRelayConnection> Connection = MakeShareable(new FFlockRelayConnection(Core, Logger, MoveTemp(OnOpened)));
-	FFlockRelayThreads::Get().Start(Core);
+	if (!FFlockRelayThreads::Start(Core, ThreadName, 0))
+	{
+		// The engine runs without threads (a launch with -nothreading): the relay cannot work, and its opening says so.
+		Core->bThreadDone = true;
+		Core->StopConnection(EState::Failed, FlockRelayFailureReasons::NoThread,
+			TEXT("No thread could be started for the relay: this launch of the game runs without threads"));
+	}
 	return Connection;
 }
 
@@ -753,12 +661,12 @@ void FFlockRelayConnection::Close()
 
 void FFlockRelayConnection::StopEveryRelayThread()
 {
-	FFlockRelayThreads::Get().StopAll();
+	FFlockRelayThreads::EndEveryThread();
 }
 
 int32 FFlockRelayConnection::GetRelayThreadsForTesting()
 {
-	return FFlockRelayThreads::Get().Count();
+	return FFlockRelayThreads::CountForTesting();
 }
 
 int32 FFlockRelayConnection::GetNoncesTakenForTesting() const

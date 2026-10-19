@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.33.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.37.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -446,7 +446,7 @@ so you can read only the half you work in.
 | [Leaderboards](Documentation/leaderboards.md) | Boards by name, standings, a player's own rank, windows and score formatting, why there is no submit call |
 | [Notifications](Documentation/notifications.md) | The inbox, scheduled reminders, the template catalog, push device tokens and what push delivery needs |
 | [Android push setup](Documentation/push-setup-android.md) | Step-by-step: Firebase project, the two JSON files and where each goes, the plugin, the token hookup, dashboard credentials, and what to check when nothing arrives |
-| [Multiplayer](Documentation/multiplayer.md) | Parties, sessions, matchmaking and connecting players: create or host, join by code, the party and session objects and their events, heartbeats, join tokens, searching for a match alone or as a party, Travel To Session and direct connections, letting in only the session's players, how each ends |
+| [Multiplayer](Documentation/multiplayer.md) | Parties, sessions, matchmaking and connecting players: create or host, join by code, the party and session objects and their events, heartbeats, join tokens, searching for a match alone or as a party, Travel To Session, direct connections and Flock's relay, letting in only the session's players, how each ends |
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, screen views, gameplay events, transactions, consent — what players did (Dashboards → Game Metrics) |
 | [Diagnostics](Documentation/diagnostics.md) | Log entries, automatic exception and Blueprint exception capture, crash reporting — what went wrong (Diagnostics → Errors / Events) |
@@ -556,8 +556,15 @@ the host's game mode calls Flock's check from `PreLoginAsync`, which lets in onl
 one connection a player, and says which Flock player each connection is; a player turned away learns why. **1.32.0 brings
 multiplayer to Blueprint**: a node for every party, session and matchmaking call and for Travel To Session, a node for every
 value a result carries, and ready-made game modes (`AFlockGameModeBase`, `AFlockGameMode`) that let in only the session's
-players, with the game's own check overridable in Blueprint. **1.33.0 builds Flock's relay client into the SDK**, which a
-later release connects players through.
+players, with the game's own check overridable in Blueprint. **1.33.0 builds Flock's relay client into the SDK**, and
+**1.34.0 connects players through it**: Travel To Session takes a player who cannot reach the host directly through Flock's
+relay (`Relay`: When Needed by default, Always or Never), the engine's own networking carrying it, and keeps a fresh join
+token on hand for a player a host's level change brings back. **1.35.0 makes a host change one call**: on On Host Changed (or
+On Relay Lost, raised when this device's relay stops working) the game calls Travel To Session again, which does this device's
+part from wherever the game is, a newer travel taking over one under way. **1.36.0 adds the multiplayer sample**, made of
+Blueprints only (`Content/Samples/Multiplayer`): sign in, host, join by code, quick match and leave, following host changes.
+**1.37.0 comes from playing through Cloudflare's relay**: a relay that stops answering this device is told lost within a minute,
+so On Relay Lost brings the game back rather than a silent wait.
 
 Deliberate omissions and known gaps:
 

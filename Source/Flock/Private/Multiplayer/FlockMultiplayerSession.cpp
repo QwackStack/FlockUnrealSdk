@@ -242,6 +242,20 @@ void UFlockMultiplayerSession::CopyFrom(const FFlockMultiplayerSessionReading& R
 	// The server blanks the address for a player without a seat, and sends none before the host first publishes.
 	bHasConnection = Reading.bHasConnection;
 	Connection = Reading.bHasConnection ? Reading.Connection : FFlockMultiplayerSessionConnection();
+	// The host reads every seated player's relay address, a player its own; a seat that ended names none.
+	SeatsOnTheRelay = Reading.Seats.FilterByPredicate([](const FFlockMultiplayerSessionSeat& Seat)
+	{
+		return !Seat.RelayAddress.IsEmpty() && Seat.Status.Equals(FlockMultiplayerSessionWireValues::SeatJoined, ESearchCase::CaseSensitive);
+	});
+}
+
+FString UFlockMultiplayerSession::SeatRelayAddressOf(const FString& Player) const
+{
+	const FFlockMultiplayerSessionSeat* Found = SeatsOnTheRelay.FindByPredicate([&Player](const FFlockMultiplayerSessionSeat& Seat)
+	{
+		return Seat.PlayerId.Equals(Player, ESearchCase::CaseSensitive);
+	});
+	return Found != nullptr ? Found->RelayAddress : FString();
 }
 
 FFlockError UFlockMultiplayerSession::RefusedWithoutOwner()

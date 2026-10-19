@@ -149,6 +149,73 @@ namespace FlockMultiplayerConnectionModes
 {
 	/** The host's address and port, published by Publish Direct Connection. */
 	inline constexpr const TCHAR* Direct = TEXT("direct");
+	/** The host's address on Flock's relay, published by Travel To Session, with its direct addresses too when players on its network may connect directly. */
+	inline constexpr const TCHAR* Relay = TEXT("relay");
+}
+
+/** What a relay connection adds to the direct values: the host's address on the relay and the relay server it is on. */
+namespace FlockRelayConnectionValues
+{
+	/** The host's address on Flock's relay, "a.b.c.d:port"; a player's seat names its own the same way. */
+	inline constexpr const TCHAR* RelayAddress = TEXT("relay_address");
+	/** The relay server the host's address is on, "name:port"; players reserve their own address on it. */
+	inline constexpr const TCHAR* RelayServer = TEXT("relay_server");
+}
+
+/** Which players Travel To Session takes through Flock's relay. Set it the same on every player of a game. */
+UENUM(BlueprintType)
+enum class EFlockRelayUse : uint8
+{
+	/**
+	 * A player sharing the host's public address tries the host's address on its network for a few seconds, then goes through
+	 * Flock's relay if that is not answered; everyone else goes through the relay, so no port has to be forwarded. Against a host
+	 * that offers no relay, players connect to the address it published.
+	 */
+	WhenNeeded,
+	/**
+	 * Every player goes through Flock's relay, on the host's network too: the host publishes no address of its own and turns away
+	 * any player that reaches it any other way, so no player's address reaches the host or the host's a player.
+	 */
+	Always,
+	/** Never through the relay: players reach the host on its network, or on a port it forwarded. */
+	Never,
+};
+
+/** Why Flock's relay could not be used (a travel result's Relay Failure Reason). An open set: compare with these and keep a default. */
+namespace FlockRelayFailureReasons
+{
+	/** Flock listed no relay: switched off for this game in the Flock dashboard, or none set up. */
+	inline constexpr const TCHAR* NotOffered = TEXT("relay_not_offered");
+	/** The host takes no players through Flock's relay, and this player's Relay is Always. */
+	inline constexpr const TCHAR* NotOfferedByTheHost = TEXT("relay_not_offered_by_host");
+	/** Flock does not list, for this player, the relay server the host uses. */
+	inline constexpr const TCHAR* ServerNotListed = TEXT("relay_server_not_listed");
+	/** The studio's relay is paused until its bill is paid. */
+	inline constexpr const TCHAR* Paused = TEXT("relay_paused");
+	/** The player asked Flock for relay logins more than 12 times in a minute, or its seat drew the most logins one seat may (10). */
+	inline constexpr const TCHAR* TooManyLogins = TEXT("relay_too_many_logins");
+	/** Flock says the player has no seat in the session. */
+	inline constexpr const TCHAR* NotInSession = TEXT("relay_not_in_session");
+	/** Flock did not answer the request for relay logins. */
+	inline constexpr const TCHAR* FlockUnreachable = TEXT("flock_unreachable");
+	/** Flock refused the request for relay logins for another reason. */
+	inline constexpr const TCHAR* LoginsRefused = TEXT("relay_logins_refused");
+	/** The relay server's name could not be looked up, or the server did not answer. */
+	inline constexpr const TCHAR* Unreachable = TEXT("relay_unreachable");
+	/** The relay refused the login Flock minted. */
+	inline constexpr const TCHAR* WrongLogin = TEXT("relay_wrong_login");
+	/** The relay has no room for another address. */
+	inline constexpr const TCHAR* Full = TEXT("relay_full");
+	/** The relay refused to let packets in from the host's relay address, or from a player's. */
+	inline constexpr const TCHAR* OpenRefused = TEXT("relay_open_refused");
+	/** The relay refused a request for another reason. */
+	inline constexpr const TCHAR* Refused = TEXT("relay_refused");
+	/** The relay let the address go (a renewal was refused, or none was answered before it lapsed), or it has answered nothing for 45 s: this device's packets no longer reach it. */
+	inline constexpr const TCHAR* Lost = TEXT("relay_lost");
+	/** The relay connection was closed by its owner (the session's end) before the call. */
+	inline constexpr const TCHAR* Closed = TEXT("relay_closed");
+	/** The relay needs threads of its own, and this launch of the game runs without threads. */
+	inline constexpr const TCHAR* NoThread = TEXT("relay_no_thread");
 }
 
 /** The values a direct connection holds on the wire; "address" and "port" are the names the backend expects. */
@@ -207,7 +274,8 @@ namespace FlockTravelToSessionOutcomes
 	inline constexpr const TCHAR* SessionEnded = TEXT("session_ended");
 	/**
 	 * Connecting to the host failed, and the engine has taken this game back to its default level; or the host published no
-	 * address and port this game can use, and it stayed where it was. Outside a LAN the host's port must be forwarded to it.
+	 * address and port this game can use, and it stayed where it was. Outside a LAN a host that offers no relay must have its
+	 * port forwarded to it.
 	 */
 	inline constexpr const TCHAR* CouldNotConnect = TEXT("could_not_connect");
 	/** The host's level opened without listening for players (or did not open), so nothing was published. */
@@ -216,6 +284,13 @@ namespace FlockTravelToSessionOutcomes
 	inline constexpr const TCHAR* NotDirect = TEXT("not_direct");
 	/** The host turned this player away; the result's Refused Reason says why, and the engine has taken this game back to its default level. */
 	inline constexpr const TCHAR* Refused = TEXT("refused");
+	/** Flock's relay was needed and could not be used; the result's Relay Failure Reason says why (a FlockRelayFailureReasons value). */
+	inline constexpr const TCHAR* RelayFailed = TEXT("relay_failed");
+	/**
+	 * The game called Travel To Session again before this one ended, and the newer one took over: nothing to do here, its own
+	 * answer follows. What this one had started was left as a cancel leaves it.
+	 */
+	inline constexpr const TCHAR* Restarted = TEXT("restarted");
 }
 
 /**
@@ -240,6 +315,8 @@ namespace FlockTravelToSessionRefusedReasons
 	inline constexpr const TCHAR* RefusedByTheGame = TEXT("refused_by_the_game");
 	/** The host's game mode does not run Flock's check of joining players (FlockJoinChecks::CheckJoiningPlayer), so nobody gets in. */
 	inline constexpr const TCHAR* JoinCheckMissing = TEXT("join_check_missing");
+	/** The host takes players through Flock's relay only (its Relay is Always), and this player reached it another way. Flock was not asked. */
+	inline constexpr const TCHAR* RelayOnly = TEXT("relay_only");
 }
 
 /** What a game can choose about Travel To Session. */
@@ -249,8 +326,10 @@ struct FLOCK_API FFlockTravelToSessionOptions
 	GENERATED_BODY()
 
 	/**
-	 * The level the host opens listening for players, such as "/Game/Maps/Arena"; empty opens the level it is in again. A
-	 * player travels to whatever level the host has open.
+	 * The level the host opens listening for players, such as "/Game/Maps/Arena"; empty opens the level it is in again, or, for a
+	 * player of the session that has become its host, the level it played with the old host (the engine may have taken it back
+	 * to its default level meanwhile). A host already listening for the session keeps its level. A player travels to whatever
+	 * level the host has open.
 	 */
 	UPROPERTY(BlueprintReadWrite, Category = "Flock|Multiplayer")
 	FString HostLevel;
@@ -258,6 +337,13 @@ struct FLOCK_API FFlockTravelToSessionOptions
 	/** How long a player waits for the host to publish how to reach it. */
 	UPROPERTY(BlueprintReadWrite, Category = "Flock|Multiplayer")
 	float WaitForHostSeconds = 60.f;
+
+	/**
+	 * Which players go through Flock's relay: by default players on the host's network connect directly (through the relay if
+	 * the host does not answer there), everyone else through the relay. Set it the same on every player of a game.
+	 */
+	UPROPERTY(BlueprintReadWrite, Category = "Flock|Multiplayer")
+	EFlockRelayUse Relay = EFlockRelayUse::WhenNeeded;
 };
 
 /** How Travel To Session ended. */
@@ -273,13 +359,27 @@ struct FLOCK_API FFlockTravelToSessionResult
 	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
 	bool bIsHost = false;
 
-	/** The address published (host) or traveled to (player); empty when there was none. */
+	/**
+	 * For a host, the direct address it published (empty when it published none, with Relay Always); for a player, the host's
+	 * address it traveled to, the host's relay IP when it went through the relay.
+	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
 	FString Address;
 
-	/** The port the host's level listens on (host) or the port traveled to (player); 0 when there was none. */
+	/** The port the host's level listens on (host), or the host's port traveled to (player), on the relay when through it; 0 when there was none. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
 	int32 Port = 0;
+
+	/** True for a player connected through Flock's relay, and for a host that takes players through it. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	bool bThroughRelay = false;
+
+	/**
+	 * Why Flock's relay could not be used, a FlockRelayFailureReasons value: set with the relay_failed outcome, and for a host that
+	 * takes players on its network only because its relay could not be opened; empty otherwise.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
+	FString RelayFailureReason;
 
 	/** The host's connection as published; its Mode is empty when the host never published. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
@@ -307,7 +407,7 @@ struct FLOCK_API FFlockJoiningPlayer
 	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
 	FString Options;
 
-	/** The player's address, as the engine gave it. */
+	/** The player's address, as the engine gave it: 127.0.0.1 for a player that came through Flock's relay. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock|Multiplayer")
 	FString Address;
 
@@ -368,6 +468,13 @@ struct FLOCK_API FFlockMultiplayerSessionSeat
 
 	UPROPERTY()
 	FString Status;
+
+	/**
+	 * The seat's address on Flock's relay ("a.b.c.d:port"), as the player published it for its seat (a connection of mode relay);
+	 * empty for none. The server shows it to the host (every seat's) and to the seat's own player only.
+	 */
+	UPROPERTY()
+	FString RelayAddress;
 };
 
 /**

@@ -102,7 +102,6 @@ void FFlockRelaySocket::Attach(FSocket* Connected)
 	Socket = Connected;
 	Protocol = Socket->GetProtocol();
 	LocalPort = FFlockUdpSockets::LocalPortOf(*Socket);
-	LastSentAt = FPlatformTime::Seconds();
 }
 
 bool FFlockRelaySocket::TrySend(const uint8* Bytes, int32 Count)
@@ -117,7 +116,6 @@ bool FFlockRelaySocket::TrySend(const uint8* Bytes, int32 Count)
 	{
 		return false;
 	}
-	LastSentAt = FPlatformTime::Seconds();
 	return true;
 }
 
