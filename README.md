@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.37.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.38.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -446,7 +446,7 @@ so you can read only the half you work in.
 | [Leaderboards](Documentation/leaderboards.md) | Boards by name, standings, a player's own rank, windows and score formatting, why there is no submit call |
 | [Notifications](Documentation/notifications.md) | The inbox, scheduled reminders, the template catalog, push device tokens and what push delivery needs |
 | [Android push setup](Documentation/push-setup-android.md) | Step-by-step: Firebase project, the two JSON files and where each goes, the plugin, the token hookup, dashboard credentials, and what to check when nothing arrives |
-| [Multiplayer](Documentation/multiplayer.md) | Parties, sessions, matchmaking and connecting players: create or host, join by code, the party and session objects and their events, heartbeats, join tokens, searching for a match alone or as a party, Travel To Session, direct connections and Flock's relay, letting in only the session's players, how each ends |
+| [Multiplayer](Documentation/multiplayer.md) | Parties, sessions, matchmaking and connecting players: create or host, join by code, the party and session objects and their events, heartbeats, join tokens, searching for a match alone or as a party, Travel To Session, direct connections and Flock's relay, direct paths for relayed players, letting in only the session's players, how each ends |
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, screen views, gameplay events, transactions, consent — what players did (Dashboards → Game Metrics) |
 | [Diagnostics](Documentation/diagnostics.md) | Log entries, automatic exception and Blueprint exception capture, crash reporting — what went wrong (Diagnostics → Errors / Events) |
@@ -564,7 +564,9 @@ On Relay Lost, raised when this device's relay stops working) the game calls Tra
 part from wherever the game is, a newer travel taking over one under way. **1.36.0 adds the multiplayer sample**, made of
 Blueprints only (`Content/Samples/Multiplayer`): sign in, host, join by code, quick match and leave, following host changes.
 **1.37.0 comes from playing through Cloudflare's relay**: a relay that stops answering this device is told lost within a minute,
-so On Relay Lost brings the game back rather than a silent wait.
+so On Relay Lost brings the game back rather than a silent wait. **1.38.0 moves relayed players to a direct path** (When Needed)
+once they and the host reach each other, and back to the relay when it goes quiet, the game's connection carrying on through
+both; a player connecting again through its relay address is back in within seconds rather than the engine's minute.
 
 Deliberate omissions and known gaps:
 

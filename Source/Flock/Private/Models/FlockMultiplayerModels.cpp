@@ -187,7 +187,8 @@ bool FFlockMultiplayerSessionReading::FromWireObject(const TSharedRef<FJsonObjec
 				return false;
 			}
 			(*ParticipantObject)->TryGetStringField(TEXT("status"), Seat.Status);
-			// How the player said to reach it for its seat: only its relay address is read, the host's own reader's way.
+			// How the player said to reach it for its seat: its relay address, and whether its bridge reads the bridges' messages, read
+			// the host's own reader's way.
 			const TSharedPtr<FJsonObject>* SeatConnection = nullptr;
 			FFlockRelayPeer SeatRelayAddress;
 			FString Unused;
@@ -195,6 +196,7 @@ bool FFlockMultiplayerSessionReading::FromWireObject(const TSharedRef<FJsonObjec
 				&& FFlockRelayPeer::TryReadPublished(**SeatConnection, SeatRelayAddress, Unused))
 			{
 				Seat.RelayAddress = SeatRelayAddress.ToString();
+				Seat.bReadsBridgeMessages = FFlockRelayPeer::ReadsBridgeMessages(**SeatConnection);
 			}
 			OutStruct.Seats.Add(Seat);
 		}

@@ -218,8 +218,11 @@ public:
 
 	void MakesHost(const FSessionRef& Session, const FString& PlayerId) { HandOver(*Session, PlayerId); }
 
-	/** PlayerId says for its seat that it is at RelayAddress on the relay, as a relayed player's game does before connecting. */
-	void SeatSaysRelayAddress(const FSessionRef& Session, const FString& PlayerId, const FString& RelayAddress)
+	/**
+	 * PlayerId says for its seat that it is at RelayAddress on the relay, as a relayed player's game does before connecting, and with
+	 * bReadsBridgeMessages that its bridge reads the bridges' messages, as this version's does.
+	 */
+	void SeatSaysRelayAddress(const FSessionRef& Session, const FString& PlayerId, const FString& RelayAddress, bool bReadsBridgeMessages = false)
 	{
 		for (FSeat& Seat : Session->Seats)
 		{
@@ -228,6 +231,10 @@ public:
 				Seat.Connection = MakeShared<FJsonObject>();
 				Seat.Connection->SetStringField(TEXT("mode"), TEXT("relay"));
 				Seat.Connection->SetStringField(TEXT("relay_address"), RelayAddress);
+				if (bReadsBridgeMessages)
+				{
+					Seat.Connection->SetNumberField(TEXT("bridge_messages"), 1);
+				}
 				++Seat.ConnectionEpoch;
 			}
 		}

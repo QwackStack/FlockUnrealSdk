@@ -160,6 +160,12 @@ namespace FlockRelayConnectionValues
 	inline constexpr const TCHAR* RelayAddress = TEXT("relay_address");
 	/** The relay server the host's address is on, "name:port"; players reserve their own address on it. */
 	inline constexpr const TCHAR* RelayServer = TEXT("relay_server");
+	/**
+	 * The highest version of the messages two devices' relay bridges send each other (to move to a direct path, and to say a new
+	 * connection starts) that this device's bridge reads, every earlier version included; published by the host for the session and
+	 * by a player for its seat. Absent from a device whose bridge would hand them to the engine, which closes a connection they reach.
+	 */
+	inline constexpr const TCHAR* BridgeMessages = TEXT("bridge_messages");
 }
 
 /** Which players Travel To Session takes through Flock's relay. Set it the same on every player of a game. */
@@ -168,13 +174,15 @@ enum class EFlockRelayUse : uint8
 {
 	/**
 	 * A player sharing the host's public address tries the host's address on its network for a few seconds, then goes through
-	 * Flock's relay if that is not answered; everyone else goes through the relay, so no port has to be forwarded. Against a host
-	 * that offers no relay, players connect to the address it published.
+	 * Flock's relay if that is not answered; everyone else goes through the relay, so no port has to be forwarded. A player who came
+	 * through the relay moves to a direct path once it and the host reach each other (each learns where Flock's servers see it and
+	 * offers that through the relay, so the two ends learn each other's addresses), and back to the relay when that path goes quiet;
+	 * the game's connection carries on through both. Against a host that offers no relay, players connect to the address it published.
 	 */
 	WhenNeeded,
 	/**
-	 * Every player goes through Flock's relay, on the host's network too: the host publishes no address of its own and turns away
-	 * any player that reaches it any other way, so no player's address reaches the host or the host's a player.
+	 * Every player goes through Flock's relay, on the host's network too, and stays on it: the host publishes no address of its own
+	 * and turns away any player that reaches it any other way, so no player's address reaches the host or the host's a player.
 	 */
 	Always,
 	/** Never through the relay: players reach the host on its network, or on a port it forwarded. */
@@ -475,6 +483,10 @@ struct FLOCK_API FFlockMultiplayerSessionSeat
 	 */
 	UPROPERTY()
 	FString RelayAddress;
+
+	/** True when the seat's relay connection says its device's relay bridge reads the bridges' own messages (FlockRelayConnectionValues::BridgeMessages). */
+	UPROPERTY()
+	bool bReadsBridgeMessages = false;
 };
 
 /**

@@ -5,6 +5,36 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.38.0] - 2026-10-19
+
+Direct paths for relayed players: a player who came through Flock's relay moves off it once it and the host reach each other.
+
+### Added
+
+- **Relay When Needed moves a relayed player to a direct path, and back.** Each end asks Flock's STUN servers and the relay
+  server where they see it, offers that and its LAN address to the other end through the relay, and probes the other's
+  addresses (and wherever the other's probes come from); once a probe is answered both ways the engine's packets go directly.
+  A direct path quiet for 4 s goes back to the relay, the other end following, and the game's connection carries on through
+  both: the host's net driver hears the player from the same port throughout. When no path proves itself (no offer within
+  20 s, no answer within 6 s) the pair stays on the relay for that connection. Each move is said once at Info. A host offers
+  its addresses only to players its check let in, and only probes naming both ends' keys count. Relay Always never moves, so
+  every address stays hidden. Nothing new for a game to call.
+- **A relay connection and a player's seat say the device's bridge reads the bridges' own messages** (`bridge_messages`, 1).
+  The engine closes a connection that one of these messages reaches (measured: 10 of 10, at the host and at the player), so a
+  bridge keeps every one of them from its engine, whatever their version, and sends none to a device that does not say it reads
+  them: a host or player on 1.34.0 to 1.37.0 stays on the relay as before.
+
+### Fixed
+
+- **A relayed player connecting again through the same relay address was let back in only once its old connection timed out**,
+  a minute later (measured: the engine handed the new connection to the old one, which still had that address, and Flock's
+  check was never asked). The player's bridge now says through the relay when its game starts a new connection (its first, or
+  one Travel To Session sees the engine start), and the host's gives it a loopback port of its own: back in within seconds (5 s
+  after the player travelled, on Cloudflare's dev relay). A socket the engine remakes for the same connection keeps its place.
+- **A relayed player's newer connection, let in before the host had seen its older one go, could lose its relay channel and,
+  30 s later, its place on the bridge**: what the older one left was let go though the newer held it. Only what a gone connection
+  held alone is let go now.
+
 ## [1.37.0] - 2026-10-19
 
 Found by playing through Flock's relay on real networks (Cloudflare's relay, from this game's network).

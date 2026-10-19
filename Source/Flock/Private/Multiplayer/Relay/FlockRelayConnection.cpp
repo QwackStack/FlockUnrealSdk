@@ -242,8 +242,8 @@ private:
 			Requests.AskTheRelay(Now);
 			if (Requests.HasStoppedAnswering(Now))
 			{
-				Lose(FString::Printf(TEXT("the relay has answered nothing for %.0f s, so this device's packets no longer reach it (the network or a router "
-					"between them changed)"), Timing.RelayLostWhenSilentSeconds));
+				Lose(FString::Printf(TEXT("the relay has answered nothing for %.0f s, so this device no longer reaches it (the network or a router between "
+					"them changed, or the relay stopped)"), Timing.RelayLostWhenSilentSeconds));
 			}
 			AnnounceOnceTheStunServersSettle(Now);
 		}

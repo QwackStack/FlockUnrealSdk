@@ -22,6 +22,15 @@ bool FFlockRelayPeer::TryReadPublished(const FJsonObject& Connection, FFlockRela
 	return true;
 }
 
+bool FFlockRelayPeer::ReadsBridgeMessages(const FJsonObject& Connection)
+{
+	FFlockRelayPeer Address;
+	FString Server;
+	// Published as a number, the version of the messages read; this device's are version 1.
+	const TSharedPtr<FJsonValue> Version = FlockWireFields::SpelledExactly(Connection, FlockRelayConnectionValues::BridgeMessages);
+	return TryReadPublished(Connection, Address, Server) && Version.IsValid() && Version->Type == EJson::Number && Version->AsNumber() >= 1.0;
+}
+
 bool FFlockRelayPeer::TryParse(const FString& Text, FFlockRelayPeer& OutPeer)
 {
 	OutPeer = FFlockRelayPeer();

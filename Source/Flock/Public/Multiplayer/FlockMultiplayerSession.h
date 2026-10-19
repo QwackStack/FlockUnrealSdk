@@ -233,6 +233,6 @@ private:
 	/** The seated players whose seat names an address on Flock's relay, as the last reading says: the host reads every seat's, a player its own. */
 	TArray<FFlockMultiplayerSessionSeat> SeatsOnTheRelay;
 
-	/** The relay address Player's seat names, or empty; player ids compared letter for letter. */
-	FString SeatRelayAddressOf(const FString& Player) const;
+	/** Player's seat on the relay as the last reading says, or null; player ids compared letter for letter. */
+	const FFlockMultiplayerSessionSeat* SeatOf(const FString& Player) const;
 };

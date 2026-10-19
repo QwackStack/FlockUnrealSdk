@@ -199,6 +199,9 @@ private:
 		/** A player's: the host's address on the relay and the relay server it is on, when it published one. */
 		FFlockRelayPeer HostOnTheRelay;
 		FString RelayServer;
+		/** A player's: the host's relay connection says its bridge reads the bridges' own messages, and names direct addresses (a host that offers direct paths). */
+		bool bHostReadsBridgeMessages = false;
+		bool bHostOffersDirectPaths = false;
 		/** The session's relay this travel uses: the host's for its players, a player's to reach its host. */
 		TSharedPtr<FFlockRelayConnection> Relay;
 		/** A player's bridge standing in for the host, kept once it is in and closed otherwise. */

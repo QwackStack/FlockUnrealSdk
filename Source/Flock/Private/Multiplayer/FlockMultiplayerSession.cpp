@@ -249,13 +249,12 @@ void UFlockMultiplayerSession::CopyFrom(const FFlockMultiplayerSessionReading& R
 	});
 }
 
-FString UFlockMultiplayerSession::SeatRelayAddressOf(const FString& Player) const
+const FFlockMultiplayerSessionSeat* UFlockMultiplayerSession::SeatOf(const FString& Player) const
 {
-	const FFlockMultiplayerSessionSeat* Found = SeatsOnTheRelay.FindByPredicate([&Player](const FFlockMultiplayerSessionSeat& Seat)
+	return SeatsOnTheRelay.FindByPredicate([&Player](const FFlockMultiplayerSessionSeat& Seat)
 	{
 		return Seat.PlayerId.Equals(Player, ESearchCase::CaseSensitive);
 	});
-	return Found != nullptr ? Found->RelayAddress : FString();
 }
 
 FFlockError UFlockMultiplayerSession::RefusedWithoutOwner()

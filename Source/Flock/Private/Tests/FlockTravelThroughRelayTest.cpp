@@ -5,6 +5,7 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Multiplayer/FlockJoinChecksOnHost.h"
+#include "Multiplayer/Relay/FlockBridgeMessages.h"
 #include "Multiplayer/Relay/FlockRelayBridge.h"
 #include "Tests/Support/FlockJoinFixture.h"
 #include "Tests/Support/FlockRelayFixture.h"
@@ -159,6 +160,17 @@ namespace FlockRelayTravelTestHelpers
 		}
 
 		FFlockRelayBridge::FPtr HostsBridge() const { return Provider->GetJoinChecks().GetRelayBridge(); }
+
+		/** The session read once, as the game's own reads bring it. */
+		void ReadsTheSession(UFlockMultiplayerSession* Read)
+		{
+			bool bRead = false;
+			if (Read != nullptr)
+			{
+				Provider->GetSession(Read->GetId(), [&bRead](TFlockResult<UFlockMultiplayerSession*>) { bRead = true; });
+			}
+			Until([&bRead]() { return bRead; }, 2.0);
+		}
 
 		TSharedPtr<FFlockRelayConnection> SessionsRelay() { return Sessions().GetRelayForTesting(); }
 
@@ -1257,6 +1269,8 @@ bool FFlockRelayTravelReconnectThroughBridgeTest::RunTest(const FString& Paramet
 	F.Game->ConnectsAgain(FString::Printf(TEXT("%s/Game/Maps/Next?FlockJoinToken=%s?game=/Script/Game.Mode?Name=Ann"), *Where, *First));
 	F.RelayFrame();
 	TestEqual(TEXT("the token on hand put on the engine's connection"), F.Game->TokensPut, 1);
+	TestTrue(TEXT("the bridge told its game connects again, so the host takes the new connection from a place of its own"),
+		Bridge->IsToldTheGameConnectsAgainForTesting());
 	TestEqual(TEXT("at once: nothing asked for it"), F.Server->Count(ERoute::JoinToken), Asked);
 	TestFalse(TEXT("which logs in with it"), F.Game->LoginToken() == First || F.Game->LoginToken().IsEmpty());
 	TestTrue(TEXT("its other options kept"), F.Game->ConnectingUrl.Contains(TEXT("?game=/Script/Game.Mode")) && F.Game->ConnectingUrl.Contains(TEXT("?Name=Ann")));
@@ -1831,6 +1845,318 @@ bool FFlockRelayTravelSeatReadTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("nor from a mode in other letters"), Reading.Seats[2].RelayAddress.IsEmpty());
 	TestTrue(TEXT("nor anything but an address"), Reading.Seats[3].RelayAddress.IsEmpty());
 	TestTrue(TEXT("nor from none"), Reading.Seats[4].RelayAddress.IsEmpty());
+	return true;
+}
+
+FLOCK_RELAY_TRAVEL_TEST(FFlockRelayTravelSeatSaysBridgeMessagesTest, "Seats.ASeatSaysItsBridgeReadsTheBridgesMessages_OnlyAsANumberInARelayConnection")
+bool FFlockRelayTravelSeatSaysBridgeMessagesTest::RunTest(const FString& Parameters)
+{
+	const auto Seat = [](const FString& Player, const FString& Mode, const TSharedPtr<FJsonValue>& Version)
+	{
+		const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+		Row->SetStringField(TEXT("player_id"), Player);
+		Row->SetStringField(TEXT("status"), TEXT("joined"));
+		const TSharedRef<FJsonObject> Connection = MakeShared<FJsonObject>();
+		Connection->SetStringField(TEXT("mode"), Mode);
+		Connection->SetStringField(TEXT("relay_address"), TEXT("203.0.113.50:50000"));
+		if (Version.IsValid())
+		{
+			Connection->SetField(TEXT("bridge_messages"), Version);
+		}
+		Row->SetObjectField(TEXT("connection_info"), Connection);
+		return MakeShared<FJsonValueObject>(Row);
+	};
+	const TSharedRef<FJsonObject> Answer = MakeShared<FJsonObject>();
+	Answer->SetStringField(TEXT("id"), TEXT("01SESSION"));
+	Answer->SetArrayField(TEXT("participants"), {
+		Seat(TEXT("reads"), TEXT("relay"), MakeShared<FJsonValueNumber>(1)),
+		Seat(TEXT("before-this-version"), TEXT("relay"), nullptr),
+		Seat(TEXT("as-text"), TEXT("relay"), MakeShared<FJsonValueString>(TEXT("1"))),
+		Seat(TEXT("direct"), TEXT("direct"), MakeShared<FJsonValueNumber>(1)) });
+	FFlockMultiplayerSessionReading Reading;
+	FString Error;
+	if (!TestTrue(TEXT("read"), FFlockMultiplayerSessionReading::FromWireObject(Answer, Reading, Error)) || !TestEqual(TEXT("four seats"), Reading.Seats.Num(), 4))
+	{
+		return false;
+	}
+	TestTrue(TEXT("a relay connection saying version 1"), Reading.Seats[0].bReadsBridgeMessages);
+	TestFalse(TEXT("one saying nothing: a bridge that hands them to its engine"), Reading.Seats[1].bReadsBridgeMessages);
+	TestFalse(TEXT("one saying it as text"), Reading.Seats[2].bReadsBridgeMessages);
+	TestFalse(TEXT("a direct connection"), Reading.Seats[3].bReadsBridgeMessages);
+	return true;
+}
+
+// ---- direct paths for relayed players ----
+
+FLOCK_RELAY_TRAVEL_TEST(FFlockRelayTravelWhenNeededDirectPathsTest, "DirectPaths.AWhenNeededHost_SaysItsBridgeReadsTheBridgesMessages_AndOffersDirectPaths")
+bool FFlockRelayTravelWhenNeededDirectPathsTest::RunTest(const FString& Parameters)
+{
+	FRelayTravelFixture F;
+	UFlockMultiplayerSession* Session = nullptr;
+	if (!TestTrue(TEXT("hosting"), F.HostingWith(*this, FFlockTravelToSessionOptions(), Session)->Succeeded()))
+	{
+		return false;
+	}
+	const TSharedPtr<FJsonObject> Published = F.LastPublished();
+	double Version = 0.0;
+	TestTrue(TEXT("its relay connection says its bridge reads version 1 of the bridges' messages"), Published.IsValid()
+		&& Published->TryGetNumberField(TEXT("bridge_messages"), Version) && Version == 1.0);
+	TestTrue(TEXT("its bridge offers its relayed players direct paths"), F.HostsBridge().IsValid() && F.HostsBridge()->GoesDirectForTesting());
+	return true;
+}
+
+FLOCK_RELAY_TRAVEL_TEST(FFlockRelayTravelAlwaysNoDirectPathsTest, "DirectPaths.AnAlwaysHost_SaysItsBridgeReadsTheBridgesMessages_AndOffersNoDirectPath")
+bool FFlockRelayTravelAlwaysNoDirectPathsTest::RunTest(const FString& Parameters)
+{
+	FRelayTravelFixture F;
+	UFlockMultiplayerSession* Session = nullptr;
+	if (!TestTrue(TEXT("hosting"), F.HostingWith(*this, Relaying(EFlockRelayUse::Always), Session)->Succeeded()))
+	{
+		return false;
+	}
+	const TSharedPtr<FJsonObject> Published = F.LastPublished();
+	double Version = 0.0;
+	TestTrue(TEXT("its bridge reads them (a player's word of a new connection)"), Published.IsValid() && Published->TryGetNumberField(TEXT("bridge_messages"), Version) && Version == 1.0);
+	TestTrue(TEXT("but offers no direct path: every address stays hidden"), F.HostsBridge().IsValid() && !F.HostsBridge()->GoesDirectForTesting());
+	return true;
+}
+
+FLOCK_RELAY_TRAVEL_TEST(FFlockRelayTravelKeptBridgeFollowsTest, "DirectPaths.AHostTravelingAgainWithAnotherRelayChoice_KeepsItsBridge_AndFollowsTheNewChoice")
+bool FFlockRelayTravelKeptBridgeFollowsTest::RunTest(const FString& Parameters)
+{
+	FRelayTravelFixture F;
+	UFlockMultiplayerSession* Session = nullptr;
+	if (!TestTrue(TEXT("hosting"), F.HostingWith(*this, FFlockTravelToSessionOptions(), Session)->Succeeded()) || Session == nullptr)
+	{
+		return false;
+	}
+	const FFlockRelayBridge::FPtr Bridge = F.HostsBridge();
+	const TSharedRef<FTravelAnswer> Always = F.Travel(Session, Relaying(EFlockRelayUse::Always));
+	F.Until([&]() { return Always->bAnswered; });
+	TestTrue(TEXT("the same bridge"), Bridge.IsValid() && F.HostsBridge() == Bridge);
+	TestFalse(TEXT("no direct path offered once the host chose Always"), Bridge->GoesDirectForTesting());
+	const TSharedRef<FTravelAnswer> WhenNeeded = F.Travel(Session, FFlockTravelToSessionOptions());
+	F.Until([&]() { return WhenNeeded->bAnswered; });
+	TestTrue(TEXT("offered again with When Needed"), F.HostsBridge() == Bridge && Bridge->GoesDirectForTesting());
+	return true;
+}
+
+FLOCK_RELAY_TRAVEL_TEST(FFlockRelayTravelReadingTellsBridgeTest, "DirectPaths.TheHostsReadingsOfTheSession_TellItsBridgeWhichPlayersReadTheBridgesMessages")
+bool FFlockRelayTravelReadingTellsBridgeTest::RunTest(const FString& Parameters)
+{
+	FRelayTravelFixture F;
+	F.Sessions().SetRelayedPlayersReadSecondsForTesting(2.0);
+	UFlockMultiplayerSession* Session = nullptr;
+	if (!TestTrue(TEXT("hosting"), F.HostingWith(*this, FFlockTravelToSessionOptions(), Session)->Succeeded()))
+	{
+		return false;
+	}
+	const TSharedPtr<FFlockRelayConnection> Relay = F.SessionsRelay();
+	const TSharedPtr<FFlockRelayConnection> Player = F.Device(*this, PlayerB, Relay->GetAddress());
+	if (!Player.IsValid())
+	{
+		return false;
+	}
+	F.Server->Joins(F.Served, PlayerB);
+	// Heard through the relay, so the host reads the session often.
+	F.ReachesTheHost(Player, TEXT("handshake"));
+	F.Server->SeatSaysRelayAddress(F.Served, PlayerB, Player->GetAddress().ToString());
+	F.Advance(2.0);
+	F.Until([&]() { return Relay->IsOpenTo(Player->GetAddress()); }, 3.0);
+	TestFalse(TEXT("a seat that does not say so: its bridge would hand them to its engine"), F.HostsBridge()->HearsThatItReadsBridgeMessagesForTesting(Player->GetAddress()));
+	F.Server->SeatSaysRelayAddress(F.Served, PlayerB, Player->GetAddress().ToString(), /*bReadsBridgeMessages*/ true);
+	F.Advance(2.0);
+	TestTrue(TEXT("one that says so, from the next reading"), F.Until([&]() { return F.HostsBridge()->HearsThatItReadsBridgeMessagesForTesting(Player->GetAddress()); }, 3.0));
+	return true;
+}
+
+FLOCK_RELAY_TRAVEL_TEST(FFlockRelayTravelNewerBeforeSweepTest, "DirectPaths.ARelayedPlayersNewerConnection_LetInBeforeItsOlderIsSeenGone_KeepsItsChannel")
+bool FFlockRelayTravelNewerBeforeSweepTest::RunTest(const FString& Parameters)
+{
+	FRelayTravelFixture F;
+	UFlockMultiplayerSession* Session = nullptr;
+	if (!TestTrue(TEXT("hosting"), F.HostingWith(*this, Relaying(EFlockRelayUse::Always), Session)->Succeeded()))
+	{
+		return false;
+	}
+	const TSharedPtr<FFlockRelayConnection> Relay = F.SessionsRelay();
+	const TSharedPtr<FFlockRelayConnection> Player = F.Device(*this, PlayerB, Relay->GetAddress());
+	const int32 Port = Player.IsValid() ? F.ReachesTheHost(Player, TEXT("handshake")) : 0;
+	const FJoining Old = F.JoinsThroughTheRelay(F.SeatedWithToken(PlayerB), Port);
+	if (!TestTrue(TEXT("precondition: let in"), Old.Answer->LetIn()))
+	{
+		return false;
+	}
+	// The player's game connects again through the same relay address; the engine drops its older connection, and the newer one is
+	// let in before a frame has seen the older one gone.
+	const TSharedRef<FFlockFakePartyServer::FHeld> Verifying = F.Server->HoldNext(ERoute::Verify);
+	const FJoining Next = F.JoinsThroughTheRelay(F.Server->MintsJoinToken(F.Served, PlayerB), Port);
+	F.Game->Leaves(Old.Connection);
+	Verifying->Release();
+	if (!TestTrue(TEXT("precondition: the newer let in"), Next.Answer->LetIn()))
+	{
+		return false;
+	}
+	F.RelayFrame();
+	TestEqual(TEXT("the newer keeps the place"), F.HostsBridge()->LoopbackPortOf(Player->GetAddress()), Port);
+	TestTrue(TEXT("and its channel: the older one's going lets go of nothing the newer holds"), Relay->KeepsChannelToForTesting(Player->GetAddress()));
+	return true;
+}
+
+FLOCK_RELAY_TRAVEL_TEST(FFlockRelayTravelMovedPlaceKeptTest, "DirectPaths.APlayerWhosePlaceMovedToANewLoopbackPort_KeepsItWhenItsOlderConnectionGoes")
+bool FFlockRelayTravelMovedPlaceKeptTest::RunTest(const FString& Parameters)
+{
+	FRelayTravelFixture F;
+	UFlockMultiplayerSession* Session = nullptr;
+	if (!TestTrue(TEXT("hosting"), F.HostingWith(*this, Relaying(EFlockRelayUse::Always), Session)->Succeeded()))
+	{
+		return false;
+	}
+	const TSharedPtr<FFlockRelayConnection> Relay = F.SessionsRelay();
+	const TSharedPtr<FFlockRelayConnection> Player = F.Device(*this, PlayerB, Relay->GetAddress());
+	if (!Player.IsValid())
+	{
+		return false;
+	}
+	// The player's bridge says its game's first connection starts, then a second one (its game connected again).
+	const TArray<uint8> First = FFlockBridgeMessages::WriteNewConnection(1);
+	Player->Send(Relay->GetAddress(), First.GetData(), First.Num());
+	const int32 Port = F.ReachesTheHost(Player, TEXT("handshake"));
+	const FJoining Old = F.JoinsThroughTheRelay(F.SeatedWithToken(PlayerB), Port);
+	if (!TestTrue(TEXT("precondition: let in"), Old.Answer->LetIn()))
+	{
+		return false;
+	}
+	const TArray<uint8> Second = FFlockBridgeMessages::WriteNewConnection(2);
+	Player->Send(Relay->GetAddress(), Second.GetData(), Second.Num());
+	F.Until([&]() { return F.HostsBridge()->LoopbackPortOf(Player->GetAddress()) != Port; }, 3.0);
+	const int32 Moved = F.HostsBridge()->LoopbackPortOf(Player->GetAddress());
+	if (!TestTrue(TEXT("precondition: the newer connection's place, on a port of its own"), Moved > 0 && Moved != Port))
+	{
+		return false;
+	}
+	F.Game->Leaves(Old.Connection);
+	F.RelayFrame();
+	TestEqual(TEXT("the older connection's going leaves the newer's place"), F.HostsBridge()->LoopbackPortOf(Player->GetAddress()), Moved);
+	return true;
+}
+
+FLOCK_RELAY_TRAVEL_TEST(FFlockRelayTravelPlayerGoesDirectTest, "DirectPaths.AWhenNeededPlayer_OfAHostOfferingDirectPaths_GetsABridgeThatGoesDirect_AndSaysSoForItsSeat")
+bool FFlockRelayTravelPlayerGoesDirectTest::RunTest(const FString& Parameters)
+{
+	FRelayTravelFixture F;
+	const TSharedPtr<FFlockRelayConnection> Host = F.Device(*this, PlayerA);
+	if (!Host.IsValid())
+	{
+		return false;
+	}
+	const TSharedRef<FJsonObject> Connection = F.RelayConnectionOf(Host->GetAddress(), F.RelayServer(), /*bWithDirect*/ true, TEXT("192.168.1.20"), TEXT("198.51.100.4"));
+	Connection->SetNumberField(TEXT("bridge_messages"), 1);
+	UFlockMultiplayerSession* Session = F.PlayerOf(*this, Connection);
+	F.Travel(Session, FFlockTravelToSessionOptions());
+	F.Until([&]() { return F.Game->TraveledTo.Num() > 0; });
+	const FFlockRelayBridge::FPtr Bridge = F.Sessions().GetTravels().GetPlayersBridgeForTesting();
+	TestTrue(TEXT("its bridge has a link to the host"), Bridge.IsValid() && Bridge->GetDirectLinkForTesting(Host->GetAddress()).IsValid());
+	const TArray<FFlockHttpRequest> Seat = F.Server->RequestsTo(ERoute::PublishSeat);
+	const TSharedPtr<FJsonObject> Body = Seat.Num() == 1 ? BodyOf(Seat[0]) : nullptr;
+	const TSharedPtr<FJsonObject>* Published = nullptr;
+	double Version = 0.0;
+	TestTrue(TEXT("its seat says its bridge reads version 1 of the bridges' messages"), Body.IsValid() && Body->TryGetObjectField(TEXT("connection_info"), Published)
+		&& Published != nullptr && (*Published)->TryGetNumberField(TEXT("bridge_messages"), Version) && Version == 1.0);
+	return true;
+}
+
+FLOCK_RELAY_TRAVEL_TEST(FFlockRelayTravelOlderHostNoLinkTest, "DirectPaths.APlayerOfAHostThatDoesNotSayItReadsTheBridgesMessages_GetsNoLink")
+bool FFlockRelayTravelOlderHostNoLinkTest::RunTest(const FString& Parameters)
+{
+	FRelayTravelFixture F;
+	const TSharedPtr<FFlockRelayConnection> Host = F.Device(*this, PlayerA);
+	if (!Host.IsValid())
+	{
+		return false;
+	}
+	// A host on a version whose bridge hands every packet to its engine, which a bridge message would make close the connection.
+	UFlockMultiplayerSession* Session = F.PlayerOf(*this, F.RelayConnectionOf(Host->GetAddress(), F.RelayServer(), /*bWithDirect*/ true,
+		TEXT("192.168.1.20"), TEXT("198.51.100.4")));
+	F.Travel(Session, FFlockTravelToSessionOptions());
+	F.Until([&]() { return F.Game->TraveledTo.Num() > 0; });
+	const FFlockRelayBridge::FPtr Bridge = F.Sessions().GetTravels().GetPlayersBridgeForTesting();
+	TestTrue(TEXT("through a bridge"), Bridge.IsValid());
+	TestFalse(TEXT("with no link"), Bridge.IsValid() && Bridge->GetDirectLinkForTesting(Host->GetAddress()).IsValid());
+	return true;
+}
+
+FLOCK_RELAY_TRAVEL_TEST(FFlockRelayTravelAlwaysPlayerNoLinkTest, "DirectPaths.AnAlwaysPlayer_GetsNoLink_ThoughItsHostOffersDirectPaths")
+bool FFlockRelayTravelAlwaysPlayerNoLinkTest::RunTest(const FString& Parameters)
+{
+	FRelayTravelFixture F;
+	const TSharedPtr<FFlockRelayConnection> Host = F.Device(*this, PlayerA);
+	if (!Host.IsValid())
+	{
+		return false;
+	}
+	const TSharedRef<FJsonObject> Connection = F.RelayConnectionOf(Host->GetAddress(), F.RelayServer(), /*bWithDirect*/ true, TEXT("192.168.1.20"), TEXT("198.51.100.4"));
+	Connection->SetNumberField(TEXT("bridge_messages"), 1);
+	UFlockMultiplayerSession* Session = F.PlayerOf(*this, Connection);
+	F.Travel(Session, Relaying(EFlockRelayUse::Always));
+	F.Until([&]() { return F.Game->TraveledTo.Num() > 0; });
+	const FFlockRelayBridge::FPtr Bridge = F.Sessions().GetTravels().GetPlayersBridgeForTesting();
+	TestTrue(TEXT("through a bridge"), Bridge.IsValid());
+	TestFalse(TEXT("with no link: Always keeps this device's addresses from the host"), Bridge.IsValid() && Bridge->GetDirectLinkForTesting(Host->GetAddress()).IsValid());
+	return true;
+}
+
+FLOCK_RELAY_TRAVEL_TEST(FFlockRelayTravelRelayOnlyHostNoLinkTest, "DirectPaths.AWhenNeededPlayer_OfAHostOfferingNoDirectAddress_GetsNoLink")
+bool FFlockRelayTravelRelayOnlyHostNoLinkTest::RunTest(const FString& Parameters)
+{
+	FRelayTravelFixture F;
+	const TSharedPtr<FFlockRelayConnection> Host = F.Device(*this, PlayerA);
+	if (!Host.IsValid())
+	{
+		return false;
+	}
+	// An Always host: its relay address alone, so it offers no direct path.
+	const TSharedRef<FJsonObject> Connection = F.RelayConnectionOf(Host->GetAddress(), F.RelayServer());
+	Connection->SetNumberField(TEXT("bridge_messages"), 1);
+	UFlockMultiplayerSession* Session = F.PlayerOf(*this, Connection);
+	F.Travel(Session, FFlockTravelToSessionOptions());
+	F.Until([&]() { return F.Game->TraveledTo.Num() > 0; });
+	const FFlockRelayBridge::FPtr Bridge = F.Sessions().GetTravels().GetPlayersBridgeForTesting();
+	TestTrue(TEXT("through a bridge"), Bridge.IsValid());
+	TestFalse(TEXT("with no link"), Bridge.IsValid() && Bridge->GetDirectLinkForTesting(Host->GetAddress()).IsValid());
+	return true;
+}
+
+FLOCK_RELAY_TRAVEL_TEST(FFlockRelayTravelSeatSaysItAgainTest, "DirectPaths.APlayerWhoseSeatNamesItsRelayAddressButNotThatItReadsTheMessages_PublishesAgain")
+bool FFlockRelayTravelSeatSaysItAgainTest::RunTest(const FString& Parameters)
+{
+	FRelayTravelFixture F;
+	const TSharedPtr<FFlockRelayConnection> Host = F.Device(*this, PlayerA);
+	if (!Host.IsValid())
+	{
+		return false;
+	}
+	UFlockMultiplayerSession* Session = F.PlayerOf(*this, F.RelayConnectionOf(Host->GetAddress(), F.RelayServer()));
+	const TSharedPtr<FFlockRelayConnection> Mine = F.Device(*this, PlayerB, Host->GetAddress());
+	if (Session == nullptr || !Mine.IsValid())
+	{
+		return false;
+	}
+	// Its seat as a device from before this version left it: the relay address, nothing more.
+	F.Server->SeatSaysRelayAddress(F.Served, PlayerB, Mine->GetAddress().ToString());
+	F.ReadsTheSession(Session);
+	const auto Publishes = [&]()
+	{
+		bool bAnswered = false;
+		F.Sessions().PublishSeatRelayAddress(Session, Mine.ToSharedRef(), [&bAnswered](TFlockResult<UFlockMultiplayerSession*>) { bAnswered = true; });
+		F.Until([&bAnswered]() { return bAnswered; });
+	};
+	Publishes();
+	TestEqual(TEXT("published, to say its bridge reads the messages"), F.Server->Count(ERoute::PublishSeat), 1);
+	// Its seat saying both now: not again.
+	F.ReadsTheSession(Session);
+	Publishes();
+	TestEqual(TEXT("not published again"), F.Server->Count(ERoute::PublishSeat), 1);
 	return true;
 }
 

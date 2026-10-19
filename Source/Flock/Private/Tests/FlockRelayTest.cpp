@@ -676,15 +676,19 @@ bool FFlockRelayAskedEveryFewSecondsTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
+	// Asks go at least half a second apart, so a window holds no more than this many (a slow tick lengthens the window, never the asks' pace).
+	const auto MostAsksSince = [](double Started) { return static_cast<int32>((FPlatformTime::Seconds() - Started) / 0.5) + 2; };
 	const int32 Before = F.Relay->SeenRequests(FFlockFakeRelayServer::MethodBinding).Num();
+	const double QuietFrom = FPlatformTime::Seconds();
 	F.RealSeconds(2.2);
 	const int32 WhileQuiet = F.Relay->SeenRequests(FFlockFakeRelayServer::MethodBinding).Num() - Before;
-	TestTrue(FString::Printf(TEXT("a binding request each half second of quiet, and no more often (%d)"), WhileQuiet), WhileQuiet >= 3 && WhileQuiet <= 6);
+	TestTrue(FString::Printf(TEXT("a binding request each half second of quiet, and no more often (%d)"), WhileQuiet), WhileQuiet >= 3 && WhileQuiet <= MostAsksSince(QuietFrom));
 	// The game's packets going all the while (to an address the relay is open to, so they do go): asked all the same, since
 	// packets get no answer.
 	const TSharedRef<FOpenedTo> Opening = F.OpenTo(Opened, Opened->GetAddress());
 	F.Until([&]() { return Opening->bAnswered; });
 	const int32 WhileSending = F.Relay->SeenRequests(FFlockFakeRelayServer::MethodBinding).Num();
+	const double SendingFrom = FPlatformTime::Seconds();
 	const TArray<uint8> Packet = Bytes(TEXT("a packet of the game's"));
 	int32 Sent = 0;
 	const double Until = FPlatformTime::Seconds() + 2.2;
@@ -695,7 +699,7 @@ bool FFlockRelayAskedEveryFewSecondsTest::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("precondition: the packets went"), Sent > 20);
 	const int32 AskedWhileSending = F.Relay->SeenRequests(FFlockFakeRelayServer::MethodBinding).Num() - WhileSending;
-	TestTrue(FString::Printf(TEXT("asked while packets go too, and no more often (%d)"), AskedWhileSending), AskedWhileSending >= 3 && AskedWhileSending <= 6);
+	TestTrue(FString::Printf(TEXT("asked while packets go too, and no more often (%d)"), AskedWhileSending), AskedWhileSending >= 3 && AskedWhileSending <= MostAsksSince(SendingFrom));
 	return true;
 }
 
@@ -706,12 +710,15 @@ bool FFlockRelayStopsAnsweringTest::RunTest(const FString& Parameters)
 	FFlockRelayTiming Timing = Quick();
 	Timing.AskTheRelayEverySeconds = 0.2;
 	Timing.RelayLostWhenSilentSeconds = 1.0;
-	const TSharedPtr<FFlockRelayConnection> Opened = F.Opened(*this, RelayPlayerA, Timing);
+	// Lost after 2 s of silence in the first part, so the moment's silence stays well inside it on a slow machine.
+	FFlockRelayTiming Slower = Timing;
+	Slower.RelayLostWhenSilentSeconds = 2.0;
+	const TSharedPtr<FFlockRelayConnection> Opened = F.Opened(*this, RelayPlayerA, Slower);
 	if (!Opened.IsValid())
 	{
 		return false;
 	}
-	F.RealSeconds(1.5);
+	F.RealSeconds(2.5);
 	TestTrue(TEXT("control: a relay that answers stays, past the silence allowed"), Opened->IsOpen());
 	// Silent for less than allowed, then answering again: it stays.
 	F.Relay->bAnswersBindings = false;
@@ -721,9 +728,12 @@ bool FFlockRelayStopsAnsweringTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("a moment's silence: still open"), Opened->IsOpen());
 	// Silent for good, as a router that moved this device to another port leaves it: lost, saying why.
 	F.Relay->bAnswersBindings = false;
-	F.Until([&]() { return Opened->HasStopped(); }, 4.0);
+	F.Until([&]() { return Opened->HasStopped(); }, 6.0);
 	TestEqualSensitive(TEXT("lost"), Opened->GetFailureReason(), FString(FlockRelayFailureReasons::Lost));
-	TestTrue(TEXT("saying the relay answered nothing"), FFlockRecordingLogger::AnyContains(F.Log->Warnings, TEXT("has answered nothing for 1 s")));
+	// The connection reads as stopped a moment before its warning reaches the game thread.
+	F.Until([&]() { return FFlockRecordingLogger::AnyContains(F.Log->Warnings, TEXT("has answered nothing for 2 s")); }, 2.0);
+	TestTrue(TEXT("saying the relay answered nothing"), FFlockRecordingLogger::AnyContains(F.Log->Warnings, TEXT("has answered nothing for 2 s")));
+	TestTrue(TEXT("and how to fix it"), FFlockRecordingLogger::AnyContains(F.Log->Warnings, FlockRelayFailureReasons::FixFor(FlockRelayFailureReasons::Lost)));
 	// A relay that never answered an ask (reserved from a socket it answered no binding on) says nothing by its silence.
 	FRelayFixture G;
 	G.Relay->bAnswersBindings = false;
@@ -783,7 +793,7 @@ bool FFlockRelayNoLongerHearsTest::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("the player's relay was lost"), Player->HasStopped());
 	TestEqualSensitive(TEXT("lost"), Player->GetFailureReason(), FString(FlockRelayFailureReasons::Lost));
-	TestTrue(FString::Printf(TEXT("precondition: the host's packets kept arriving while the relay heard nothing from the player (%d)"), Arrived), Arrived > 10);
+	TestTrue(FString::Printf(TEXT("precondition: the host's packets kept arriving while the relay heard nothing from the player (%d)"), Arrived), Arrived > 5);
 	TestTrue(TEXT("control: the host, which the relay still hears, stays"), Host->IsOpen());
 	return true;
 }

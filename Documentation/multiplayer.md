@@ -480,8 +480,8 @@ port of its own, so the engine sees one connection a player.
 
 | Relay | The host | A player |
 |---|---|---|
-| `WhenNeeded` (default) | opens its address on the relay and publishes it with its own addresses | on the host's network (it shares the host's public address): connects to the host's LAN address, and through the relay when the host does not answer there within 3 s; anywhere else: through the relay |
-| `Always` | publishes its relay address alone, and turns away any player that reaches it another way (`relay_only`, without asking Flock) | through the relay, on the host's network too |
+| `WhenNeeded` (default) | opens its address on the relay and publishes it with its own addresses; offers each relayed player a direct path | on the host's network (it shares the host's public address): connects to the host's LAN address, and through the relay when the host does not answer there within 3 s; anywhere else: through the relay. Through the relay, it moves to a direct path once it and the host reach each other (see below) |
+| `Always` | publishes its relay address alone, and turns away any player that reaches it another way (`relay_only`, without asking Flock) | through the relay, on the host's network too, and stays on it |
 | `Never` | opens no relay and publishes directly | connects to the address the host published; a host that takes players through the relay alone cannot be reached (`could_not_connect`, said in the log) |
 
 A player reserves its own address on the relay server the host is on, says it for its seat, and the host lets in each seated
@@ -506,6 +506,28 @@ the travel ends `relay_failed`, and `RelayFailureReason` says why:
 Each reason carries its own fix in the warning the log shows. A host whose relay cannot be opened publishes directly under
 When Needed (saying why, unless the relay is switched off for the game) and stops hosting under Always (`relay_failed`).
 
+#### Direct paths for relayed players (When Needed)
+
+A player that connects through the relay with When Needed, to a host with When Needed, moves off the relay once the two reach
+each other, so the game plays on a shorter path and the relay carries nothing for it. Nothing is asked of the game, and the
+engine's connection carries on unchanged: the host's net driver hears the player from the same port throughout.
+
+1. Each end asks Flock's STUN servers and the relay server where they see it, then offers that address and its LAN address to
+   the other end through the relay.
+2. Each end sends probes to the other's addresses (and to wherever the other's probes come from, for a router that gives each
+   destination a port of its own). A probe answered proves the path both ways, and the engine's packets go directly from then on.
+3. A keep-alive goes each second. A direct path quiet for 4 s goes back to the relay, the other end following when told; the
+   relay stays reserved for the session, so going back loses nothing but those 4 s.
+4. When no direct path proves itself (the other end never offers within 20 s, or no probe is answered within 6 s), the pair stays
+   on the relay for that connection; a connection the game makes again tries again.
+
+Each move is said once in the log, at Info: `Packets to the host now go directly`, `The direct path to the host went quiet`,
+`could not be reached directly (...)`. A host offers its addresses only to players its check let in, and only probes naming
+both ends' random keys count, so nobody else on the relay or the internet opens a path. Each end learns the other's public
+address this way; **Always** keeps every address hidden and never moves. A device on an SDK before 1.38.0 at either end stays on
+the relay: no message of the bridges' own is sent to a device whose connection does not say it reads them (`bridge_messages`),
+since the engine closes a connection that such a message reaches.
+
 What to know about relayed play:
 
 - A host takes at most 64 relayed players. A relay address the host's check has not let in within 30 s gives its place back
@@ -517,12 +539,19 @@ What to know about relayed play:
   40 s), and puts it on that connection before it logs in. Nothing is asked of the game. When no token on hand is good (Flock
   could not give one), a new one is asked for that connection; one that comes after the host has taken the player back (its net
   driver's `ServerTravelPause`, 4 s by default) is too late, and the log says the first token went.
-- A relay connection holds `mode` `relay`, the direct values above when the host's Relay is When Needed, and two more:
+- A player whose game connects again through the same relay address (Travel To Session again while its relay works, or the
+  engine's own connection back after a host's level change) reaches the host's engine from a loopback port of its own: the
+  engine would hand a new connection from the address its old one still has to the old one, until that one timed out (a minute).
+  The player's bridge says so through the relay ahead of each new connection's first three packets, which is all the relay then
+  carries for a player on a direct path. A socket the engine remakes for the same connection (`net.RecreateSocketTimeoutThreshold`)
+  is no new connection: it keeps its place and its direct path.
+- A relay connection holds `mode` `relay`, the direct values above when the host's Relay is When Needed, and three more:
 
 | Value | Holds |
 |---|---|
 | `relay_address` | the host's address on the relay, `a.b.c.d:port` |
 | `relay_server` | the relay server it is on, `name:port` |
+| `bridge_messages` | `1`: this device's relay bridge reads the bridges' own messages (a player's seat says it too) |
 
 ### Letting in only the session's players
 

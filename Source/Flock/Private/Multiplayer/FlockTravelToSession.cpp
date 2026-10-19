@@ -466,14 +466,17 @@ void FFlockTravels::OpenRelayForPlayers(const FTravelRef& Travel)
 					Self->Fail(Pinned.ToSharedRef(), ShutDownWhileTraveling());
 					return;
 				}
+				// Direct paths for its relayed players with When Needed alone: Always keeps every address hidden.
+				const bool bGoesDirect = Pinned->Options.Relay == EFlockRelayUse::WhenNeeded;
 				// A host that kept hosting keeps the bridge its relayed players came through, while that relay works.
 				const FFlockRelayBridge::FPtr InUse = Owner->GetJoinChecks().GetRelayBridge();
 				if (InUse.IsValid() && InUse->GetRelay() == Relay && Owner->GetJoinChecks().IsHosting(Pinned->Session.Get()))
 				{
+					InUse->SetGoesDirect(bGoesDirect);
 					Self->PublishForPlayers(Pinned.ToSharedRef(), Relay);
 					return;
 				}
-				const TFlockRelayResult<FFlockRelayBridge::FPtr> Made = FFlockRelayBridge::ForTheHost(Relay, Pinned->Result.Port, Self->Logger);
+				const TFlockRelayResult<FFlockRelayBridge::FPtr> Made = FFlockRelayBridge::ForTheHost(Relay, Pinned->Result.Port, Self->Logger, bGoesDirect);
 				if (!Made.bSuccess)
 				{
 					if (Made.Failure.Reason.IsEmpty())
@@ -656,6 +659,12 @@ void FFlockTravels::TookConnection(const FTravelRef& Travel, UFlockMultiplayerSe
 			Complete(Travel, FlockTravelToSessionOutcomes::CouldNotConnect);
 			return;
 		}
+		// A host that names direct addresses beside its relay one (When Needed) offers its relayed players a direct path; its bridge
+		// is sent the bridges' own messages only when it says it reads them.
+		FFlockPublishedDirectAddresses Published;
+		Travel->bHostReadsBridgeMessages = FFlockRelayPeer::ReadsBridgeMessages(*Values);
+		Travel->bHostOffersDirectPaths = FFlockDirectAddresses::ReadPublished(Session->GetConnection(), Published)
+			&& !(Published.Address.IsEmpty() && Published.Lan.IsEmpty() && Published.Public.IsEmpty());
 		if (Travel->Options.Relay == EFlockRelayUse::Always)
 		{
 			StartThroughTheRelay(Travel);
@@ -853,7 +862,11 @@ void FFlockTravels::ConnectThroughTheBridge(const FTravelRef& Travel)
 {
 	// The bridge to the host the game was with makes way: one bridge a relay.
 	LeaveTheHost();
-	const TFlockRelayResult<FFlockRelayBridge::FPtr> Made = FFlockRelayBridge::ToTheHost(Travel->Relay.ToSharedRef(), Travel->HostOnTheRelay, Logger);
+	FFlockRelayBridge::FToTheHostOptions Bridging;
+	Bridging.bHostReadsBridgeMessages = Travel->bHostReadsBridgeMessages;
+	// Always keeps this device's addresses from the host; When Needed moves to a direct path once one proves itself.
+	Bridging.bGoesDirect = Travel->Options.Relay == EFlockRelayUse::WhenNeeded && Travel->bHostOffersDirectPaths;
+	const TFlockRelayResult<FFlockRelayBridge::FPtr> Made = FFlockRelayBridge::ToTheHost(Travel->Relay.ToSharedRef(), Travel->HostOnTheRelay, Logger, Bridging);
 	if (!Made.bSuccess)
 	{
 		if (Made.Failure.Reason.IsEmpty())
@@ -1231,6 +1244,11 @@ void FFlockTravels::KeepWithTheHost()
 		if (!With->bConnectionHandled)
 		{
 			With->bConnectionHandled = true;
+			// A new connection of the engine's through the same bridge: the host's is told, so it takes it from a loopback port of its own.
+			if (With->Bridge.IsValid())
+			{
+				With->Bridge->GameConnectsAgain();
+			}
 			if (!With->TokenOnHand.IsEmpty() && With->TokenOnHandGoodUntil - Time >= UseTokenWithSecondsLeft)
 			{
 				PutTokenOnTheConnectionBack(With, With->TokenOnHand);

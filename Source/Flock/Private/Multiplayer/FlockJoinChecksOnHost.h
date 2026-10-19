@@ -141,9 +141,15 @@ private:
 		bool bToldFlockStopped = false;
 		/** Every player comes through the relay bridge (Relay Always); anyone else is turned away. */
 		bool bRelayOnly = false;
-		/** How relayed players reach this host, and the relay peer behind each connection let in through it. */
+		/** A connection let in through the bridge: the relay peer behind it, and the loopback port of the bridge's it came from. */
+		struct FRelayed
+		{
+			FFlockRelayPeer Peer;
+			int32 LoopbackPort = 0;
+		};
+		/** How relayed players reach this host, and each connection let in through it. */
 		FFlockRelayBridge::FPtr Bridge;
-		TMap<uint64, FFlockRelayPeer> RelayedPlayers;
+		TMap<uint64, FRelayed> RelayedPlayers;
 	};
 
 	struct FCheck
@@ -180,11 +186,14 @@ private:
 	static uint64 ConnectionElsewhere(FHosting& InHosting, const FString& PlayerId, uint64 Connection);
 	/** Takes the check out of the waiting ones and gives its request up; false when it was answered already. */
 	bool Take(const FCheckRef& Check);
-	/** The relay peer Connection comes through, from one of the bridge's loopback ports; false for a connection of any other kind. */
-	static bool TryGetRelayPeer(const FHosting& InHosting, uint64 Connection, FFlockRelayPeer& OutPeer);
+	/** The relay peer Connection comes through, from one of the bridge's loopback ports (OutLoopbackPort, when given); false for a connection of any other kind. */
+	static bool TryGetRelayPeer(const FHosting& InHosting, uint64 Connection, FFlockRelayPeer& OutPeer, int32* OutLoopbackPort = nullptr);
 	/** A player let in from the bridge keeps its place there and gets a relay channel. */
 	static void LetInThroughTheRelay(FHosting& InHosting, uint64 Connection);
-	/** Relayed players whose connection is gone: their address is forgotten unless another connection still comes through it. */
+	/**
+	 * Relayed players whose connection is gone: their address is forgotten unless another connection still comes through it, or its
+	 * place moved on to a newer connection of the player's (a loopback port of its own).
+	 */
 	static void ForgetRelayedPlayersGone(FHosting& InHosting);
 	static void CloseRelayBridge(FHosting& InHosting);
 	static void Refuse(const FFlockJoiningRequest& Request, const FString& Reason);

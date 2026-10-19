@@ -165,18 +165,23 @@ void FFlockJoinChecksOnHost::CloseRelayBridge(FHosting& InHosting)
 	InHosting.RelayedPlayers.Reset();
 }
 
-bool FFlockJoinChecksOnHost::TryGetRelayPeer(const FHosting& InHosting, uint64 Connection, FFlockRelayPeer& OutPeer)
+bool FFlockJoinChecksOnHost::TryGetRelayPeer(const FHosting& InHosting, uint64 Connection, FFlockRelayPeer& OutPeer, int32* OutLoopbackPort)
 {
 	const int32 Port = InHosting.Game->LoopbackPortOf(Connection);
+	if (OutLoopbackPort != nullptr)
+	{
+		*OutLoopbackPort = Port;
+	}
 	return InHosting.Bridge.IsValid() && Port > 0 && InHosting.Bridge->TryGetPeer(Port, OutPeer);
 }
 
 void FFlockJoinChecksOnHost::LetInThroughTheRelay(FHosting& InHosting, uint64 Connection)
 {
 	FFlockRelayPeer Peer;
-	if (TryGetRelayPeer(InHosting, Connection, Peer))
+	int32 Port = 0;
+	if (TryGetRelayPeer(InHosting, Connection, Peer, &Port))
 	{
-		InHosting.RelayedPlayers.Add(Connection, Peer);
+		InHosting.RelayedPlayers.Add(Connection, FHosting::FRelayed{ Peer, Port });
 		InHosting.Bridge->LetIn(Peer);
 	}
 }
@@ -193,11 +198,24 @@ void FFlockJoinChecksOnHost::ForgetRelayedPlayersGone(FHosting& InHosting)
 		{
 			continue;
 		}
-		const FFlockRelayPeer Peer = It.Value();
+		const FHosting::FRelayed Gone = It.Value();
+		const FFlockRelayPeer Peer = Gone.Peer;
 		It.RemoveCurrent();
+		// What the gone connection held alone is let go: a newer connection of the player's let in through the same relay address
+		// before this one was seen gone keeps its place, its channel and its link.
+		bool bAnotherLetInThroughIt = false;
+		for (const TPair<uint64, FHosting::FRelayed>& Other : InHosting.RelayedPlayers)
+		{
+			bAnotherLetInThroughIt = bAnotherLetInThroughIt || (Other.Value.Peer == Peer && InHosting.Game->IsStillHere(Other.Key));
+		}
+		const int32 Port = InHosting.Bridge->LoopbackPortOf(Peer);
+		// The player's game connected again and its place moved to a loopback port of its own: that place is the newer connection's.
+		if (bAnotherLetInThroughIt || (Port > 0 && Port != Gone.LoopbackPort))
+		{
+			continue;
+		}
 		// The player's game may be connecting again through the same relay address (a host's level change sends it back): that
 		// connection keeps its path, and waits to be let in as a newly heard peer does.
-		const int32 Port = InHosting.Bridge->LoopbackPortOf(Peer);
 		if (Port > 0 && InHosting.Game->IsAnyConnectionFromLoopbackPort(Port))
 		{
 			InHosting.Bridge->NoLongerLetIn(Peer);
@@ -453,13 +471,13 @@ void FFlockJoinChecksOnHost::LetInOverTheEarlier(const FCheckRef& Check, const F
 			return;
 		}
 	}
-	FFlockRelayPeer EarlierPeer;
+	FHosting::FRelayed EarlierRelayed;
 	bool bEarlierRelayed = false;
 	if (Earlier != 0)
 	{
 		// Taken out here, so the forgetting of relayed players gone leaves the newer connection's relay address alone.
 		Held.LetIn.Remove(Earlier);
-		bEarlierRelayed = Held.RelayedPlayers.RemoveAndCopyValue(Earlier, EarlierPeer);
+		bEarlierRelayed = Held.RelayedPlayers.RemoveAndCopyValue(Earlier, EarlierRelayed);
 		Held.Game->CloseConnection(Earlier);
 		Logger->LogInfo(FString::Printf(TEXT("Closed a player's earlier connection, silent for %g s or more, for their newer one from %s."),
 			EarlierConnectionGivesWayAfterSeconds, *Check->Request.Address));
@@ -467,10 +485,10 @@ void FFlockJoinChecksOnHost::LetInOverTheEarlier(const FCheckRef& Check, const F
 	// Remembered once let in, so a refused connection never holds the player's place; a relayed one keeps its place on the bridge.
 	Held.LetIn.Add(Check->Connection, FHosting::FLetIn{ PlayerId, JoinTokenIn(Check->Request.Options) });
 	LetInThroughTheRelay(Held, Check->Connection);
-	if (bEarlierRelayed && Held.Bridge.IsValid() && !(Held.RelayedPlayers.Contains(Check->Connection) && Held.RelayedPlayers[Check->Connection] == EarlierPeer))
+	if (bEarlierRelayed && Held.Bridge.IsValid() && !(Held.RelayedPlayers.Contains(Check->Connection) && Held.RelayedPlayers[Check->Connection].Peer == EarlierRelayed.Peer))
 	{
 		// The earlier one's relay address, unless the newer comes through it too.
-		Held.Bridge->Forget(EarlierPeer);
+		Held.Bridge->Forget(EarlierRelayed.Peer);
 	}
 	if (Check->Request.Answer)
 	{

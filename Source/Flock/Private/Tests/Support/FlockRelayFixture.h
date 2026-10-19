@@ -114,6 +114,8 @@ namespace FlockRelayTestHelpers
 		TUniquePtr<FFlockFakeRelayServer> Relay = MakeUnique<FFlockFakeRelayServer>();
 		TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
 		TArray<TSharedRef<FFlockRelayConnection>> Connections;
+		/** The STUN servers each relay opened from now on lists with its login, as Flock lists them. */
+		TArray<FFlockRelayStunLookUp> StunServers;
 
 		FRelayFixture() { FFlockUdpSockets::ResetForTesting(); }
 
@@ -142,7 +144,7 @@ namespace FlockRelayTestHelpers
 		TSharedRef<FOpening> Open(const FFlockRelayLogin& WithLogin, const FFlockRelayTiming& Timing = Quick())
 		{
 			const TSharedRef<FOpening> Answer = MakeShared<FOpening>();
-			Connections.Add(FFlockRelayConnection::Open(WithLogin, TArray<FFlockRelayStunLookUp>(), Timing, Log, Into(Answer)));
+			Connections.Add(FFlockRelayConnection::Open(WithLogin, StunServers, Timing, Log, Into(Answer)));
 			return Answer;
 		}
 

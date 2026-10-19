@@ -42,4 +42,11 @@ struct FLOCK_API FFlockRelayPeer
 	 * connection for the session and a player's for its seat alike.
 	 */
 	static bool TryReadPublished(const FJsonObject& Connection, FFlockRelayPeer& OutAddress, FString& OutServer);
+
+	/**
+	 * True when a connection of mode "relay" says the device behind it reads version 1 of the relay bridges' own messages
+	 * (FlockRelayConnectionValues::BridgeMessages: the highest version read, every earlier one included, so 1 or more); a device
+	 * that does not say so would hand them to the engine, which closes a connection they reach, so none is sent to it.
+	 */
+	static bool ReadsBridgeMessages(const FJsonObject& Connection);
 };

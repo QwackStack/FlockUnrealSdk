@@ -2,6 +2,7 @@
 
 #include "Multiplayer/FlockMultiplayerSessions.h"
 #include "Http/FlockErrorHints.h"
+#include "Multiplayer/Relay/FlockBridgeMessages.h"
 #include "UObject/Package.h"
 
 namespace
@@ -390,6 +391,8 @@ FFlockRequestHandle FFlockMultiplayerSessions::PublishRelayConnection(UFlockMult
 	{
 		Values.Set(FlockRelayConnectionValues::RelayAddress, RelayAddress);
 		Values.Set(FlockRelayConnectionValues::RelayServer, RelayServer);
+		// This host's bridge keeps the bridges' own messages from the engine, so its players' bridges may send them.
+		Values.Set(FlockRelayConnectionValues::BridgeMessages, static_cast<int32>(FFlockBridgeMessages::Version));
 		return Values;
 	};
 	if (!bWithDirectAddresses)
@@ -435,7 +438,9 @@ FFlockRequestHandle FFlockMultiplayerSessions::PublishSeatRelayAddress(UFlockMul
 		return FFlockRequestHandle();
 	}
 	const FString RelayAddress = OnTheRelay->GetAddress().ToString();
-	if (Session->SeatRelayAddressOf(Session->PlayerId).Equals(RelayAddress, ESearchCase::CaseSensitive))
+	// Skipped when the seat says both already: this relay address, and that this device's bridge reads the bridges' messages.
+	const FFlockMultiplayerSessionSeat* Mine = Session->SeatOf(Session->PlayerId);
+	if (Mine != nullptr && Mine->RelayAddress.Equals(RelayAddress, ESearchCase::CaseSensitive) && Mine->bReadsBridgeMessages)
 	{
 		AnswerSessionCall(OnComplete, TFlockResult<UFlockMultiplayerSession*>::Ok(Session));
 		return FFlockRequestHandle();
@@ -443,6 +448,7 @@ FFlockRequestHandle FFlockMultiplayerSessions::PublishSeatRelayAddress(UFlockMul
 	FFlockCommandData Connection;
 	Connection.Set(TEXT("mode"), FlockMultiplayerConnectionModes::Relay);
 	Connection.Set(FlockRelayConnectionValues::RelayAddress, RelayAddress);
+	Connection.Set(FlockRelayConnectionValues::BridgeMessages, static_cast<int32>(FFlockBridgeMessages::Version));
 	const TSharedRef<FFlockMultiplayerSessionRequests> RequestsRef = Requests;
 	const int32 SignInNumber = Session->SignInNumber;
 	const FString SessionId = Session->Id;
@@ -461,13 +467,21 @@ void FFlockMultiplayerSessions::OpenTheRelayToSeatedPlayers(UFlockMultiplayerSes
 		return;
 	}
 	const TWeakPtr<FFlockMultiplayerSessions> WeakSelf = AsShared();
+	TSet<FFlockRelayPeer> ReadingBridgeMessages;
 	for (const FFlockMultiplayerSessionSeat& Seat : Session->SeatsOnTheRelay)
 	{
 		FFlockRelayPeer Address;
+		if (Seat.PlayerId.Equals(Session->PlayerId, ESearchCase::CaseSensitive) || !FFlockRelayPeer::TryParse(Seat.RelayAddress, Address))
+		{
+			continue;
+		}
+		if (Seat.bReadsBridgeMessages)
+		{
+			ReadingBridgeMessages.Add(Address);
+		}
 		// An IP open or being opened is the relay's own to answer at once (one request an IP); a refused one is skipped here, so the
 		// refusal is told once rather than at every reading. One not answered is asked again at the next.
-		if (Seat.PlayerId.Equals(Session->PlayerId, ESearchCase::CaseSensitive) || !FFlockRelayPeer::TryParse(Seat.RelayAddress, Address)
-			|| RelayNow->RefusedToOpenTo(Address))
+		if (RelayNow->RefusedToOpenTo(Address))
 		{
 			continue;
 		}
@@ -480,6 +494,12 @@ void FFlockMultiplayerSessions::OpenTheRelayToSeatedPlayers(UFlockMultiplayerSes
 					*Opened.Failure.Error.ReasonAndFix()));
 			}
 		});
+	}
+	// The host's bridge offers a direct path only to players whose bridges read its messages, as their seats say.
+	const FFlockRelayBridge::FPtr Bridge = JoinChecks.IsValid() ? JoinChecks->GetRelayBridge() : nullptr;
+	if (Bridge.IsValid() && Bridge->GetRelay() == RelayNow.ToSharedRef())
+	{
+		Bridge->SetPeersThatReadBridgeMessages(ReadingBridgeMessages);
 	}
 }
 
