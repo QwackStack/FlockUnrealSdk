@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.38.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.38.1.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -567,6 +567,8 @@ Blueprints only (`Content/Samples/Multiplayer`): sign in, host, join by code, qu
 so On Relay Lost brings the game back rather than a silent wait. **1.38.0 moves relayed players to a direct path** (When Needed)
 once they and the host reach each other, and back to the relay when it goes quiet, the game's connection carrying on through
 both; a player connecting again through its relay address is back in within seconds rather than the engine's minute.
+**1.38.1 builds and runs on Android**, where no name was looked up before, so the relay could not be reached: a phone on mobile
+data plays through Flock's relay and moves to a direct path with a host on another network.
 
 Deliberate omissions and known gaps:
 

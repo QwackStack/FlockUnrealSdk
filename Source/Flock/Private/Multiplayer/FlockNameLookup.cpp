@@ -21,9 +21,9 @@ TSharedRef<FFlockNameLookup, ESPMode::ThreadSafe> FFlockNameLookup::Start(const 
 		LookUp->Answer(FString());
 		return LookUp;
 	}
-	TFunction<void(const FString&)> Answer = [LookUp](const FString& Ipv4)
+	TFunction<void(const FString&)> Answer = [LookUp](const FString& Address)
 	{
-		LookUp->Answer(FFlockDirectAddresses::Ipv4Value(Ipv4));
+		LookUp->Answer(FFlockDirectAddresses::Ipv4Value(Address));
 	};
 	if (LookUpForTesting)
 	{
@@ -36,20 +36,21 @@ TSharedRef<FFlockNameLookup, ESPMode::ThreadSafe> FFlockNameLookup::Start(const 
 		LookUp->Answer(FString());
 		return LookUp;
 	}
-	// Answered on one of the engine's threads.
+	// Answered on one of the engine's threads. The service is a number, never absent: the engine's lookup on another thread passes
+	// an absent one as empty, which Android's resolver refuses for a datagram lookup (EAI_SERVICE), so no name was looked up there.
 	Sockets->GetAddressInfoAsync([Answer](FAddressInfoResult Result)
 	{
-		FString Ipv4;
+		FString FirstIpv4;
 		for (const FAddressInfoResultData& Found : Result.Results)
 		{
-			Ipv4 = FFlockDirectAddresses::Ipv4Value(Found.Address->ToString(false));
-			if (!Ipv4.IsEmpty())
+			FirstIpv4 = FFlockDirectAddresses::Ipv4Value(Found.Address->ToString(false));
+			if (!FirstIpv4.IsEmpty())
 			{
 				break;
 			}
 		}
-		Answer(Ipv4);
-	}, *Host, nullptr, EAddressInfoFlags::Default, FNetworkProtocolTypes::IPv4, SOCKTYPE_Datagram);
+		Answer(FirstIpv4);
+	}, *Host, TEXT("0"), EAddressInfoFlags::Default, FNetworkProtocolTypes::IPv4, SOCKTYPE_Datagram);
 	return LookUp;
 }
 

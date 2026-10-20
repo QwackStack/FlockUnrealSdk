@@ -14,7 +14,7 @@ class FFlockPlayerProvider;
 /**
  * Game commands: the authoritative, server-validated mutations of a player's data.
  *
- * Every command posts to a `game_command/*` route and answers with the whole updated player-data row, which
+ * Every command posts to a route under `game_command/` and answers with the whole updated player-data row, which
  * is written straight back through the player provider's cache — so a read right after a mutation sees the
  * new values rather than the pre-write ones.
  *

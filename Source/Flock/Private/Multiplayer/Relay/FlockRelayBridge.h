@@ -61,9 +61,13 @@ public:
 	struct FToTheHostOptions
 	{
 		/** The host's bridge reads the bridges' own messages (it published so); none is sent to one that did not. */
-		bool bHostReadsBridgeMessages = false;
+		bool bHostReadsBridgeMessages;
 		/** The engine's packets move to a direct path once the host and this device reach each other (Relay When Needed, a host that offers one). */
-		bool bGoesDirect = false;
+		bool bGoesDirect;
+
+		// Set here rather than where they are declared: clang refuses a default argument of the enclosing class (ToTheHost's) that
+		// needs a nested struct's member initializers.
+		FToTheHostOptions() : bHostReadsBridgeMessages(false), bGoesDirect(false) {}
 	};
 
 	/**

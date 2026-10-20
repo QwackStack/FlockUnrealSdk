@@ -5,6 +5,20 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.38.1] - 2026-10-20
+
+The SDK builds and runs on Android.
+
+### Fixed
+
+- **The SDK did not compile for Android.** Android's compiler refused two comments holding `/*` and two local names that hid a
+  member, which the Windows compiler accepts; all changed, and a game for Android builds and runs (measured with UE 5.4 on a
+  Galaxy S23 Ultra).
+- **On Android no name was ever looked up**, so the relay server and the STUN servers were never reached and Travel To Session
+  through the relay failed with `relay_unreachable`: the engine's lookup passed an absent service as an empty one, which
+  Android's resolver refuses. The lookup now gives a numeric service. Measured on the phone on mobile data (an IPv6-only
+  network) with a desktop host on another network: through Cloudflare's relay, then a direct path across the two networks.
+
 ## [1.38.0] - 2026-10-19
 
 Direct paths for relayed players: a player who came through Flock's relay moves off it once it and the host reach each other.
