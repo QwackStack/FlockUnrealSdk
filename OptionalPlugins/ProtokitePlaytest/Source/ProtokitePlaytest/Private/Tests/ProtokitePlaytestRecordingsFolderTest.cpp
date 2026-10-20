@@ -449,7 +449,8 @@ bool FProtokitePlaytestRecordingsLeavesRunsInUseAloneTest::RunTest(const FString
 	TestEqual(TEXT("The running test video is untouched"), IFileManager::Get().FileSize(*RunningTestVideoVideo), static_cast<int64>(Unfinished.Num()));
 	TestEqual(TEXT("A run another launch holds is not listed for upload"),
 		FProtokitePlaytestRecordingsFolder::FindRecordingsWaitingToUpload(Test.Recordings).Num(), 0);
-	const FProtokitePlaytestRecordingsRoom Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, /*BudgetBytes*/ 1, /*BytesWanted*/ 1024 * 1024);
+	const FProtokitePlaytestRecordingsRoom Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, /*BudgetBytes*/ 1, /*BytesWanted*/ 1024 * 1024,
+		EProtokitePlaytestRecordingKind::Playtest);
 	TestEqual(TEXT("Making room deletes no playtest recording in use"), Room.PlaytestRecordingsDeleted.Num(), 0);
 	TestEqual(TEXT("And no test video in use"), Room.TestVideosDeleted.Num(), 0);
 
@@ -532,7 +533,8 @@ bool FProtokitePlaytestRecordingsNeverTouchesAnythingElseTest::RunTest(const FSt
 
 	FProtokitePlaytestRecordingsFolder::FinishWhatEndedRunsLeft(Test.Recordings);
 	FProtokitePlaytestRecordingsFolder::FindRecordingsWaitingToUpload(Test.Recordings);
-	const FProtokitePlaytestRecordingsRoom Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, /*BudgetBytes*/ 1, /*BytesWanted*/ 1024 * 1024);
+	const FProtokitePlaytestRecordingsRoom Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, /*BudgetBytes*/ 1, /*BytesWanted*/ 1024 * 1024,
+		EProtokitePlaytestRecordingKind::Playtest);
 	TestFalse(TEXT("Control: the ended run was deleted to make room"), RecordingsTestFolderExists(EndedRun));
 	TestEqual(TEXT("Nothing that is not a run's is counted"), Room.BytesUsed, 0LL);
 	for (const FString& Path : Others)
@@ -567,13 +569,14 @@ bool FProtokitePlaytestRecordingsMakeRoomDeletesTestVideosFirstTest::RunTest(con
 	const int64 Wanted = 50 * 1024;
 
 	FProtokitePlaytestRecordingsRoom Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings,
-		NewestTestVideoBytes + NewerUploadBytes + OlderTestVideoBytes + OldestUploadBytes + Wanted, Wanted);
+		NewestTestVideoBytes + NewerUploadBytes + OlderTestVideoBytes + OldestUploadBytes + Wanted, Wanted, EProtokitePlaytestRecordingKind::Playtest);
 	TestEqual(TEXT("With room for everything, nothing is deleted"), Room.TestVideosDeleted.Num() + Room.PlaytestRecordingsDeleted.Num(), 0);
 	TestEqual(TEXT("Everything is counted"), Room.BytesUsed, NewestTestVideoBytes + NewerUploadBytes + OlderTestVideoBytes + OldestUploadBytes);
 	TestEqual(TEXT("And the budget has room left for the new recording"), Room.BytesLeftInBudget, Wanted);
 
 	// Room for both uploads and the new recording: both test videos go, oldest first, and no upload, though one is older.
-	Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, NewerUploadBytes + OldestUploadBytes + Wanted, Wanted);
+	Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, NewerUploadBytes + OldestUploadBytes + Wanted, Wanted,
+		EProtokitePlaytestRecordingKind::Playtest);
 	if (TestEqual(TEXT("Both test videos are deleted"), Room.TestVideosDeleted.Num(), 2))
 	{
 		TestTrue(TEXT("The older one first"), FPaths::IsSamePath(FPaths::GetPath(Room.TestVideosDeleted[0]), OlderTestVideo));
@@ -583,8 +586,16 @@ bool FProtokitePlaytestRecordingsMakeRoomDeletesTestVideosFirstTest::RunTest(con
 	TestTrue(TEXT("The oldest upload is kept"), RecordingsTestFolderExists(OldestUpload));
 	TestEqual(TEXT("And the new recording fits"), Room.BytesLeftInBudget, Wanted);
 
+	// A test video never costs a recording waiting to be uploaded, however short the room.
+	Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, NewerUploadBytes + OldestUploadBytes + Wanted - 1, Wanted,
+		EProtokitePlaytestRecordingKind::TestVideo);
+	TestEqual(TEXT("For a test video no upload is deleted"), Room.PlaytestRecordingsDeleted.Num(), 0);
+	TestTrue(TEXT("The oldest upload is still there"), RecordingsTestFolderExists(OldestUpload));
+	TestTrue(TEXT("So the test video gets less room than it wanted"), Room.BytesLeftInBudget < Wanted);
+
 	// One byte short of keeping both uploads: only then does one go, the oldest.
-	Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, NewerUploadBytes + OldestUploadBytes + Wanted - 1, Wanted);
+	Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, NewerUploadBytes + OldestUploadBytes + Wanted - 1, Wanted,
+		EProtokitePlaytestRecordingKind::Playtest);
 	if (TestEqual(TEXT("One recording waiting to be uploaded is deleted"), Room.PlaytestRecordingsDeleted.Num(), 1))
 	{
 		TestTrue(TEXT("The oldest"), FPaths::IsSamePath(FPaths::GetPath(Room.PlaytestRecordingsDeleted[0]), OldestUpload));
@@ -617,7 +628,7 @@ bool FProtokitePlaytestRecordingsMakeRoomCountsRunsInUseTest::RunTest(const FStr
 		&Video, nullptr, nullptr);
 	const int64 Wanted = 100 * 1024;
 
-	FProtokitePlaytestRecordingsRoom Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, Reserved + 50 * 1024, Wanted);
+	FProtokitePlaytestRecordingsRoom Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, Reserved + 50 * 1024, Wanted, EProtokitePlaytestRecordingKind::Playtest);
 	TestEqual(TEXT("The ended run is deleted, although the running one is older"), Room.TestVideosDeleted.Num(), 1);
 	TestFalse(TEXT("Its folder is gone"), RecordingsTestFolderExists(Ended));
 	TestEqual(TEXT("The running game's recording is untouched"), IFileManager::Get().FileSize(*StillRunning->GetUnfinishedVideoFilePath()),
@@ -625,7 +636,7 @@ bool FProtokitePlaytestRecordingsMakeRoomCountsRunsInUseTest::RunTest(const FStr
 	TestEqual(TEXT("And counted at the size it may grow to, not the size it has"), Room.BytesUsed, Reserved);
 	TestEqual(TEXT("The budget has what is left after that"), Room.BytesLeftInBudget, 50LL * 1024);
 
-	Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, Reserved - 1, Wanted);
+	Room = FProtokitePlaytestRecordingsFolder::MakeRoom(Test.Recordings, Reserved - 1, Wanted, EProtokitePlaytestRecordingKind::Playtest);
 	TestEqual(TEXT("With a running game's recording filling the budget, nothing is left"), Room.BytesLeftInBudget, 0LL);
 	TestTrue(TEXT("And it is still not deleted"), IFileManager::Get().FileExists(*StillRunning->GetUnfinishedVideoFilePath()));
 	return true;
@@ -746,6 +757,83 @@ bool FProtokitePlaytestVideoFileFinishesAnInterruptedFileTest::RunTest(const FSt
 		}
 	}
 	TestEqual(TEXT("It is left as it was"), IFileManager::Get().FileSize(*Held), static_cast<int64>(HeldBytes.Num()));
+	return true;
+}
+
+/** A run folder that cannot be removed once its lock has gone gets the lock back, so a later launch still finds and deletes it. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestRecordingsFolderKeepsItsLockTest,
+	"Protokite.Playtest.Recordings.ARunFolderThatCannotBeRemovedKeepsItsLock",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestRecordingsFolderKeepsItsLockTest::RunTest(const FString& Parameters)
+{
+	FRecordingsTestFolder Test;
+	const TArray<uint8> Video = MakeRecordingsTestVideoBytes(1, 10 * 1024, 1);
+	const FString RunFolder = MakeEndedRecordingRun(*this, Test.Recordings, EProtokitePlaytestRecordingKind::TestVideo,
+		TEXT("20260101-000000-aaaaaaaa"), &Video, nullptr, nullptr);
+	const FString LockPath = FPaths::Combine(RunFolder, FProtokitePlaytestRecordingsFolder::LockFileName);
+	const FString Stray = FPaths::Combine(RunFolder, TEXT("arrived-meanwhile.txt"));
+
+	const TSharedPtr<FProtokitePlaytestRecordingRun> Run = FProtokitePlaytestRecordingRun::ClaimEnded(RunFolder);
+	if (!TestTrue(TEXT("Precondition: the ended run is claimed"), Run.IsValid()))
+	{
+		return false;
+	}
+	// A file arrives between the lock's deletion and the folder's removal, so the folder cannot go.
+	FProtokitePlaytestRecordingRun::SetBeforeNextFolderRemovalForTesting([Stray]()
+	{
+		FFileHelper::SaveStringToFile(TEXT("x"), *Stray);
+	});
+	TArray<FString> Left;
+	TestFalse(TEXT("The run is not reported deleted"), Run->DeleteEverything(Left));
+	TestTrue(TEXT("Its folder is still there"), IFileManager::Get().DirectoryExists(*RunFolder));
+	TestTrue(TEXT("With its lock back"), IFileManager::Get().FileExists(*LockPath));
+
+	// So a later launch finds it, and deletes it once nothing is in the way.
+	const TSharedPtr<FProtokitePlaytestRecordingRun> Later = FProtokitePlaytestRecordingRun::ClaimEnded(RunFolder);
+	if (TestTrue(TEXT("A later launch claims it"), Later.IsValid()))
+	{
+		TArray<FString> LeftLater;
+		TestTrue(TEXT("And deletes it"), Later->DeleteEverything(LeftLater));
+		TestFalse(TEXT("The folder is gone"), IFileManager::Get().DirectoryExists(*RunFolder));
+	}
+	return true;
+}
+
+/** A playtest recording whose session file cannot be read is kept: deleting a recording is the one step that cannot be undone. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestRecordingsUnreadableSessionTest,
+	"Protokite.Playtest.Recordings.ARecordingWithAnUnreadableSessionIsKept",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestRecordingsUnreadableSessionTest::RunTest(const FString& Parameters)
+{
+	FRecordingsTestFolder Test;
+	const TArray<uint8> Video = MakeRecordingsTestVideoBytes(1, 10 * 1024, 1);
+	// Its video was cut off (five whole frames, then 40 bytes of a sixth promising 100), so finishing it is what makes what
+	// is kept playable.
+	TArray<uint8> CutOff = MakeRecordingsTestVideoBytes(5, 100, 0);
+	AppendRecordingsTestFrameHeader(CutOff, 5, 100);
+	CutOff.Append(MakeRecordingsTestFrame(5, 40));
+	const FString Kept = MakeEndedRecordingRun(*this, Test.Recordings, EProtokitePlaytestRecordingKind::Playtest,
+		TEXT("20260101-000000-aaaaaaaa"), nullptr, &CutOff, nullptr);
+	FFileHelper::SaveStringToFile(TEXT("{\"protokite_session_id\": "), *FPaths::Combine(Kept, FProtokitePlaytestRecordingsFolder::SessionFileName));
+	// The controls: a recording no session was saved for is deleted, as before, and so is one whose file parses but names no session.
+	const FString NoSession = MakeEndedRecordingRun(*this, Test.Recordings, EProtokitePlaytestRecordingKind::Playtest,
+		TEXT("20260101-000001-bbbbbbbb"), &Video, nullptr, nullptr);
+	const FString NamesNoSession = MakeEndedRecordingRun(*this, Test.Recordings, EProtokitePlaytestRecordingKind::Playtest,
+		TEXT("20260101-000002-cccccccc"), &Video, nullptr, nullptr);
+	FFileHelper::SaveStringToFile(TEXT("{\"protokite_session_id\":\"\"}"), *FPaths::Combine(NamesNoSession, FProtokitePlaytestRecordingsFolder::SessionFileName));
+
+	const FProtokitePlaytestWhatEndedRunsLeft Result = FProtokitePlaytestRecordingsFolder::FinishWhatEndedRunsLeft(Test.Recordings);
+	TestEqual(TEXT("The recording with an unreadable session is kept"), Result.RecordingsWithAnUnreadableSessionKept, 1);
+	TestTrue(TEXT("Its folder is there"), RecordingsTestFolderExists(Kept));
+	TestEqual(TEXT("Its cut-off video was finished first"), Result.InterruptedRecordingsFinished, 1);
+	TestTrue(TEXT("So the kept file is a whole one"), FPaths::FileExists(FPaths::Combine(Kept, TEXT("recording-20260101-000000-aaaaaaaa.webm"))));
+	TestFalse(TEXT("With no cut-off file left beside it"), FPaths::FileExists(FPaths::Combine(Kept, TEXT("recording-20260101-000000-aaaaaaaa.webm.part"))));
+	TestEqual(TEXT("And it is not offered for upload"), Result.RecordingsWaitingToUpload, 0);
+	TestEqual(TEXT("The two with no session are deleted"), Result.RecordingsWithoutASessionDeleted, 2);
+	TestFalse(TEXT("The one with no session file"), RecordingsTestFolderExists(NoSession));
+	TestFalse(TEXT("And the one whose file names no session"), RecordingsTestFolderExists(NamesNoSession));
 	return true;
 }
 

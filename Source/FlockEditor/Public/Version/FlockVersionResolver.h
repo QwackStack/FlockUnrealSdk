@@ -29,7 +29,8 @@ public:
 	/**
 	 * Editor convenience: resolve via the active lookup, then (on success) apply, persist to
 	 * DefaultGame.ini, and surface the outcome as an editor toast. Fails cleanly when no version lookup
-	 * is registered.
+	 * is registered. Once the lookup has answered, success or not, the Flock panel is refreshed and then
+	 * OnFinished runs: the bake sets the ID directly, so no settings-changed event refreshes anything.
 	 */
-	static void ResolveAndBake(UFlockConfig& Config);
+	static void ResolveAndBake(UFlockConfig& Config, TFunction<void()> OnFinished = nullptr);
 };

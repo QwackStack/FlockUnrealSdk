@@ -88,7 +88,7 @@ namespace
 		}
 	}
 
-	/** Sorts by id then name — the same ordering the emitters use, so files and hash agree on identity. */
+	/** In FlockCodegenComesBefore order, the one the emitters use, so files and hash agree on identity. */
 	template <typename T>
 	TArray<const T*> SortedById(const TArray<T>& Items)
 	{
@@ -100,7 +100,7 @@ namespace
 		}
 		Sorted.Sort([](const T& A, const T& B)
 		{
-			return A.Id == B.Id ? A.Name < B.Name : A.Id < B.Id;
+			return FlockCodegenComesBefore(A, B);
 		});
 		return Sorted;
 	}

@@ -1,33 +1,22 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockCommandAsyncActions.h"
+#include "Blueprint/FlockBlueprintCallOrigin.h"
+#include "Http/FlockErrorHints.h"
 
-#include "Engine/BlueprintGeneratedClass.h"
 #include "FlockSubsystem.h"
 #include "Providers/FlockCommandProvider.h"
 
 namespace
 {
-	FString ResolveCallOrigin(const UObject* WorldContextObject)
-	{
-		if (const UBlueprintGeneratedClass* BlueprintClass =
-			WorldContextObject ? Cast<UBlueprintGeneratedClass>(WorldContextObject->GetClass()) : nullptr)
-		{
-			FString AssetName = BlueprintClass->GetName();
-			AssetName.RemoveFromEnd(TEXT("_C"));
-			return FString::Printf(TEXT("Blueprint '%s'"), *AssetName);
-		}
-		return TEXT("Blueprint node");
-	}
-
 	FFlockCommandProvider* ResolveCommands(UObject* WorldContextObject, FFlockError& OutError)
 	{
 		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
 		FFlockCommandProvider* Provider = Sdk ? Sdk->GetCommandProvider() : nullptr;
 		if (!Provider)
 		{
-			OutError = FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Flock command provider is not available. Initialize the SDK first."));
+			OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock commands are not available: Flock is not initialized"), FFlockErrorHints::InitializeFlockFirst());
 		}
 		return Provider;
 	}
@@ -75,7 +64,7 @@ void UFlockUpdatePlayerDataAction::Activate()
 		}
 	};
 
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	if (Key.IsEmpty())
 	{
 		Provider->UpdatePlayerData(PlayerDataId, Data, OnDone);
@@ -121,7 +110,7 @@ void UFlockUnlockAchievementAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockUnlockAchievementAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->UnlockAchievement(AchievementName, [WeakThis](TFlockResult<FFlockPlayerData> Result)
 	{
 		if (UFlockUnlockAchievementAction* Self = WeakThis.Get())
@@ -176,7 +165,7 @@ void UFlockAddGameFundsAction::Activate()
 		}
 	};
 
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	if (CurrencyTemplateId.IsEmpty())
 	{
 		Provider->AddGameFunds(Currency, Amount, OnDone);
@@ -220,7 +209,7 @@ void UFlockFlushPendingCommandsAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockFlushPendingCommandsAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->FlushPendingWrites([WeakThis](TFlockResult<int32> Result)
 	{
 		if (UFlockFlushPendingCommandsAction* Self = WeakThis.Get())

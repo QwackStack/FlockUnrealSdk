@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Models/FlockLeaderboardModels.h"
+#include "Models/FlockPlayerModels.h"
 #include "FlockLeaderboardLibrary.generated.h"
 
 /**
@@ -53,4 +54,11 @@ public:
 	/** True when a bigger number ranks better. Sort and label from this rather than reading Direction. */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Is Higher Better"), Category = "Flock|Leaderboard")
 	static bool IsHigherBetter(const FFlockLeaderboard& Leaderboard);
+
+	/** Refusal reasons as the server spells them, to compare a refusal's Reason against rather than typing them. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Refusal Reason Score Bounds"), Category = "Flock|Leaderboard")
+	static FString RefusalReasonScoreBounds() { return FlockLeaderboardRefusalReasons::ScoreBounds; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Refusal Reason Gain Limit"), Category = "Flock|Leaderboard")
+	static FString RefusalReasonGainLimit() { return FlockLeaderboardRefusalReasons::GainLimit; }
 };

@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -15,6 +16,7 @@
 #include "Containers/Ticker.h"
 #include "HAL/FileManager.h"
 #include "Http/FlockHttpClient.h"
+#include "Http/FlockErrorHints.h"
 #include "Http/FlockSnapshotStore.h"
 #include "Misc/Base64.h"
 #include "Misc/Paths.h"
@@ -23,6 +25,7 @@
 #include "Providers/FlockPlayerProvider.h"
 #include "Providers/FlockShopProvider.h"
 #include "Tests/Support/FlockFakeTransport.h"
+#include "Tests/Support/FlockTestRetries.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
 #include "Tests/Support/FlockMemoryEventCache.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
@@ -54,21 +57,6 @@ namespace FlockShopProviderTestHelpers
 		Payload.ReplaceInline(TEXT("/"), TEXT("_"));
 		Payload.ReplaceInline(TEXT("="), TEXT(""));
 		return FString::Printf(TEXT("h.%s.s"), *Payload);
-	}
-
-	/**
-	 * Runs retries that the handler scheduled on the core ticker.
-	 *
-	 * A retry is never synchronous even at a zero delay — it goes through FTSTicker — so a test that only
-	 * calls and asserts sees the first attempt and nothing else, and would read a working retry as an
-	 * absent one.
-	 */
-	inline void PumpRetries()
-	{
-		for (int32 Index = 0; Index < 8; ++Index)
-		{
-			FTSTicker::GetCoreTicker().Tick(1.f);
-		}
 	}
 
 	inline FString TempRoot()
@@ -577,6 +565,74 @@ bool FFlockShopPurchaseNotRetriedTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── A real-money item sent through the wallet purchase is refused on its own code, with its hint ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopRealMoneyItemTest, "Flock.Shop.Provider.ARealMoneyItemIsRefusedOnItsOwnCodeWithItsHint",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopRealMoneyItemTest::RunTest(const FString& Parameters)
+{
+	// The body as the backend's shop settlement code builds it; the route's documented responses leave the code out.
+	FFixture Fx(Retrying());
+	Fx.SignIn();
+	Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+	Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Status(422,
+		TEXT("{\"detail\":{\"code\":\"shop.real_currency_needs_checkout\",\"message\":\"'USD' is a real currency and cannot be paid from a wallet; open a checkout with POST /v1/shop/checkout, or verify a store receipt with POST /v1/shop/validate-receipt\"}}")));
+
+	TOptional<TFlockResult<FFlockPurchaseResult>> Answer;
+	Fx.Provider->Purchase(TEXT("item-1"), FString(), [&Answer](TFlockResult<FFlockPurchaseResult> R) { Answer = R; });
+	FlockTestRetries::Pump();
+	if (!TestTrue(TEXT("answered"), Answer.IsSet()))
+	{
+		Cleanup(Fx.Dir);
+		return false;
+	}
+	TestFalse(TEXT("refused"), Answer->bSuccess);
+	TestEqual(TEXT("on its own code, not Unknown"), Answer->Error.ErrorCode, EFlockErrorCode::ShopRealCurrencyNeedsCheckout);
+	TestEqual(TEXT("as the 422 it is"), Answer->Error.StatusCode, 422);
+	TestEqualSensitive(TEXT("with its hint"), Answer->Error.Hint, FFlockErrorHints::For(EFlockErrorCode::ShopRealCurrencyNeedsCheckout));
+	TestFalse(TEXT("a hint there is"), Answer->Error.Hint.IsEmpty());
+	TestTrue(TEXT("and the server's reason"), Answer->Error.Message.Contains(TEXT("real currency")) || Answer->Error.ServerMessage.Contains(TEXT("real currency")));
+	TestEqual(TEXT("sent once"), Fx.Fake->CountTo(TEXT("shop/transaction")), 1);
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+// ── A purchase or consume made with the server unreachable is sent once, fails, and is never queued for later ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopOfflineMoneyTest, "Flock.Shop.Provider.APurchaseOrConsumeMadeOfflineIsSentOnceAndNeverQueued",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopOfflineMoneyTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx(Retrying());
+	Fx.SignIn();
+	Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+	Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Offline());
+	Fx.Fake->On(TEXT("player_inventory/inv-1/consume"), FFlockFakeTransport::Offline());
+
+	EFlockErrorType PurchaseFailure = EFlockErrorType::None;
+	Fx.Provider->Purchase(TEXT("item-1"), FString(), [&PurchaseFailure](TFlockResult<FFlockPurchaseResult> R) { PurchaseFailure = R.bSuccess ? EFlockErrorType::None : R.Error.Type; });
+	EFlockErrorType ConsumeFailure = EFlockErrorType::None;
+	Fx.Provider->Consume(TEXT("inv-1"), [&ConsumeFailure](TFlockResult<FFlockConsumeResult> R) { ConsumeFailure = R.bSuccess ? EFlockErrorType::None : R.Error.Type; });
+	FlockTestRetries::Pump();
+	TestEqual(TEXT("the purchase fails as unreachable"), PurchaseFailure, EFlockErrorType::Connection);
+	TestEqual(TEXT("so does the consume"), ConsumeFailure, EFlockErrorType::Connection);
+
+	// The network comes back: nothing held back is sent.
+	Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(PurchaseResultBody()));
+	Fx.Fake->On(TEXT("player_inventory/inv-1/consume"), FFlockFakeTransport::Ok(ConsumeResultBody()));
+	FlockTestRetries::Pump();
+	TestEqual(TEXT("the purchase was sent once"), Fx.Fake->CountTo(TEXT("shop/transaction")), 1);
+	TestEqual(TEXT("the consume was sent once"), Fx.Fake->CountTo(TEXT("player_inventory/inv-1/consume")), 1);
+
+	// Contrast: a read made with the server unreachable is tried again under the same policy.
+	Fx.Fake->On(TEXT("player_inventory/player/player-a"), FFlockFakeTransport::Offline());
+	Fx.Provider->GetPlayerInventory(FString(), 1, 100, [](TFlockResult<FFlockPlayerInventoryPage>) {});
+	FlockTestRetries::Pump();
+	TestTrue(TEXT("contrast: a read is tried again"), Fx.Fake->CountTo(TEXT("player_inventory/player/player-a")) > 1);
+	Cleanup(Fx.Dir);
+	return true;
+}
+
 // ── SHOP-06: inventory is never cached — offline it fails rather than serving stale ownership ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopInventoryOfflineTest, "Flock.Shop.Provider.InventoryOfflineFails",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -694,6 +750,35 @@ bool FFlockShopClearCacheTest::RunTest(const FString& Parameters)
 // This is the defect the whole change exists to fix: the SDK used to deserialize the response straight
 // onto the inventory model, which against a real backend produced a populated-looking row of nulls. The
 // fixture is root-shaped and nests `inventory`, so reading it off the root cannot pass.
+// ── A purchase says where it has got to: paid by default, any other status the server sends read as it spelled it ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopPurchaseStatusTest, "Flock.Shop.Provider.PurchaseReadsItsStatus",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopPurchaseStatusTest::RunTest(const FString& Parameters)
+{
+	auto Purchase = [this](const FString& Body)
+	{
+		FFixture Fx;
+		Fx.SignIn();
+		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(RewardItemBody(TEXT("item-1"), 100)));
+		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(Body));
+		FFlockPurchaseResult Purchased;
+		Fx.Provider->Purchase(TEXT("item-1"), FString(), [&Purchased](TFlockResult<FFlockPurchaseResult> R) { Purchased = R.Value; });
+		return Purchased;
+	};
+
+	const FFlockPurchaseResult Pending = Purchase(TEXT("{\"purchase_id\":\"pur-2\",\"item_type\":\"standard\",\"status\":\"pending\"}"));
+	TestEqualSensitive(TEXT("The status is read as the server spelled it"), Pending.Status, FString(FlockPurchaseStatuses::Pending));
+	TestFalse(TEXT("A pending purchase is not paid"), Pending.IsPaid());
+	TestFalse(TEXT("Nor to a graph"), UFlockShopLibrary::IsPurchasePaid(Pending));
+
+	const FFlockPurchaseResult Unsaid = Purchase(PurchaseResultBody());
+	TestEqualSensitive(TEXT("A status left out reads as paid, the schema's default"), Unsaid.Status, FString(FlockPurchaseStatuses::Paid));
+	TestTrue(TEXT("And is paid"), Unsaid.IsPaid());
+	TestTrue(TEXT("To a graph too"), UFlockShopLibrary::IsPurchasePaid(Unsaid));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopPurchaseResultShapeTest, "Flock.Shop.Provider.PurchaseParsesNestedResult",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
@@ -909,7 +994,7 @@ bool FFlockShopConsumeMoneySafetyTest::RunTest(const FString& Parameters)
 		Fx.Provider->Consume(TEXT("inv-1"), [&](TFlockResult<FFlockConsumeResult> R) { bFailed = !R.bSuccess; });
 		// Pumped even though nothing should be scheduled: without this, "one attempt" would also pass
 		// against a version that *had* queued a retry and simply never got to run it.
-		PumpRetries();
+		FlockTestRetries::Pump();
 
 		TestTrue(TEXT("the failure surfaces"), bFailed);
 		TestEqual(TEXT("a money mutation is not retried on a 5xx"),
@@ -924,7 +1009,7 @@ bool FFlockShopConsumeMoneySafetyTest::RunTest(const FString& Parameters)
 
 		bool bOk = false;
 		Fx.Provider->Consume(TEXT("inv-1"), [&](TFlockResult<FFlockConsumeResult> R) { bOk = R.bSuccess; });
-		PumpRetries();
+		FlockTestRetries::Pump();
 
 		TestTrue(TEXT("a provably-unprocessed failure is retried and succeeds"), bOk);
 		TestEqual(TEXT("which took two attempts"),
@@ -972,6 +1057,19 @@ bool FFlockShopLibraryParityTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("consume wallet absent"), UFlockShopLibrary::ConsumeHasWallet(Consumed));
 	Consumed.Wallet.Id = TEXT("pd-1");
 	TestTrue(TEXT("consume wallet present"), UFlockShopLibrary::ConsumeHasWallet(Consumed));
+
+	FFlockPurchaseResult Pending;
+	Pending.Status = FlockPurchaseStatuses::Pending;
+	TestEqual(TEXT("Is Purchase Paid matches the struct"), UFlockShopLibrary::IsPurchasePaid(Pending), Pending.IsPaid());
+	TestFalse(TEXT("and a pending purchase is not paid"), UFlockShopLibrary::IsPurchasePaid(Pending));
+	TestTrue(TEXT("a purchase with no status read is paid"), UFlockShopLibrary::IsPurchasePaid(Bare));
+
+	TestEqualSensitive(TEXT("pending is the wire spelling"), UFlockShopLibrary::PurchaseStatusPending(), FString(FlockPurchaseStatuses::Pending));
+	TestEqualSensitive(TEXT("paid is the wire spelling"), UFlockShopLibrary::PurchaseStatusPaid(), FString(FlockPurchaseStatuses::Paid));
+	TestEqualSensitive(TEXT("failed is the wire spelling"), UFlockShopLibrary::PurchaseStatusFailed(), FString(FlockPurchaseStatuses::Failed));
+	TestEqualSensitive(TEXT("expired is the wire spelling"), UFlockShopLibrary::PurchaseStatusExpired(), FString(FlockPurchaseStatuses::Expired));
+	TestEqualSensitive(TEXT("refunded is the wire spelling"), UFlockShopLibrary::PurchaseStatusRefunded(), FString(FlockPurchaseStatuses::Refunded));
+	TestEqualSensitive(TEXT("and the constants are the schema's"), FString(FlockPurchaseStatuses::Paid), FString(TEXT("paid")));
 
 	return true;
 }
@@ -1077,6 +1175,60 @@ bool FFlockShopNoPlayerProviderTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("and still reports its wallet to the caller"), Purchased.Wallet.Id, FString(TEXT("pd-1")));
 
 	Cleanup(Fx.Dir);
+	return true;
+}
+
+// ── A purchase acts for the sign-in it started under: a switch while its item is read sends nothing and records nothing ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopPurchaseKeepsItsSignInTest, "Flock.Shop.Provider.PurchaseIsNotSentAfterItsSignInEnds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopPurchaseKeepsItsSignInTest::RunTest(const FString& Parameters)
+{
+	auto RunPurchase = [this](bool bSwitchPlayerMeanwhile, int32& OutPurchasePosts, int32& OutRecords, EFlockErrorType& OutErrorType)
+	{
+		FFixture Fx;
+		Fx.SignIn(TEXT("player-a"));
+		Fx.WireAnalytics();
+		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(PurchaseResultBody()));
+		Fx.Fake->On(TEXT("analytics/transactions"), FFlockFakeTransport::Ok(TEXT("{}")));
+
+		// The item read is held, so another player signs in between the purchase and its send.
+		Fx.Fake->bDeferred = true;
+		bool bDone = false;
+		Fx.Provider->Purchase(TEXT("item-1"), FString(), [&](TFlockResult<FFlockPurchaseResult> R)
+		{
+			bDone = true;
+			OutErrorType = R.bSuccess ? EFlockErrorType::None : R.Error.Type;
+		});
+		TestFalse(TEXT("the purchase waits for its item"), bDone);
+		if (bSwitchPlayerMeanwhile)
+		{
+			Fx.SignIn(TEXT("player-b"));
+		}
+		Fx.Fake->bDeferred = false;
+		Fx.Fake->FlushPending();
+
+		TestTrue(TEXT("the purchase answered"), bDone);
+		OutPurchasePosts = Fx.Fake->CountTo(TEXT("shop/transaction"));
+		OutRecords = Fx.Fake->CountTo(TEXT("analytics/transactions"));
+		Cleanup(Fx.Dir);
+	};
+
+	int32 Posts = -1;
+	int32 Records = -1;
+	EFlockErrorType Type = EFlockErrorType::None;
+
+	// Control: the same sign-in all along sends the purchase and records Started and Purchased.
+	RunPurchase(false, Posts, Records, Type);
+	TestEqual(TEXT("control: one purchase POST"), Posts, 1);
+	TestEqual(TEXT("control: Started + Purchased recorded"), Records, 2);
+	TestEqual(TEXT("control: succeeded"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::None));
+
+	RunPurchase(true, Posts, Records, Type);
+	TestEqual(TEXT("after the switch: no purchase POST as the next player"), Posts, 0);
+	TestEqual(TEXT("after the switch: nothing recorded for the next player"), Records, 0);
+	TestEqual(TEXT("after the switch: cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
 	return true;
 }
 

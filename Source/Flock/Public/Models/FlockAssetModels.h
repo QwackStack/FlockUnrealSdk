@@ -54,8 +54,8 @@ struct FLOCK_API FFlockAsset
 	bool IsValid() const { return !Id.IsEmpty(); }
 
 	/**
-	 * The half of the cache key that changes when the bytes change. Canonical uses `UpdatedAt.Ticks`;
-	 * UpdatedAt is a raw ISO-8601 string here, so this is a CRC of that string — the same discriminating
+	 * The half of the cache key that changes when the bytes change. UpdatedAt is a raw ISO-8601 string,
+	 * so this is a CRC of that string — the same discriminating
 	 * power without a date parse that could fail on an unexpected format, and filename-safe by construction.
 	 */
 	FString VersionToken() const;

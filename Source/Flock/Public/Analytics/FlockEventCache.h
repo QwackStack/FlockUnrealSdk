@@ -63,4 +63,10 @@ public:
 
 	/** Drops everything. Backs the "erase my analytics data" path. */
 	virtual void Clear() = 0;
+
+	/**
+	 * Keeps Payload for the launch that takes this one over, from a thread that may not touch this queue (the crashing one):
+	 * a store that can, writes the entry and nothing else. False when nothing was kept.
+	 */
+	virtual bool KeepForALaterLaunch(const FString& Payload) { return !Enqueue(Payload).IsEmpty(); }
 };

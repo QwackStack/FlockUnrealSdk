@@ -15,6 +15,16 @@ FFlockInitConfig FFlockInitConfig::FromSettings(const UFlockConfig& Settings)
 	return Config;
 }
 
+FString FFlockInitConfig::TrimApiUrl(const FString& ApiUrl)
+{
+	FString Trimmed = ApiUrl.TrimStartAndEnd();
+	while (Trimmed.EndsWith(TEXT("/")))
+	{
+		Trimmed.LeftChopInline(1);
+	}
+	return Trimmed;
+}
+
 TMap<FString, FString> FFlockInitConfig::GetBaseHeaders() const
 {
 	TMap<FString, FString> Headers;

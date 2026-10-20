@@ -34,6 +34,16 @@ bool FFlockJsonData::IsValid() const
 	return ResolveObject().IsValid();
 }
 
+bool FFlockJsonData::GetAsStruct(const UScriptStruct* StructType, void* OutStruct) const
+{
+	const TSharedPtr<FJsonObject> Object = ResolveObject();
+	if (!Object.IsValid() || StructType == nullptr || OutStruct == nullptr)
+	{
+		return false;
+	}
+	return FJsonObjectConverter::JsonObjectToUStruct(Object.ToSharedRef(), StructType, OutStruct, 0, 0);
+}
+
 TSharedPtr<FJsonObject> FFlockJsonData::ResolveObject() const
 {
 	if (!bParsed)

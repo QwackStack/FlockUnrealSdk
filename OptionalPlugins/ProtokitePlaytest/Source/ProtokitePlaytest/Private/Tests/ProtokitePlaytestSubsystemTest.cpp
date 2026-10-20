@@ -225,7 +225,7 @@ bool FProtokitePlaytestSubsystemSendsFlocksOwnHeadersTest::RunTest(const FString
 
 	if (TestEqual(TEXT("One config request"), Fixture.ConfigRequests(), 1))
 	{
-		const FFlockHttpRequest& Request = Fixture.Transport->Requests[0];
+		const FFlockHttpRequest& Request = Fixture.Transport->RequestAt(0);
 		TestEqual(TEXT("To the playtest-config route of the Protokite API URL"), Request.Url,
 			FString(TEXT("http://localhost:8020/game/sdk/playtest-config")));
 		TestEqual(TEXT("With the API key the Flock SDK initialized with"), Request.Headers.FindRef(TEXT("X-Flock-API-Key")),

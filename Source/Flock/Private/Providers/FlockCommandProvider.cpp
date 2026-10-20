@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Providers/FlockCommandProvider.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Http/FlockEndpoints.h"
 #include "Http/FlockSnapshotStore.h"
@@ -135,8 +136,8 @@ void FFlockCommandProvider::UnlockAchievement(const FString& AchievementName,
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Player provider unavailable; cannot resolve the achievements row."))));
+			OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock player data is not available, so the player's achievements record cannot be found"), FFlockErrorHints::InitializeFlockFirst())));
 		}
 		return;
 	}
@@ -163,8 +164,8 @@ void FFlockCommandProvider::UnlockAchievement(const FString& AchievementName,
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-						TEXT("No achievements data found for the current player."))));
+					OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+						TEXT("The signed-in player has no achievements record"), TEXT("The server makes it when a player registers, from the Game Version's achievement template (a player-data template tagged achievement), so a player who registered before that template existed, or under another Game Version, has none. Create the template in the Flock dashboard, then register the player under this build's Game Version."))));
 				}
 				return;
 			}
@@ -192,8 +193,8 @@ void FFlockCommandProvider::AddGameFunds(const FString& Currency, int32 Amount,
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Player provider unavailable; cannot resolve the currency template."))));
+			OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock player data is not available, so the currency template cannot be found"), FFlockErrorHints::InitializeFlockFirst())));
 		}
 		return;
 	}
@@ -234,8 +235,8 @@ void FFlockCommandProvider::AddGameFunds(const FString& Currency, int32 Amount, 
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Player provider unavailable; cannot resolve the currency wallet."))));
+			OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock player data is not available, so the player's wallet cannot be found"), FFlockErrorHints::InitializeFlockFirst())));
 		}
 		return;
 	}
@@ -262,8 +263,8 @@ void FFlockCommandProvider::AddGameFunds(const FString& Currency, int32 Amount, 
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-						TEXT("No currency wallet found for the current player."))));
+					OnComplete(TFlockResult<FFlockPlayerData>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+						TEXT("The signed-in player has no wallet record for that currency template"), TEXT("Check the Currency Template ID is the id of the Game Version's currency template in the Flock dashboard. The server makes a player's wallet when the player registers, so a player who registered before that template existed, or under another Game Version, has none."))));
 				}
 				return;
 			}
@@ -321,6 +322,19 @@ void FFlockCommandProvider::FlushPendingWrites(TFunction<void(TFlockResult<int32
 	FlushNext(MakeShared<int32>(0), MoveTemp(OnComplete));
 }
 
+void FFlockCommandProvider::FlushNextWhileSignedIn(const TSharedRef<int32>& Delivered, TFunction<void(TFlockResult<int32>)> OnComplete)
+{
+	// The answer just handled belonged to the queue's player whatever happened since. The next write is that player's too,
+	// and the command routes take no token, so nothing on the server would stop it going out after they signed out: the
+	// queue waits for their next sign-in instead.
+	if (!IsTheQueuesPlayer(Session->GetPlayerId()))
+	{
+		FinishFlush(*Delivered, MoveTemp(OnComplete));
+		return;
+	}
+	FlushNext(Delivered, MoveTemp(OnComplete));
+}
+
 void FFlockCommandProvider::FlushNext(const TSharedRef<int32>& Delivered, TFunction<void(TFlockResult<int32>)> OnComplete)
 {
 	if (PendingWrites.Num() == 0)
@@ -347,12 +361,10 @@ void FFlockCommandProvider::FlushNext(const TSharedRef<int32>& Delivered, TFunct
 			// not enough: a replay that continued here would post the *next* entry with the new player's
 			// bearer, and the server rejecting A's row under B's token would drop A's write for good.
 			// Compare the identity of the queue, not just its head.
-			// A *different signed-in player*, specifically. Signing out mid-flight is not this hazard: with no
-			// bearer the next post simply fails Auth and stays queued, and treating it as a switch would
-			// abandon the flush on the very failure being processed — a rejected write that ends the session
-			// would then never be dropped.
+			// A *different signed-in player*, specifically: this answer is still handled after a sign-out (it is the queue's
+			// player's), so a rejected write is dropped; FlushNextWhileSignedIn then stops before the next one goes out.
 			const FString LivePlayerId = Self->Session->GetPlayerId();
-			const bool bPlayerSwitched = !LivePlayerId.IsEmpty() && LivePlayerId != Self->QueuePlayerId;
+			const bool bPlayerSwitched = !LivePlayerId.IsEmpty() && !Self->IsTheQueuesPlayer(LivePlayerId);
 			if (bPlayerSwitched || !Self->HeadStillIs(Head))
 			{
 				Self->FinishFlush(*Delivered, OnComplete);
@@ -364,7 +376,7 @@ void FFlockCommandProvider::FlushNext(const TSharedRef<int32>& Delivered, TFunct
 				Self->PendingWrites.RemoveAt(0);
 				Self->PersistQueue();
 				*Delivered += 1;
-				Self->FlushNext(Delivered, OnComplete);
+				Self->FlushNextWhileSignedIn(Delivered, OnComplete);
 				return;
 			}
 
@@ -416,7 +428,7 @@ void FFlockCommandProvider::FlushNext(const TSharedRef<int32>& Delivered, TFunct
 			Self->PendingWrites.RemoveAt(0);
 			Self->PersistQueue();
 			Self->EvictOptimisticRow(Head.PlayerDataId);
-			Self->FlushNext(Delivered, OnComplete);
+			Self->FlushNextWhileSignedIn(Delivered, OnComplete);
 		});
 }
 
@@ -522,9 +534,15 @@ void FFlockCommandProvider::SendQueueable(const FString& Path, const FString& Pa
 	const FString& PlayerDataId, const FFlockCommandData& OptimisticFields,
 	TFunction<void(TFlockResult<FFlockPlayerData>)> OnComplete)
 {
-	if (!IsServerReachable())
+	EnsureQueueLoaded();
+	const bool bReachable = IsServerReachable();
+	if (!bReachable || PendingWrites.Num() > 0)
 	{
-		const FFlockPlayerData Optimistic = EnqueueOffline(Path, PayloadJson, Context, PlayerDataId, OptimisticFields);
+		const FFlockPlayerData Optimistic = EnqueueWrite(Path, PayloadJson, Context, PlayerDataId, OptimisticFields, bReachable);
+		if (bReachable)
+		{
+			FlushPendingWrites();
+		}
 		if (OnComplete)
 		{
 			OnComplete(TFlockResult<FFlockPlayerData>::Ok(Optimistic));
@@ -535,10 +553,11 @@ void FFlockCommandProvider::SendQueueable(const FString& Path, const FString& Pa
 	PostCommand(Path, PayloadJson, Context, /*bIdempotent*/ true, MoveTemp(OnComplete));
 }
 
-FFlockPlayerData FFlockCommandProvider::EnqueueOffline(const FString& Path, const FString& PayloadJson,
-	const FString& Context, const FString& PlayerDataId, const FFlockCommandData& OptimisticFields)
+FFlockPlayerData FFlockCommandProvider::EnqueueWrite(const FString& Path, const FString& PayloadJson,
+	const FString& Context, const FString& PlayerDataId, const FFlockCommandData& OptimisticFields, bool bReachable)
 {
 	EnsureQueueLoaded();
+	const int32 WaitingBefore = PendingWrites.Num();
 
 	FFlockPendingCommand Pending;
 	Pending.Path = Path;
@@ -548,7 +567,15 @@ FFlockPlayerData FFlockCommandProvider::EnqueueOffline(const FString& Path, cons
 	PendingWrites.Add(Pending);
 	PersistQueue();
 
-	Logger->LogWarning(FString::Printf(TEXT("%s: offline — queued for sync on reconnect"), *Context));
+	if (bReachable)
+	{
+		Logger->LogInfo(FString::Printf(TEXT("%s: queued behind %d earlier write(s) still being sent, so it cannot overtake them"),
+			*Context, WaitingBefore));
+	}
+	else
+	{
+		Logger->LogWarning(FString::Printf(TEXT("%s: offline — queued for sync on reconnect"), *Context));
+	}
 
 	// Overlay the change onto the cached row so a read-after-write is consistent. An uncached row yields an
 	// empty record; the authoritative values land when the queue replays.
@@ -572,7 +599,7 @@ void FFlockCommandProvider::EnsureQueueLoaded()
 	// player). The previous player's in-memory writes are dropped so they can't replay under a new login;
 	// their persisted copy stays under their own scope and replays when they sign back in.
 	const FString PlayerId = Session->GetPlayerId();
-	if (bQueueLoaded && QueuePlayerId == PlayerId)
+	if (bQueueLoaded && IsTheQueuesPlayer(PlayerId))
 	{
 		return;
 	}
@@ -657,4 +684,10 @@ bool FFlockCommandProvider::HeadStillIs(const FFlockPendingCommand& Entry) const
 	return PendingWrites.Num() > 0
 		&& PendingWrites[0].Path == Entry.Path
 		&& PendingWrites[0].PayloadJson == Entry.PayloadJson;
+}
+
+bool FFlockCommandProvider::IsTheQueuesPlayer(const FString& PlayerId) const
+{
+	// Letter for letter: ids differing only in case are two players.
+	return PlayerId.Equals(QueuePlayerId, ESearchCase::CaseSensitive);
 }

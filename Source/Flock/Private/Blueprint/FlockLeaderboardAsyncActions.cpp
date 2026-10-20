@@ -1,33 +1,22 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockLeaderboardAsyncActions.h"
+#include "Blueprint/FlockBlueprintCallOrigin.h"
+#include "Http/FlockErrorHints.h"
 
-#include "Engine/BlueprintGeneratedClass.h"
 #include "FlockSubsystem.h"
 #include "Providers/FlockLeaderboardProvider.h"
 
 namespace
 {
-	FString ResolveCallOrigin(const UObject* WorldContextObject)
-	{
-		if (const UBlueprintGeneratedClass* BlueprintClass =
-			WorldContextObject ? Cast<UBlueprintGeneratedClass>(WorldContextObject->GetClass()) : nullptr)
-		{
-			FString AssetName = BlueprintClass->GetName();
-			AssetName.RemoveFromEnd(TEXT("_C"));
-			return FString::Printf(TEXT("Blueprint '%s'"), *AssetName);
-		}
-		return TEXT("Blueprint node");
-	}
-
 	FFlockLeaderboardProvider* ResolveLeaderboard(UObject* WorldContextObject, FFlockError& OutError)
 	{
 		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
 		FFlockLeaderboardProvider* Provider = Sdk ? Sdk->GetLeaderboardProvider() : nullptr;
 		if (!Provider)
 		{
-			OutError = FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Flock leaderboards are not available. Initialize the SDK first."));
+			OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock leaderboards are not available: Flock is not initialized"), FFlockErrorHints::InitializeFlockFirst());
 		}
 		return Provider;
 	}
@@ -55,7 +44,7 @@ void UFlockGetLeaderboardAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetLeaderboardAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetByName(LeaderboardName, [WeakThis](TFlockResult<FFlockLeaderboard> Result)
 	{
 		if (UFlockGetLeaderboardAction* Self = WeakThis.Get())
@@ -104,7 +93,7 @@ void UFlockGetLeaderboardStandingsAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetLeaderboardStandingsAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetStandings(LeaderboardName, Window, Country, Page, Limit,
 		[WeakThis](TFlockResult<FFlockStandings> Result)
 		{
@@ -152,7 +141,7 @@ void UFlockGetMyRankAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetMyRankAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetMyRank(LeaderboardName, Window, Country, [WeakThis](TFlockResult<FFlockPlayerRank> Result)
 	{
 		if (UFlockGetMyRankAction* Self = WeakThis.Get())
@@ -200,7 +189,7 @@ void UFlockGetStandingsAroundMeAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetStandingsAroundMeAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetAroundMe(LeaderboardName, Neighbours, Window, Country,
 		[WeakThis](TFlockResult<FFlockStandings> Result)
 		{

@@ -4,6 +4,7 @@
 
 #include "ProtokitePlaytestLogger.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/FlockTemporaryFiles.h"
 #include "Misc/Paths.h"
@@ -11,6 +12,12 @@
 namespace
 {
 	const FString FormFileExtension = TEXT(".json");
+	const FString ClaimFileEnding = TEXT(".sending");
+
+	FString ClaimPathOf(const FString& FormPath)
+	{
+		return FormPath + ClaimFileEnding;
+	}
 }
 
 FString FProtokitePlaytestFormSpool::GetDefaultFolder()
@@ -45,6 +52,24 @@ TArray<TPair<FString, FProtokitePlaytestFormSubmission>> FProtokitePlaytestFormS
 {
 	TArray<TPair<FString, FProtokitePlaytestFormSubmission>> Waiting;
 
+	// A claim a launch left when it ended, for a form that has gone since: the operating system let go of it, so it opens.
+	TArray<FString> Claims;
+	IFileManager::Get().FindFiles(Claims, *FPaths::Combine(Folder, TEXT("*") + ClaimFileEnding), /*Files*/ true, /*Directories*/ false);
+	for (const FString& ClaimName : Claims)
+	{
+		const FString ClaimPath = FPaths::Combine(Folder, ClaimName);
+		const FString FormPath = ClaimPath.LeftChop(ClaimFileEnding.Len());
+		if (!IFileManager::Get().FileExists(*FormPath))
+		{
+			TUniquePtr<IFileHandle> Left(FPlatformFileManager::Get().GetPlatformFile().OpenWrite(*ClaimPath, /*bAppend*/ true, /*bAllowRead*/ false));
+			if (Left.IsValid())
+			{
+				Left.Reset();
+				IFileManager::Get().Delete(*ClaimPath, /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
+			}
+		}
+	}
+
 	TArray<FString> Names;
 	IFileManager::Get().FindFiles(Names, *FPaths::Combine(Folder, TEXT("*") + FormFileExtension), /*Files*/ true, /*Directories*/ false);
 	// Oldest first: the names start with the time they were written, so sorting them sorts by age.
@@ -77,6 +102,32 @@ TArray<TPair<FString, FProtokitePlaytestFormSubmission>> FProtokitePlaytestFormS
 bool FProtokitePlaytestFormSpool::Forget(const FString& FilePath) const
 {
 	return IFileManager::Get().Delete(*FilePath, /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
+}
+
+TUniquePtr<IFileHandle> FProtokitePlaytestFormSpool::Claim(const FString& FilePath) const
+{
+	TUniquePtr<IFileHandle> Lock(FPlatformFileManager::Get().GetPlatformFile().OpenWrite(*ClaimPathOf(FilePath), /*bAppend*/ true, /*bAllowRead*/ false));
+	if (!Lock.IsValid())
+	{
+		return nullptr;
+	}
+	// Sent and forgotten by another launch since the folder was read.
+	if (!IFileManager::Get().FileExists(*FilePath))
+	{
+		Release(Lock, FilePath);
+		return nullptr;
+	}
+	return Lock;
+}
+
+void FProtokitePlaytestFormSpool::Release(TUniquePtr<IFileHandle>& Claim, const FString& FilePath)
+{
+	if (!Claim.IsValid())
+	{
+		return;
+	}
+	Claim.Reset();
+	IFileManager::Get().Delete(*ClaimPathOf(FilePath), /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
 }
 
 int32 FProtokitePlaytestFormSpool::CountWaiting() const

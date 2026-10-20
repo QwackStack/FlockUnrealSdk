@@ -518,8 +518,9 @@ namespace
 			return M.Finish();
 		}
 
-		// `Make…Update` is pure, so execution runs entry -> update and the conversion happens on the data
-		// edge. The update's own `Data` input is the command body, which is why both ends are named Data.
+		// The conversion has execution pins of its own (the wildcard struct-to-data call), so execution runs
+		// entry -> convert -> update. The update's own `Data` input is the command body, which is why both ends are
+		// named Data.
 		M.Connect(ExecIn, Write->FindPin(UEdGraphSchema_K2::PN_Execute, EGPD_Input), TEXT("entry -> convert"));
 		M.Connect(Write->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output),
 			Update->FindPin(UEdGraphSchema_K2::PN_Execute, EGPD_Input), TEXT("convert -> update"));

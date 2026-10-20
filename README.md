@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.23.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.38.1.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -67,8 +67,8 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   player's row for a template by the template's id or tag), browse the player templates that define those
   records, and check a player's ban status. A player's rows are paginated once and cached; templates are
   cached and snapshot-backed.
-- **Game commands** — the server-validated way to change a player's data: write a set of fields or a
-  single field onto a data row, unlock an achievement, or add funds to a wallet. Every command returns
+- **Game commands** — the server-validated way to change a player's data: replace a data row (every field
+  its template declares, nullable ones included) or write a single field onto it, unlock an achievement, or add funds to a wallet. Every command returns
   the updated row and writes it back into the player cache. Data writes queue offline and replay
   automatically; funds never do — a grant fails rather than being queued, and is never re-sent after an
   ambiguous failure.
@@ -91,6 +91,14 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   player's full updated credential list, so a link doubles as a refresh; the server refuses to remove the
   last credential, and a credential already owned by another player surfaces as an error rather than
   silently merging accounts.
+- **Parties** — players group up by invite code before they search for a match together: create, join, get the
+  player's own party back after a restart, and, as its leader, remove players, hand over the lead, change its size and
+  settings, or disband it. The SDK keeps a held party current on its own, and raises an event when its members, its
+  leader or its end change; an older reading never undoes a newer one.
+- **Sessions** — one player hosts a game the others join by code: host, join, read a session or the one the player is
+  seated in, and, as its host, publish how to reach it, hand hosting over or end it; join tokens let the host check who
+  connects. The SDK keeps the seat with heartbeats whose answers keep the session current, raises an event when its
+  players, its host, its connection or its end change, and gives the seat up when the game quits.
 - **Code generation** — one menu click turns your backend's templates, configs, and shops into typed
   structs, enums, and one-node reads, writes, and purchases. Blueprint by default, with no toolchain and
   no compile step; switch the target to emit a generated C++ module instead.
@@ -121,6 +129,12 @@ Then, either way:
 
 Each release is built from the tagged source, so it contains no compiled binaries: you build it once with
 your project, against your engine version and toolchain.
+
+**Calling Flock from C++.** Add `"Flock"` to your game module's `Build.cs`; `PrivateDependencyModuleNames` is
+enough, and a Blueprint-only project needs nothing. That covers every call a game makes, the typed reads
+`GetDataAs<T>` and `GetAs<T>` included. Only a module that builds its own requests on Flock's HTTP layer (a
+subclass of `FFlockProviderBase`, or `FFlockHttpClient`'s request templates) also adds `"Json"` and
+`"JsonUtilities"`.
 
 **Optional: Protokite Playtest (beta).** Releases also carry `ProtokitePlaytest-<version>.zip`, a separate plugin for
 Protokite playtests. Extract it next to the Flock SDK, so that `Plugins/ProtokitePlaytest/` sits beside
@@ -186,15 +200,19 @@ announced on the releases page.
 
 ## Requirements
 
-- **Unreal Engine 5.4 to 5.8.** Every version from 5.5 up is built *and* run against the full test
-  suite before a release — that part of the range is what has been verified, not what is expected to
-  work. **5.4 is newer to the range and is not there yet:** it has been built and linked in a real 5.4
-  project, all modules, with no errors or warnings, but the test suite has not been run on it. Treat a
-  first run on 5.4 as something to check rather than assume, and please report what you find — that is
-  how this sentence gets shorter. Older engines are refused with a single clear error. Newer ones
+- **Unreal Engine 5.4 to 5.8.** Every version in the range is built *and* run against the full test
+  suite before a release — the range is what has been verified, not what is expected to work. Older engines are refused with a single clear error. Newer ones
   compile and emit a warning saying they are past what has been verified: a new engine usually breaks
   nothing, so the SDK does not block you on the day one ships. See [CHANGELOG.md](CHANGELOG.md) for how
   the range moves.
+- **Known engine issue on 5.4 and 5.5: a Development package ends with an access violation (`0xC0000005`)
+  about 60 seconds after it quits.** The game has already closed by then, and its log is complete. This is
+  an engine bug, not this plugin's: as a packaged game shuts down, the engine releases Nanite's resources
+  after a lock they use has been destroyed, and its crash handler then waits 60 seconds before the process
+  ends. It happens whether or not any Flock feature ran. Epic fixed it in 5.6. It was measured on 5.5
+  Development packages; 5.4 has the same engine code. Shipping packages leave out the part involved, so
+  they should not be affected, though that has not been measured. If a script judges a packaged run on
+  these engines, read the game's own exit lines in its log rather than the process's exit code.
 - **Platforms: verified on Windows (Win64).** The SDK is written against portable engine APIs and uses
   no platform-specific code, so other targets are expected to work — but expected is not verified, and
   this project states only what it has actually run. Windows is where the test suite has been executed;
@@ -428,6 +446,7 @@ so you can read only the half you work in.
 | [Leaderboards](Documentation/leaderboards.md) | Boards by name, standings, a player's own rank, windows and score formatting, why there is no submit call |
 | [Notifications](Documentation/notifications.md) | The inbox, scheduled reminders, the template catalog, push device tokens and what push delivery needs |
 | [Android push setup](Documentation/push-setup-android.md) | Step-by-step: Firebase project, the two JSON files and where each goes, the plugin, the token hookup, dashboard credentials, and what to check when nothing arrives |
+| [Multiplayer](Documentation/multiplayer.md) | Parties, sessions, matchmaking and connecting players: create or host, join by code, the party and session objects and their events, heartbeats, join tokens, searching for a match alone or as a party, Travel To Session, direct connections and Flock's relay, direct paths for relayed players, letting in only the session's players, how each ends |
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, screen views, gameplay events, transactions, consent — what players did (Dashboards → Game Metrics) |
 | [Diagnostics](Documentation/diagnostics.md) | Log entries, automatic exception and Blueprint exception capture, crash reporting — what went wrong (Diagnostics → Errors / Events) |
@@ -525,7 +544,31 @@ off when its game ended, and keeps recordings inside a disk budget. **1.17.0 upl
 session they belong to, and pushes what earlier launches left. **1.18.0 adds the playtest's feedback form**, built from
 the questions the playtest publishes, with a button to upload the recording from it. **1.19.0 adds Blueprint nodes for
 the whole playtest**, including a form of your own, setup findings when Play starts, a warning for a Shipping build
-carrying a playtest, and reports a crash once rather than three times.
+carrying a playtest, and reports a crash once rather than three times. **1.26.0 adds parties**, the first multiplayer
+feature: create, join by invite code, get the player's party back after a restart, and the leader's calls, with events
+when the party changes. **1.27.0 adds sessions**: host, join by code, my session after a restart, the host's calls,
+join tokens, and heartbeats that keep the seat and keep the session current. **1.29.0 adds matchmaking**: search a queue by
+its name alone or as a party, every member's game told when the party's search starts and ends, and a match handing over
+the session it seats the player in. **1.30.0 connects the players**: Travel To Session opens the host's level listening
+and publishes how to reach it, and takes every other player there, to the host's LAN address when both share a public
+address; a connection of the game's own (Steam, EOS) is published and read back the same way. **1.31.0 checks who joins**:
+the host's game mode calls Flock's check from `PreLoginAsync`, which lets in only players whose Flock join token checks out,
+one connection a player, and says which Flock player each connection is; a player turned away learns why. **1.32.0 brings
+multiplayer to Blueprint**: a node for every party, session and matchmaking call and for Travel To Session, a node for every
+value a result carries, and ready-made game modes (`AFlockGameModeBase`, `AFlockGameMode`) that let in only the session's
+players, with the game's own check overridable in Blueprint. **1.33.0 builds Flock's relay client into the SDK**, and
+**1.34.0 connects players through it**: Travel To Session takes a player who cannot reach the host directly through Flock's
+relay (`Relay`: When Needed by default, Always or Never), the engine's own networking carrying it, and keeps a fresh join
+token on hand for a player a host's level change brings back. **1.35.0 makes a host change one call**: on On Host Changed (or
+On Relay Lost, raised when this device's relay stops working) the game calls Travel To Session again, which does this device's
+part from wherever the game is, a newer travel taking over one under way. **1.36.0 adds the multiplayer sample**, made of
+Blueprints only (`Content/Samples/Multiplayer`): sign in, host, join by code, quick match and leave, following host changes.
+**1.37.0 comes from playing through Cloudflare's relay**: a relay that stops answering this device is told lost within a minute,
+so On Relay Lost brings the game back rather than a silent wait. **1.38.0 moves relayed players to a direct path** (When Needed)
+once they and the host reach each other, and back to the relay when it goes quiet, the game's connection carrying on through
+both; a player connecting again through its relay address is back in within seconds rather than the engine's minute.
+**1.38.1 builds and runs on Android**, where no name was looked up before, so the relay could not be reached: a phone on mobile
+data plays through Flock's relay and moves to a direct path with a host on another network.
 
 Deliberate omissions and known gaps:
 

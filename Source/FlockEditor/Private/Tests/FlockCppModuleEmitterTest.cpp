@@ -220,4 +220,21 @@ bool FFlockCppModuleRefusalTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── A project with no generated module gets nothing from a Blueprint sync or a Clean ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCppModuleNoSkeletonTest, "Flock.Editor.CppModule.RemovingTypesWithNoModuleWritesNothing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCppModuleNoSkeletonTest::RunTest(const FString& Parameters)
+{
+	const FString Root = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("FlockCppNoModuleTest"), TEXT("FlockGenerated"));
+	IFileManager::Get().DeleteDirectory(*FPaths::GetPath(Root), /*RequireExists*/ false, /*Tree*/ true);
+
+	FString Error;
+	TestTrue(TEXT("nothing to remove is a success"), FFlockCppModuleEmitter::RemoveGeneratedTypes(Root, TEXT("FlockGenerated"),
+		/*bResetManifest*/ true, Error));
+	TestFalse(TEXT("and no folder or stub was written"), IFileManager::Get().DirectoryExists(*Root));
+	IFileManager::Get().DeleteDirectory(*FPaths::GetPath(Root), /*RequireExists*/ false, /*Tree*/ true);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

@@ -12,7 +12,7 @@
  * A provider's resolved structured data as an opaque, read-mostly handle (OverlayFields is the single write
  * path, for the optimistic row an offline command leaves). The backend delivers such data as a
  * recursive list[DataField] tree (each node typed object/list/dict/scalar); this collapses it once, at
- * parse, into a single flat JSON object — the UE analog of the canonical SDK's ToFlatObject — and holds
+ * parse, into a single flat JSON object, and holds
  * that. Shared across features: a game config's/patch's `data` and a player template's/row's `data` all use
  * it.
  *
@@ -64,13 +64,14 @@ struct FLOCK_API FFlockStructuredData
 	template <typename T>
 	bool GetDataAs(T& OutStruct) const
 	{
-		const TSharedPtr<FJsonObject> Object = ResolveObject();
-		if (!Object.IsValid())
-		{
-			return false;
-		}
-		return FJsonObjectConverter::JsonObjectToUStruct(Object.ToSharedRef(), T::StaticStruct(), &OutStruct, 0, 0);
+		return GetDataAsStruct(T::StaticStruct(), &OutStruct);
 	}
+
+	/**
+	 * GetDataAs for a struct type known at run time: fills OutStruct, a StructType, by reflection. False when there is no
+	 * data, or no type or target. The conversion runs inside Flock, so a game module needs no JSON module of its own to call it.
+	 */
+	bool GetDataAsStruct(const UScriptStruct* StructType, void* OutStruct) const;
 
 	// Dotted-path reads (e.g. "stats.max_health"). Each segment resolves exact-first then Pascal-cased, so a
 	// dashboard name ("max_health") finds the flattened key ("MaxHealth") and a Pascal name finds it directly.

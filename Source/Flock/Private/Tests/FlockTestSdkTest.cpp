@@ -40,10 +40,7 @@ namespace FlockTestSdkTesting
 	/** The launch folders in the project's own analytics folder, one per line in name order, to compare before and after. */
 	FString ProjectLaunchFolders()
 	{
-		TArray<FString> Folders = FFlockLaunchFolder::FindFolders(
-			FPaths::Combine(FFlockAnalyticsLaunches::DefaultFolder(), FFlockAnalyticsLaunches::LaunchesFolderName));
-		Folders.Sort();
-		return FString::Join(Folders, TEXT("\n"));
+		return FString::Join(FFlockAnalyticsLaunches::FindLaunchFoldersOfEveryGame(FFlockAnalyticsLaunches::DefaultFolder()), TEXT("\n"));
 	}
 }
 
@@ -75,7 +72,20 @@ bool FFlockTestSdkKeepsItsFilesTest::RunTest(const FString& Parameters)
 	const FString ProjectLaunchesBefore = FlockTestSdkTesting::ProjectLaunchFolders();
 	// A missing file reads as the minimum time, so a file made or deleted shows up as a change too.
 	const FDateTime ProjectConsentBefore = IFileManager::Get().GetTimeStamp(*FFlockConsentStore::DefaultPath());
-	const FDateTime ProjectSignInBefore = IFileManager::Get().GetTimeStamp(*FFlockFileTokenStore::DefaultPath());
+	// Every saved sign-in of the project's, each game's and the one an earlier build kept, with its time.
+	const auto ProjectSignIns = []()
+	{
+		TArray<FString> Names;
+		IFileManager::Get().FindFiles(Names, *FPaths::Combine(FFlockFileTokenStore::DefaultFolder(), TEXT("auth*.dat")), /*Files*/ true, /*Directories*/ false);
+		Names.Sort();
+		FString Listed;
+		for (const FString& Name : Names)
+		{
+			Listed += Name + TEXT("@") + IFileManager::Get().GetTimeStamp(*FPaths::Combine(FFlockFileTokenStore::DefaultFolder(), Name)).ToString() + TEXT("\n");
+		}
+		return Listed;
+	};
+	const FString ProjectSignInsBefore = ProjectSignIns();
 
 	FString TestFolder;
 	{
@@ -93,8 +103,7 @@ bool FFlockTestSdkKeepsItsFilesTest::RunTest(const FString& Parameters)
 		Test->InitializeWithConfig(FlockTestSdkTesting::MakeValidConfig());
 		TestTrue(TEXT("Precondition: initialized with analytics on"), Test->IsInitialized() && Test->GetAnalyticsProvider() != nullptr);
 
-		const TArray<FString> OwnLaunches = FFlockLaunchFolder::FindFolders(
-			FPaths::Combine(Test.Folder, TEXT("analytics"), FFlockAnalyticsLaunches::LaunchesFolderName));
+		const TArray<FString> OwnLaunches = FFlockAnalyticsLaunches::FindLaunchFoldersOfEveryGame(FPaths::Combine(Test.Folder, TEXT("analytics")));
 		TestEqual(TEXT("This launch's analytics folder is in the test's own folder"), OwnLaunches.Num(), 1);
 		TestFalse(TEXT("And held while the SDK runs"), OwnLaunches.Num() == 1 && FFlockLaunchFolder::ClaimEnded(OwnLaunches[0]).IsValid());
 		TestEqualSensitive(TEXT("Not one launch folder is added to the project's, or taken from it"), FlockTestSdkTesting::ProjectLaunchFolders(), ProjectLaunchesBefore);
@@ -109,7 +118,7 @@ bool FFlockTestSdkKeepsItsFilesTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("The offline cache is the test's own"), IFileManager::Get().FileExists(*OtherVersionCache));
 		TestFalse(TEXT("The sign-in is the test's own"), IFileManager::Get().FileExists(*OtherGameSignIn));
 		TestTrue(TEXT("And the project's sign-in is left alone"),
-			IFileManager::Get().GetTimeStamp(*FFlockFileTokenStore::DefaultPath()) == ProjectSignInBefore);
+			ProjectSignIns() == ProjectSignInsBefore);
 
 		const FFlockAssetProvider* Assets = Test->GetAssetProvider();
 		TestTrue(TEXT("The asset cache is in the test's folder"), Assets != nullptr

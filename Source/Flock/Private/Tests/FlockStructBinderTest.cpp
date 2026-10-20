@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -9,6 +10,8 @@
 #include "Models/FlockAnalyticsModels.h"
 #include "Models/FlockPlayerModels.h"
 #include "Models/FlockStructuredData.h"
+#include "Models/FlockShopModels.h"
+#include "Misc/ScopeExit.h"
 
 namespace FlockStructBinderTestHelpers
 {
@@ -289,6 +292,65 @@ bool FFlockBinderWireNameTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("an unregistered struct writes its member names"),
 		Plain.Contains(TEXT("\"Reason\""), ESearchCase::CaseSensitive));
 
+	return true;
+}
+
+// -- A list or a map of structs uses the wire-name table too, both directions --
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockBinderContainerWireNameTest, "Flock.Codegen.Binder.ListsAndMapsOfStructsUseWireNames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockBinderContainerWireNameTest::RunTest(const FString& Parameters)
+{
+	// Each stands in for a generated struct held in a list or a map of another one.
+	FFlockStructBinder::RegisterWireNames(FFlockFeatureBan::StaticStruct(), { { TEXT("Reason"), TEXT("why_banned") } });
+	FFlockStructBinder::RegisterWireNames(FFlockShopItemReward::StaticStruct(), { { TEXT("Amount"), TEXT("reward_amount") } });
+	ON_SCOPE_EXIT
+	{
+		FFlockStructBinder::UnregisterWireNames(FFlockFeatureBan::StaticStruct());
+		FFlockStructBinder::UnregisterWireNames(FFlockShopItemReward::StaticStruct());
+	};
+
+	FFlockPlayerBan Ban;
+	FFlockFeatureBan Feature;
+	Feature.Reason = TEXT("cheating");
+	Ban.Data.Add(TEXT("Leaderboard"), Feature);
+	const FString BanJson = FFlockStructBinder::ToCommandData(FFlockPlayerBan::StaticStruct(), &Ban).ToJsonString();
+	AddInfo(BanJson);
+	TestTrue(TEXT("a map's struct values write their declared names"), BanJson.Contains(TEXT("\"why_banned\":\"cheating\""), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("not their member names"), BanJson.Contains(TEXT("\"Reason\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and its keys as they are"), BanJson.Contains(TEXT("\"Leaderboard\""), ESearchCase::CaseSensitive));
+
+	FFlockShopItem Item;
+	FFlockShopItemReward Reward;
+	Reward.Amount = 50;
+	Item.Rewards.Add(Reward);
+	const FString ItemJson = FFlockStructBinder::ToCommandData(FFlockShopItem::StaticStruct(), &Item).ToJsonString();
+	AddInfo(ItemJson);
+	TestTrue(TEXT("a list's struct elements write their declared names"), ItemJson.Contains(TEXT("\"reward_amount\":50"), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("not their member names"), ItemJson.Contains(TEXT("\"Amount\""), ESearchCase::CaseSensitive));
+
+	FFlockStructuredData BanSource;
+	BanSource.FlatJson = TEXT("{\"Data\":{\"Chat\":{\"why_banned\":\"spam\"}}}");
+	FFlockPlayerBan ReadBan;
+	FFlockStructBinder::FillStruct(FFlockPlayerBan::StaticStruct(), &ReadBan, BanSource);
+	if (TestEqual(TEXT("a map of structs fills"), ReadBan.Data.Num(), 1))
+	{
+		for (const TPair<FString, FFlockFeatureBan>& Entry : ReadBan.Data)
+		{
+			TestEqualSensitive(TEXT("its key as it was"), Entry.Key, FString(TEXT("Chat")));
+			TestEqual(TEXT("its values from their declared names"), Entry.Value.Reason, FString(TEXT("spam")));
+		}
+	}
+
+	FFlockStructuredData ItemSource;
+	ItemSource.FlatJson = TEXT("{\"Rewards\":[{\"reward_amount\":7},{\"reward_amount\":9}]}");
+	FFlockShopItem ReadItem;
+	FFlockStructBinder::FillStruct(FFlockShopItem::StaticStruct(), &ReadItem, ItemSource);
+	if (TestEqual(TEXT("a list of structs fills"), ReadItem.Rewards.Num(), 2))
+	{
+		TestEqual(TEXT("each element from its declared names"), ReadItem.Rewards[0].Amount, 7);
+		TestEqual(TEXT("..."), ReadItem.Rewards[1].Amount, 9);
+	}
 	return true;
 }
 

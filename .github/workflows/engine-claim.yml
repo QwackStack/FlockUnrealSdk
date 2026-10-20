@@ -150,3 +150,37 @@ jobs:
           else
             echo "No engine-version branching in build rules."
           fi
+
+      - name: Every test that checks a spelling compiles on the floor engine
+        run: |
+          set -euo pipefail
+
+          # FAutomationTestBase::TestEqualSensitive arrived in UE 5.5. Below that, FlockEngineCompat.h stands in for it
+          # with a macro, which only a file that includes that header (or FlockTestSpelling.h, which includes it) gets. A
+          # test file without it compiles on 5.5 and newer and breaks the floor engine's editor and Development builds,
+          # where the tests are compiled: three test files added in 1.30.1 did, and only the engine sweep found it.
+          COMPAT_H="Source/Flock/Public/Misc/FlockEngineCompat.h"
+          FILES=$(grep -rl --include='*.h' --include='*.cpp' 'TestEqualSensitive' Source/ OptionalPlugins/ | grep -vxF "$COMPAT_H" || true)
+          MISSING=""
+          for FILE in $FILES; do
+            if ! grep -qE '^#include ".*(FlockEngineCompat|FlockTestSpelling)\.h"' "$FILE"; then
+              MISSING="${MISSING}${FILE}"$'\n'
+            fi
+          done
+
+          if [ -n "$MISSING" ]; then
+            echo "::error::These files call TestEqualSensitive without the stand-in UE 5.4 needs. Include \"Misc/FlockEngineCompat.h\" in each:"
+            printf '%s' "$MISSING"
+            exit 1
+          fi
+
+          # The stand-in is a macro that reads `this`, so it serves only an unqualified call inside a test's own RunTest. A
+          # helper that takes the test (Test.TestEqualSensitive) compiles on 5.5 and newer only.
+          QUALIFIED=$(grep -rnE --include='*.h' --include='*.cpp' '(\.|->)[[:space:]]*TestEqualSensitive[[:space:]]*\(' Source/ OptionalPlugins/ || true)
+          if [ -n "$QUALIFIED" ]; then
+            echo "::error::TestEqualSensitive is called on a test from outside it, which UE 5.4's stand-in cannot serve. Call it unqualified in the test's RunTest, or check Actual.Equals(Expected, ESearchCase::CaseSensitive) with TestTrue:"
+            echo "$QUALIFIED"
+            exit 1
+          fi
+
+          echo "Every file that calls TestEqualSensitive brings the UE 5.4 stand-in ($(printf '%s\n' "$FILES" | grep -c .) files)."

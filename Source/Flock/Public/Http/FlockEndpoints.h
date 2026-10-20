@@ -180,4 +180,39 @@ namespace FlockEndpoints
 	inline constexpr const TCHAR* CommandUpdatePlayerDataKey = TEXT("game_command/update_player_data_key");
 	inline constexpr const TCHAR* CommandUnlockAchievement = TEXT("game_command/unlock_achievement");
 	inline constexpr const TCHAR* CommandAddGameFunds = TEXT("game_command/add_game_funds");
+
+	// Matchmaking — the queue list needs only the API key; queues are found by name from it, since no by-name route exists.
+	inline constexpr const TCHAR* MatchmakingQueues = TEXT("matchmaking/queues");
+	// Matchmaking searches — every route acts as the signed-in player; a search is read and cancelled by its own player only.
+	inline constexpr const TCHAR* MatchmakingTicket = TEXT("matchmaking/ticket");
+	inline constexpr const TCHAR* MatchmakingTicketCurrent = TEXT("matchmaking/ticket/current");
+	inline FString MatchmakingTicketById(const FString& TicketId) { return FString::Printf(TEXT("matchmaking/ticket/%s"), *Encode(TicketId)); }
+
+	// Parties — every route acts as the signed-in player.
+	inline constexpr const TCHAR* Party = TEXT("party");
+	inline constexpr const TCHAR* PartyJoin = TEXT("party/join");
+	inline constexpr const TCHAR* PartyMine = TEXT("party/me");
+	inline FString PartyById(const FString& PartyId) { return FString::Printf(TEXT("party/%s"), *Encode(PartyId)); }
+	inline FString PartyLeave(const FString& PartyId) { return PartyById(PartyId) + TEXT("/leave"); }
+	inline FString PartyKick(const FString& PartyId) { return PartyById(PartyId) + TEXT("/kick"); }
+	inline FString PartyTransfer(const FString& PartyId) { return PartyById(PartyId) + TEXT("/transfer"); }
+
+	// Multiplayer sessions — every route acts as the signed-in player and answers the whole session, but for the two join-token routes.
+	inline constexpr const TCHAR* Sessions = TEXT("multiplayer/sessions");
+	inline constexpr const TCHAR* SessionJoin = TEXT("multiplayer/sessions/join");
+	inline constexpr const TCHAR* SessionCurrent = TEXT("multiplayer/sessions/current");
+	inline FString SessionById(const FString& SessionId) { return FString::Printf(TEXT("multiplayer/sessions/%s"), *Encode(SessionId)); }
+	inline FString SessionHeartbeat(const FString& SessionId) { return SessionById(SessionId) + TEXT("/heartbeat"); }
+	inline FString SessionLeave(const FString& SessionId) { return SessionById(SessionId) + TEXT("/leave"); }
+	inline FString SessionEnd(const FString& SessionId) { return SessionById(SessionId) + TEXT("/end"); }
+	inline FString SessionHost(const FString& SessionId) { return SessionById(SessionId) + TEXT("/host"); }
+	inline FString SessionConnection(const FString& SessionId) { return SessionById(SessionId) + TEXT("/connection-info"); }
+	/** How to reach the signed-in player for its own seat, which the host reads (a relay address it lets in). */
+	inline FString SessionSeatConnection(const FString& SessionId) { return SessionById(SessionId) + TEXT("/participants/me/connection-info"); }
+	inline FString SessionJoinToken(const FString& SessionId) { return SessionById(SessionId) + TEXT("/join-token"); }
+	/** How the host's check of a join token ends its route, whatever the session. */
+	inline constexpr const TCHAR* SessionVerifyJoinTokenEnding = TEXT("/verify-join-token");
+	inline FString SessionVerifyJoinToken(const FString& SessionId) { return SessionById(SessionId) + SessionVerifyJoinTokenEnding; }
+	/** The servers to connect through; asked with no session it lists the STUN servers alone. */
+	inline constexpr const TCHAR* RelayCredentials = TEXT("multiplayer/relay-credentials");
 }

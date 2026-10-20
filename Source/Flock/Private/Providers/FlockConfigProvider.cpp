@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Providers/FlockConfigProvider.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Http/FlockEndpoints.h"
 
@@ -400,7 +401,7 @@ void FFlockConfigProvider::GetPlayerFeatures(const FString& PlayerId, TFunction<
 {
 	// Empty = the signed-in player, matching every other Player ID argument in the SDK.
 	const FString ResolvedPlayerId = PlayerId.IsEmpty() ? Session->GetPlayerId() : PlayerId;
-	if (!RequireNotEmpty(ResolvedPlayerId, TEXT("Player ID (sign in first)"), OnComplete))
+	if (!RequireNotEmpty(ResolvedPlayerId, TEXT("Player ID"), OnComplete, FFlockErrorHints::SignInFirst()))
 	{
 		return;
 	}
@@ -424,7 +425,7 @@ void FFlockConfigProvider::GetPlayerFeatures(const FString& PlayerId, TFunction<
 	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
 
-	// No snapshot: per-player resolved features must not be served stale, so this is a plain Execute.
+	// No snapshot on disk: a player's features are kept in memory for the run only (PlayerFeaturesByPlayer).
 	Execute<FFlockGameConfigSchema>(
 		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockGameConfigSchema>)> OnAttempt)
 		{

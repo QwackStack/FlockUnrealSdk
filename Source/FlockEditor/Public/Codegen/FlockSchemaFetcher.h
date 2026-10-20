@@ -15,8 +15,8 @@
  * emitter sees a partial snapshot, and that is far easier to guarantee (and to read) when there is one
  * request in flight at a time. This is an editor action measured in a second or two, not a frame budget.
  *
- * The version is resolved by name even though project settings already carry a baked id, matching the
- * canonical SDK: resolving is what catches a *stale* bake, where the backend cut a new version under the
+ * The version is resolved by name even though project settings already carry a baked id: resolving is
+ * what catches a *stale* bake, where the backend cut a new version under the
  * same name. Both ids ride on the snapshot so the caller can surface the mismatch.
  *
  * The client is injected rather than built internally, so tests drive the whole chain over the fake

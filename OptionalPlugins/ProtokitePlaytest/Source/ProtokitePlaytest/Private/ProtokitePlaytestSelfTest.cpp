@@ -185,7 +185,7 @@ bool FProtokitePlaytestSelfTest::IsTheExpectedRefusal(bool bSucceeded, const FFl
 	{
 		// Protokite names the question only inside its sentence, so a refusal for another question looks the same
 		// by status alone. Compared letter for letter, as the server names its questions.
-		const FString Named = ProtokitePlaytestFindFieldIdInComplaint(Reason);
+		const FString Named = ProtokitePlaytestFindFieldIdInComplaint(Error.ServerMessage);
 		if (!Named.Equals(QuestionItMustName, ESearchCase::CaseSensitive))
 		{
 			OutWhatHappened = Named.IsEmpty()

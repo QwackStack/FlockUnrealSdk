@@ -55,9 +55,19 @@ public:
 
 	/**
 	 * Moves a completed temp file into place, drops the asset's other versions, and enforces the budget.
-	 * Returns the final path, or empty when the move failed (the caller still has usable bytes at TempPath).
+	 * Returns the final path, or empty when the file was not kept (the caller still has usable bytes at TempPath): the move
+	 * failed, or the download is larger than the whole budget, which only a file whose size the record left out can be.
 	 */
 	FString Commit(const FString& AssetId, const FString& VersionToken, const FString& TempPath);
+
+	/**
+	 * A file of its own for a download that is not kept (caching off), in a folder of this cache's, so it is as writable as
+	 * the cache on every platform. Files a launch left there are deleted by a later one.
+	 */
+	FString MakeUnkeptPath(const FString& VersionToken) const;
+
+	/** Whether Path is a download this cache does not keep (a temporary file under it), which the SDK deletes once read. */
+	bool IsUnkeptDownload(const FString& Path) const;
 
 	/** Deletes an abandoned temp file. Safe to call on a path that was never created. */
 	void Abandon(const FString& TempPath) const;
@@ -71,13 +81,15 @@ public:
 private:
 	void DeleteOtherVersions(const FString& AssetId, const FString& KeepPath) const;
 
-	/** Evicts least-recently-used files until the total fits the budget. No-op when unbudgeted. */
-	void EnforceMaxSize();
+	/** Evicts least-recently-used files, never KeepPath, until the total fits the budget. No-op when unbudgeted. */
+	void EnforceMaxSize(const FString& KeepPath);
 
 	/** Whitelists filename-safe characters so an asset id can never escape the cache directory. */
 	static FString Sanitize(const FString& In);
 
 	FString Directory;
+	/** The subfolder downloads that are not kept are written to. */
+	static constexpr const TCHAR* UnkeptFolder = TEXT("unkept");
 	int64 MaxSizeBytes = 0;
 	TSharedRef<IFlockLogger> Logger;
 };

@@ -1,37 +1,21 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockAuthAsyncActions.h"
+#include "Blueprint/FlockBlueprintCallOrigin.h"
+#include "Http/FlockErrorHints.h"
 #include "FlockSubsystem.h"
-#include "Engine/BlueprintGeneratedClass.h"
 #include "Providers/FlockAuthProvider.h"
 
 namespace
 {
-	/**
-	 * Names the Blueprint that activated a node, for the SDK log's call-origin tag. The world context is
-	 * the graph's `self` — a Blueprint-generated class for BP callers (its "_C" suffix is an artifact of
-	 * the generated class, not part of the asset name), anything else means the node was driven from C++.
-	 */
-	FString ResolveCallOrigin(const UObject* WorldContextObject)
-	{
-		if (const UBlueprintGeneratedClass* BlueprintClass =
-			WorldContextObject ? Cast<UBlueprintGeneratedClass>(WorldContextObject->GetClass()) : nullptr)
-		{
-			FString AssetName = BlueprintClass->GetName();
-			AssetName.RemoveFromEnd(TEXT("_C"));
-			return FString::Printf(TEXT("Blueprint '%s'"), *AssetName);
-		}
-		return TEXT("Blueprint node");
-	}
-
 	FFlockAuthProvider* ResolveProvider(UObject* WorldContextObject, FFlockError& OutError)
 	{
 		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
 		FFlockAuthProvider* Provider = Sdk ? Sdk->GetAuthProvider() : nullptr;
 		if (!Provider)
 		{
-			OutError = FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Flock SDK is not initialized. Initialize the SDK before calling auth nodes."));
+			OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock is not initialized, so its sign-in nodes cannot run"), FFlockErrorHints::InitializeFlockFirst());
 		}
 		return Provider;
 	}
@@ -115,14 +99,14 @@ UFlockLoginAction* UFlockLoginAction::LoginWithDiscord(UObject* WorldContextObje
 void UFlockLoginAction::Activate()
 {
 	FFlockError Error;
-	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject, Error);
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerLoginResponse>::Fail(Error));
 		return;
 	}
 	TWeakObjectPtr<UFlockLoginAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	Start(*Provider, [WeakThis](TFlockResult<FFlockPlayerLoginResponse> Result)
 	{
 		if (UFlockLoginAction* Self = WeakThis.Get())
@@ -205,14 +189,14 @@ UFlockRegisterAction* UFlockRegisterAction::RegisterWithSteam(UObject* WorldCont
 void UFlockRegisterAction::Activate()
 {
 	FFlockError Error;
-	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject, Error);
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockRegisterResult>::Fail(Error));
 		return;
 	}
 	TWeakObjectPtr<UFlockRegisterAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	Start(*Provider, [WeakThis](TFlockResult<FFlockRegisterResult> Result)
 	{
 		if (UFlockRegisterAction* Self = WeakThis.Get())
@@ -248,7 +232,7 @@ UFlockRestoreSessionAction* UFlockRestoreSessionAction::RestoreSession(UObject* 
 void UFlockRestoreSessionAction::Activate()
 {
 	FFlockError Error;
-	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject, Error);
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), Error);
 	if (!Provider)
 	{
 		OnNoSession.Broadcast();
@@ -256,7 +240,7 @@ void UFlockRestoreSessionAction::Activate()
 		return;
 	}
 	TWeakObjectPtr<UFlockRestoreSessionAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	Provider->TryRestoreSession([WeakThis](bool bRestored)
 	{
 		if (UFlockRestoreSessionAction* Self = WeakThis.Get())
@@ -356,7 +340,7 @@ UFlockAuthAccountAction* UFlockAuthAccountAction::RefreshToken(UObject* WorldCon
 			{
 				OnDone(bRefreshed, bRefreshed
 					? FFlockError()
-					: FFlockError::Make(EFlockErrorType::Auth, TEXT("Token refresh failed. Please log in again.")));
+					: FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("The player's sign-in could not be renewed"), TEXT("Sign the player in again. If the device was offline, wait for the connection and renew again first; the Output Log names what refused it.")));
 			});
 		});
 }
@@ -364,14 +348,14 @@ UFlockAuthAccountAction* UFlockAuthAccountAction::RefreshToken(UObject* WorldCon
 void UFlockAuthAccountAction::Activate()
 {
 	FFlockError Error;
-	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject, Error);
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), Error);
 	if (!Provider)
 	{
 		Complete(false, Error);
 		return;
 	}
 	TWeakObjectPtr<UFlockAuthAccountAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	Start(*Provider, [WeakThis](bool bSuccess, const FFlockError& ResultError)
 	{
 		if (UFlockAuthAccountAction* Self = WeakThis.Get())
@@ -490,14 +474,14 @@ UFlockAccountLinkAction* UFlockAccountLinkAction::Unlink(UObject* WorldContextOb
 void UFlockAccountLinkAction::Activate()
 {
 	FFlockError Error;
-	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject, Error);
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerAccountsResponse>::Fail(Error));
 		return;
 	}
 	TWeakObjectPtr<UFlockAccountLinkAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	Start(*Provider, [WeakThis](TFlockResult<FFlockPlayerAccountsResponse> Result)
 	{
 		if (UFlockAccountLinkAction* Self = WeakThis.Get())
@@ -535,7 +519,7 @@ UFlockNameAvailableAction* UFlockNameAvailableAction::IsNameAvailable(UObject* W
 void UFlockNameAvailableAction::Activate()
 {
 	FFlockError Error;
-	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject, Error);
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), Error);
 	if (!Provider)
 	{
 		OnFailure.Broadcast(false, Error);
@@ -543,7 +527,7 @@ void UFlockNameAvailableAction::Activate()
 		return;
 	}
 	TWeakObjectPtr<UFlockNameAvailableAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	Provider->IsNameAvailable(Name, [WeakThis](TFlockResult<FFlockNameAvailableResponse> Result)
 	{
 		if (UFlockNameAvailableAction* Self = WeakThis.Get())

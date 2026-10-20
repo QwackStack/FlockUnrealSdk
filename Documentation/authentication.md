@@ -2,7 +2,8 @@
 
 Sign players in with email, device id, Google, Apple, Steam, Facebook, or Discord. Tokens are stored
 encrypted between launches and the session is restored automatically on startup; expired access tokens
-refresh silently, including a one-shot retry for an authenticated call that raced the expiry.
+refresh silently, including a one-shot retry for an authenticated call that raced the expiry. Only a 401 is
+refreshed: a 403 means the player is not allowed to do that, and a new token would not change it.
 
 ## Providers at a glance
 
@@ -163,19 +164,27 @@ Four coded errors are worth handling in-game:
 - **`ForgotPassword` always reports success.** The backend never reveals whether an address has an
   account, so success means "if that address exists, a code was sent". Do not use it to test whether
   someone is registered.
-- **Password reset needs an email credential.** `ResetPassword` accepts a session signed in with email
-  (a restored email session counts) **or** an email credential linked during this session. A device or
-  Steam session with no email attached cannot reset a password it never had. That linked-email
-  knowledge is session-scoped and deliberately not persisted — after a restore the SDK does not know
-  what is attached until you call `GetLinkedAccounts`.
+- **Password reset works signed out.** `ResetPassword` sends the email, the code from `ForgotPassword`
+  and the new password, and the route takes no token, so a player who forgot their password can reset it
+  from the sign-in screen. The server refuses a wrong or expired code.
 - **`RevokeToken` is the server-side kill**, and the thing to reach for when a token is stolen — it
   invalidates the refresh token for good. Call `Logout` afterwards for a full sign-out; `Logout` alone
   only clears local state.
 - **Token storage is an AES-encrypted file** under the project's Saved directory, keyed to the machine,
   user, and game. It defeats casual copying and inspection, not code running as the same user. Implement
   `IFlockTokenStore` to plug in platform keychain storage instead.
+- **Each game keeps its own saved sign-in**, named by its API URL and API key, so a project that switches to
+  another game (or another backend) never restores a player of the old one. The sign-in an earlier version kept
+  is taken over by the first game that reads one, so updating signs nobody out.
 - **The email-verification routes need a bearer.** It rides along automatically when a player is signed
   in, and the server requires it — so those calls fail with a 401 when signed out.
+- **A call made for a player stays that player's.** A call that acts as the signed-in player (the inbox, a
+  rank, linking, a purchase and the like) sends its retries only while that sign-in lasts. If the player
+  signs out, or another player signs in, while it is waiting to retry, the retry is not sent and the call
+  fails with `EFlockErrorType::Cancelled`. A call that looks something up first (a purchase reads its item,
+  scheduling by name looks up the template, cancelling every schedule reads the list) is not sent at all if
+  the sign-in changed meanwhile. A token refresh that comes back after the sign-in it was for has ended is
+  dropped: it does not sign the new player out or replace their token.
 
 ---
 

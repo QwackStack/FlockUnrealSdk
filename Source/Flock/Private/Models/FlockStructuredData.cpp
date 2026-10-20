@@ -31,7 +31,7 @@ namespace
 		TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 		for (const TSharedPtr<FJsonValue>& Element : Fields)
 		{
-			const TSharedPtr<FJsonObject> Field = Element.IsValid() ? Element->AsObject() : nullptr;
+			const TSharedPtr<FJsonObject> Field = FFlockJsonUtils::AsObjectOrNull(Element);
 			if (!Field.IsValid())
 			{
 				continue;
@@ -69,7 +69,7 @@ namespace
 			TArray<TSharedPtr<FJsonValue>> Items;
 			for (const TSharedPtr<FJsonValue>& Element : Value->AsArray())
 			{
-				const TSharedPtr<FJsonObject> ItemField = Element.IsValid() ? Element->AsObject() : nullptr;
+				const TSharedPtr<FJsonObject> ItemField = FFlockJsonUtils::AsObjectOrNull(Element);
 				if (ItemField.IsValid())
 				{
 					Items.Add(FlattenField(ItemField));
@@ -158,6 +158,16 @@ void FFlockStructuredData::OverlayFields(const TSharedRef<FJsonObject>& Fields)
 	FlatJson = SerializeObject(Merged);
 	bParsed = false;
 	CachedObject.Reset();
+}
+
+bool FFlockStructuredData::GetDataAsStruct(const UScriptStruct* StructType, void* OutStruct) const
+{
+	const TSharedPtr<FJsonObject> Object = ResolveObject();
+	if (!Object.IsValid() || StructType == nullptr || OutStruct == nullptr)
+	{
+		return false;
+	}
+	return FJsonObjectConverter::JsonObjectToUStruct(Object.ToSharedRef(), StructType, OutStruct, 0, 0);
 }
 
 TSharedPtr<FJsonObject> FFlockStructuredData::ResolveObject() const

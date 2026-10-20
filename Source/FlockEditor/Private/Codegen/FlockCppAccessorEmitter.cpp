@@ -107,15 +107,19 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 		Includes += FString::Printf(TEXT("#include \"%s.h\"\n"), *Header);
 	};
 
+	// The type emitter's names, so a `_2` struct is the one each accessor means.
+	const FFlockCppTypeEmitter::FStructNames StructNames = FFlockCppTypeEmitter::MakeStructNames(Snapshot);
+
 	// ── Player templates: fetch into the typed struct, write it back ──
-	for (const FFlockPlayerTemplateSchema& Template : Snapshot.PlayerTemplates)
+	for (int32 TemplateIndex = 0; TemplateIndex < Snapshot.PlayerTemplates.Num(); ++TemplateIndex)
 	{
+		const FFlockPlayerTemplateSchema& Template = Snapshot.PlayerTemplates[TemplateIndex];
 		if (Template.Id.IsEmpty())
 		{
 			continue;
 		}
-		const FString StructName = FFlockCppTypeEmitter::MakeStructName(
-			Template.Name, FFlockStructEmitter::TemplateSuffix);
+		const FString StructName = StructNames.Templates[TemplateIndex];
+		const FString NameInComment = FFlockCppTypeEmitter::ToCppCommentText(Template.Name);
 		AddInclude(StructName);
 
 		const FString Entity = PascalCase(Template.Name);
@@ -131,13 +135,13 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 			TEXT("\t */\n")
 			TEXT("\tstatic void %s(const UObject* WorldContextObject,\n")
 			TEXT("\t\tTFunction<void(TFlockResult<%s>, const FString& RowId)> OnDone);\n\n"),
-			*Template.Name, *GetName, *StructName);
+			*NameInComment, *GetName, *StructName);
 
 		Declarations += FString::Printf(
 			TEXT("\t/** Writes a \"%s\" struct back to the row it came from. */\n")
 			TEXT("\tstatic void %s(const UObject* WorldContextObject, const FString& RowId,\n")
 			TEXT("\t\tconst %s& Value, TFunction<void(TFlockResult<FFlockPlayerData>)> OnDone);\n\n"),
-			*Template.Name, *SaveName, *StructName);
+			*NameInComment, *SaveName, *StructName);
 
 		Definitions += FString::Printf(
 			TEXT("void FFlockGenerated::%s(const UObject* WorldContextObject,\n")
@@ -165,7 +169,8 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 			TEXT("\t\tOnDone(TFlockResult<%s>::Ok(Value), Row.Value.Id);\n")
 			TEXT("\t});\n")
 			TEXT("}\n\n"),
-			*GetName, *StructName, *StructName, *Template.Id, *StructName, *StructName, *StructName, *StructName);
+			*GetName, *StructName, *StructName, *FFlockCppTypeEmitter::ToCppStringContents(Template.Id), *StructName,
+			*StructName, *StructName, *StructName);
 
 		Definitions += FString::Printf(
 			TEXT("void FFlockGenerated::%s(const UObject* WorldContextObject, const FString& RowId,\n")
@@ -177,7 +182,7 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 			TEXT("\t\tif (OnDone) { OnDone(TFlockResult<FFlockPlayerData>::Fail(NotReady())); }\n")
 			TEXT("\t\treturn;\n")
 			TEXT("\t}\n")
-			TEXT("\t// Members are named exactly as the template declares them, so the body needs no name map.\n")
+			TEXT("\t// Written under the names the template declares, from this module's wire-name table.\n")
 			TEXT("\tconst FFlockCommandData Data = FFlockStructBinder::ToCommandData(%s::StaticStruct(), &Value);\n")
 			TEXT("\tProvider->UpdatePlayerData(RowId, Data, [OnDone](TFlockResult<FFlockPlayerData> R) { if (OnDone) { OnDone(R); } });\n")
 			TEXT("}\n\n"),
@@ -187,14 +192,14 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 	}
 
 	// ── Game configs: read-only, so a Get and no Save ──
-	for (const FFlockGameConfigSchema& Config : Snapshot.GameConfigs)
+	for (int32 ConfigIndex = 0; ConfigIndex < Snapshot.GameConfigs.Num(); ++ConfigIndex)
 	{
+		const FFlockGameConfigSchema& Config = Snapshot.GameConfigs[ConfigIndex];
 		if (Config.Id.IsEmpty())
 		{
 			continue;
 		}
-		const FString StructName = FFlockCppTypeEmitter::MakeStructName(
-			Config.Name, FFlockStructEmitter::ConfigSuffix);
+		const FString StructName = StructNames.Configs[ConfigIndex];
 		AddInclude(StructName);
 
 		const FString GetName = Reserve(TEXT("Get") + PascalCase(Config.Name), TEXT("Config"), UsedNames);
@@ -203,7 +208,7 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 			TEXT("\t/** Reads the \"%s\" game config, patched value where one applies. */\n")
 			TEXT("\tstatic void %s(const UObject* WorldContextObject,\n")
 			TEXT("\t\tTFunction<void(TFlockResult<%s>)> OnDone);\n\n"),
-			*Config.Name, *GetName, *StructName);
+			*FFlockCppTypeEmitter::ToCppCommentText(Config.Name), *GetName, *StructName);
 
 		Definitions += FString::Printf(
 			TEXT("void FFlockGenerated::%s(const UObject* WorldContextObject,\n")
@@ -231,7 +236,8 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 			TEXT("\t\tOnDone(TFlockResult<%s>::Ok(Value));\n")
 			TEXT("\t});\n")
 			TEXT("}\n\n"),
-			*GetName, *StructName, *StructName, *Config.Id, *StructName, *StructName, *StructName, *StructName);
+			*GetName, *StructName, *StructName, *FFlockCppTypeEmitter::ToCppStringContents(Config.Id), *StructName,
+			*StructName, *StructName, *StructName);
 
 		++Result.FunctionCount;
 	}
@@ -302,13 +308,16 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 			TEXT("\tstatic void AddFunds(const UObject* WorldContextObject, EFlockCurrencyId Currency, int32 Amount,\n")
 			TEXT("\t\tTFunction<void(TFlockResult<FFlockPlayerData>)> OnDone);\n\n");
 
+		// With the wallet's template known its id is baked, so the call skips the runtime tag scan. Without it the
+		// call finds the wallet by the 'currency' tag at runtime, so it starts working once a template has the tag;
+		// an empty baked id would be refused on every call.
 		const FString CurrencyTemplateId = FindCurrencyTemplateId(Snapshot);
+		const FString WalletArgument = CurrencyTemplateId.IsEmpty() ? FString()
+			: FString::Printf(TEXT("TEXT(\"%s\"), "), *FFlockCppTypeEmitter::ToCppStringContents(CurrencyTemplateId));
 		if (CurrencyTemplateId.IsEmpty())
 		{
-			// Not fatal: the SDK resolves the wallet by tag when no id is supplied. A slower call, not a
-			// broken one — but worth saying, because the tag is probably missing by accident.
-			Result.Warnings.Add(TEXT("No template is tagged 'currency', so Add Funds will resolve the wallet "
-				"at runtime instead of using a baked id."));
+			Result.Warnings.Add(TEXT("No template is tagged 'currency', so Add Funds fails until one is: it finds the "
+				"player's wallet by that tag."));
 		}
 
 		Definitions += FString::Printf(
@@ -321,11 +330,10 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 			TEXT("\t\tif (OnDone) { OnDone(TFlockResult<FFlockPlayerData>::Fail(NotReady())); }\n")
 			TEXT("\t\treturn;\n")
 			TEXT("\t}\n")
-			TEXT("\t// The currency-tagged template's id is baked, so the call skips the runtime tag scan.\n")
-			TEXT("\tProvider->AddGameFunds(FlockCurrencyIdToWire(Currency), Amount, TEXT(\"%s\"),\n")
+			TEXT("\tProvider->AddGameFunds(FlockCurrencyIdToWire(Currency), Amount, %s\n")
 			TEXT("\t\t[OnDone](TFlockResult<FFlockPlayerData> R) { if (OnDone) { OnDone(R); } });\n")
 			TEXT("}\n\n"),
-			*CurrencyTemplateId);
+			*WalletArgument);
 		++Result.FunctionCount;
 	}
 
@@ -354,6 +362,7 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 	Source += FString::Printf(TEXT("\n#include \"%s.h\"\n\n"), *HeaderName);
 	Source += TEXT("#include \"Codegen/FlockStructBinder.h\"\n");
 	Source += TEXT("#include \"FlockSubsystem.h\"\n");
+	Source += TEXT("#include \"Http/FlockErrorHints.h\"\n");
 	Source += TEXT("#include \"Providers/FlockCommandProvider.h\"\n");
 	Source += TEXT("#include \"Providers/FlockConfigProvider.h\"\n");
 	Source += TEXT("#include \"Providers/FlockPlayerProvider.h\"\n");
@@ -364,8 +373,8 @@ FFlockCppAccessorEmitter::FEmitResult FFlockCppAccessorEmitter::Emit(const FFloc
 		TEXT("\t/** The failure every accessor reports when the SDK is not up yet. */\n")
 		TEXT("\tFFlockError NotReady()\n")
 		TEXT("\t{\n")
-		TEXT("\t\treturn FFlockError::Make(EFlockErrorType::Validation,\n")
-		TEXT("\t\t\tTEXT(\"The Flock SDK is not initialized, or the world context could not resolve it.\"));\n")
+		TEXT("\t\treturn FFlockError::MakeWithFix(EFlockErrorType::Validation,\n")
+		TEXT("\t\t\tTEXT(\"Flock is not initialized, or the world context is not in a game world\"), FFlockErrorHints::InitializeFlockFirst());\n")
 		TEXT("\t}\n")
 		TEXT("\n")
 		TEXT("\tFFlockPlayerProvider* ResolvePlayer(const UObject* WorldContextObject)\n")

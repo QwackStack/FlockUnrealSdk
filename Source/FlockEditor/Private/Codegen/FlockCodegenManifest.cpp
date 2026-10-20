@@ -128,7 +128,7 @@ EFlockCodegenDrift FFlockCodegenManifest::Compare(const FFlockCodegenManifest& S
 	{
 		return EFlockCodegenDrift::NeverGenerated;
 	}
-	if (Stored.GameVersionId != Fresh.GameVersionId)
+	if (!Stored.GameVersionId.Equals(Fresh.GameVersionId, ESearchCase::CaseSensitive))
 	{
 		return EFlockCodegenDrift::VersionChanged;
 	}
@@ -138,7 +138,7 @@ EFlockCodegenDrift FFlockCodegenManifest::Compare(const FFlockCodegenManifest& S
 	{
 		return EFlockCodegenDrift::ContentChanged;
 	}
-	if (Stored.ContentHash != FFlockSchemaHasher::ComputeContentHash(Fresh))
+	if (!Stored.ContentHash.Equals(FFlockSchemaHasher::ComputeContentHash(Fresh), ESearchCase::CaseSensitive))
 	{
 		return EFlockCodegenDrift::ContentChanged;
 	}

@@ -2,6 +2,7 @@
 
 #include "Analytics/FlockStackTrace.h"
 
+#include "HAL/PlatformProcess.h"
 #include "HAL/PlatformStackWalk.h"
 #include "Misc/Paths.h"
 
@@ -68,12 +69,23 @@ namespace
 
 FString FFlockStackTrace::Capture(uint32 FramesToSkip)
 {
-	// One-time symbol-handler init, paid on the first capture so a run with no faults never pays it.
-	static bool bStackWalkingInitialized = false;
-	if (!bStackWalkingInitialized)
+	// One-time symbol-handler init, paid on the first capture so a run with no faults never pays it. Captures come from any
+	// thread, so one claims the init and the others wait for it: 0 not started, 1 starting, 2 done.
+	static volatile int32 StackWalkingState = 0;
+	if (FPlatformAtomics::AtomicRead(&StackWalkingState) != 2)
 	{
-		bStackWalkingInitialized = true;
-		FPlatformStackWalk::InitStackWalking();
+		if (FPlatformAtomics::InterlockedCompareExchange(&StackWalkingState, 1, 0) == 0)
+		{
+			FPlatformStackWalk::InitStackWalking();
+			FPlatformAtomics::InterlockedExchange(&StackWalkingState, 2);
+		}
+		else
+		{
+			while (FPlatformAtomics::AtomicRead(&StackWalkingState) != 2)
+			{
+				FPlatformProcess::YieldThread();
+			}
+		}
 	}
 
 	uint64 BackTrace[MaxStackFrames] = { 0 };

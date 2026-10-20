@@ -4,6 +4,7 @@
 
 #include "ProtokitePlaytestVideoEncoder.h"
 #include "ProtokitePlaytestVideoFile.h"
+#include "ProtokitePlaytestVideoFrameSchedule.h"
 #include "ProtokitePlaytestVideoFrameSource.h"
 #include "HAL/Event.h"
 #include "HAL/FileManager.h"
@@ -141,7 +142,12 @@ struct FProtokitePlaytestVideoRecording::FWriter : public TSharedFromThis<FProto
 	std::atomic<bool> bCouldNotWrite{ false };
 	std::atomic<bool> bWritten{ false };
 
+	/** The size every encoded frame has, set before any frame is handed over. */
+	FIntPoint VideoSize = FIntPoint::ZeroValue;
+
 	// The encoding thread's.
+	/** A picture whose window changed shape, placed between black bars; kept so it is allocated once. */
+	TArray<FColor> PictureInTheMiddle;
 	int64 BytesHandedToFile = FProtokitePlaytestVideoFile::FileHeaderBytes;
 	int32 FramesEncoded = 0;
 	int32 FramesDroppedBecauseWritingFellBehind = 0;
@@ -176,9 +182,21 @@ struct FProtokitePlaytestVideoRecording::FWriter : public TSharedFromThis<FProto
 		}
 
 		const double StartSeconds = FPlatformTime::Seconds();
+		// The window changed shape after the recording started: its picture keeps that shape, between black bars.
+		const TArray<FColor>* Pixels = &Frame.Pixels;
+		if (Frame.Size != VideoSize)
+		{
+			if (!PlaceInTheMiddleOfTheFrame(Frame.Pixels, Frame.Size, VideoSize, PictureInTheMiddle))
+			{
+				EncodeError = FString::Printf(TEXT("a frame of %d pixels does not fill its %dx%d"), Frame.Pixels.Num(), Frame.Size.X, Frame.Size.Y);
+				bCouldNotWrite = true;
+				return;
+			}
+			Pixels = &PictureInTheMiddle;
+		}
 		TArray<FProtokitePlaytestEncodedFrame> Encoded;
 		FString Error;
-		if (!Encoder.Encode(Frame.Pixels, Frame.TimestampMs, Settings.FrameDurationMs(), Encoded, Error))
+		if (!Encoder.Encode(*Pixels, Frame.TimestampMs, Settings.FrameDurationMs(), Encoded, Error))
 		{
 			EncodeError = Error;
 			bCouldNotWrite = true;
@@ -310,6 +328,7 @@ TSharedPtr<FProtokitePlaytestVideoRecording> FProtokitePlaytestVideoRecording::S
 	Writer->PartPath = FilePath + TEXT(".part");
 	Writer->BeforeEachEncodeForTesting = MoveTemp(BeforeEachEncodeForTesting);
 	Writer->BeforeEachWriteForTesting = MoveTemp(BeforeEachWriteForTesting);
+	Writer->VideoSize = Source->GetFrameSize();
 
 	if (!Writer->Encoder.Initialize(Source->GetFrameSize(), Settings.FramesPerSecond, Settings.BitrateKbps, OutError))
 	{

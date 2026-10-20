@@ -290,7 +290,7 @@ void FFlockCodegenRunner::Sync(FOnSyncComplete OnComplete)
 				// Nothing is written, so whatever was generated before is still intact and still correct
 				// for the version it was generated against.
 				FRunResult Failed;
-				Failed.Error = Fetched.Error.Message;
+				Failed.Error = Fetched.Error.ReasonAndFix();
 				OnComplete.ExecuteIfBound(Failed);
 				return;
 			}
@@ -393,7 +393,7 @@ EFlockCodegenDrift FFlockCodegenRunner::CompareBakedVersion(const FString& Baked
 	{
 		return EFlockCodegenDrift::Current;
 	}
-	return Stored.GameVersionId == BakedGameVersionId
+	return Stored.GameVersionId.Equals(BakedGameVersionId, ESearchCase::CaseSensitive)
 		? EFlockCodegenDrift::Current
 		: EFlockCodegenDrift::VersionChanged;
 }

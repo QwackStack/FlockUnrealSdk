@@ -40,6 +40,64 @@ FIntPoint FitVideoSizeInside(FIntPoint ScreenSize, FIntPoint MaxVideoSize)
 	return FIntPoint(FMath::Max(Width, 2), FMath::Max(Height, 2));
 }
 
+FIntPoint FitPictureInsideTheVideo(FIntPoint ScreenSize, FIntPoint VideoSize)
+{
+	FIntPoint Picture = FitVideoSizeInside(ScreenSize, VideoSize);
+	if (Picture.X <= 0 || Picture.Y <= 0)
+	{
+		return VideoSize;
+	}
+	if (VideoSize.X - Picture.X < SmallestBarsPixels)
+	{
+		Picture.X = VideoSize.X;
+	}
+	if (VideoSize.Y - Picture.Y < SmallestBarsPixels)
+	{
+		Picture.Y = VideoSize.Y;
+	}
+	return Picture;
+}
+
+bool PlaceInTheMiddleOfTheFrame(const TArray<FColor>& Picture, FIntPoint PictureSize, FIntPoint FrameSize, TArray<FColor>& OutFrame)
+{
+	if (FrameSize.X <= 0 || FrameSize.Y <= 0)
+	{
+		OutFrame.Reset();
+		return false;
+	}
+	OutFrame.SetNumUninitialized(FrameSize.X * FrameSize.Y);
+	const bool bReadable = PictureSize.X > 0 && PictureSize.Y > 0 && Picture.Num() == PictureSize.X * PictureSize.Y;
+	const int32 Width = bReadable ? FMath::Min(PictureSize.X, FrameSize.X) : 0;
+	const int32 Height = bReadable ? FMath::Min(PictureSize.Y, FrameSize.Y) : 0;
+	const int32 FromColumn = (PictureSize.X - Width) / 2;
+	const int32 FromRow = (PictureSize.Y - Height) / 2;
+	const int32 ToColumn = (FrameSize.X - Width) / 2;
+	const int32 ToRow = (FrameSize.Y - Height) / 2;
+	// Each pixel is written once: black for the bars, the picture between them.
+	for (int32 Row = 0; Row < FrameSize.Y; ++Row)
+	{
+		FColor* Line = &OutFrame[Row * FrameSize.X];
+		if (Row < ToRow || Row >= ToRow + Height)
+		{
+			for (int32 Column = 0; Column < FrameSize.X; ++Column)
+			{
+				Line[Column] = FColor::Black;
+			}
+			continue;
+		}
+		for (int32 Column = 0; Column < ToColumn; ++Column)
+		{
+			Line[Column] = FColor::Black;
+		}
+		FMemory::Memcpy(Line + ToColumn, &Picture[(FromRow + Row - ToRow) * PictureSize.X + FromColumn], Width * sizeof(FColor));
+		for (int32 Column = ToColumn + Width; Column < FrameSize.X; ++Column)
+		{
+			Line[Column] = FColor::Black;
+		}
+	}
+	return bReadable;
+}
+
 FString DecideWhyVideoCannotBeRecorded(bool bBuiltWithVideo, bool bCanRender, int32 FrameGrabberLatency)
 {
 	if (!bBuiltWithVideo)

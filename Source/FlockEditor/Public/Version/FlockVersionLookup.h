@@ -30,12 +30,13 @@ struct FFlockResolveResult
 		return Result;
 	}
 
-	static FFlockResolveResult Fail(const FString& InError)
+	/** Failure found before any answer: what is wrong, and how to fix it. */
+	static FFlockResolveResult Fail(const FString& InError, const FString& InFix)
 	{
 		FFlockResolveResult Result;
 		Result.bSuccess = false;
-		Result.Error = InError;
-		Result.Detail = FFlockError::Make(EFlockErrorType::Network, InError);
+		Result.Detail = FFlockError::MakeWithFix(EFlockErrorType::Network, InError, InFix);
+		Result.Error = Result.Detail.ReasonAndFix();
 		return Result;
 	}
 
@@ -44,7 +45,7 @@ struct FFlockResolveResult
 	{
 		FFlockResolveResult Result;
 		Result.bSuccess = false;
-		Result.Error = InError.Message;
+		Result.Error = InError.ReasonAndFix();
 		Result.Detail = InError;
 		return Result;
 	}

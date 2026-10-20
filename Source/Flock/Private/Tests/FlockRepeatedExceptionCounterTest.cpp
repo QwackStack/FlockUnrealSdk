@@ -137,4 +137,24 @@ bool FFlockRepeatedExceptionCounterWindowTest::RunTest(const FString& Parameters
 	return true;
 }
 
+// ── Two faults whose messages differ only in letter case are two faults, each reported ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRepeatedExceptionCounterCaseTest, "Flock.Analytics.RepeatedExceptionCounter.FaultsDifferingInCaseAreTwo",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRepeatedExceptionCounterCaseTest::RunTest(const FString& Parameters)
+{
+	FFlockRepeatedExceptionCounter Counter(60.f);
+	const FName Game(TEXT("LogGame"));
+	const FString Stack = TEXT("Game.exe+0x10\nGame.exe+0x20");
+	const FString Upper = FFlockRepeatedExceptionCounter::MakeSameFaultKey(Game, TEXT("Missing Item"), Stack);
+	const FString Lower = FFlockRepeatedExceptionCounter::MakeSameFaultKey(Game, TEXT("missing item"), Stack);
+	TestFalse(TEXT("Precondition: the keys differ in letter case"), Upper.Equals(Lower, ESearchCase::CaseSensitive));
+
+	TestTrue(TEXT("The first fault is reported"), Counter.ShouldReportNow(Upper, TEXT("Missing Item"), Stack, FFlockLogDetails(), 1.0));
+	TestTrue(TEXT("The second is a fault of its own, reported too"), Counter.ShouldReportNow(Lower, TEXT("missing item"), Stack, FFlockLogDetails(), 2.0));
+	TestFalse(TEXT("A true repeat is still counted"), Counter.ShouldReportNow(Upper, TEXT("Missing Item"), Stack, FFlockLogDetails(), 3.0));
+	TestEqual(TEXT("Two windows open"), Counter.OpenWindowCount(), 2);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

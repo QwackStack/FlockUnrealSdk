@@ -19,6 +19,16 @@ FFlockAuthSession::FFlockAuthSession(const TSharedRef<FFlockHttpClient>& InClien
 
 bool FFlockAuthSession::SetTokens(const FString& InAccessToken, const FString& InRefreshToken, FString& OutError)
 {
+	if (!AdoptTokens(InAccessToken, InRefreshToken, OutError))
+	{
+		return false;
+	}
+	++SignInNumber;
+	return true;
+}
+
+bool FFlockAuthSession::AdoptTokens(const FString& InAccessToken, const FString& InRefreshToken, FString& OutError)
+{
 	TOptional<FFlockJwtClaims> NewClaims;
 	if (!InAccessToken.IsEmpty())
 	{
@@ -27,8 +37,7 @@ bool FFlockAuthSession::SetTokens(const FString& InAccessToken, const FString& I
 		if (!FFlockJwt::Parse(InAccessToken, Parsed, ParseError))
 		{
 			Logger->LogError(FString::Printf(TEXT("Failed to parse JWT access token: %s"), *ParseError));
-			OutError = TEXT("Server returned an unparseable JWT access token. Cannot establish player session — ")
-				TEXT("the auth response was malformed. Verify ApiUrl points at a supported Flock backend.");
+			OutError = TEXT("The server's sign-in answer holds an access token that cannot be read, so no player session was made");
 			return false;
 		}
 		NewClaims = MoveTemp(Parsed);
@@ -56,6 +65,7 @@ void FFlockAuthSession::SetAuthMethod(EFlockAuthMethod Method)
 void FFlockAuthSession::ClearTokens()
 {
 	Logger->LogInfo(TEXT("Clearing authentication tokens"));
+	++SignInNumber;
 	AccessToken.Empty();
 	RefreshToken.Empty();
 	Claims.Reset();
@@ -106,9 +116,10 @@ void FFlockAuthSession::Persist()
 	Store->Save(Tokens); // empty access token behaves as Clear inside the store
 }
 
-void FFlockAuthSession::RefreshAccessToken(TFunction<void(bool)> OnComplete)
+void FFlockAuthSession::RefreshAccessToken(int32 ForSignInNumber, TFunction<void(bool)> OnComplete)
 {
-	if (RefreshToken.IsEmpty())
+	// The sign-in this refresh was asked for has ended, or there is nothing to refresh with: no request.
+	if (ForSignInNumber != SignInNumber || RefreshToken.IsEmpty())
 	{
 		if (OnComplete)
 		{
@@ -117,13 +128,16 @@ void FFlockAuthSession::RefreshAccessToken(TFunction<void(bool)> OnComplete)
 		return;
 	}
 
-	PendingRefreshCallbacks.Add(MoveTemp(OnComplete));
-	if (bRefreshInFlight)
+	// Piggyback on a refresh already on its way for this sign-in; one sent for an earlier sign-in is not this one's.
+	if (RefreshInFlight.IsValid() && RefreshInFlight->SignInNumber == SignInNumber)
 	{
-		// Piggyback: the queued callback completes with the in-flight POST's outcome.
+		RefreshInFlight->Callbacks.Add(MoveTemp(OnComplete));
 		return;
 	}
-	bRefreshInFlight = true;
+	const TSharedRef<FRefreshInFlight> Refresh = MakeShared<FRefreshInFlight>();
+	Refresh->SignInNumber = SignInNumber;
+	Refresh->Callbacks.Add(MoveTemp(OnComplete));
+	RefreshInFlight = Refresh;
 
 	FFlockPlayerRefreshTokenRequest Request;
 	Request.PlayerId = GetPlayerId();
@@ -132,7 +146,7 @@ void FFlockAuthSession::RefreshAccessToken(TFunction<void(bool)> OnComplete)
 	FString Json;
 	if (!FFlockJsonUtils::StructToWireJson(Request, Json, /*bOmitEmptyStrings*/ true))
 	{
-		DrainRefreshCallbacks(false);
+		FinishRefresh(Refresh, false);
 		return;
 	}
 
@@ -145,23 +159,31 @@ void FFlockAuthSession::RefreshAccessToken(TFunction<void(bool)> OnComplete)
 	Client->PostJsonRaw<FFlockPlayerLoginResponse>(
 		FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, FlockEndpoints::PlayerTokenRefresh),
 		BaseHeaders, Json,
-		[Self](TFlockResult<FFlockPlayerLoginResponse> Result)
+		[Self, Refresh](TFlockResult<FFlockPlayerLoginResponse> Result)
 		{
+			// A sign-out or another sign-in came first: the answer belongs to a sign-in that is over, so it keeps,
+			// clears and raises nothing.
+			if (Refresh->SignInNumber != Self->SignInNumber)
+			{
+				Self->Logger->LogDebug(TEXT("Token refresh answered after the sign-in it was for had ended; the answer is not used"));
+				Self->FinishRefresh(Refresh, false);
+				return;
+			}
+
 			if (!Result.bSuccess)
 			{
-				// An authoritative rejection kills the session; transport-shaped failures keep it
-				// so a flaky network doesn't sign the player out.
-				const bool bAuthoritative = Result.Error.Type == EFlockErrorType::Auth
-					|| Result.Error.Type == EFlockErrorType::Serialization;
-				if (bAuthoritative)
+				// Only the server refusing the token ends the sign-in. Anything else keeps it, so a flaky network does not
+				// sign the player out, and neither does a captive portal's page answering in the server's place (a 200
+				// that is not the server's JSON).
+				if (Result.Error.Type == EFlockErrorType::Auth)
 				{
 					Self->Logger->LogWarning(TEXT("Token refresh failed: session expired"));
-					Self->FailRefreshAsExpired();
+					Self->FailRefreshAsExpired(Refresh);
 				}
 				else
 				{
-					Self->Logger->LogError(FString::Printf(TEXT("Token refresh failed: %s"), *Result.Error.Message));
-					Self->DrainRefreshCallbacks(false);
+					Self->Logger->LogError(FString::Printf(TEXT("Renewing the sign-in failed: %s"), *Result.Error.ReasonAndFix()));
+					Self->FinishRefresh(Refresh, false);
 				}
 				return;
 			}
@@ -169,15 +191,16 @@ void FFlockAuthSession::RefreshAccessToken(TFunction<void(bool)> OnComplete)
 			if (Result.Value.AccessToken.IsEmpty())
 			{
 				Self->Logger->LogWarning(TEXT("Token refresh failed: empty access token from server"));
-				Self->FailRefreshAsExpired();
+				Self->FailRefreshAsExpired(Refresh);
 				return;
 			}
 
+			// The same sign-in carries on with new tokens, so its number stays.
 			FString SetError;
-			if (!Self->SetTokens(Result.Value.AccessToken, Result.Value.RefreshToken, SetError))
+			if (!Self->AdoptTokens(Result.Value.AccessToken, Result.Value.RefreshToken, SetError))
 			{
 				Self->Logger->LogWarning(FString::Printf(TEXT("Token refresh failed: %s"), *SetError));
-				Self->FailRefreshAsExpired();
+				Self->FailRefreshAsExpired(Refresh);
 				return;
 			}
 
@@ -186,15 +209,18 @@ void FFlockAuthSession::RefreshAccessToken(TFunction<void(bool)> OnComplete)
 			{
 				Hub->InvokeTokenRefreshed();
 			}
-			Self->DrainRefreshCallbacks(true);
+			Self->FinishRefresh(Refresh, true);
 		});
 }
 
-void FFlockAuthSession::DrainRefreshCallbacks(bool bSuccess)
+void FFlockAuthSession::FinishRefresh(const TSharedRef<FRefreshInFlight>& Refresh, bool bSuccess)
 {
-	bRefreshInFlight = false;
-	TArray<TFunction<void(bool)>> Callbacks = MoveTemp(PendingRefreshCallbacks);
-	PendingRefreshCallbacks.Reset();
+	if (RefreshInFlight == Refresh)
+	{
+		RefreshInFlight.Reset();
+	}
+	TArray<TFunction<void(bool)>> Callbacks = MoveTemp(Refresh->Callbacks);
+	Refresh->Callbacks.Reset();
 	for (const TFunction<void(bool)>& Callback : Callbacks)
 	{
 		if (Callback)
@@ -204,12 +230,16 @@ void FFlockAuthSession::DrainRefreshCallbacks(bool bSuccess)
 	}
 }
 
-void FFlockAuthSession::FailRefreshAsExpired()
+void FFlockAuthSession::FailRefreshAsExpired(const TSharedRef<FRefreshInFlight>& Refresh)
 {
+	if (BeforeExpiredSignInEnds)
+	{
+		BeforeExpiredSignInEnds();
+	}
 	ClearTokens();
 	if (UFlockEvents* Hub = Events.Get())
 	{
 		Hub->InvokeAuthExpired();
 	}
-	DrainRefreshCallbacks(false);
+	FinishRefresh(Refresh, false);
 }

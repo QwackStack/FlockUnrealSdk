@@ -83,7 +83,7 @@ private:
 		const TMap<FString, FString>& UploadHeaders, int32 AttemptsSoFar,
 		TFunction<void(FProtokitePlaytestRecordingUploadOutcome)> OnDone);
 
-	/** One retry, with a link of its own. A second failure leaves the recording for a later launch. */
+	/** One retry, with a link of its own, when a fresh link can help. A second failure leaves the recording for a later launch. */
 	static constexpr int32 MaxAttempts = 2;
 
 	TSharedRef<FProtokiteClient> Client;

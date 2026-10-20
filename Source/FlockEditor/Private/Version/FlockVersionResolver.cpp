@@ -5,8 +5,10 @@
 #include "Config/FlockConfig.h"
 #include "FlockSubsystem.h"
 #include "FlockEditor.h"
+#include "Setup/FlockSetupUI.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Misc/ScopeExit.h"
 
 #define LOCTEXT_NAMESPACE "FlockEditor"
 
@@ -51,12 +53,7 @@ namespace
 
 FString FFlockVersionResolver::VersionedUrl(const FString& ApiUrl, const FString& Path)
 {
-	FString Base = ApiUrl.TrimStartAndEnd();
-	while (Base.EndsWith(TEXT("/")))
-	{
-		Base.LeftChopInline(1);
-	}
-	return FString::Printf(TEXT("%s/%s/%s"), *Base, *UFlockSubsystem::ApiVersion, *Path);
+	return FString::Printf(TEXT("%s/%s/%s"), *FFlockInitConfig::TrimApiUrl(ApiUrl), *UFlockSubsystem::ApiVersion, *Path);
 }
 
 FString FFlockVersionResolver::ByNameUrl(const FString& ApiUrl, const FString& GameVersion)
@@ -79,14 +76,23 @@ bool FFlockVersionResolver::ApplyResult(UFlockConfig& Config, const FFlockResolv
 	return true;
 }
 
-void FFlockVersionResolver::ResolveAndBake(UFlockConfig& Config)
+void FFlockVersionResolver::ResolveAndBake(UFlockConfig& Config, TFunction<void()> OnFinished)
 {
 	// The config is the UFlockConfig CDO (process-lifetime), so a raw pointer capture is safe.
 	UFlockConfig* ConfigPtr = &Config;
 
 	FFlockVersionLookupRegistry::Get().Resolve(Config.ApiUrl, Config.ApiKey, Config.GameVersion,
-		FFlockResolveComplete::CreateLambda([ConfigPtr](const FFlockResolveResult& Result)
+		FFlockResolveComplete::CreateLambda([ConfigPtr, OnFinished = MoveTemp(OnFinished)](const FFlockResolveResult& Result)
 		{
+			ON_SCOPE_EXIT
+			{
+				FFlockSetupUI::RefreshPanel();
+				if (OnFinished)
+				{
+					OnFinished();
+				}
+			};
+
 			if (!Result.bSuccess)
 			{
 				UE_LOG(LogFlockEditor, Warning, TEXT("Flock resolve failed: %s"), *Result.Error);

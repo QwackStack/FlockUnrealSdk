@@ -7,7 +7,7 @@
 #include "FlockAuthModels.generated.h"
 
 /**
- * Wire models for the player auth endpoints (OpenAPI /v1/player/*). Field names map to the
+ * Wire models for the player auth endpoints (OpenAPI, the /v1/player/ routes). Field names map to the
  * snake_case wire via FFlockJsonUtils (LoginType -> login_type). Request structs are serialized
  * with empty-string omission so optional members drop off the wire entirely; response bools follow
  * the wire-model convention (no b prefix).

@@ -36,9 +36,13 @@ public:
 
 	/**
 	 * Deletes everything in the folder, its lock last, then the folder, and lets go of it. When anything could not be deleted the
-	 * lock file stays, so a later launch still finds the folder and tries again. Returns whether the folder is gone.
+	 * lock file stays, so a later launch still finds the folder and tries again; a folder that cannot be removed once its lock
+	 * has gone gets the lock back for the same reason. Returns whether the folder is gone.
 	 */
 	bool DeleteEverything();
+
+	/** Runs Hook once, between deleting the next folder's lock and removing the folder, where a test makes the removal fail. */
+	static void SetBeforeNextFolderRemovalForTesting(TFunction<void()> Hook);
 
 private:
 	FFlockLaunchFolder(const FString& InPath, TUniquePtr<IFileHandle> InLock);

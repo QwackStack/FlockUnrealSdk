@@ -17,3 +17,7 @@ Tooling/        export-ignore
 # first .uplugin it finds, so a copy nested in Flock's folder would never load. Each one is released as an
 # archive of its own (release.yml) and kept out of Flock's.
 OptionalPlugins/ export-ignore
+
+# Unreal assets are binary: never normalise their line endings or diff them as text (the multiplayer sample in Content/).
+*.uasset binary
+*.umap   binary

@@ -14,7 +14,8 @@
  *  - UE has no guaranteed C++ pre-package gate; Data Validation validators run on assets during
  *    Validate Assets / cook, not on project settings directly. Coverage is best-effort.
  *  - It stays inert unless a real version lookup is registered, so it never blocks a package when the
- *    version can't be resolved anyway. Schema-drift checks are deferred until codegen exists.
+ *    version can't be resolved anyway. Generated code from another version is not checked here: the setup
+ *    findings (`Flock.Codegen.Drift`) and the codegen commandlet's verify mode report it.
  */
 UCLASS()
 class UFlockConfigValidator : public UEditorValidatorBase

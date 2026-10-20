@@ -20,6 +20,9 @@
  *
  * Enveloped verbs (Get/Post/...) unwrap {error, response, result} and return the bare model; *Raw verbs
  * deserialize the whole body for the endpoints that aren't enveloped.
+ *
+ * Its request templates read JSON in the caller's module: a module outside Flock that calls them adds "Json" and
+ * "JsonUtilities" to its own dependencies, or its editor build fails to link.
  */
 class FLOCK_API FFlockHttpClient : public TSharedFromThis<FFlockHttpClient>
 {
@@ -93,6 +96,14 @@ public:
 	FFlockRequestHandle Patch(const FString& Url, const TMap<FString, FString>& Headers, const TBody& Body, TFunction<void(TFlockResult<TResp>)> OnComplete)
 	{
 		return SendWithBody<TResp, TBody>(TEXT("PATCH"), Url, Headers, Body, EBodyReading::Envelope, MoveTemp(OnComplete));
+	}
+
+	/** Enveloped PATCH with a caller-serialized JSON body, as PostJson: for a body holding the game's own data, kept as sent. */
+	template <typename T>
+	FFlockRequestHandle PatchJson(const FString& Url, const TMap<FString, FString>& Headers, const FString& JsonBody,
+		TFunction<void(TFlockResult<T>)> OnComplete)
+	{
+		return Send<T>(TEXT("PATCH"), Url, Headers, JsonBody, /*bHasBody*/ true, EBodyReading::Envelope, MoveTemp(OnComplete));
 	}
 
 	template <typename T>
@@ -281,7 +292,7 @@ private:
 			{
 				return TFlockResult<T>::Ok(T());
 			}
-			return TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Serialization, TEXT("Malformed response body"),
+			return TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Serialization, TEXT("The server's answer could not be read as JSON"),
 				Response.StatusCode, SuccessBody));
 		}
 
@@ -329,7 +340,7 @@ private:
 		{
 			if (OnComplete)
 			{
-				OnComplete(TFlockResult<TResp>::Fail(FFlockError::Make(EFlockErrorType::Serialization, TEXT("Failed to serialize request body"))));
+				OnComplete(TFlockResult<TResp>::Fail(FFlockError::Make(EFlockErrorType::Serialization, TEXT("The SDK could not write this request's body"))));
 			}
 			return FFlockRequestHandle();
 		}

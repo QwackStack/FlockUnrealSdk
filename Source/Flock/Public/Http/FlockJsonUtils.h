@@ -39,6 +39,22 @@ public:
 	static bool IsJson(const FString& Text);
 
 	/**
+	 * The object a JSON value holds, or null when it holds anything else. The engine's AsObject() hands back an empty
+	 * object for a non-object (and logs an error), which reads as a valid item with nothing in it.
+	 */
+	static TSharedPtr<FJsonObject> AsObjectOrNull(const TSharedPtr<FJsonValue>& Value)
+	{
+		return Value.IsValid() && Value->Type == EJson::Object ? Value->AsObject() : nullptr;
+	}
+
+	/**
+	 * The spelling Keys already holds of Key when it differs from Key only in letter case, else empty (Key is there as
+	 * it is spelled, or not at all). Keys are compared letter for letter, which this engine's string maps and JSON
+	 * objects cannot do by themselves: they would take `score` for `Score` and replace one with the other.
+	 */
+	static FString OtherSpellingOf(const TArray<FString>& Keys, const FString& Key);
+
+	/**
 	 * The field names of a JSON object, in author spelling, in map order.
 	 *
 	 * The one JSON operation with no engine API behind it, which is why it is worth centralising: every
@@ -145,7 +161,7 @@ public:
 			const TSharedRef<FJsonObject> Transformed = TransformObjectKeys(Object, /*bToPascal*/ true);
 			if (!FJsonObjectConverter::JsonObjectToUStruct(Transformed, T::StaticStruct(), &OutStruct, 0, 0))
 			{
-				OutError = TEXT("Malformed response body");
+				OutError = TEXT("The server's answer could not be read as JSON");
 				return false;
 			}
 			return true;
@@ -243,7 +259,7 @@ public:
 		TSharedPtr<FJsonObject> Root;
 		if (!TryParseObject(Json, Root) || !Root.IsValid())
 		{
-			OutError = TEXT("Malformed response body");
+			OutError = TEXT("The server's answer could not be read as JSON");
 			return false;
 		}
 		return WireObjectToStruct(Root.ToSharedRef(), OutStruct, OutError);
@@ -262,13 +278,13 @@ public:
 		TSharedPtr<FJsonObject> Root;
 		if (!TryParseObject(Body, Root) || !Root.IsValid())
 		{
-			OutError = TEXT("Malformed response body");
+			OutError = TEXT("The server's answer could not be read as JSON");
 			return false;
 		}
 		const TArray<TSharedPtr<FJsonValue>>* ResultArray = nullptr;
 		if (!Root->TryGetArrayField(TEXT("result"), ResultArray))
 		{
-			OutError = TEXT("Invalid response from server (missing result)");
+			OutError = TEXT("The server's answer has no result in it");
 			return false;
 		}
 		OutArray.Reset();
@@ -279,7 +295,7 @@ public:
 			// accept a string/number element as an empty struct.
 			if (!Elem.IsValid() || Elem->Type != EJson::Object)
 			{
-				OutError = TEXT("Malformed response element");
+				OutError = TEXT("An entry in the server's answer could not be read");
 				return false;
 			}
 			T Item;
@@ -302,13 +318,13 @@ public:
 		TSharedPtr<FJsonObject> Root;
 		if (!TryParseObject(Body, Root) || !Root.IsValid())
 		{
-			OutError = TEXT("Malformed response body");
+			OutError = TEXT("The server's answer could not be read as JSON");
 			return false;
 		}
 		const TSharedPtr<FJsonObject>* ResultObj = nullptr;
 		if (!Root->TryGetObjectField(TEXT("result"), ResultObj) || !ResultObj->IsValid())
 		{
-			OutError = TEXT("Invalid response from server (missing result)");
+			OutError = TEXT("The server's answer has no result in it");
 			return false;
 		}
 		return WireObjectToStruct((*ResultObj).ToSharedRef(), OutStruct, OutError);
@@ -327,7 +343,7 @@ public:
 		TSharedPtr<FJsonObject> Root;
 		if (!TryParseObject(Body, Root) || !Root.IsValid())
 		{
-			OutError = TEXT("Malformed response body");
+			OutError = TEXT("The server's answer could not be read as JSON");
 			return false;
 		}
 		TSharedPtr<FJsonObject> Page = Root;
@@ -339,15 +355,15 @@ public:
 		const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
 		if (!Page->TryGetArrayField(TEXT("items"), Items))
 		{
-			OutError = TEXT("Invalid paginated response (missing items)");
+			OutError = TEXT("The server's answer has no list of items in it");
 			return false;
 		}
 		for (const TSharedPtr<FJsonValue>& Elem : *Items)
 		{
-			const TSharedPtr<FJsonObject> ElemObj = Elem.IsValid() ? Elem->AsObject() : nullptr;
+			const TSharedPtr<FJsonObject> ElemObj = FFlockJsonUtils::AsObjectOrNull(Elem);
 			if (!ElemObj.IsValid())
 			{
-				OutError = TEXT("Malformed paginated item");
+				OutError = TEXT("An item in the server's answer could not be read");
 				return false;
 			}
 			T Item;

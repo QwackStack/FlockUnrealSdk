@@ -3,6 +3,7 @@
 #include "ProtokitePlaytestRecordingsFolder.h"
 
 #include "Dom/JsonObject.h"
+#include "ProtokitePlaytestLogger.h"
 #include "ProtokitePlaytestVideoFile.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/FileManager.h"
@@ -207,6 +208,29 @@ bool FProtokitePlaytestRecordingRun::SaveSession(const FProtokitePlaytestRecordi
 	return true;
 }
 
+namespace
+{
+	TFunction<void()> BeforeNextRunFolderRemoval;
+}
+
+void FProtokitePlaytestRecordingRun::SetBeforeNextFolderRemovalForTesting(TFunction<void()> Hook)
+{
+	BeforeNextRunFolderRemoval = MoveTemp(Hook);
+}
+
+bool FProtokitePlaytestRecordingRun::HasUnreadableSessionFile() const
+{
+	const FString SessionPath = FPaths::Combine(Folder, FProtokitePlaytestRecordingsFolder::SessionFileName);
+	if (!IFileManager::Get().FileExists(*SessionPath))
+	{
+		return false;
+	}
+	FString Text;
+	TSharedPtr<FJsonObject> Object;
+	return !FFileHelper::LoadFileToString(Text, *SessionPath) || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Object)
+		|| !Object.IsValid();
+}
+
 FProtokitePlaytestRecordingSession FProtokitePlaytestRecordingRun::LoadSession() const
 {
 	FProtokitePlaytestRecordingSession Session;
@@ -251,9 +275,25 @@ bool FProtokitePlaytestRecordingRun::DeleteEverything(TArray<FString>& OutFilesL
 	}
 	// The lock goes last, so a run whose files could not all be deleted is still a run the next launch finds.
 	Lock.Reset();
-	FileManager.Delete(*FPaths::Combine(Folder, FProtokitePlaytestRecordingsFolder::LockFileName), /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
-	FileManager.DeleteDirectory(*Folder, /*RequireExists*/ false, /*Tree*/ false);
-	return true;
+	const FString LockPath = FPaths::Combine(Folder, FProtokitePlaytestRecordingsFolder::LockFileName);
+	FileManager.Delete(*LockPath, /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
+	if (TFunction<void()> Hook = MoveTemp(BeforeNextRunFolderRemoval))
+	{
+		BeforeNextRunFolderRemoval = nullptr;
+		Hook();
+	}
+	if (FileManager.DeleteDirectory(*Folder, /*RequireExists*/ false, /*Tree*/ false))
+	{
+		return true;
+	}
+	// The folder could not go once its lock had. Without the lock no later launch would claim it, and what is in it would
+	// stay for good, so the lock is put back.
+	if (FileManager.DirectoryExists(*Folder) && !FileManager.FileExists(*LockPath))
+	{
+		TUniquePtr<IFileHandle>(FPlatformFileManager::Get().GetPlatformFile().OpenWrite(*LockPath, /*bAppend*/ true, /*bAllowRead*/ false));
+	}
+	OutFilesLeft.Add(Folder);
+	return false;
 }
 
 FString FProtokitePlaytestRecordingsFolder::GetDefaultPath()
@@ -281,8 +321,12 @@ FProtokitePlaytestWhatEndedRunsLeft FProtokitePlaytestRecordingsFolder::FinishWh
 		const FString UnfinishedPath = Run->GetUnfinishedVideoFilePath();
 		const bool bForThePlaytest = Run->GetKind() == EProtokitePlaytestRecordingKind::Playtest;
 
+		// A session file that cannot be read: the recording is kept, since deleting it cannot be undone, and the disk budget
+		// still deletes it when room is needed. Its video is still finished below, so what is kept can be played.
+		const bool bSessionUnreadable = bForThePlaytest && Run->HasUnreadableSessionFile();
+
 		// No session was started for it, so it can never be uploaded, and is not worth finishing.
-		if (bForThePlaytest && Run->LoadSession().IsEmpty())
+		if (bForThePlaytest && !bSessionUnreadable && Run->LoadSession().IsEmpty())
 		{
 			const bool bHadVideo = FileManager.FileExists(*VideoPath) || FileManager.FileExists(*UnfinishedPath);
 			if (Run->DeleteEverything(Result.FilesLeftForTheNextLaunch) && bHadVideo)
@@ -335,6 +379,13 @@ FProtokitePlaytestWhatEndedRunsLeft FProtokitePlaytestRecordingsFolder::FinishWh
 			Run->DeleteEverything(Result.FilesLeftForTheNextLaunch);
 			continue;
 		}
+		if (bSessionUnreadable)
+		{
+			UE_LOG(LogProtokitePlaytest, Warning, TEXT("%s keeps a playtest recording whose session file cannot be read, so it cannot be uploaded. It is kept, and deleted only when the recordings need the room."),
+				*Run->GetFolder());
+			++Result.RecordingsWithAnUnreadableSessionKept;
+			continue;
+		}
 		if (bForThePlaytest)
 		{
 			++Result.RecordingsWaitingToUpload;
@@ -369,7 +420,8 @@ TArray<FProtokitePlaytestRecordingWaitingToUpload> FProtokitePlaytestRecordingsF
 	return Waiting;
 }
 
-FProtokitePlaytestRecordingsRoom FProtokitePlaytestRecordingsFolder::MakeRoom(const FString& RecordingsFolder, int64 BudgetBytes, int64 BytesWanted)
+FProtokitePlaytestRecordingsRoom FProtokitePlaytestRecordingsFolder::MakeRoom(const FString& RecordingsFolder, int64 BudgetBytes, int64 BytesWanted,
+	EProtokitePlaytestRecordingKind NewKind)
 {
 	FProtokitePlaytestRecordingsRoom Room;
 	struct FEndedRecordingRun
@@ -400,10 +452,14 @@ FProtokitePlaytestRecordingsRoom FProtokitePlaytestRecordingsFolder::MakeRoom(co
 		(Run->GetKind() == EProtokitePlaytestRecordingKind::Playtest ? EndedPlaytestRecordings : EndedTestVideos).Add({ Run->GetFolder(), Bytes });
 	}
 
-	// Test videos go first; a recording waiting to be uploaded only when that is not enough. Oldest first within each: the
-	// folders are in name order, and a run's name starts with the time it was made.
+	// Test videos go first; a recording waiting to be uploaded only when that is not enough, and never for a test video. Oldest
+	// first within each: the folders are in name order, and a run's name starts with the time it was made.
 	for (const TArray<FEndedRecordingRun>* EndedRuns : { &EndedTestVideos, &EndedPlaytestRecordings })
 	{
+		if (EndedRuns == &EndedPlaytestRecordings && NewKind == EProtokitePlaytestRecordingKind::TestVideo)
+		{
+			break;
+		}
 		for (const FEndedRecordingRun& Ended : *EndedRuns)
 		{
 			if (Room.BytesUsed + BytesWanted <= BudgetBytes)

@@ -34,7 +34,14 @@ no JSON parsing node needed.
 ![A Flock Purchase node with its Shop Item Id wired from a picked item, both exec pins handled, and the Purchase Result output feeding a UI update](images/shop-purchase.png)
 
 **Break the Purchase Result to see what actually happened.** It carries `Inventory` (the row the player
-now owns), `Granted` (what the purchase handed over immediately) and `Wallet` (the balances afterwards).
+now owns), `Granted` (what the purchase handed over immediately), `Wallet` (the balances afterwards) and
+`Status`. Purchase spends only game currencies from the player's wallet, so a purchase it makes is paid at
+once and *Is Purchase Paid* is true. An item priced in a currency the game's currency config lists as real money
+is refused with `ShopRealCurrencyNeedsCheckout` (the server reads that list for the Game Version the game sends):
+price it in a game currency, or leave it out of what the game sells this way. `Status` is still one of the
+server's purchase statuses (`FlockPurchaseStatuses`): compare it against the *Flock Purchase Status* nodes, never a
+typed-out string. A purchase or consume that reports a wallet also writes it into the cached
+player data, so the next read of that template shows the new balance.
 
 `Inventory` can be **empty**, and that is not an error: an item that grants its contents outright — a
 currency pack — creates nothing to own and reports the grant instead. Use *Has Inventory Row* before
@@ -67,13 +74,19 @@ Sdk->GetShopProvider()->GetByName(TEXT("Starter"),
         }
     });
 
-// Buy. An empty player id resolves the signed-in player.
+// Buy. ItemId is the shop item's Id from its shop (Item.Id above): not the item's name, and not the
+// shop's id. An empty player id resolves the signed-in player.
 Sdk->GetShopProvider()->Purchase(ItemId, FString(),
     [](TFlockResult<FFlockPurchaseResult> Bought)
     {
-        if (!Bought.bSuccess && Bought.Error.ErrorCode == EFlockErrorCode::ShopInsufficientFunds)
+        if (!Bought.bSuccess)
         {
-            // The server declined — show the player, don't retry.
+            if (Bought.Error.ErrorCode == EFlockErrorCode::ShopInsufficientFunds)
+            {
+                // The server declined — show the player, don't retry.
+            }
+            // What went wrong, then a "Fix:" line saying how to fix it.
+            UE_LOG(LogTemp, Warning, TEXT("%s"), *Bought.Error.ToDisplayText());
             return;
         }
 
@@ -103,8 +116,9 @@ Sdk->GetShopProvider()->GetPlayerInventory(FString(), /*Page*/ 1, /*Limit*/ 100,
 - **Consuming follows the same rule, in the other direction.** It credits currency, so a re-send after an
   ambiguous failure would grant twice. Only a failure that proves the server never processed the request
   is retried; everything else is reported.
-- **A purchase is never queued offline**, and neither is a consume. Unlike a player-data write, they fail
-  immediately when the server is unreachable. There is no offline shopping.
+- **A purchase is never queued offline**, and neither is a consume. Unlike a player-data write, each is sent at
+  most once with the server unreachable (a purchase of an item not read yet first reads it, and fails there),
+  fails with a `Connection` error, and is not sent again when the network comes back. There is no offline shopping.
 - **Rewards are advertised before they are bought.** An item's `Rewards` says what buying it will grant,
   so a shop tile can show "500 gold" without a transaction. It is empty for a plain item.
 - **Inventory is always fetched fresh.** It is never cached and never snapshotted, because it is what a

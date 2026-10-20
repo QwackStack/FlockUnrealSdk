@@ -94,26 +94,21 @@ private:
 	TMap<FString, FString> HeadersNow() const { return Session->GetAuthHeaders(); }
 
 	/**
-	 * Rewrites a 404 from a by-name read into a Validation failure naming the board. The 404 status is
-	 * **kept** on the translated error so the snapshot layer still reads it as an authoritative answer and
-	 * propagates it, rather than quietly serving a cached page for a board that no longer exists.
+	 * Makes the server's "no board by that name" a Validation failure: the caller's mistake, never retried. The 404
+	 * status, the server's reason (which names the board) and the fix are **kept**, so the snapshot layer still reads
+	 * it as an authoritative answer and propagates it, rather than quietly serving a cached page for a board that no
+	 * longer exists. Any other 404 (a wrong API URL answers request.not_found) keeps its own reason and fix.
 	 */
 	template <typename T>
 	static TFlockResult<T> AsCallerMistake(TFlockResult<T> Result, const FString& LeaderboardName)
 	{
-		if (!Result.bSuccess && Result.Error.StatusCode == 404)
+		if (!Result.bSuccess && Result.Error.ErrorCode == EFlockErrorCode::LeaderboardNotFound)
 		{
-			// The name is the overwhelmingly likely cause, but it is not the only one a 404 can carry — a
-			// deleted season window or a misrouted API URL would land here too, and blaming the board name
-			// would send someone to check a spelling that is correct. So the server's own words are appended
-			// when it sent any, rather than replaced.
-			FString Message = FString::Printf(TEXT("No leaderboard named '%s'"), *LeaderboardName);
-			if (!Result.Error.ServerMessage.IsEmpty())
+			Result.Error.Type = EFlockErrorType::Validation;
+			if (Result.Error.Message.IsEmpty())
 			{
-				Message += FString::Printf(TEXT(" (server said: %s)"), *Result.Error.ServerMessage);
+				Result.Error.Message = FString::Printf(TEXT("No leaderboard named '%s'"), *LeaderboardName);
 			}
-			Result.Error = FFlockError::Make(EFlockErrorType::Validation, Message,
-				Result.Error.StatusCode, Result.Error.Body, Result.Error.Code, Result.Error.ServerMessage);
 		}
 		return Result;
 	}

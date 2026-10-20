@@ -11,33 +11,28 @@
 
 EFlockProbeState FFlockConnectionProbe::Classify(const FFlockError& Error)
 {
-	switch (Error.Type)
+	// No HTTP response at all — DNS, refused, or offline. "Check the API URL" is fair advice here.
+	if (Error.Type == EFlockErrorType::Connection)
 	{
-	case EFlockErrorType::Connection:
-		// No HTTP response at all — DNS, refused, or offline. "Check the API URL" is fair advice here.
 		return EFlockProbeState::Unreachable;
+	}
 
-	case EFlockErrorType::Auth:
+	// By the server's code, never the status alone: a wrong API URL answers 404 (request.not_found) and a server that
+	// is not Flock's game API answers 401 without a code (measured 2026-10-15), and neither is the key or the version.
+	switch (Error.ErrorCode)
+	{
+	case EFlockErrorCode::GameInvalidApiKey:
+	case EFlockErrorCode::GameMissingApiKey:
+	case EFlockErrorCode::GameGameNotFound:
 		return EFlockProbeState::KeyRejected;
-
+	case EFlockErrorCode::GameVersionGameVersionByNameNotFound:
+	case EFlockErrorCode::GameVersionGameVersionNotFound:
+		return EFlockProbeState::VersionNotFound;
 	default:
 		break;
 	}
 
-	// 401/403 without the Auth classification still mean the key was refused.
-	if (Error.StatusCode == 401 || Error.StatusCode == 403)
-	{
-		return EFlockProbeState::KeyRejected;
-	}
-
-	// The only 404 this route can produce: the version name did not match. The game is identified by the
-	// API key and is not part of the request, so a 404 can never mean "no such game".
-	if (Error.StatusCode == 404)
-	{
-		return EFlockProbeState::VersionNotFound;
-	}
-
-	// Everything else — including a timeout — reports the server's own wording rather than a guess. A
+	// Everything else — including a timeout — reports the error's own reason and fix rather than a guess. A
 	// timeout on a correct URL is common under load, and calling it Unreachable would send the developer
 	// to edit a setting that is fine.
 	return EFlockProbeState::Failed;
@@ -55,7 +50,7 @@ void FFlockConnectionProbe::Run(const FString& ApiUrl, const FString& ApiKey, co
 			{
 				FFlockProbeResult Result;
 				Result.State = Classify(Resolve.Detail);
-				Result.Message = Resolve.Detail.ServerMessage.IsEmpty() ? Resolve.Error : Resolve.Detail.ServerMessage;
+				Result.Message = Resolve.Detail.ReasonAndFix();
 				OnComplete.ExecuteIfBound(Result);
 				return;
 			}

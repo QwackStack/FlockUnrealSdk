@@ -107,7 +107,7 @@ FFirebaseMessagingLibrary::OnTokenReceived().AddLambda([this](const FString& Tok
             Notifications->RegisterDeviceToken(Token, [](TFlockResult<FFlockDeviceToken> Result)
             {
                 UE_LOG(LogTemp, Log, TEXT("Flock push registration: %s"),
-                    Result.bSuccess ? TEXT("ok") : *Result.Error.Message);
+                    Result.bSuccess ? TEXT("ok") : *Result.Error.ToDisplayText());
             });
         }
     }

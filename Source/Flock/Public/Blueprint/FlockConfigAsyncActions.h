@@ -55,7 +55,7 @@ private:
 	TObjectPtr<UObject> WorldContextObject;
 
 	bool bByName = true;
-	FString Argument;
+	FString ConfigIdOrName;
 };
 
 /** Fetches configs filtered by tag (Any = all). */

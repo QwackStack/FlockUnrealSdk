@@ -14,9 +14,14 @@ namespace
 }
 
 FFlockFileEventCache::FFlockFileEventCache(const FString& Subfolder, int32 InMaxEntries, const FString& InRootDirectory)
-	: Directory(FPaths::Combine(InRootDirectory, Subfolder))
-	, MaxEntries(InMaxEntries)
+	: Directory(InRootDirectory.IsEmpty() ? FString() : FPaths::Combine(InRootDirectory, Subfolder))
+	, MaxEntries(InRootDirectory.IsEmpty() ? 0 : InMaxEntries)
 {
+	// No folder (a launch that could not hold one): nothing is kept, read or made, and every entry goes straight out.
+	if (Directory.IsEmpty())
+	{
+		return;
+	}
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	PlatformFile.CreateDirectoryTree(*Directory);
 
@@ -56,7 +61,7 @@ FString FFlockFileEventCache::MakeHandle()
 	// inside the same millisecond without needing a GUID's width.
 	const FDateTime Now = FDateTime::UtcNow();
 	const int64 Millis = Now.ToUnixTimestamp() * 1000 + Now.GetMillisecond();
-	return FString::Printf(TEXT("%013lld_%08x"), Millis, ++Sequence);
+	return FString::Printf(TEXT("%013lld_%08x"), Millis, static_cast<uint32>(FPlatformAtomics::InterlockedIncrement(&Sequence)));
 }
 
 void FFlockFileEventCache::EvictToCap()
@@ -73,6 +78,13 @@ void FFlockFileEventCache::EvictToCap()
 int32 FFlockFileEventCache::PendingCount() const
 {
 	return Handles.Num();
+}
+
+bool FFlockFileEventCache::KeepForALaterLaunch(const FString& Payload)
+{
+	// Only the entry's file is written: the list of handles belongs to the game thread, and the launch that takes this one
+	// over moves every entry in the folder, this one included.
+	return MaxEntries > 0 && WriteAtomic(MakeHandle(), Payload);
 }
 
 FString FFlockFileEventCache::Enqueue(const FString& Payload)

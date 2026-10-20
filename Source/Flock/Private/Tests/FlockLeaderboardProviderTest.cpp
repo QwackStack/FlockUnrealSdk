@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -17,6 +18,9 @@
 
 namespace FlockLeaderboardProviderTestHelpers
 {
+	/** The answer for a board the game does not have, as the local backend sent it on 2026-10-15. */
+	const TCHAR* const UnknownBoardBody = TEXT("{\"detail\":{\"code\":\"leaderboard.not_found\",\"message\":\"Leaderboard 'Nope' not found\"}}");
+
 	inline FFlockRetryPolicy NoRetry()
 	{
 		FFlockRetryPolicy Policy;
@@ -80,14 +84,14 @@ namespace FlockLeaderboardProviderTestHelpers
 		TSharedPtr<FFlockSnapshotStore> Snapshot;
 		TSharedPtr<FFlockLeaderboardProvider> Provider;
 
-		explicit FFixture(const FString& ExistingDir = FString())
+		explicit FFixture(const FString& ExistingDir = FString(), const FFlockRetryPolicy& Policy = NoRetry())
 			: Dir(ExistingDir.IsEmpty() ? TempRoot() : ExistingDir)
 			, Client(MakeShared<FFlockHttpClient>(Fake, MakeShared<FFlockNullLogger>()))
 			, Session(MakeShared<FFlockAuthSession>(Client, Store, MakeShared<FFlockNullLogger>(),
 				TEXT("http://x/v1"), TMap<FString, FString>{ { TEXT("X-Flock-API-Key"), TEXT("k") } }))
 		{
 			Snapshot = MakeShared<FFlockSnapshotStore>(Dir, MakeShared<FFlockNullLogger>(), TEXT("9.9.9"));
-			Provider = MakeShared<FFlockLeaderboardProvider>(Client, NoRetry(), MakeShared<FFlockNullLogger>(),
+			Provider = MakeShared<FFlockLeaderboardProvider>(Client, Policy, MakeShared<FFlockNullLogger>(),
 				Session, TEXT("http://x/v1"), Snapshot, TEXT("ver-1"));
 			RouteAll();
 		}
@@ -266,7 +270,7 @@ bool FFlockLeaderboardUnknownNameTest::RunTest(const FString& Parameters)
 	{
 		FFixture F;
 		F.SignIn();
-		F.RouteStandings(FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"missing\"}")));
+		F.RouteStandings(FFlockFakeTransport::Status(404, UnknownBoardBody));
 
 		bool bDone = false;
 		F.Provider->GetStandings(TEXT("Nope"), [&](TFlockResult<FFlockStandings> Result)
@@ -286,7 +290,7 @@ bool FFlockLeaderboardUnknownNameTest::RunTest(const FString& Parameters)
 	{
 		FFixture F;
 		F.SignIn();
-		F.RouteRank(FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"missing\"}")));
+		F.RouteRank(FFlockFakeTransport::Status(404, UnknownBoardBody));
 
 		bool bDone = false;
 		F.Provider->GetMyRank(TEXT("Nope"), [&](TFlockResult<FFlockPlayerRank> Result)
@@ -305,7 +309,7 @@ bool FFlockLeaderboardUnknownNameTest::RunTest(const FString& Parameters)
 	{
 		FFixture F;
 		F.Provider->GetStandings(TEXT("HighScoreTest"), [](TFlockResult<FFlockStandings>) {});
-		F.RouteStandings(FFlockFakeTransport::Status(404, TEXT("{\"detail\":\"missing\"}")));
+		F.RouteStandings(FFlockFakeTransport::Status(404, UnknownBoardBody));
 
 		bool bDone = false;
 		F.Provider->GetStandings(TEXT("HighScoreTest"), [&](TFlockResult<FFlockStandings> Result)
@@ -313,6 +317,27 @@ bool FFlockLeaderboardUnknownNameTest::RunTest(const FString& Parameters)
 			bDone = true;
 			TestFalse(TEXT("propagates despite the cache"), Result.bSuccess);
 			TestTrue(TEXT("as a validation error"), Result.Error.Type == EFlockErrorType::Validation);
+		});
+		TestTrue(TEXT("completed"), bDone);
+		Cleanup(F.Dir);
+	}
+
+	// Counter-case: a 404 that is not the board's (an API URL ending in /v1 reaches no route) keeps its own reason and
+	// fix, rather than sending the developer to check a board name that is right.
+	{
+		FFixture F;
+		F.SignIn();
+		F.RouteStandings(FFlockFakeTransport::Status(404, TEXT("{\"detail\":{\"code\":\"request.not_found\",\"message\":\"Not Found\"}}")));
+
+		bool bDone = false;
+		F.Provider->GetStandings(TEXT("Nope"), [&](TFlockResult<FFlockStandings> Result)
+		{
+			bDone = true;
+			TestFalse(TEXT("fails"), Result.bSuccess);
+			TestEqual(TEXT("on its own code"), Result.Error.ErrorCode, EFlockErrorCode::RequestNotFound);
+			TestTrue(TEXT("not made the caller's mistake"), Result.Error.Type != EFlockErrorType::Validation);
+			TestFalse(TEXT("not called the board's"), Result.Error.Message.Contains(TEXT("leaderboard"), ESearchCase::IgnoreCase));
+			TestTrue(TEXT("with the fix for a wrong API URL"), Result.Error.Hint.Contains(TEXT("API URL")));
 		});
 		TestTrue(TEXT("completed"), bDone);
 		Cleanup(F.Dir);
@@ -527,6 +552,99 @@ bool FFlockLeaderboardClearCacheTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("nothing cached to serve"), Result.bSuccess);
 	});
 	TestTrue(TEXT("completed"), bDone);
+	Cleanup(F.Dir);
+	return true;
+}
+
+// ── My rank acts as the signed-in player: a retry scheduled before another player signs in is never sent as them ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLeaderboardRankKeepsItsSignInTest, "Flock.Leaderboard.Provider.RankRetryIsNotSentAfterItsSignInEnds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockLeaderboardRankKeepsItsSignInTest::RunTest(const FString& Parameters)
+{
+	FFlockRetryPolicy Retrying;
+	Retrying.MaxRetries = 2;
+	Retrying.InitialDelaySeconds = 0.f;
+
+	auto RunRank = [&Retrying](bool bSwitchPlayerMeanwhile, int32& OutRankRequests, EFlockErrorType& OutErrorType)
+	{
+		FFixture F(FString(), Retrying);
+		F.SignIn(TEXT("player-a"));
+		// Most specific first, as RouteAll does: "/me" sits under the board route's prefix.
+		F.Fake->On(TEXT("/around-me"), F.AroundResponse);
+		F.Fake->OnSequence(TEXT("/me"), { FFlockFakeTransport::Status(503, TEXT("{}")), FFlockFakeTransport::Ok(RankBody()) });
+		F.Fake->On(TEXT("/standings"), F.StandingsResponse);
+		F.Fake->On(TEXT("leaderboard/by-name/"), F.BoardResponse);
+
+		bool bDone = false;
+		F.Provider->GetMyRank(TEXT("HighScoreTest"), [&](TFlockResult<FFlockPlayerRank> R)
+		{
+			bDone = true;
+			OutErrorType = R.bSuccess ? EFlockErrorType::None : R.Error.Type;
+		});
+		if (bSwitchPlayerMeanwhile)
+		{
+			F.SignIn(TEXT("player-b"));
+		}
+		for (int32 Index = 0; Index < 8; ++Index)
+		{
+			FTSTicker::GetCoreTicker().Tick(1.f);
+		}
+		OutRankRequests = bDone ? F.Fake->CountTo(TEXT("/me")) : -1;
+		Cleanup(F.Dir);
+	};
+
+	int32 Requests = 0;
+	EFlockErrorType Type = EFlockErrorType::None;
+	RunRank(false, Requests, Type);
+	TestEqual(TEXT("control: the retry goes out for the same sign-in"), Requests, 2);
+	TestEqual(TEXT("control: it succeeds"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::None));
+
+	RunRank(true, Requests, Type);
+	TestEqual(TEXT("after the switch: only the first attempt was sent"), Requests, 1);
+	TestEqual(TEXT("after the switch: cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
+	return true;
+}
+
+// ── My rank reads the token on each attempt, so the replay after a refresh carries the new one ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLeaderboardRankReplayTokenTest, "Flock.Leaderboard.Provider.RankReplayCarriesTheRefreshedToken",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockLeaderboardRankReplayTokenTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn(TEXT("player-a"));
+	// A token of its own (a later expiry), so the replay's header cannot match the first one by accident.
+	FString NewPayload = FBase64::Encode(FString::Printf(TEXT("{\"sub\":\"player-a\",\"exp\":%lld}"),
+		FDateTime::UtcNow().ToUnixTimestamp() + 7200));
+	NewPayload.ReplaceInline(TEXT("+"), TEXT("-"));
+	NewPayload.ReplaceInline(TEXT("/"), TEXT("_"));
+	NewPayload.ReplaceInline(TEXT("="), TEXT(""));
+	const FString NewToken = FString::Printf(TEXT("h.%s.s"), *NewPayload);
+	TestNotEqual(TEXT("the refreshed token differs from the first"), NewToken, MakeTestJwt(TEXT("player-a")));
+	F.Fake->On(TEXT("/around-me"), F.AroundResponse);
+	F.Fake->OnSequence(TEXT("/me"), { FFlockFakeTransport::Status(401, TEXT("{}")), FFlockFakeTransport::Ok(RankBody()) });
+	F.Fake->On(TEXT("/standings"), F.StandingsResponse);
+	F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Ok(FString::Printf(
+		TEXT("{\"player_id\":\"player-a\",\"access_token\":\"%s\",\"refresh_token\":\"r-2\"}"), *NewToken)));
+	F.Fake->On(TEXT("leaderboard/by-name/"), F.BoardResponse);
+
+	bool bSucceeded = false;
+	F.Provider->GetMyRank(TEXT("HighScoreTest"), [&](TFlockResult<FFlockPlayerRank> R) { bSucceeded = R.bSuccess; });
+
+	TestTrue(TEXT("the replay after the refresh succeeds"), bSucceeded);
+	TestEqual(TEXT("one refresh"), F.Fake->CountTo(TEXT("token/refresh")), 1);
+	TestEqual(TEXT("two rank requests"), F.Fake->CountTo(TEXT("/me")), 2);
+	FString LastRankAuthorization;
+	for (const FFlockHttpRequest& Request : F.Fake->Requests)
+	{
+		if (Request.Url.Contains(TEXT("/me")))
+		{
+			const FString* Value = Request.Headers.Find(TEXT("Authorization"));
+			LastRankAuthorization = Value ? *Value : FString();
+		}
+	}
+	TestEqualSensitive(TEXT("the replay carries the refreshed token"), LastRankAuthorization, FString::Printf(TEXT("Bearer %s"), *NewToken));
 	Cleanup(F.Dir);
 	return true;
 }

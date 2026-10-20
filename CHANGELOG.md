@@ -5,6 +5,651 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.38.1] - 2026-10-20
+
+The SDK builds and runs on Android.
+
+### Fixed
+
+- **The SDK did not compile for Android.** Android's compiler refused two comments holding `/*` and two local names that hid a
+  member, which the Windows compiler accepts; all changed, and a game for Android builds and runs (measured with UE 5.4 on a
+  Galaxy S23 Ultra).
+- **On Android no name was ever looked up**, so the relay server and the STUN servers were never reached and Travel To Session
+  through the relay failed with `relay_unreachable`: the engine's lookup passed an absent service as an empty one, which
+  Android's resolver refuses. The lookup now gives a numeric service. Measured on the phone on mobile data (an IPv6-only
+  network) with a desktop host on another network: through Cloudflare's relay, then a direct path across the two networks.
+
+## [1.38.0] - 2026-10-19
+
+Direct paths for relayed players: a player who came through Flock's relay moves off it once it and the host reach each other.
+
+### Added
+
+- **Relay When Needed moves a relayed player to a direct path, and back.** Each end asks Flock's STUN servers and the relay
+  server where they see it, offers that and its LAN address to the other end through the relay, and probes the other's
+  addresses (and wherever the other's probes come from); once a probe is answered both ways the engine's packets go directly.
+  A direct path quiet for 4 s goes back to the relay, the other end following, and the game's connection carries on through
+  both: the host's net driver hears the player from the same port throughout. When no path proves itself (no offer within
+  20 s, no answer within 6 s) the pair stays on the relay for that connection. Each move is said once at Info. A host offers
+  its addresses only to players its check let in, and only probes naming both ends' keys count. Relay Always never moves, so
+  every address stays hidden. Nothing new for a game to call.
+- **A relay connection and a player's seat say the device's bridge reads the bridges' own messages** (`bridge_messages`, 1).
+  The engine closes a connection that one of these messages reaches (measured: 10 of 10, at the host and at the player), so a
+  bridge keeps every one of them from its engine, whatever their version, and sends none to a device that does not say it reads
+  them: a host or player on 1.34.0 to 1.37.0 stays on the relay as before.
+
+### Fixed
+
+- **A relayed player connecting again through the same relay address was let back in only once its old connection timed out**,
+  a minute later (measured: the engine handed the new connection to the old one, which still had that address, and Flock's
+  check was never asked). The player's bridge now says through the relay when its game starts a new connection (its first, or
+  one Travel To Session sees the engine start), and the host's gives it a loopback port of its own: back in within seconds (5 s
+  after the player travelled, on Cloudflare's dev relay). A socket the engine remakes for the same connection keeps its place.
+- **A relayed player's newer connection, let in before the host had seen its older one go, could lose its relay channel and,
+  30 s later, its place on the bridge**: what the older one left was let go though the newer held it. Only what a gone connection
+  held alone is let go now.
+
+## [1.37.0] - 2026-10-19
+
+Found by playing through Flock's relay on real networks (Cloudflare's relay, from this game's network).
+
+### Fixed
+
+- **A relay that stops answering this device is told lost within a minute** (On Relay Lost, `relay_lost`, the log saying the
+  relay has answered nothing for 45 s), so Travel To Session again opens another. A relay's own packets can keep arriving after
+  this device's stop reaching it (a router that moved the game to another port, a network that changed); until now nothing
+  asked the relay while the game's packets went, so it was told lost only when an opening was renewed, minutes later, the
+  player meanwhile timed out by the engine. The relay is now asked every 15 s whatever else goes (a binding request, which keeps
+  the way open through a router too); a relay that never answered one is not judged by its silence.
+
+## [1.36.0] - 2026-10-19
+
+The multiplayer sample, made of Blueprints only.
+
+### Added
+
+- **`Content/Samples/Multiplayer`** (turn on Show Plugin Content in the Content Browser): `BP_FlockSampleGameInstance`, a Game
+  Instance whose Event Graph signs in with a device name, hosts, joins by code, quick matches, travels to the session, travels
+  again on On Host Changed and On Relay Lost, gives the seat up when a travel does not get in, and leaves, each part of its
+  graph in a comment box saying what it does; `WBP_FlockMultiplayerSample`, a card in the screen's corner with a field and a button
+  for each and the Game Instance's status line; and `FlockMultiplayerSample`, a level whose
+  World Settings run Flock Game Mode Base (its host lets in only the session's players) and whose Level Blueprint shows the
+  widget. There is no C++ in it: every Flock call is a node. Set the project's Game Instance Class to `BP_FlockSampleGameInstance`,
+  open the level and play it in two standalone games; see the multiplayer guide's "The multiplayer sample".
+- The assets are saved with Unreal Engine 5.4, so every engine the SDK supports (5.4 to 5.8) opens them; a test loads them and
+  checks every event the sample's buttons call.
+
+### Changed
+
+- The guide and the comments name the engine's events as the editor shows them: the Game Instance's **NetworkError** and
+  **TravelError**, the game mode's **OnPostLogin**, and an async node's **Async Action** pin.
+
+## [1.35.0] - 2026-10-19
+
+A host change, or a relay that stopped working, is one call for the game: Travel To Session again.
+
+### Added
+
+- **Travel To Session again takes over.** Called while a travel is under way, it ends that one with the new `restarted`
+  outcome (its engine side left as a cancel leaves it: a level opening stops listening once open, a connection still being
+  made is given up) and begins once that has settled; a travel started from the restarted answer takes over in turn. **Flock
+  Travel Outcome Restarted** in Blueprint.
+- **Called again for the session the game plays, Travel To Session does this device's part from where the game is**, read
+  when it begins, so a host change is On Host Changed, then Travel To Session with the same options. A host already listening
+  for the session keeps its level and its players, opens its relay address again when it was lost, and publishes again; a
+  refused publish, a cancel or a newer travel leaves that level listening. A player that has become the host opens the level it
+  played with the old host (unless `HostLevel` names one), though the engine may have taken it back to its default level
+  meanwhile; its connection to the old host goes with the level change. A player with the old host waits for the new one in
+  that level and connects (the engine closes the old connection as it sets off). A host that handed hosting over stops
+  listening and joins the new host. A player already in the game of the host the session names, on the address that host
+  published, is answered `connected` at once and keeps its connection (a level's Begin Play that travels runs on every player
+  that arrives). A game connected to a server of its own is refused, though it played the session.
+- **`OnRelayLost`** on the session (Blueprint **On Relay Lost**): raised once a relay when this device's relay address stops
+  working while the session lasts, with why (a `FlockRelayFailureReasons` value), and never for a relay the SDK gave back (the
+  session ended, the player left, another relay server, a shutdown). On a player, it is raised too when its host publishes
+  another relay address (the host's own relay was lost), since the player's relay no longer reaches it; a new host's address is
+  On Host Changed's. Travel To Session again opens another.
+
+### Changed
+
+- **A travel asked for while the engine changes level waits for it** (a seamless travel included), at most 30 s and then
+  refused saying so, rather than being refused at once: the engine's own way out of a lost connection takes a frame. A travel
+  no longer refuses another that is under way. A player's Wait For Host Seconds is checked when the travel begins, against
+  this device's part then.
+- **A player's earlier connection the host has heard nothing from for 5 s gives way to their newer one** once the newer is
+  let in (the earlier is closed, said in the log): what a lost relay or a game that stopped leaves on the host until the
+  engine's own timeout of a minute. A newer one that comes sooner waits, up to 5 s, while the earlier stays quiet; one the
+  host hears from again keeps its place, the newer refused `already_connected`. The newer must bring a join token of its own
+  (Travel To Session asks for one each time): a token stays good for its 60 s and travels in the clear, so the earlier
+  connection's own token presented again is refused `already_connected`. One still waiting when the host's level stops
+  listening is turned away `flock_unreachable`, as every player still being checked is.
+
+## [1.34.0] - 2026-10-18
+
+Travel To Session connects players through Flock's relay: a player who cannot reach the host directly (on another network,
+behind a router with no forwarded port) joins it through the relay, and the game's networking code stays as it is.
+
+### Added
+
+- **`Relay` on Travel To Session's options** (`EFlockRelayUse`): **When Needed** (the default) takes a player on the host's
+  network straight to the host, and through the relay when the host does not answer there within 3 s; every other player goes
+  through the relay. **Always** takes every player through the relay, on the host's network too, and the host turns away any
+  player that reaches it another way (`relay_only`, without asking Flock). **Never** keeps the relay out of it. Set it the
+  same on every player of a game.
+- **The engine's own net driver carries relayed players.** The SDK stands in for the other side on this device's loopback:
+  a player's game travels to 127.0.0.1 on a port of the SDK's, which passes what it sends to the host's relay address; a host
+  gets each relayed player from a loopback port of its own, so the engine sees a connection a player and its handshake, level
+  changes (seamless or not) and timeouts work as on a direct connection. A host takes at most 64 relayed players; a relay
+  address its check has not let in within 30 s gives its place back once a new one is heard. Packets the relay cannot carry
+  (over 1400 bytes; the engine sends at most 1024) are dropped with one warning.
+- **Only players the host's check let in get the relay's cheaper channel** (4 bytes a packet rather than 36), and a player's
+  `PlayerForConnection` and `FFlockJoiningPlayer` work through the relay as directly (the address reads 127.0.0.1).
+- **Results say how a travel went**: `bThroughRelay`, the `relay_failed` outcome with `RelayFailureReason` (a
+  `FlockRelayFailureReasons` value, each with its own fix: no relay offered, the host offering none, its relay server not
+  listed for the player, a paused relay, too many logins, no seat, Flock or the relay out of reach, a wrong login, a full
+  relay, an opening refused, a lost or closed relay, no threads), and the `relay_only` refusal. Blueprint has a node for each.
+- **The connection mode `relay`**: the host publishes its relay address and relay server (`relay_address`, `relay_server`),
+  with its direct addresses too under When Needed. A relayed player reserves its address on the host's relay server and
+  publishes it for its seat, and the host lets each seated player's relay address in, reading the session every 2 s while it
+  takes players through the relay, so a relay that gives each address an IP of its own (Cloudflare's) carries every player.
+
+### Changed
+
+- **A host whose relay cannot be opened** publishes directly under When Needed (saying why, unless the relay is switched off
+  for the game) and stops hosting under Always (`relay_failed`). A host that stopped listening while its relay opened
+  publishes nothing.
+
+### Fixed
+
+- **A host's level change without seamless travel no longer turns its players away.** The engine brings every player back
+  through a new connection carrying the join token of its first travel, which Flock refuses once its 60 s are up
+  (`join_token_invalid`, and the player was sent to its default level). A player in its host's game now keeps a fresh join
+  token on hand (a new one once the one it holds has less than 20 s left: about one request every 40 s) and the SDK puts it on
+  that connection before it logs in, for direct connections and relayed ones alike, with nothing asked of the game. A
+  token on hand asked for once the host has ended the session (before this game's heartbeat brings the end) is the
+  session's end, learned from Flock's answer, not a failed call in the log.
+
+## [1.33.0] - 2026-10-18
+
+The relay client: the SDK reserves an address on Flock's relay for a session and carries packets through it. Games do not use
+it yet: a later release connects players through it from Travel To Session.
+
+### Added
+
+- **A relay client inside the SDK**, with no new API yet. For the held session it asks Flock for relay logins named with the
+  session, reserves an address on the first relay server Flock lists that answers, opens it to other players' relay
+  addresses, and carries packets both ways (on channels once asked, 4 bytes a packet), on a thread of its own so the game's
+  thread never waits and a packet allocates nothing on it. A relay that answers only some of a device's ports, as Cloudflare's
+  does, is reserved from whichever of 8 sockets it answers; every socket is dual-stack where the platform allows. It signs
+  again when the relay's nonce goes stale, renews what the relay keeps before it lapses, and gives the address back when the
+  session ends (before `OnEnded`), the player signs out or the game quits, its stale nonce answered too. Each failure has its
+  own reason and fix: Flock out of reach, relay logins refused (more than 12 a minute, or the seat's allowance of 10 used),
+  no seat, the studio's relay paused, no relay offered, a relay server out of reach, a wrong login, a full relay, an opening
+  refused, the relay lost.
+
+### Changed
+
+- **The STUN servers' names and the relay's are looked up by one shared lookup**, and the UDP sockets the SDK opens toward
+  the internet can be opened from any thread.
+
+### Fixed
+
+- **A project whose game changes no longer sends the old game's analytics to the new one.** Each game's crash marker,
+  live-session record and queued events are kept apart, under its backend and API key
+  (`Saved/Flock/analytics/games/<key>/`). Every game a project ran used to share one folder, and a changed game sent the old
+  one's unsent sessions and events to its own backend, which refused and dropped them. The launches an earlier build kept are
+  taken over by the first game to start after the update. Consent stays per install.
+- **A saved sign-in is restored only by the game it was made with.** Each game keeps its own file, under its backend and API
+  key (`Saved/Flock/auth-<key>.dat`); it was kept per Game Name, so two backends' games of one name restored each other's
+  player. The sign-in an earlier build kept is taken over by the first game to read one, so nobody is signed out by updating.
+
+## [1.32.0] - 2026-10-17
+
+Blueprint support for multiplayer: a game made in Blueprint makes and joins parties and sessions, finds a match, travels into
+the session's game and lets in only the session's players.
+
+### Added
+
+- **An async node for every multiplayer call**, under *Flock | Multiplayer*: Flock Create Party, Join Party, Get My Party,
+  Leave Party, Kick From Party, Make Party Leader, Update Party, Disband Party; Flock Host Session, Join Session, Get Session,
+  Get My Session, Leave Session, End Session, Make Session Host, Publish Connection, Publish Direct Connection, Request Join
+  Token, Verify Join Token, Find Direct Address, Wait For Connection; Flock Find Match and Party Find Match (On Matched, On No
+  Match); Flock Travel To Session (On Joined, On Not Joined). Each fires one pin, the failure pin with the error; Get My Party
+  and Get My Session tell none from one; Find Match, Party Find Match, Wait For Connection and Travel To Session can be
+  cancelled from their Async Action pin, and a cancel the game asks for fires no pin. The game instance keeps a node until it
+  has fired. Travel To Session warns when called from an object of the current level, which is gone once its pins fire.
+- **A pure node for every value a multiplayer result carries** (`UFlockMultiplayerLibrary`): Flock Travel Outcome, Flock
+  Refused Reason, Flock Matchmaking Outcome and Flock Session End Reason nodes, the connection mode and direct connection
+  values, and Is Matched.
+- **`AFlockGameModeBase` and `AFlockGameMode`**, game modes that let in only the session's players while the game hosts
+  through Travel To Session: their `PreLoginAsync` runs Flock's check, the engine's own, then **Approve Joining Player**, the
+  game's own check, overridable in Blueprint.
+
+### Changed
+
+- **A Blueprint node's calls are logged under the Blueprint that made them on every line**, a call that goes through another
+  part of the SDK included: a multiplayer call's own lines read "C++" before (only the HTTP lines beneath named the Blueprint).
+  For C++ that tags its own calls: `FFlockCallOriginScope` takes the caller's name alone (`FFlockCallOriginScope Scope(TEXT("..."))`),
+  and `FFlockProviderBase::SetCallOrigin`/`GetCallOrigin` are gone; every provider reads the one `FFlockCallOrigin`.
+
+### Fixed
+
+- **A sign-in node no longer keeps the level that called it alive.** The game instance keeps a sign-in node until it answers,
+  and the node held its caller, such as a menu widget: a sign-in still on its way when the game changed level kept the old
+  level's world past the change, which the engine reports as a world not cleaned up by garbage collection. A check in the
+  repository's CI now fails a node the game instance keeps that holds its caller.
+
+## [1.31.0] - 2026-10-16
+
+Join verification: a host that travels to its session with Travel To Session lets in only the session's players.
+
+### Added
+
+- **`FlockJoinChecks::CheckJoiningPlayer(GameMode, Options, Address, UniqueId, OnComplete, ApproveJoiningPlayer)`**, called
+  from the host's game mode's `PreLoginAsync` in place of the engine's own. While the game hosts through Travel To Session, a
+  joining player is let in only once Flock has verified the join token their travel URL carries, one connection a player;
+  then the engine's own checks (`PreLogin`, such as a full game) run, then the game's own `ApproveJoiningPlayer`, which gets
+  an `FFlockJoiningPlayer` (the verified `PlayerId`, the URL's `Options` without the token, `Address`, `UniqueId`).
+  `OnComplete` is always called and the game thread never waits. While the game does not host through Travel To Session,
+  it is the engine's own `PreLoginAsync`.
+- **`UFlockMultiplayerSession::PlayerForConnection(PlayerController)`** (Blueprint pure): the Flock player behind one of the
+  host's player controllers, its own included; empty for a connection gone or never let in by Flock's check.
+- **Travel To Session's `refused` outcome** with `FFlockTravelToSessionResult::RefusedReason`, and
+  `FlockTravelToSessionRefusedReasons`: `no_join_token` (Flock not asked), `join_token_invalid` (Flock's one answer for a
+  made-up token, another session's, an expired one and one whose player gave up their seat), `already_connected` (a token
+  checks out any number of times within its 60 s, so the host itself lets one connection a player in), `flock_unreachable`
+  (no answer within 8 s, an answer that cannot be read, or the host over its checks a minute: nobody is let in unchecked),
+  `session_ended`, `not_host`, `refused_by_the_game`, and `join_check_missing` (the host's game mode does not call the
+  check, so nobody is let in; told once at Error). The reason can also be the game's own or the engine's words. A refusal is
+  logged on the joining player with its fix.
+
+### Changed
+
+- **Travel To Session asks for a join token** once the host's address is known and travels with it (`?FlockJoinToken=`); a
+  token Flock will not give fails the travel with Flock's error, before anything travels. The host turns its check of joining
+  players on before its level listens, and off once the game no longer listens (a host travel that does not start hosting
+  stops listening), at another host travel, or when Flock shuts down; every player still being checked is then turned away
+  rather than left waiting, since the engine never drops a player its game mode has not answered (measured). Flock shut down
+  while the hosted level stays open turns every joining player away (`flock_unreachable`, told once) until that level closes.
+- **A join token Flock does not vouch for is logged at Debug on the host**, not as a warning: it is Flock's answer, which the
+  host's check turns into a refusal, and anyone who reaches a host can send one (a flood of made-up tokens wrote one warning a
+  check, 60 a minute). Flock turning the host's checks away for volume, and any other answer of that route, still warns.
+
+### Fixed
+
+- **The SDK did not compile on UE 5.4 in the editor or a Development build** (since 1.30.1): three of its own test files used
+  a string check UE 5.4 does not have without the stand-in the SDK supplies for it. A check in the repository's CI now fails a
+  file that does that.
+
+## [1.30.1] - 2026-10-15
+
+Every failure says what is wrong and how to fix it.
+
+### Changed
+
+- **`FFlockError::Message` is what is wrong**: the server's own reason when it gave one (`Shop item with ID 'GoldItem' not
+  found`), otherwise the plain meaning of the status or the transport failure (`The server found nothing at this address`,
+  `The server did not answer in time`). It no longer reads `HTTP request failed (HTTP 404)`, `Authentication failed (HTTP 403)`
+  or `Validation failed (HTTP 422)`, and a bare 403 is a refusal, no longer called an authentication failure. It never holds
+  the status: `ToDisplayText()` tags it.
+- **`FFlockError::Hint` is never empty**: the code's advice, or the advice for the kind of failure when the code has none
+  (`FFlockErrorHints::ForFailure`): an answer without a Flock code (a proxy, a captive portal, an API URL pointing elsewhere),
+  a code newer than this SDK (named in the fix), a server failure, a timeout (a change may already have been made, so read
+  before re-sending), no connection, an unreadable success. `ToDisplayText()` always ends with its `Fix:` line.
+- **The Output Log's line for a failed call** carries the same text as `ToDisplayText()`, fix included; it held only the
+  terse message, which is what a developer saw for a purchase given the wrong id.
+- **Every failure the SDK finds itself names what to do**, built with the new `FFlockError::MakeWithFix`: an empty argument
+  says what to pass, a call with nobody signed in says to sign in, a node run before Flock initialized says how it starts,
+  a session or party that has ended names how to get another. CI fails on a Validation, Network or Auth failure built with
+  `FFlockError::Make` outside the HTTP client.
+- **A board read's 404 is the caller's mistake only when it is the board's** (`leaderboard.not_found`); a wrong API URL's
+  `request.not_found` keeps its own reason and fix rather than sending the developer to check a board name.
+- **The setup panel's connection test** tells a rejected key and an unknown Game Version by their codes. A wrong API URL
+  answers 404 or an uncoded 401, which it called "no game version by that name" or "the API Key was rejected"; it now shows
+  the error's own reason and fix.
+- `FFlockResolveResult::Fail` (editor) takes the fix with the failure.
+- **A failed download of an asset's file** names the storage that serves it and storage's own fix (a missing file is
+  uploaded again, an expired link read again), rather than calling storage's answer a wrong API URL.
+  `FFlockError::MakeWithFix` takes the status of such an answer.
+- **A failed call to Protokite** (the optional playtest plugin) says what Protokite meant and how to fix it
+  (`FProtokiteClient::FixFor`): a key Protokite does not know names API Key, a build no playtest is linked to says to link
+  the playtest to the build's Game Version, a missing form says to publish it, and an answer that is not Protokite's (a
+  captive portal, a proxy) names Protokite API URL in the playtest's settings. Protokite's refusals carry no Flock error
+  code, so the Flock SDK's fix for an answer without one, which points at the Flock API URL, no longer reaches them.
+
+### Added
+
+- `EFlockErrorCode` members for the codes the server sends on any route: `RequestNotFound` (no route at that address, or a record a route did not find; a wrong API URL lands here, as when
+  API URL ends in `/v1`), `RequestMethodNotAllowed`, `RequestValidationFailed` (a member missing from the body, named in the
+  message), `RequestUnauthorized`, `RequestForbidden`, `RequestConflict`, `RequestPayloadTooLarge`, `RequestRateLimited` and
+  `RequestFailed`; the API key check's `GameMissingApiKey` and `GameInvalidApiKey`; and the sign-in check's
+  `PlayerMissingToken`, `PlayerInvalidToken` and `PlayerExpiredToken`. Each has a hint.
+- `FFlockError::MakeWithFix`, `FFlockError::ReasonAndFix()` (the display text without the operation), and
+  `FFlockErrorHints::ForFailure` with the fixes several failures share.
+
+### Fixed
+
+- **A purchase given the item's name or the shop's id** read `HTTP request failed (HTTP 404)`. The shop item hints now say
+  a purchase takes `FFlockShopItem::Id`, read from the shop, not the item's name or the shop's id, and the shop guide shows
+  reading it.
+- **The wallet hints** told a player with no wallet, or no balance in a currency, to call Flock Add Game Funds to create it,
+  which refuses the same way: a wallet is made when the player registers, from the Game Version's currency template.
+  `ShopWalletNotFound`, `ShopCurrencyNotHeld`, `ShopRewardCurrencyNotHeld`, `ShopCurrencyTemplateNotFound` and
+  `GameCommandCurrencyNotFound` now say so.
+- `ShopShopNotFound` names the Game Version a shop belongs to, and `ShopPlayerNotFound` the player a purchase acts on.
+- **A feedback form Protokite refused with no reason of its own** could be logged as refusing a question cut out of the
+  fix that follows the reason; the question is read out of Protokite's own reason only.
+
+## [1.30.0] - 2026-10-15
+
+Connecting players.
+
+### Added
+
+- **`UFlockMultiplayerSession::TravelToSession(WorldContextObject, Options, OnComplete)`** brings the game into the session's
+  game. The host opens `Options.HostLevel` (empty: the level it is in) listening for players, the engine's `?listen`, and once
+  it listens publishes how to reach it on the port its net driver bound (the engine takes the next free port when the one
+  asked for is taken, so that is the one published). A player waits for that (`WaitForHostSeconds`, 60), travels to the host's
+  LAN address when both share a public address and to the published address otherwise, and completes once the host has let it
+  in. It completes with `FFlockTravelToSessionResult`: `Outcome` (`FlockTravelToSessionOutcomes`: `started_as_host`,
+  `connected`, `host_never_published`, `session_ended`, `could_not_connect`, `could_not_start`, `not_direct`, an open set),
+  `bIsHost`, `Address`, `Port` and the host's `Connection`. A connection that fails is the engine's to give up: it takes the
+  game back to its default level, and the call completes `could_not_connect` with a warning naming the address and the port
+  forwarding a host outside the player's network needs. The completion runs in the new level.
+- **`PublishDirectConnection(Port, OnComplete)`**: the host publishes a `direct` connection, `{address, port, lan_address,
+  public_address}`: its public address from one request to the STUN server Flock lists (asked with no session, so a direct
+  connection is not counted as relay use; read once a launch, a failed read not kept), its LAN address from the route toward
+  that server, and `address` the public one when known. An unknown address is left out; a port outside 1 to 65535 is refused
+  before any request. The STUN request goes from a dual-stack socket where the platform makes one (a phone on mobile data
+  hears some STUN servers only that way), a plain IPv4 one otherwise.
+- **`WaitForConnection(TimeoutSeconds, OnComplete)`** answers the session once the host has published, once it has ended, or
+  with neither when the time runs out, reading the session every 2 s meanwhile (heartbeats come every 20 s). A host change
+  clears the address without ending the wait. **`FindDirectAddress(OnComplete)`** says which of the host's addresses this
+  game uses: only a dotted IPv4 address and a whole port from 1 to 65535 count (a port sent as text is taken).
+- A connection of the game's own (Steam, EOS) is published with `PublishConnection(Mode, Values)` as before; a player's
+  `TravelToSession` ends `not_direct` holding it.
+- `Documentation/multiplayer.md` covers connecting players.
+
+## [1.29.0] - 2026-10-15
+
+Matchmaking.
+
+### Added
+
+- **`FFlockMultiplayerProvider::FindMatch(QueueName, Options, OnComplete)`** searches a queue by its name (letter for letter)
+  and completes with `FFlockMatchmakingResult`: `Outcome` (`FlockMatchmakingOutcomes`: `matched`, `expired`,
+  `party_changed`, `cancelled`, an open set), the `Session` the match seats the player in, held like any other session, and
+  the matched `PlayerIds`, the longest waiting first. A search that ends without a match is an outcome, not a failure.
+  Cancelling the handle cancels the search on the server; a match that landed meanwhile gives its seat up first. A search
+  of the player's own left from an earlier launch is cancelled and replaced; a party's is never touched by a search alone.
+- **`UFlockParty::FindMatch`**, **`IsSearching()`**, **`OnSearchStarted`** and **`OnSearchEnded(Result)`**: the leader's game
+  searches as the party, matched as one group and never split; another member's `FindMatch` waits for the leader's search,
+  and every member's game hears the search start and end, from its own call or the party's refresh, before the call waiting
+  for it completes. A search from before the game first held the party is not told.
+- The search is checked every 3 seconds (2.25 to 3.75), only for the sign-in it was made under: a sign-in that ends ends
+  the search as `Cancelled` and sends nothing more, and frees the next player's `FindMatch` at once. Quitting the game cancels
+  it on the way out without waiting; a search still being made is cancelled once its ticket lands, and a match already
+  landing gives its seat up.
+- A member's wait for the leader's search ends (`Validation`) when the party ends first, or when the player comes to lead it.
+- The queue list is read once a launch; a queue deleted and made again under the same name is found by its new id.
+- `Documentation/multiplayer.md` covers matchmaking; the matchmaking error hints name `FindMatch`.
+
+### Fixed
+
+- **Cancelling a party create, join or `GetMyParty` while it read the player's search** did nothing: the cancel reached the
+  request on its way only while something else still held the call, and that last reading held nothing. A call made of
+  requests sent in turn now always reaches the one on its way; sessions' calls share the same mechanism.
+- **A player with no search** (asked by every party refresh) is traced at debug instead of as a warning.
+- **A shop item priced in real money** sent through `Purchase` now fails with its own code,
+  `EFlockErrorCode::ShopRealCurrencyNeedsCheckout`, and a hint, instead of `Unknown`: the server refuses it because the call
+  only spends game currencies from the wallet. The shop guide no longer says such a purchase can come back `pending`, nor
+  that a purchase or consume fails "immediately" offline (each is sent once and reports the connection failure); the 1.28.0
+  entry below names the status constants `FlockPurchaseStatuses`, as the code does.
+- `FFlockMultiplayerProvider` no longer hands its matchmaking a lookup that called back into the provider; the queue list
+  is one shared object, read through the matchmaking requests with the API key alone.
+
+## [1.28.1] - 2026-10-14
+
+Follow-ups to the 1.28.0 review, and keys compared letter for letter.
+
+### Changed
+
+- **Metadata keys and event property names are compared letter for letter.** `Score` and `score` are two keys. The engine's
+  map and JSON object cannot keep both (they would replace one with the other without a word), so a second spelling is not
+  added, a warning names both, and the first stays. `FFlockMetadata::Add`, the `Add Metadata ...` and `Flock Event Property
+  (...)` nodes and `FFlockCommandData::Set` all follow it; repeated-exception windows have since 1.28.0.
+- **Player ids are compared letter for letter** in the command queue's flush and reload and in the analytics events batch,
+  as every other identifier is.
+- **Player features** are documented as kept in memory per player for the run (`FFlockConfigProvider::GetPlayerFeatures`
+  and `Documentation/game-config.md`), which is what the code has done since they were added; nothing changed in behaviour.
+
+### Fixed
+
+- **An API URL of nothing but spaces and slashes** is refused at initialization with an error naming the setting; it
+  initialized and sent every request to `/v1/...`.
+- **A playtest recording whose session file cannot be read** has its cut-off video finished before it is kept, so what is
+  kept can be played.
+- The three HTTP transports claim their one answer through `FFlockCancelToken::TryClaimAnswer()` rather than each by hand.
+
+## [1.28.0] - 2026-10-14
+
+Fixes found while writing the SDK guide, across the core, the editor, codegen and the Protokite Playtest plugin.
+
+### Added
+
+- **`FFlockPlayerData::LeaderboardRefusals`**: the boards that turned away the score an update fed them (Update Player Data
+  and Update Player Data Field), each with a reason (`FlockLeaderboardRefusalReasons`, an open set), whether it can be retried
+  and when. An empty list after Add Game Funds or Unlock Achievement means those routes do not report refusals.
+- **`FFlockPurchaseResult::Status`** (`FlockPurchaseStatuses`) and `IsPaid()`, with Blueprint nodes.
+- **Editor: Don't Open For This** on a finding that opens the Flock panel by itself; it stays listed.
+
+### Changed
+
+- **`ResetPassword` works signed out**: the route needs no sign-in, so a player who forgot their password can use it.
+- **An analytics transaction is sent once**: a timeout or 5xx after the server may have stored it is not sent again (only
+  408 and 429 are), so revenue is never counted twice.
+- **Codegen, C++ target**: two templates or fields making one name give the later a `_2` suffix (the declared name still
+  goes on the wire); dashboard text in generated code is escaped; a re-sync leaves an unchanged header untouched, so nothing
+  rebuilds; entities are walked in id order, so a suffix never moves between syncs.
+- **The upgrade notice counts as seen only once the Flock panel has shown it**; a launch that opens nothing keeps it.
+
+### Fixed
+
+- **Core**: a request the engine refuses to start is answered once; a cancelled request is no longer logged as a failure to
+  reach the server; the call replayed after a token refresh can be cancelled; a sign-in whose refresh the server rejects
+  ends as a sign-out does (analytics told, the player's caches cleared); a retry wait never passes `MaxDelay`, and a negative
+  `Retry-After` means now; a failure that is never retried is not warned about, and a final failure is logged once; a
+  paginated list refuses an item that is not an object; the API URL is trimmed like the editor's; shutdown waits for
+  requests in flight with analytics off.
+- **Commands**: an online save waits behind older queued saves, so their replay cannot undo it; a flush stops when its
+  player signs out.
+- **Analytics**: an ended launch's queued entry that cannot be moved stays for a later launch rather than being deleted; a
+  launch that cannot hold a folder keeps nothing on disk; diagnostics logged from another thread are queued on the game
+  thread; a crash is written to disk only, and its marker stays until its report is queued; faults differing only in
+  letter case are counted apart.
+- **Notifications**: the seen marker and the pending reminders survive a new game version (and an earlier build's are
+  rescued); a reply landing after another sign-in raises nothing and is tracked for the player who asked; the template
+  list no longer chooses a locale for a by-name schedule.
+- **Account linking**: a reply landing after another sign-in no longer sets the next session's email flag.
+- **Assets**: a download larger than the cache budget is not kept (and never evicts the file just kept); a download that
+  is not kept is written beside the cache and cleaned up; a name is matched letter for letter.
+- **Editor**: Resolve and the startup bake refresh the panel once they answer, and the startup checks wait for the bake;
+  the settings banner counts what it names (notes, not "0 items"); the help text names both codegen targets.
+- **Codegen**: Add Funds with no `currency`-tagged template finds the wallet by tag instead of sending an empty id, which
+  was refused on every call; a Blueprint-target sync or Clean writes nothing under `Source/` for a project with no generated
+  module; version ids are compared letter for letter; lists and maps of generated structs use the wire-name table in both
+  directions.
+- **UE 5.4: the editor target builds again.** Seventeen test files used `TestEqualSensitive`, which UE 5.4 lacks, without
+  the stand-in `Misc/FlockEngineCompat.h` supplies, so a 5.4 editor build failed to compile its tests.
+- **Protokite Playtest**: a run or launch folder that cannot be removed keeps its lock, so a later launch finds it; a
+  recording whose session file cannot be parsed is kept; a test video never deletes a recording waiting to upload; the
+  feedback form opens for any loaded playtest, a player who answered "nothing" included; kept forms are sent one at a time,
+  each claimed so two launches never send one twice; a fresh upload link is asked for only where one can help; an upload
+  that stops moving is given up after 60 s; recordings carry their colour standard (BT.601, studio range) in the stream and
+  the file; a WebM's duration ends at its last frame's end; the self-test's wrong key no longer says `flock-playtest`.
+
+- **A party or session this game is leaving ends as `Left`, however the SDK learns it is gone.** Three ways ignored a leave
+  still on its way: a party replaced by creating or joining another ended `Removed`; a party call answered `party.not_found`
+  ended `Removed` (a disband answered so now ends `Disbanded`); and a session that could not be read to learn why it ended
+  ended `dropped`.
+- **Protokite Playtest: pushing the recordings earlier launches left no longer keeps its work in memory for the rest of the
+  launch.** The step that uploads them one at a time held itself, so it, the list of recordings, the request headers and
+  the completion were never freed.
+- **Protokite Playtest: a recording keeps the game's shape when the window changes shape.** After a resize to another
+  shape (a window made taller, or turned) the picture was stretched to the video's size; it is now recorded at the largest
+  size of its new shape that fits, between black bars; a side within 16 pixels of the video's still fills it, so rounding
+  never draws thin lines.
+
+### Documentation
+
+- **README names a known engine issue on UE 5.4 and 5.5**: a Development package ends with an access violation
+  (`0xC0000005`) about 60 seconds after it quits. It is the engine's, fixed by Epic in 5.6, and happens whether or not
+  any Flock feature ran.
+
+## [1.27.0] - 2026-10-13
+
+### Added
+
+- **Sessions.** One player hosts a game the others join by code.
+  - `FFlockMultiplayerProvider::HostSession(MaxPlayers, Data, bSameVersionOnly, OnComplete)` makes a session with the
+    signed-in player as its host and only player. Leave the size unset for the game's own player count from the dashboard (8 unless changed there); it takes 2 to 16. The
+    data is the game's own, such as a map, kept with its keys as written. With `bSameVersionOnly` (the server's default,
+    so it is sent only when false) only players on the host's Game Version can join.
+  - `JoinSession(JoinCode, OnComplete)` takes a seat by code, in any letter case. `GetSession(SessionId, OnComplete)` reads
+    a session the player holds or once held a seat in; one the player is no longer seated in comes back ended and is not
+    held. `GetMySession(OnComplete)` finds the session the player is seated in without its id, or null when seated nowhere.
+  - Each completes with a `UFlockMultiplayerSession` (Blueprint type): its id, join code, host and whether the player hosts,
+    the players seated now (longest seated first), size, data (`FFlockJsonData`), the host's published connection
+    (`HasConnection`, `GetConnection`: a mode and its values) and why it ended. Its calls are `Leave`, `End`, `MakeHost`,
+    `PublishConnection`, `RequestJoinToken` and `VerifyJoinToken`.
+  - Its events, assignable from Blueprint: `OnPlayersChanged`, `OnHostChanged`, `OnConnectionChanged` (also raised when
+    hosting moves and the old host's address is cleared) and `OnEnded`, raised once with a reason string:
+    `FlockMultiplayerSessionEndReasons` names the server's (`ended_by_host`, `host_left`, `expired`, `empty`) and the
+    SDK's (`left`, `dropped`, `moved_to_another_session`, `signed_out`); the server can add more.
+  - **Heartbeats.** While a session is held the SDK keeps the seat with a heartbeat at the interval the server gives (20 s
+    at the defaults). Every session route answers the whole session, so each heartbeat's answer brings the session up to
+    date and raises its events with no read by the game. Only the newest reading changes the session: an older one, or one
+    whose host or connection epoch is lower than the one held, changes nothing.
+  - A call that finds the player out of the session reads it once to learn why and ends it with that reason (`dropped`
+    when it cannot be read). Hosting or joining another session ends the held one at once as `moved_to_another_session`.
+  - The game instance shutting down (the game quitting, or Play In Editor stopping) gives the seat up without waiting for
+    the answer; the session ends as `left`, raising nothing. `ShutdownSdk` keeps the seat.
+  - Host, end and make host are never sent twice after a lost answer. Every session call is sent only for the sign-in it was
+    made under.
+
+### Changed
+
+- The session error hints name the calls that fix them (`HostSession`, `JoinSession`, `GetSession`, `RequestJoinToken`).
+
+### Fixed
+
+- A party that another player removed the player from, or that ended some other way, while this game's leave or disband of
+  an earlier party was still on its way, ended as `Left` or `Disbanded`. Only the party the game itself left or disbanded
+  ends that way now; any other ends as `Removed`.
+
+## [1.26.0] - 2026-10-13
+
+### Added
+
+- **Parties.** Players group up by invite code before they search for a match together.
+  - `FFlockMultiplayerProvider::CreateParty(MaxSize, Settings, OnComplete)` makes a party with the signed-in player as its
+    leader and only member. Leave the size unset for the server's default (4); it takes 2 to 64 players. The settings are
+    the game's own data on the party, such as a mode, kept with their keys exactly as written.
+  - `JoinParty(InviteCode, OnComplete)` joins by code, in any letter case. Joining the party the player is already in returns
+    it.
+  - `GetMyParty(OnComplete)` reads the player's party, or null when the player is in none. A party lasts until the player
+    leaves it, across launches, so call it after signing in. It returns the same object while the party lasts.
+  - Each completes with a `UFlockParty` (Blueprint type): its id, invite code, leader, members in the order they joined, size,
+    settings (`FFlockJsonData`), and why it ended (`EFlockPartyEndReason`). Its calls are `Leave`, `Kick`, `MakeLeader`,
+    `Update` and `Disband`, each completing with the party as it stands afterwards, and each call returns a handle that
+    cancels the request on its way.
+  - Its events, assignable from Blueprint: `OnMembersChanged`, `OnLeaderChanged` and `OnEnded`, raised once with
+    `Left`, `Disbanded`, `Removed` (the server no longer lists the player in it) or `SignedOut` (the player signed out or
+    another signed in; raised on the next frame, while the party reads as ended at once). Flock shutting down ends it
+    without raising anything.
+  - The SDK reads a held party again every **Party Refresh Seconds** (Project Settings > Flock > Multiplayer, 10 by
+    default, 0 turns it off), after each change this game makes, and on `GetMyParty`. Only the newest reading changes the
+    party: a reading sent before another one landed, or before a change this game made finished, changes nothing.
+  - The game's own leave reads as `Left` even when a refresh sees it first or the server says the player is already out.
+    A change answered `party.not_found` ends the party as `Removed`. A refresh never takes up another party; only a call
+    the game makes does.
+  - Create, kick, make leader and disband are never sent twice after a lost answer. Every party call is sent only for the
+    sign-in it was made under.
+
+### Changed
+
+- The party error hints name the calls that fix them (`GetMyParty`, `Leave`, `MakeLeader`, `Disband`).
+
+## [1.25.0] - 2026-10-13
+
+### Added
+
+- **Multiplayer setup.** `UFlockSubsystem::GetMultiplayerProvider()` returns `FFlockMultiplayerProvider`, built when the
+  SDK starts and torn down when it shuts down. It is where the multiplayer features will live; this release gives it two
+  things.
+  - **`FindQueueId(QueueName, OnComplete)`** finds a matchmaking queue's id by its exact name, letter case included. It
+    reads the game's queue list (`GET /v1/matchmaking/queues?limit=200`, API key only) once a launch, shares that read
+    with every caller asking at the same time, and reads again only for a name the list it kept does not have. Of two
+    queues with one name the older is used, with one warning. A missing name fails `Validation`, coded
+    `matchmaking.queue_not_found`, and its hint names a queue that differs only in letter case, or says when the list was
+    full (200 queues) and a newer queue may be missing from it. Cancelling the handle ends that caller's wait at once, and
+    a lookup still waiting when Flock shuts down is answered `Cancelled`.
+  - **Repeating calls** (`FFlockRepeatingCalls`), which the multiplayer features use for search checks, heartbeats and
+    party refreshes. One request at a time each, every 0.75 to 1.25 times its interval, sent from the core ticker (which
+    keeps ticking while a desktop game is minimized or covered), for the sign-in it started under. A server's
+    `Retry-After` is honoured. No answer, a timeout, a 5xx, 408, 429 or an unreadable answer keeps it going; any other
+    failure stops it and is reported once. The SDK's own features start them; a game does not.
+
+### Changed
+
+- **A 403 is never answered with a token refresh.** A 401 still refreshes the token and sends the call once more. A 403
+  means the player is not allowed (not the host, not the party leader), which a new token does not change, so the 403 is
+  the answer. Until now both refreshed.
+- **A call made for a player stays that player's.** The calls that act as the signed-in player through their token send
+  every attempt -- retries, and the replay after a token refresh -- only while that sign-in lasts. After a sign-out or
+  another sign-in they fail `Cancelled` and send nothing, so a retry never goes out as the next player; one made while
+  nobody was signed in stops the same way once someone signs in. Each attempt reads the token as it is then. These are
+  the inbox, unread count, summary, mark read and mark all read, scheduling, cancelling and listing schedules, device
+  token register and unregister, your leaderboard rank and the standings around you, sending and checking the
+  verification email, revoking the token, listing, linking and unlinking accounts, and a purchase. The calls that do
+  other work first keep the sign-in they were asked for under: a purchase (it reads its item first, and records its
+  analytics transactions only for that sign-in), scheduling by template name (it looks the template up first) and
+  cancelling every schedule (it reads the list first, and a sign-in change stops the walk with the rest still tracked).
+  Game-wide reads keep retrying as before.
+- **A token refresh answered after its sign-in ended changes nothing.** It is not saved, raises no event and signs nobody
+  out, and a player who signed in meanwhile gets a refresh of their own when one is needed.
+- **A cancelled call is no longer answered from the offline cache.** It fails `Cancelled`, as it does without a cache.
+- `FFlockAuthSession` gains `GetSignInNumber()` (a sign-in and a sign-out move it, a refresh does not), `GetBaseHeaders()`
+  and a `RefreshAccessToken(ForSignInNumber, OnComplete)` overload. `FFlockProviderBase` gains `ForTheCurrentSignInOnly`
+  and `ForSignInOnly`, which wrap an operation in the rule above.
+
+### Fixed
+
+- **A game module calling `FFlockStructuredData::GetDataAs<T>` or `FFlockJsonData::GetAs<T>` no longer fails to link.**
+  Both converted the data inline, in the game's own module, which links neither `Json` nor `JsonUtilities` through Flock
+  (measured in an editor build, with Flock listed private and public), so the editor build failed with an unresolved
+  `FJsonObjectConverter::JsonObjectToUStruct`. The conversion now runs inside Flock, through the new
+  `GetDataAsStruct(StructType, OutStruct)` and `GetAsStruct(StructType, OutStruct)`, which also take a struct type known
+  at run time. A game module needs only `"Flock"`; code that builds its own requests on Flock's HTTP layer adds `"Json"`
+  and `"JsonUtilities"` (README, Installation).
+
+## [1.24.0] - 2026-10-13
+
+### Added
+
+- **Matchmaking, party and session error codes.** `EFlockErrorCode` gains 29 members, each with a hint: 9 `matchmaking.`,
+  12 `multiplayer.` and 8 `party.` codes, so a refusal from those services reads as its own code instead of `Unknown`.
+  Four of them (`MatchmakingNotPartyLeader`, `MatchmakingPlayerNotEligible`, `MultiplayerNotHost`, `PartyNotPartyLeader`)
+  arrive as HTTP 403 and mean "not allowed", not "signed out"; their hints never send the player to sign in. A 404 from
+  these services usually means "not yours, or no longer live". Members are named after their wire codes, so
+  `matchmaking.not_party_leader` and `party.not_party_leader` are two members. No multiplayer call ships yet.
+
+### Changed
+
+- `EFlockErrorCode` members are grouped by namespace, so the new groups sit between existing ones and every member after
+  `LogEventGameNotFound` has a new number. Blueprint pins and C++ refer to members by name and are unaffected; anything
+  that stored the raw number needs it re-mapped.
+
 ## [1.23.0] - 2026-09-24
 
 ### Changed

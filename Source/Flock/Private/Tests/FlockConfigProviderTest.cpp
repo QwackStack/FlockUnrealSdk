@@ -14,6 +14,7 @@
 #include "Providers/FlockConfigProvider.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
+#include "Tests/Support/FlockTestSafeIndex.h"
 
 namespace FlockConfigProviderTestHelpers
 {
@@ -171,7 +172,7 @@ bool FFlockConfigProviderByTagTest::RunTest(const FString& Parameters)
 	});
 	TestTrue(TEXT("by-tag succeeds"), bDone);
 	TestEqual(TEXT("one config in list"), Configs.Num(), 1);
-	TestTrue(TEXT("tag query present"), Fx.Fake->Requests.Num() > 0 && Fx.Fake->Requests[0].Url.Contains(TEXT("tag=gameplay")));
+	TestTrue(TEXT("tag query present"), Fx.Fake->Requests.Num() > 0 && FlockTestAt(Fx.Fake->Requests, 0).Url.Contains(TEXT("tag=gameplay")));
 
 	Cleanup(Fx.Dir);
 	return true;
@@ -190,7 +191,7 @@ bool FFlockConfigProviderTagAnyTest::RunTest(const FString& Parameters)
 	if (Fx.Fake->Requests.Num() > 0)
 	{
 		// Any means no filter: the query parameter is omitted entirely.
-		TestFalse(TEXT("no tag query for Any"), Fx.Fake->Requests[0].Url.Contains(TEXT("tag=")));
+		TestFalse(TEXT("no tag query for Any"), FlockTestAt(Fx.Fake->Requests, 0).Url.Contains(TEXT("tag=")));
 	}
 
 	Cleanup(Fx.Dir);
@@ -497,6 +498,37 @@ bool FFlockConfigProviderPlayerFeaturesNoDiskTest::RunTest(const FString& Parame
 		TestTrue(TEXT("player features were never written to disk"), bFailed);
 	}
 	Cleanup(Dir);
+	return true;
+}
+
+// ── A player's features are kept in memory for the run: one fetch per player, until ClearCache ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConfigProviderPlayerFeaturesKeptTest, "Flock.Config.Provider.PlayerFeaturesAreKeptPerPlayerForTheRun",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockConfigProviderPlayerFeaturesKeptTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx;
+	Fx.SignIn(TEXT("player-a"));
+	Fx.Fake->On(TEXT("player/player-a/features"), FFlockFakeTransport::Ok(ConfigBody));
+	Fx.Fake->On(TEXT("player/player-b/features"), FFlockFakeTransport::Ok(ConfigBody));
+
+	int32 Answers = 0;
+	for (int32 Read = 0; Read < 3; ++Read)
+	{
+		Fx.Provider->GetPlayerFeatures(TEXT("player-a"), [&Answers](TFlockResult<FFlockGameConfigSchema> R) { Answers += R.bSuccess ? 1 : 0; });
+	}
+	TestEqual(TEXT("three reads answer"), Answers, 3);
+	TestEqual(TEXT("from one fetch"), Fx.Fake->CountTo(TEXT("player/player-a/features")), 1);
+
+	Fx.Provider->GetPlayerFeatures(TEXT("player-b"), [](TFlockResult<FFlockGameConfigSchema>) {});
+	TestEqual(TEXT("another player fetches their own"), Fx.Fake->CountTo(TEXT("player/player-b/features")), 1);
+	TestEqual(TEXT("without touching the first's"), Fx.Fake->CountTo(TEXT("player/player-a/features")), 1);
+
+	Fx.Provider->ClearCache();
+	Fx.Provider->GetPlayerFeatures(TEXT("player-a"), [](TFlockResult<FFlockGameConfigSchema>) {});
+	TestEqual(TEXT("ClearCache forgets them, so the next read fetches"), Fx.Fake->CountTo(TEXT("player/player-a/features")), 2);
+
+	Cleanup(Fx.Dir);
 	return true;
 }
 

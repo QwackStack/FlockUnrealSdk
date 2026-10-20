@@ -18,8 +18,8 @@ namespace
 	 *
 	 * The one thing this buys over the JSON adapter is that the payload never exists in memory as a whole:
 	 * IHttpRequest::SetResponseBodyReceiveStream hands the engine the FArchive to write into as bytes
-	 * arrive. Canonical buffers the entire asset into a managed byte[] and then writes it out, so a 300 MB
-	 * asset costs 300 MB of heap before it costs any disk. Here it costs the disk write and a socket buffer.
+	 * arrive. Buffered whole and then written out, a 300 MB asset would cost 300 MB of memory before it cost any
+	 * disk; streamed, it costs the disk write and a socket buffer.
 	 *
 	 * When a platform's HTTP implementation refuses the stream, we fall back to the buffered path rather
 	 * than failing — a memory cost is better than an unavailable feature.
@@ -104,6 +104,10 @@ namespace
 				[OnComplete, Token, Writer, TargetPath, bStreaming, Log]
 				(FHttpRequestPtr RequestPtr, FHttpResponsePtr Response, bool bConnectedSuccessfully)
 				{
+					if (!Token->TryClaimAnswer())
+					{
+						return;
+					}
 					// Flush and release the handle before anything reads, moves, or deletes the file.
 					if (Writer.IsValid())
 					{
@@ -160,9 +164,10 @@ namespace
 					}
 				});
 
-			if (!HttpRequest->ProcessRequest())
+			// A request the engine refuses to start may already have been answered through the completion above (UE 5.5
+			// answers it before ProcessRequest returns), so this answers only when that did not.
+			if (!HttpRequest->ProcessRequest() && Token->TryClaimAnswer())
 			{
-				// Never dispatched, so the completion above will not run — close and clean up here.
 				if (Writer.IsValid())
 				{
 					Writer->Close();

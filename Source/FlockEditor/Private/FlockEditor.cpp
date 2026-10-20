@@ -93,7 +93,7 @@ void FFlockEditorModule::RegisterMenus()
 		LOCTEXT("SyncSchemas", "Sync Schemas"),
 		LOCTEXT("SyncSchemasTooltip",
 			"Fetch this game version's player templates, game configs, and shops, and regenerate the typed "
-			"Blueprint structs, enums, and function library from them."),
+			"structs, enums and accessors from them, as Blueprint assets or C++ by the Codegen Target setting."),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Import"),
 		FUIAction(FExecuteAction::CreateStatic(&FFlockEditorModule::OnSyncSchemas)));
 
@@ -101,7 +101,7 @@ void FFlockEditorModule::RegisterMenus()
 		"FlockCleanGenerated",
 		LOCTEXT("CleanGenerated", "Clean Generated"),
 		LOCTEXT("CleanGeneratedTooltip",
-			"Delete every asset a schema sync generated, and the manifest recording it. Blueprints "
+			"Delete everything a schema sync generated, and the manifest recording it. Blueprints "
 			"referencing a generated struct or enum will be listed before anything is removed."),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Delete"),
 		FUIAction(FExecuteAction::CreateStatic(&FFlockEditorModule::OnCleanGenerated)));
@@ -116,7 +116,7 @@ namespace
 	 */
 	FAutoConsoleCommand GFlockSyncSchemasCommand(
 		TEXT("Flock.SyncSchemas"),
-		TEXT("Fetches this game version's schemas and regenerates the typed Blueprint assets from them."),
+		TEXT("Fetches this game version's schemas and regenerates the typed structs, enums and accessors (Blueprint or C++, by Codegen Target)."),
 		FConsoleCommandDelegate::CreateStatic(&FFlockEditorModule::OnSyncSchemas));
 
 	FAutoConsoleCommand GFlockCleanGeneratedCommand(
@@ -210,28 +210,31 @@ void FFlockEditorModule::OnConfigPropertyChanged(UObject* Object, FPropertyChang
 
 void FFlockEditorModule::OnEditorInitialized(double /*Duration*/)
 {
-	// Catch-up for a project that has a version name but no baked ID yet (e.g. a fresh clone).
-	const UFlockConfig* Config = GetDefault<UFlockConfig>();
-	if (Config && Config->GameVersionId.IsEmpty())
-	{
-		TryAutoResolve(TEXT("unresolved on editor startup"));
-	}
-
 	// Cheap drift check: compares the generated manifest against the baked version id, no network. Silent
-	// when codegen has never run, so a project that does not use it hears nothing.
-	FFlockCodegenRunner::WarnIfBakedVersionDrifted();
+	// when codegen has never run, so a project that does not use it hears nothing. Then the panel opens
+	// only if something is actionable, or this developer has never seen the SDK.
+	const auto CheckTheSetup = []()
+	{
+		FFlockCodegenRunner::WarnIfBakedVersionDrifted();
+		FFlockSetupUI::SummonIfNeeded();
+	};
 
-	// Opens the panel only if something is actionable, or this developer has never seen the SDK. A
-	// healthy project on a fresh clone gets nothing.
-	FFlockSetupUI::SummonIfNeeded();
+	// Catch-up for a project that has a version name but no baked ID yet (e.g. a fresh clone). Both checks
+	// wait for that bake: read before it lands, the ID it is about to write would read as missing.
+	const UFlockConfig* Config = GetDefault<UFlockConfig>();
+	if (Config && Config->GameVersionId.IsEmpty() && TryAutoResolve(TEXT("unresolved on editor startup"), CheckTheSetup))
+	{
+		return;
+	}
+	CheckTheSetup();
 }
 
-void FFlockEditorModule::TryAutoResolve(const TCHAR* Reason)
+bool FFlockEditorModule::TryAutoResolve(const TCHAR* Reason, TFunction<void()> OnFinished)
 {
 	// Inert until a real (non-stub) lookup is registered.
 	if (!FFlockVersionLookupRegistry::Get().CanResolve())
 	{
-		return;
+		return false;
 	}
 	// Only auto-resolve a complete config; an incomplete one would just fail noisily. The manual menu
 	// action stays available for that case (it surfaces the failure on purpose).
@@ -239,10 +242,11 @@ void FFlockEditorModule::TryAutoResolve(const TCHAR* Reason)
 	FString Error;
 	if (!Config || !Config->IsValid(Error))
 	{
-		return;
+		return false;
 	}
 	UE_LOG(LogFlockEditor, Log, TEXT("Flock: auto-resolving Game Version (%s)."), Reason);
-	FFlockVersionResolver::ResolveAndBake(*Config);
+	FFlockVersionResolver::ResolveAndBake(*Config, MoveTemp(OnFinished));
+	return true;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -24,7 +24,7 @@ class UUserDefinedEnum;
 class FLOCKEDITOR_API FFlockEnumEmitter
 {
 public:
-	/** Asset names, matching the canonical SDK's enum names. */
+	/** Asset names of the generated enums. */
 	static const TCHAR* const ShopItemEnumName;
 	static const TCHAR* const CurrencyEnumName;
 	static const TCHAR* const AchievementEnumName;

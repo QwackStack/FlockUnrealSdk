@@ -36,6 +36,23 @@ struct FProtokitePlaytestVideoSettings
  */
 FIntPoint FitVideoSizeInside(FIntPoint ScreenSize, FIntPoint MaxVideoSize);
 
+/** A side of a picture this many pixels or more short of the video's gets black bars; a smaller difference is stretched over. */
+constexpr int32 SmallestBarsPixels = 16;
+
+/**
+ * The size a screen of ScreenSize is grabbed at for a video of VideoSize: its shape fitted inside, except that a side
+ * fewer than SmallestBarsPixels short of the video's takes the video's, so rounding never draws thin black lines.
+ */
+FIntPoint FitPictureInsideTheVideo(FIntPoint ScreenSize, FIntPoint VideoSize);
+
+/**
+ * Puts a picture of PictureSize in the middle of a black frame of FrameSize, so a window whose shape changed after the
+ * recording started keeps its shape between black bars rather than being stretched. A picture larger than the frame is
+ * cut to its middle. OutFrame is reused, so a caller that keeps it allocates once. False, with OutFrame all black, when
+ * the picture's pixels do not fill PictureSize.
+ */
+bool PlaceInTheMiddleOfTheFrame(const TArray<FColor>& Picture, FIntPoint PictureSize, FIntPoint FrameSize, TArray<FColor>& OutFrame);
+
 /** Why this process cannot record video, or empty when it can. The same answer every time it is asked. */
 FString DecideWhyVideoCannotBeRecorded(bool bBuiltWithVideo, bool bCanRender, int32 FrameGrabberLatency);
 

@@ -52,6 +52,10 @@ bool FFlockLeaderboardLibraryParityTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("higher board is higher-better"), UFlockLeaderboardLibrary::IsHigherBetter(Higher));
 	TestFalse(TEXT("lower board is not"), UFlockLeaderboardLibrary::IsHigherBetter(Lower));
 
+	// Refusal reasons, as the server spells them.
+	TestEqualSensitive(TEXT("score bounds"), UFlockLeaderboardLibrary::RefusalReasonScoreBounds(), FString(TEXT("score_bounds")));
+	TestEqualSensitive(TEXT("gain limit"), UFlockLeaderboardLibrary::RefusalReasonGainLimit(), FString(TEXT("gain_limit")));
+
 	// Formatting, across every value type and every special case the struct handles.
 	const TArray<EFlockLeaderboardValueType> Types = {
 		EFlockLeaderboardValueType::Integer,

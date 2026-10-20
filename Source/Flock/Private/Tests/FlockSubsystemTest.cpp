@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -17,6 +18,7 @@
 #include "Misc/ScopeExit.h"
 #include "Providers/FlockAnalyticsProvider.h"
 #include "Providers/FlockAuthProvider.h"
+#include "Http/FlockSnapshotStore.h"
 #include "UObject/Package.h"
 
 namespace
@@ -244,6 +246,84 @@ bool FFlockAnalyticsSubsystemWiringTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * A sign-in the server refuses to refresh ends as a sign-out does: the analytics session closes and the player's cached
+ * rows go, before the tokens are cleared, so nothing carries on in the name of a player who is no longer signed in.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemExpiredSignInEndsAsASignOutDoesTest, "Flock.Runtime.Subsystem.ExpiredSignInEndsAsASignOutDoes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSubsystemExpiredSignInEndsAsASignOutDoesTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockSubsystemAuthTestHelpers;
+
+	UFlockConfig* Settings = GetMutableDefault<UFlockConfig>();
+	const bool bAutoStartWas = Settings->bAnalyticsAutoStartSession;
+	Settings->bAnalyticsAutoStartSession = true;
+	ON_SCOPE_EXIT
+	{
+		Settings->bAnalyticsAutoStartSession = bAutoStartWas;
+	};
+
+	FSubsystemAuthFixture F;
+	F.Store->bHasTokens = true;
+	F.Store->Stored.AccessToken = MakeJwt(TEXT("p-exp"));
+	F.Store->Stored.RefreshToken = TEXT("r-exp");
+	F.Store->Stored.AuthMethod = EFlockAuthMethod::Device;
+	F.Fake->On(TEXT("v1/player_data"), FFlockFakeTransport::Ok(TEXT(
+		"{\"items\":[{\"id\":\"pd-1\",\"player_template_id\":\"tmpl-1\",\"game_id\":\"g\",\"player_id\":\"p-exp\","
+		"\"data\":[{\"type\":\"int\",\"field_name\":\"coins\",\"value\":5}],\"created_at\":\"\",\"updated_at\":\"\"}],"
+		"\"total\":1,\"page\":1,\"limit\":100}")));
+	F.Sdk->InitializeWithConfig(MakeValidConfig());
+
+	FFlockAnalyticsProvider* Analytics = F.Sdk->GetAnalyticsProvider();
+	FFlockPlayerProvider* Players = F.Sdk->GetPlayerProvider();
+	FFlockAuthProvider* Auth = F.Sdk->GetAuthProvider();
+	if (!TestNotNull(TEXT("analytics wired"), Analytics) || !TestNotNull(TEXT("players wired"), Players) || !TestNotNull(TEXT("auth wired"), Auth))
+	{
+		F.Sdk->ShutdownSdk();
+		return false;
+	}
+	TestTrue(TEXT("precondition: signed in"), F.Sdk->IsAuthenticated());
+	TestTrue(TEXT("precondition: a session is running"), Analytics->HasActiveSession());
+	bool bRead = false;
+	Players->GetMyDataByTemplate(TEXT("tmpl-1"), [&bRead](TFlockResult<FFlockPlayerData> Result) { bRead = Result.bSuccess; });
+	FFlockPlayerData Row;
+	TestTrue(TEXT("precondition: the player's row is cached"), bRead && Players->TryGetCachedRow(TEXT("pd-1"), Row));
+
+	UFlockEventTestListener* Expired = NewObject<UFlockEventTestListener>();
+	F.Sdk->GetEvents()->OnAuthExpired.AddDynamic(Expired, &UFlockEventTestListener::HandleAuthExpired);
+	F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Status(401, TEXT("")));
+	bool bRefreshed = true;
+	Auth->RefreshToken([&bRefreshed](bool bOk) { bRefreshed = bOk; });
+
+	TestFalse(TEXT("the refresh was refused"), bRefreshed);
+	TestEqual(TEXT("the game hears the sign-in expired"), Expired->AuthExpiredCount, 1);
+	TestFalse(TEXT("signed out"), F.Sdk->IsAuthenticated());
+	TestFalse(TEXT("the analytics session ended with it"), Analytics->HasActiveSession());
+	TestFalse(TEXT("and the player's cached row is gone"), Players->TryGetCachedRow(TEXT("pd-1"), Row));
+
+	F.Sdk->ShutdownSdk();
+	return true;
+}
+
+// ── A pasted API URL with a space or a trailing slash reaches the same routes as the editor's tools ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemTrimsTheApiUrlTest, "Flock.Runtime.Subsystem.TrimsTheApiUrl",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSubsystemTrimsTheApiUrlTest::RunTest(const FString& Parameters)
+{
+	FFlockTestSdk Test;
+	FFlockInitConfig Config = MakeValidConfig();
+	Config.ApiUrl = TEXT(" https://api.example.test// ");
+	Test->InitializeWithConfig(Config);
+	TestEqualSensitive(TEXT("the base has no space or trailing slash"), Test->GetApiUrl(), FString(TEXT("https://api.example.test")));
+	TestEqualSensitive(TEXT("so the version joins it with one slash"), Test->GetVersionedApiUrl(), FString(TEXT("https://api.example.test/v1")));
+	TestEqualSensitive(TEXT("a clean URL is kept as it is"), FFlockInitConfig::TrimApiUrl(TEXT("http://127.0.0.1:8001")), FString(TEXT("http://127.0.0.1:8001")));
+	Test->ShutdownSdk();
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLeaderboardSubsystemWiringTest, "Flock.Leaderboard.Subsystem.Wiring",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -293,6 +373,54 @@ bool FFlockSubsystemRequestHeadersTest::RunTest(const FString& Parameters)
 
 	Sdk->ShutdownSdk();
 	TestEqual(TEXT("No headers after shutdown"), Sdk->GetRequestHeaders().Num(), 0);
+	return true;
+}
+
+// ── Start-up rescues notification state an earlier build kept under its game version, before the prune deletes it ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemRescuesNotificationStateTest, "Flock.Runtime.Subsystem.RescuesNotificationStateBeforeTheVersionPrune",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSubsystemRescuesNotificationStateTest::RunTest(const FString& Parameters)
+{
+	UFlockConfig* Settings = GetMutableDefault<UFlockConfig>();
+	const bool bCacheWas = Settings->bEnableOfflineCache;
+	Settings->bEnableOfflineCache = true;
+	ON_SCOPE_EXIT
+	{
+		Settings->bEnableOfflineCache = bCacheWas;
+	};
+
+	FFlockTestSdk Test;
+	const FString Root = FPaths::Combine(Test.Folder, TEXT("snapshots"));
+	{
+		FFlockSnapshotStore Earlier(Root, MakeShared<FFlockNullLogger>(), TEXT("1.27.0"));
+		Earlier.Write(TEXT("old-version/notification_state/player-a"), TEXT("pending_schedules"), TEXT("[{\"Id\":\"sch-1\"}]"));
+	}
+	Test->InitializeWithConfig(MakeValidConfig());
+	Test->ShutdownSdk();
+
+	FFlockSnapshotStore After(Root, MakeShared<FFlockNullLogger>(), TEXT("1.28.0"));
+	FString Payload;
+	TestTrue(TEXT("The reminder list is kept outside every version's tree"),
+		After.TryRead(TEXT("_state/notification_state/player-a"), TEXT("pending_schedules"), Payload));
+	TestFalse(TEXT("Not left where the prune deletes it"),
+		IFileManager::Get().DirectoryExists(*FPaths::Combine(Root, TEXT("old-version"))));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemRefusesAnEmptyApiUrlTest, "Flock.Runtime.Subsystem.RefusesAnApiUrlOfNothing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSubsystemRefusesAnEmptyApiUrlTest::RunTest(const FString& Parameters)
+{
+	AddExpectedError(TEXT("Initialize failed"), EAutomationExpectedErrorFlags::Contains, 1);
+	FFlockTestSdk Test;
+	FFlockInitConfig Config = MakeValidConfig();
+	// Spaces and slashes alone trim to nothing, which would send every request to "/v1/...".
+	Config.ApiUrl = TEXT("  // ");
+	Test->InitializeWithConfig(Config);
+	TestFalse(TEXT("The SDK does not initialize on a URL of nothing"), Test->IsInitialized());
+	TestTrue(TEXT("And says so"), Test->GetInitializationError().Contains(TEXT("API URL is empty"), ESearchCase::CaseSensitive));
 	return true;
 }
 

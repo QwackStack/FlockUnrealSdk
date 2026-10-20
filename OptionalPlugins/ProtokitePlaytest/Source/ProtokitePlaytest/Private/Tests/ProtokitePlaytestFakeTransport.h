@@ -80,6 +80,13 @@ public:
 		HeldReplies.Reset();
 	}
 
+	/** The request at Index, or an empty one past the end: a test that expected it fails rather than ends the run. */
+	const FFlockHttpRequest& RequestAt(int32 Index) const
+	{
+		static const FFlockHttpRequest NoRequest;
+		return Requests.IsValidIndex(Index) ? Requests[Index] : NoRequest;
+	}
+
 	/** How many requests went to an address ending with Suffix. */
 	int32 CountRequestsEndingWith(const FString& Suffix) const
 	{

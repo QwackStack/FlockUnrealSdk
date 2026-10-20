@@ -48,6 +48,27 @@ void FProtokitePlaytestRecordingUploads::UploadOne(const TSharedRef<FProtokitePl
 	AskForLinkAndSend(Run, Session, MakeUploadHeaders(LaunchHeaders, Session.FlockGameVersionId), 0, MoveTemp(OnDone));
 }
 
+namespace
+{
+	/**
+	 * Whether a second try with a fresh link can mend what went wrong: a link that expired (a 403 not about the signature), a
+	 * storage that had a moment (408, 429, 5xx), or no answer while the file is still there to send. A refusal of the request
+	 * itself, a content type the link was not signed for, or a file gone, a second link meets the same way.
+	 */
+	bool AFreshLinkCouldHelp(const FFlockFileUploadOutcome& Sent, const FString& VideoFilePath)
+	{
+		if (Sent.Result == EFlockHttpResult::Success)
+		{
+			if (Sent.StatusCode == 403)
+			{
+				return !Sent.ErrorDetail.Contains(TEXT("SignatureDoesNotMatch"), ESearchCase::CaseSensitive);
+			}
+			return Sent.StatusCode == 408 || Sent.StatusCode == 429 || Sent.StatusCode >= 500;
+		}
+		return Sent.Result != EFlockHttpResult::Cancelled && IFileManager::Get().FileExists(*VideoFilePath);
+	}
+}
+
 void FProtokitePlaytestRecordingUploads::AskForLinkAndSend(const TSharedRef<FProtokitePlaytestRecordingRun>& Run,
 	const FProtokitePlaytestRecordingSession& Session, const TMap<FString, FString>& UploadHeaders, int32 AttemptsSoFar,
 	TFunction<void(FProtokitePlaytestRecordingUploadOutcome)> OnDone)
@@ -84,7 +105,7 @@ void FProtokitePlaytestRecordingUploads::AskForLinkAndSend(const TSharedRef<FPro
 
 			Self->Uploader->UploadFile(Link.Value.UploadUrl, VideoFilePath, ProtokitePlaytestRecordingContentTypes::WebM,
 				Self->UploadTimeoutSeconds, nullptr,
-				[WeakSelf, Run, Session, UploadHeaders, Attempt, OnDone](FFlockFileUploadOutcome Sent)
+				[WeakSelf, Run, Session, UploadHeaders, Attempt, VideoFilePath, OnDone](FFlockFileUploadOutcome Sent)
 				{
 					const TSharedPtr<FProtokitePlaytestRecordingUploads> SelfAgain = WeakSelf.Pin();
 					if (!SelfAgain.IsValid())
@@ -121,7 +142,7 @@ void FProtokitePlaytestRecordingUploads::AskForLinkAndSend(const TSharedRef<FPro
 						? FString::Printf(TEXT("The upload failed with status %d."), Sent.StatusCode)
 						: FString::Printf(TEXT("The upload failed with status %d: %s"), Sent.StatusCode, *Sent.ErrorDetail);
 
-					if (Attempt < MaxAttempts)
+					if (Attempt < MaxAttempts && AFreshLinkCouldHelp(Sent, VideoFilePath))
 					{
 						// A link lives only a few minutes and this one has now been spent, so the retry asks for
 						// another rather than sending to the same address again.
@@ -154,9 +175,11 @@ void FProtokitePlaytestRecordingUploads::UploadEveryOneWaiting(const FString& Re
 
 	TWeakPtr<FProtokitePlaytestRecordingUploads> WeakSelf = AsShared();
 
-	// Declared first so it can hand itself to the next step: one at a time, never all at once.
+	// Declared first so it can hand itself to the next step: one at a time, never all at once. It holds itself weakly, and
+	// each upload's completion holds it strongly, so it is freed with the last completion rather than never.
 	const TSharedRef<TFunction<void()>> UploadNext = MakeShared<TFunction<void()>>();
-	*UploadNext = [WeakSelf, ToUpload, Uploaded, Left, Next, LaunchHeaders, UploadNext, OnDone]()
+	const TWeakPtr<TFunction<void()>> WeakUploadNext = UploadNext;
+	*UploadNext = [WeakSelf, ToUpload, Uploaded, Left, Next, LaunchHeaders, WeakUploadNext, OnDone]()
 	{
 		const TSharedPtr<FProtokitePlaytestRecordingUploads> Self = WeakSelf.Pin();
 		if (!Self.IsValid())
@@ -176,8 +199,14 @@ void FProtokitePlaytestRecordingUploads::UploadEveryOneWaiting(const FString& Re
 				continue;
 			}
 
+			// Whoever is running this step holds it, so it pins; the completion then keeps it for the next one.
+			const TSharedPtr<TFunction<void()>> ThisStep = WeakUploadNext.Pin();
+			if (!ThisStep.IsValid())
+			{
+				return;
+			}
 			Self->UploadOne(Run.ToSharedRef(), Recording.Session, LaunchHeaders,
-				[Uploaded, Left, UploadNext](FProtokitePlaytestRecordingUploadOutcome Outcome)
+				[Uploaded, Left, ThisStep](FProtokitePlaytestRecordingUploadOutcome Outcome)
 				{
 					if (Outcome.bUploaded)
 					{
@@ -187,7 +216,7 @@ void FProtokitePlaytestRecordingUploads::UploadEveryOneWaiting(const FString& Re
 					{
 						++(*Left);
 					}
-					(*UploadNext)();
+					(*ThisStep)();
 				});
 			return;
 		}

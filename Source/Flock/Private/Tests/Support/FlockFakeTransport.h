@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Http/FlockHttpAdapter.h"
+#include "Tests/Support/FlockTestSafeIndex.h"
 
 /**
  * Header-only IFlockHttpAdapter fake for automation tests. Routes by
@@ -90,6 +91,10 @@ public:
 	}
 
 	// ── request-log query helpers ──
+
+	/** The last request sent, or an empty one when none was: a test that expected one fails rather than ends the run. */
+	const FFlockHttpRequest& LastRequest() const { return FlockTestAt(Requests, Requests.Num() - 1); }
+
 	int32 CountTo(const FString& UrlFragment) const
 	{
 		int32 Count = 0;

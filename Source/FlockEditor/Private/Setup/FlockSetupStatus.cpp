@@ -194,8 +194,12 @@ TArray<FFlockSetupFinding> FFlockSetupStatus::Evaluate(const FFlockSetupInput& I
 
 bool FFlockSetupStatus::HasErrors(const TArray<FFlockSetupFinding>& Findings)
 {
-	return Findings.ContainsByPredicate(
-		[](const FFlockSetupFinding& Finding) { return Finding.Severity == EFlockSetupSeverity::Error; });
+	return Findings.ContainsByPredicate(&FFlockSetupStatus::OpensThePanelByItself);
+}
+
+bool FFlockSetupStatus::OpensThePanelByItself(const FFlockSetupFinding& Finding)
+{
+	return Finding.Severity == EFlockSetupSeverity::Error;
 }
 
 TArray<FFlockSetupFinding> FFlockSetupStatus::AtLeast(const TArray<FFlockSetupFinding>& Findings,

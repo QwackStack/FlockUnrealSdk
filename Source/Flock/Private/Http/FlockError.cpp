@@ -15,8 +15,18 @@ FFlockError FFlockError::Make(EFlockErrorType InType, const FString& InMessage, 
 	Error.Code = InCode;
 	Error.ErrorCode = FFlockErrorCodes::Parse(InCode);
 	Error.ServerMessage = InServerMessage;
-	// One place: every coded failure gets its remedy here, whichever layer built the error.
-	Error.Hint = FFlockErrorHints::For(Error.ErrorCode);
+	// One place: every failure gets its fix here, whichever layer built it.
+	Error.Hint = FFlockErrorHints::ForFailure(Error);
+	return Error;
+}
+
+FFlockError FFlockError::MakeWithFix(EFlockErrorType InType, const FString& InMessage, const FString& InFix, int32 InStatusCode)
+{
+	FFlockError Error = Make(InType, InMessage, InStatusCode);
+	if (!InFix.IsEmpty())
+	{
+		Error.Hint = InFix;
+	}
 	return Error;
 }
 
@@ -38,27 +48,23 @@ FString FFlockError::ToString() const
 
 FString FFlockError::ToDisplayText() const
 {
-	FString Text;
+	return Operation.IsEmpty() ? ReasonAndFix() : Operation + TEXT(" failed: ") + ReasonAndFix();
+}
 
-	if (!Operation.IsEmpty())
+FString FFlockError::ReasonAndFix() const
+{
+	FString Text = Message;
+
+	// Bounded, low-cardinality identifiers only, so error-tracker grouping stays meaningful.
+	if (!Code.IsEmpty() && StatusCode > 0)
 	{
-		Text += Operation + TEXT(" failed: ");
+		Text += FString::Printf(TEXT(" [%s, HTTP %d]"), *Code, StatusCode);
 	}
-
-	// The server's reason beats our generic "Validation failed" whenever the body carried one.
-	const bool bFromServer = !ServerMessage.IsEmpty();
-	Text += bFromServer ? ServerMessage : Message;
-
-	// Bounded, low-cardinality identifiers only, so error-tracker grouping stays meaningful. The status
-	// is only added alongside a server reason: the terse Message already spells it out.
-	const bool bTagStatus = bFromServer && StatusCode > 0;
-	if (!Code.IsEmpty())
+	else if (!Code.IsEmpty())
 	{
-		Text += bTagStatus
-			? FString::Printf(TEXT(" [%s, HTTP %d]"), *Code, StatusCode)
-			: FString::Printf(TEXT(" [%s]"), *Code);
+		Text += FString::Printf(TEXT(" [%s]"), *Code);
 	}
-	else if (bTagStatus)
+	else if (StatusCode > 0)
 	{
 		Text += FString::Printf(TEXT(" [HTTP %d]"), StatusCode);
 	}

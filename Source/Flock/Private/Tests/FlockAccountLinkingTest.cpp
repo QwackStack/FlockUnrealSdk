@@ -7,6 +7,7 @@
 #include "Misc/FlockEngineCompat.h"
 
 #include "Auth/FlockAuthSession.h"
+#include "Containers/Ticker.h"
 #include "FlockEvents.h"
 #include "FlockLogger.h"
 #include "Http/FlockHttpClient.h"
@@ -66,7 +67,7 @@ namespace FlockAccountLinkingTestHelpers
 		TUniquePtr<FFlockAuthProvider> Provider;
 		TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
 
-		FFixture()
+		explicit FFixture(const FFlockRetryPolicy& Policy = NoRetryPolicy())
 			: Client(MakeShared<FFlockHttpClient>(Fake, MakeShared<FFlockNullLogger>()))
 			, Session(MakeShared<FFlockAuthSession>(Client, Store, MakeShared<FFlockNullLogger>(),
 				TEXT("http://x/v1"), TMap<FString, FString>{ { TEXT("X-Flock-API-Key"), TEXT("k") } }))
@@ -76,7 +77,7 @@ namespace FlockAccountLinkingTestHelpers
 			Events->OnAccountLinked.AddDynamic(Listener, &UFlockEventTestListener::HandleAccountLinked);
 			Events->OnAccountUnlinked.AddDynamic(Listener, &UFlockEventTestListener::HandleAccountUnlinked);
 			Session->SetEvents(Events);
-			Provider = MakeUnique<FFlockAuthProvider>(Client, NoRetryPolicy(), Log, Session, Events, TEXT("http://x/v1"));
+			Provider = MakeUnique<FFlockAuthProvider>(Client, Policy, Log, Session, Events, TEXT("http://x/v1"));
 		}
 
 		/** Signs in without going through the network, so linking tests start from a real bearer. */
@@ -171,7 +172,7 @@ bool FFlockAccountLinkingRequestShapeTest::RunTest(const FString& Parameters)
 		F.Provider->LinkEmail(TEXT("a@b.c"), TEXT("pw"), nullptr);
 
 		TestEqual(TEXT("one request"), F.Fake->Requests.Num(), 1);
-		const FFlockHttpRequest& Sent = F.Fake->Requests.Last();
+		const FFlockHttpRequest& Sent = F.Fake->LastRequest();
 		TestEqual(TEXT("POST"), Sent.Method, FString(TEXT("POST")));
 		TestTrue(TEXT("email on the wire"), Sent.JsonBody.Contains(TEXT("\"email\":\"a@b.c\""), ESearchCase::CaseSensitive));
 		TestTrue(TEXT("password on the wire"), Sent.JsonBody.Contains(TEXT("\"password\":\"pw\""), ESearchCase::CaseSensitive));
@@ -184,7 +185,7 @@ bool FFlockAccountLinkingRequestShapeTest::RunTest(const FString& Parameters)
 		F.Fake->On(TEXT("player/link/device"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("device_id"), TEXT("d-1")))));
 		F.Provider->LinkDevice(TEXT("dev-9"), nullptr);
 
-		const FFlockHttpRequest& Sent = F.Fake->Requests.Last();
+		const FFlockHttpRequest& Sent = F.Fake->LastRequest();
 		TestTrue(TEXT("device_id snake_cased"), Sent.JsonBody.Contains(TEXT("\"device_id\":\"dev-9\""), ESearchCase::CaseSensitive));
 		TestTrue(TEXT("device_type sent"), Sent.JsonBody.Contains(TEXT("\"device_type\""), ESearchCase::CaseSensitive));
 	}
@@ -212,7 +213,7 @@ bool FFlockAccountLinkingRequestShapeTest::RunTest(const FString& Parameters)
 			default: F.Provider->LinkDiscord(TEXT("tok"), nullptr); break;
 			}
 
-			const FFlockHttpRequest& Sent = F.Fake->Requests.Last();
+			const FFlockHttpRequest& Sent = F.Fake->LastRequest();
 			TestTrue(FString::Printf(TEXT("%s hits its own route"), Case.Wire),
 				Sent.Url.EndsWith(FString::Printf(TEXT("player/link/oauth/%s"), Case.Wire)));
 			TestTrue(FString::Printf(TEXT("%s posts a bare token"), Case.Wire), Sent.JsonBody.Contains(TEXT("\"token\":\"tok\""), ESearchCase::CaseSensitive));
@@ -227,7 +228,7 @@ bool FFlockAccountLinkingRequestShapeTest::RunTest(const FString& Parameters)
 		F.Fake->On(TEXT("player/unlink"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("email"), TEXT("u-1")))));
 		F.Provider->Unlink(EFlockCredentialProvider::DeviceId, nullptr);
 
-		const FFlockHttpRequest& Sent = F.Fake->Requests.Last();
+		const FFlockHttpRequest& Sent = F.Fake->LastRequest();
 		TestTrue(TEXT("device_id segment, not DeviceId"), Sent.Url.EndsWith(TEXT("player/unlink/device_id")));
 		TestEqual(TEXT("POST"), Sent.Method, FString(TEXT("POST")));
 		TestTrue(TEXT("Authorization sent"), Sent.Headers.Contains(TEXT("Authorization")));
@@ -387,113 +388,49 @@ bool FFlockAccountLinkingCodedErrorTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAccountLinkingResetGateTest, "Flock.Auth.Linking.PasswordResetGate",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAccountLinkingKeepsItsSignInTest, "Flock.Auth.Linking.RetryIsNotSentAfterItsSignInEnds",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FFlockAccountLinkingResetGateTest::RunTest(const FString& Parameters)
+bool FFlockAccountLinkingKeepsItsSignInTest::RunTest(const FString& Parameters)
 {
 	using namespace FlockAccountLinkingTestHelpers;
 
-	// Baseline: a device session cannot reset a password.
+	auto Run = [](bool bSwitchPlayerMeanwhile, int32& OutLinkPosts, EFlockErrorType& OutErrorType)
 	{
-		FFixture F;
-		F.SignIn();
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("gated on a device session"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-		TestEqual(TEXT("no network touched"), F.Fake->Requests.Num(), 0);
-	}
-	// Linking an email during a device session opens the gate.
-	{
-		FFixture F;
-		F.SignIn();
-		F.Fake->On(TEXT("player/link/email"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("email"), TEXT("u-1")))));
-		F.Provider->LinkEmail(TEXT("a@b.c"), TEXT("pw"), nullptr);
+		FFlockRetryPolicy Policy;
+		Policy.MaxRetries = 2;
+		Policy.InitialDelaySeconds = 0.f;
+		FFixture F(Policy);
+		F.SignIn(TEXT("player-a"));
+		// A 429 is retried even for a link, since the server refused it before acting on it.
+		F.Fake->OnSequence(TEXT("player/link/device"), { FFlockFakeTransport::Status(429, TEXT("{}")),
+			FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("device_id"), TEXT("dev-9")))) });
+		bool bDone = false;
+		F.Provider->LinkDevice(TEXT("dev-9"), [&](TFlockResult<FFlockPlayerAccountsResponse> R)
+		{
+			bDone = true;
+			OutErrorType = R.bSuccess ? EFlockErrorType::None : R.Error.Type;
+		});
+		if (bSwitchPlayerMeanwhile)
+		{
+			F.SignIn(TEXT("player-b"));
+		}
+		for (int32 Tick = 0; Tick < 8; ++Tick)
+		{
+			FTSTicker::GetCoreTicker().Tick(1.f);
+		}
+		OutLinkPosts = bDone ? F.Fake->CountTo(TEXT("player/link/device")) : -1;
+	};
 
-		F.Fake->On(TEXT("player/password/reset"), FFlockFakeTransport::Ok(TEXT("{\"success\":true}")));
-		bool bSuccess = false;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { bSuccess = R.bSuccess; });
-		TestTrue(TEXT("reset allowed after linking an email"), bSuccess);
-	}
-	// Reading a list with no email credential leaves the gate closed.
-	{
-		FFixture F;
-		F.SignIn();
-		F.Fake->On(TEXT("player/accounts"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("device_id"), TEXT("d-1")))));
-		F.Provider->GetLinkedAccounts(nullptr);
+	int32 Posts = 0;
+	EFlockErrorType Type = EFlockErrorType::None;
+	Run(false, Posts, Type);
+	TestEqual(TEXT("control: the retry links the device"), Posts, 2);
+	TestEqual(TEXT("control: succeeded"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::None));
 
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("still gated"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-	}
-	// Unlinking the email closes the gate again — the flag re-derives from the returned list.
-	{
-		FFixture F;
-		F.SignIn();
-		F.Fake->On(TEXT("player/link/email"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("email"), TEXT("u-1")))));
-		F.Provider->LinkEmail(TEXT("a@b.c"), TEXT("pw"), nullptr);
-
-		F.Fake->On(TEXT("player/unlink"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("device_id"), TEXT("d-1")))));
-		F.Provider->Unlink(EFlockCredentialProvider::Email, nullptr);
-
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("re-gated after unlink"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-	}
-	// Cross-player trap: a new sign-in without an intervening logout must not inherit the previous player's answer.
-	{
-		FFixture F;
-		F.SignIn(TEXT("p-1"));
-		F.Fake->On(TEXT("player/link/email"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("email"), TEXT("u-1")))));
-		F.Provider->LinkEmail(TEXT("a@b.c"), TEXT("pw"), nullptr);
-
-		// Sign in as a different player through the real login path, no Logout() in between.
-		F.Fake->On(TEXT("player/login/device"), FFlockFakeTransport::Ok(FString::Printf(
-			TEXT("{\"player_id\":\"p-2\",\"access_token\":\"%s\",\"refresh_token\":\"r-2\"}"), *MakeJwt(TEXT("p-2")))));
-		F.Provider->LoginWithDevice(TEXT("dev-2"), nullptr);
-
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("new player does not inherit the gate"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-	}
-	// Logout clears it.
-	{
-		FFixture F;
-		F.SignIn();
-		F.Fake->On(TEXT("player/link/email"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("email"), TEXT("u-1")))));
-		F.Provider->LinkEmail(TEXT("a@b.c"), TEXT("pw"), nullptr);
-		F.Provider->Logout();
-		F.SignIn();
-
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("gate cleared by logout"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-	}
-	// A restore knows nothing about linked credentials until the game reads the list.
-	{
-		FFixture F;
-		F.SignIn();
-		F.Fake->On(TEXT("player/link/email"), FFlockFakeTransport::Ok(AccountsBody(Account(TEXT("email"), TEXT("u-1")))));
-		F.Provider->LinkEmail(TEXT("a@b.c"), TEXT("pw"), nullptr);
-
-		FFlockStoredTokens Stored;
-		Stored.AccessToken = MakeJwt(TEXT("p-1"));
-		Stored.RefreshToken = TEXT("r-1");
-		Stored.AuthMethod = EFlockAuthMethod::Device;
-		F.Store->Save(Stored);
-		F.Provider->TryRestoreSession(nullptr);
-
-		EFlockErrorType Type = EFlockErrorType::None;
-		F.Provider->ResetPassword(TEXT("a@b.c"), TEXT("code"), TEXT("new"),
-			[&](TFlockResult<FFlockAuthActionResponse> R) { Type = R.Error.Type; });
-		TestEqual(TEXT("gate cleared by restore"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Auth));
-	}
+	Run(true, Posts, Type);
+	TestEqual(TEXT("after a switch: the retry does not link the device to the next player"), Posts, 1);
+	TestEqual(TEXT("after a switch: cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
 	return true;
 }
 

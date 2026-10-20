@@ -27,13 +27,12 @@ DECLARE_DELEGATE_TwoParams(FFlockAssetProgress, int64 /*BytesReceived*/, int64 /
  * 2. **Bytes** ride IFlockAssetDownloader to presigned object storage: no bearer, no envelope, its own
  *    retry budget (`AssetDownloadRetryCount`), and streamed to disk rather than held in memory.
  *
- * There is no by-name route on the backend, so GetByName fetches the index and filters it — the same
- * thing canonical does, and the reason the index is worth caching at all.
+ * There is no by-name route on the backend, so GetByName fetches the index and filters it, which is the
+ * reason the index is worth caching at all.
  *
- * **One download path, not two.** Canonical splits `DownloadAsync<T>` (buffers into memory) from
- * `DownloadToCacheAsync` (disk only, written specifically "to avoid a full byte[] allocation"), and
- * carries the size-cap and cache-enabled checks in both. Here every download streams into a file and the
- * typed getters load from it, so preload and download are the same code and the cap is checked once.
+ * **One download path, not two.** Every download streams into a file and the typed getters load from it,
+ * so preload and download are the same code, no asset is held whole in memory, and the size cap is checked
+ * once.
  * With the cache disabled the stream target is a temp file deleted after conversion.
  *
  * **Presigned URLs expire.** A record served from the snapshot can carry a signature the server no

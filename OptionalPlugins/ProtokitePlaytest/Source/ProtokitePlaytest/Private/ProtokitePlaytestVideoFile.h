@@ -43,10 +43,11 @@ public:
 	 * The bytes written before the first frame: the EBML header, the segment header, the info and the one video track.
 	 *
 	 * It counts the name this plugin writes into the file twice (the muxing and writing app), so **renaming the plugin
-	 * changes this number**: it went from 151 to 159 when FlockPlaytest became ProtokitePlaytest. Open() refuses to
-	 * record rather than write a header of a length the recovery pass does not expect, and says both numbers.
+	 * changes this number**: it went from 151 to 159 when FlockPlaytest became ProtokitePlaytest, and to 178 when the video
+	 * track gained its colour standard. Open() refuses to record rather than write a header of another length, and says both
+	 * numbers. Finishing a cut-off file reads its header's length off the file itself, so an earlier build's still finishes.
 	 */
-	static constexpr int64 FileHeaderBytes = 159;
+	static constexpr int64 FileHeaderBytes = 178;
 	/** What each frame costs on top of its own bytes: a cluster around it, its time, and the block header. */
 	static constexpr int64 FrameHeaderBytes = 23;
 
@@ -65,7 +66,10 @@ public:
 	 */
 	bool WriteFrame(const TArray<uint8>& FrameBytes, int64 TimestampMs, bool bKeyFrame);
 
-	/** Stamps the segment's size and the duration into the header and closes the file. False when anything could not be saved. */
+	/**
+	 * Stamps the segment's size and the duration into the header and closes the file. The duration runs to the end of the last
+	 * frame, which is taken to last as long as the one before it. False when anything could not be saved.
+	 */
 	bool Close();
 
 	/**
@@ -92,4 +96,5 @@ private:
 	int64 BytesWritten = 0;
 	int32 FramesWritten = 0;
 	int64 LastTimestampMs = -1;
+	int64 PreviousTimestampMs = -1;
 };

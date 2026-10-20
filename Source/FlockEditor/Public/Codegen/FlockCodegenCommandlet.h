@@ -7,7 +7,8 @@
 #include "FlockCodegenCommandlet.generated.h"
 
 /**
- * Codegen for CI: `UnrealEditor-Cmd.exe <project> -run=FlockCodegen [-mode=sync|verify]`.
+ * Codegen for CI: `UnrealEditor-Cmd.exe <project> -run=FlockEditor.FlockCodegen [-mode=sync|verify]`. The module name is
+ * needed: commandlets are looked up before this editor module loads, so the bare `-run=FlockCodegen` is not found.
  *
  * A commandlet rather than an `-ExecCmds` console call, because CI needs an **exit code**, and a console
  * command has no way to produce one. The three-way split matters more than it looks:

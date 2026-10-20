@@ -8,7 +8,7 @@ class FFrameGrabber;
 class FSceneViewport;
 class UGameInstance;
 
-/** One captured frame: its pixels at the video's size, and when it is shown. */
+/** One captured frame: its pixels and their size (the video's, or smaller once the window changed shape), and when it is shown. */
 struct FProtokitePlaytestVideoFrame
 {
 	TArray<FColor> Pixels;
@@ -22,7 +22,7 @@ class IProtokitePlaytestVideoFrameSource
 public:
 	virtual ~IProtokitePlaytestVideoFrameSource() = default;
 
-	/** The size of every frame this source hands over. */
+	/** The video's size. A frame of another shape comes smaller and is placed between black bars by the recording. */
 	virtual FIntPoint GetFrameSize() const = 0;
 
 	/** False while the frames already asked for are still on their way, so asking for another would only queue it up. */

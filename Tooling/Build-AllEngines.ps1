@@ -340,6 +340,13 @@ function Invoke-FlockTests {
         return [PSCustomObject]@{ Ran = $false; Total = 0; Failed = 0; Reason = 'no tests ran' }
     }
 
+    # The tests found must be the tests completed: a run that ended part way reports only those it reached, all green
+    # (measured once: 18 of 20 completed, reported 18/18).
+    $Found = [regex]::Match($LogText, 'Found (\d+) automation tests')
+    if ($Found.Success -and [int]$Found.Groups[1].Value -ne $Total) {
+        return [PSCustomObject]@{ Ran = $false; Total = $Total; Failed = 0; Reason = "found $($Found.Groups[1].Value) tests but $Total completed" }
+    }
+
     # A failure is named, with the first error it logged, and its log is kept. The next run deletes this log, and a
     # count alone once left a one-off failure on one engine that nothing could identify afterwards (2026-09-18).
     $FailedTests = @()
@@ -598,8 +605,10 @@ if ($Unproven.Count) {
     Write-Host ("UE " + ($Unproven -join ' and UE ') + " bound the declared range and were not verified. The claim is unproven.") -ForegroundColor Red
     exit 1
 }
-if ($BuildFailed.Count -or $GameBuildFailed.Count -or $TestFailed.Count) {
-    Write-Host 'Engines inside the declared range failed. The claim is unproven.' -ForegroundColor Red
+# An installed engine inside the range that could not be built is ground the claim covers and nothing measured.
+$UncoveredInRange = @($Unusable | Where-Object { [version]"$_" -le [version]"$($Ceiling.Major).$($Ceiling.Minor)" })
+if ($BuildFailed.Count -or $GameBuildFailed.Count -or $TestFailed.Count -or $UncoveredInRange.Count) {
+    Write-Host 'Engines inside the declared range failed or could not be covered. The claim is unproven.' -ForegroundColor Red
     exit 1
 }
 

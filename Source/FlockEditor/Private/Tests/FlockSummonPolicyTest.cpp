@@ -100,8 +100,8 @@ bool FFlockSummonRecordSeenTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Headless records nothing — nobody saw anything"), Decision.bRecordSeen);
 	}
 
-	// With a human present, the seen-state is recorded whatever we decide about the panel — otherwise a
-	// healthy project would summon on every launch forever.
+	// With a human present, the version counts as seen only when the panel opens: the upgrade notice is a
+	// finding inside it, so a launch that opens nothing has shown it to nobody.
 	{
 		FFlockSummonContext Context;
 		Context.bFirstAdd = true;
@@ -111,24 +111,27 @@ bool FFlockSummonRecordSeenTest::RunTest(const FString& Parameters)
 	}
 
 	{
-		// Healthy project: nothing to show, but the developer was there, so it counts as seen.
+		// An updated SDK with nothing wrong opens nothing, so its upgrade notice is still to be seen.
 		FFlockSummonContext Context;
 		const FFlockSummonDecision Decision = FFlockSummonPolicy::Decide(Context);
 		TestFalse(TEXT("Healthy project opens nothing"), Decision.bOpenPanel);
-		TestTrue(TEXT("...but still records as seen, or it would summon every launch"), Decision.bRecordSeen);
+		TestFalse(TEXT("...and records nothing as seen"), Decision.bRecordSeen);
 	}
 
 	{
-		// Suppressed and already-summoned are also human-present cases.
 		FFlockSummonContext Context;
 		Context.bHasError = true;
-		Context.bSuppressedByUser = true;
-		TestTrue(TEXT("A muted notice still counts as seen"), FFlockSummonPolicy::Decide(Context).bRecordSeen);
+		TestTrue(TEXT("An error opens the panel, and what it shows counts as seen"), FFlockSummonPolicy::Decide(Context).bRecordSeen);
+
+		FFlockSummonContext Muted;
+		Muted.bHasError = true;
+		Muted.bSuppressedByUser = true;
+		TestFalse(TEXT("A muted error opens nothing, so nothing is seen"), FFlockSummonPolicy::Decide(Muted).bRecordSeen);
 
 		FFlockSummonContext Second;
 		Second.bHasError = true;
 		Second.bAlreadySummonedThisSession = true;
-		TestTrue(TEXT("Second call in a session still counts as seen"), FFlockSummonPolicy::Decide(Second).bRecordSeen);
+		TestFalse(TEXT("Nor does a second call in a session"), FFlockSummonPolicy::Decide(Second).bRecordSeen);
 	}
 
 	// Decide and ShouldSummon must never disagree about the panel.

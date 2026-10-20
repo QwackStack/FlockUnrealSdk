@@ -104,7 +104,8 @@ public:
 	/**
 	 * Records a gameplay event for the Game Metrics dashboards — not Flock Log Diagnostic Event, which writes an
 	 * engineering entry. Build Properties with the Flock Event Property nodes, which keep a number a number.
-	 * Returns false when refused (analytics off, no consent, an empty name, or the reserved session_started).
+	 * Returns false when refused (analytics off, no consent, an empty name, a name over 200 characters or a category
+	 * over 100, or the reserved session_started).
 	 *
 	 * Surface: analytics — read on Dashboards → Game Metrics.
 	 */

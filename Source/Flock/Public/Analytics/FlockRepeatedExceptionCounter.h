@@ -80,7 +80,13 @@ private:
 
 	float WindowSeconds = 0.f;
 	int32 MaxTracked = DefaultMaxTracked;
-	TMap<FString, FWindow> Windows;
+	/** Keyed letter for letter: two faults whose messages differ only in case are two faults. */
+	struct FSameFaultKeyFuncs : TDefaultMapKeyFuncs<FString, FWindow, /*bInAllowDuplicateKeys*/ false>
+	{
+		static bool Matches(const FString& A, const FString& B) { return A.Equals(B, ESearchCase::CaseSensitive); }
+		static uint32 GetKeyHash(const FString& Key) { return FCrc::StrCrc32(*Key); }
+	};
+	TMap<FString, FWindow, FDefaultSetAllocator, FSameFaultKeyFuncs> Windows;
 
 	/** Windows replaced by a later occurrence before a tick expired them; handed out by the next CollectFinished. */
 	TArray<FRepeatReport> FinishedReports;

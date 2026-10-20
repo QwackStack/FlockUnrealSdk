@@ -5,8 +5,8 @@
 void FFlockStubVersionLookup::Resolve(const FString& ApiUrl, const FString& ApiKey, const FString& GameVersion, FFlockResolveComplete OnComplete)
 {
 	OnComplete.ExecuteIfBound(FFlockResolveResult::Fail(
-		TEXT("No Flock version lookup is registered, so the Game Version cannot be resolved. ")
-		TEXT("Ensure the FlockEditor module is loaded.")));
+		TEXT("No Flock version lookup is registered, so the Game Version cannot be resolved"),
+		TEXT("Enable the Flock plugin so its editor module loads, then resolve the Game Version again.")));
 }
 
 namespace

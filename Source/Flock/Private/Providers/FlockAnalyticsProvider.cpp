@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Providers/FlockAnalyticsProvider.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Analytics/FlockAnalyticsJson.h"
 #include "Analytics/FlockAnalyticsLaunches.h"
@@ -203,11 +204,11 @@ void FFlockAnalyticsProvider::Initialize()
 		const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
 		LogSink->OnFatal.AddLambda([WeakSelf](const FFlockCapturedLog& Captured)
 		{
-			// Crash path: spool to disk only. There is no time for a round trip.
+			// Crash path, on the crashing thread: to disk only. There is no time for a round trip.
 			const TSharedPtr<FFlockAnalyticsProvider> Self = WeakSelf.Pin();
 			if (Self.IsValid())
 			{
-				Self->LogException(Captured.Message, Captured.StackTrace, DetailsOfCapturedFault(Captured));
+				Self->KeepCrashReport(Captured.Message, Captured.StackTrace, DetailsOfCapturedFault(Captured));
 			}
 		});
 		LogSink->Start();
@@ -309,12 +310,12 @@ void FFlockAnalyticsProvider::ReportSurvivingTermination(const FString& MarkerPa
 		return;
 	}
 
-	// Always drop the marker, even when we cannot report it — otherwise a dirty exit found while
-	// consent is off would be re-reported on every single launch from now on.
-	EndedLaunchTracker.ClearMarker();
-
+	// The marker is dropped after its report is queued, so a game killed in between reports it twice rather than never; and
+	// it is dropped even when it cannot be reported, or a dirty exit found while consent is off would be re-reported on every
+	// launch from now on.
 	if (!IsCollecting())
 	{
+		EndedLaunchTracker.ClearMarker();
 		return;
 	}
 
@@ -329,6 +330,7 @@ void FFlockAnalyticsProvider::ReportSurvivingTermination(const FString& MarkerPa
 	Event.Data.ExtraData.Add(KeyAppVersion, Survivor.AppVersion);
 	Event.Data.ExtraData.Add(KeySdkVersion, Survivor.SdkVersion);
 	QueueLogEvent(MoveTemp(Event));
+	EndedLaunchTracker.ClearMarker();
 }
 
 void FFlockAnalyticsProvider::SetConsent(bool bGranted)
@@ -421,6 +423,18 @@ void FFlockAnalyticsProvider::QueueLogEvent(FFlockLogEventRequest&& Event)
 
 void FFlockAnalyticsProvider::LogEvent(const FString& Message, const TMap<FString, FString>& ExtraData)
 {
+	if (!IsInGameThread())
+	{
+		const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
+		AsyncTask(ENamedThreads::GameThread, [WeakSelf, Message, ExtraData]()
+		{
+			if (const TSharedPtr<FFlockAnalyticsProvider> Self = WeakSelf.Pin())
+			{
+				Self->LogEvent(Message, ExtraData);
+			}
+		});
+		return;
+	}
 	FFlockLogEventRequest Event = MakeLogEvent(EFlockLogEventType::Debug, Message);
 	Event.Data.ExtraData = ExtraData;
 	QueueLogEvent(MoveTemp(Event));
@@ -428,6 +442,18 @@ void FFlockAnalyticsProvider::LogEvent(const FString& Message, const TMap<FStrin
 
 void FFlockAnalyticsProvider::LogError(const FString& Message, const FFlockLogDetails& Details)
 {
+	if (!IsInGameThread())
+	{
+		const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
+		AsyncTask(ENamedThreads::GameThread, [WeakSelf, Message, Details]()
+		{
+			if (const TSharedPtr<FFlockAnalyticsProvider> Self = WeakSelf.Pin())
+			{
+				Self->LogError(Message, Details);
+			}
+		});
+		return;
+	}
 	FFlockLogEventRequest Event = MakeLogEvent(EFlockLogEventType::LogicError, Message);
 	Event.Data.LogicalExpression = Details.LogicalExpression;
 	Event.Data.ErrorCode = Details.ErrorCode;
@@ -445,7 +471,21 @@ void FFlockAnalyticsProvider::LogException(const FString& Message, const FString
 	// off-by-one here is invisible except by reading one. The walk stays in this function for that
 	// reason: moved one call deeper, the first frame would be LogException itself. The automatic sink
 	// path always supplies its own, captured where the error was logged, so it never re-walks here.
-	SpoolException(Message, StackTrace.IsEmpty() ? FFlockStackTrace::Capture(/*FramesToSkip*/ 3) : StackTrace, Details);
+	const FString Trace = StackTrace.IsEmpty() ? FFlockStackTrace::Capture(/*FramesToSkip*/ 3) : StackTrace;
+	// The stack is the calling thread's, so it is walked here; the queue is the game thread's, so the rest is done there.
+	if (!IsInGameThread())
+	{
+		const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
+		AsyncTask(ENamedThreads::GameThread, [WeakSelf, Message, Trace, Details]()
+		{
+			if (const TSharedPtr<FFlockAnalyticsProvider> Self = WeakSelf.Pin())
+			{
+				Self->LogException(Message, Trace, Details);
+			}
+		});
+		return;
+	}
+	SpoolException(Message, Trace, Details);
 
 	// Exception pressure is context for the next launch's termination report.
 	if (Deps.TerminationTracker.IsValid())
@@ -457,6 +497,21 @@ void FFlockAnalyticsProvider::LogException(const FString& Message, const FString
 void FFlockAnalyticsProvider::SpoolException(const FString& Message, const FString& StackTrace,
 	const FFlockLogDetails& Details)
 {
+	QueueLogEvent(MakeExceptionEvent(Message, StackTrace, Details));
+}
+
+void FFlockAnalyticsProvider::KeepCrashReport(const FString& Message, const FString& StackTrace, const FFlockLogDetails& Details)
+{
+	if (!IsCollecting() || !Deps.LogEventCache.IsValid())
+	{
+		return;
+	}
+	Deps.LogEventCache->KeepForALaterLaunch(FFlockAnalyticsJson::SerializeEvent(MakeExceptionEvent(Message, StackTrace, Details)));
+}
+
+FFlockLogEventRequest FFlockAnalyticsProvider::MakeExceptionEvent(const FString& Message, const FString& StackTrace,
+	const FFlockLogDetails& Details) const
+{
 	FFlockLogEventRequest Event = MakeLogEvent(EFlockLogEventType::Exception, Message);
 	Event.Data.ErrorMessage = Message;
 	Event.Data.ErrorTraceback = StackTrace;
@@ -466,7 +521,7 @@ void FFlockAnalyticsProvider::SpoolException(const FString& Message, const FStri
 	}
 	Event.Data.ErrorData = Details.ErrorData;
 	Event.Data.ExtraData = Details.ExtraData;
-	QueueLogEvent(MoveTemp(Event));
+	return Event;
 }
 
 void FFlockAnalyticsProvider::RecordScreenView(const FString& ScreenName)
@@ -703,8 +758,8 @@ void FFlockAnalyticsProvider::RecordTransaction(const FFlockAnalyticsTransaction
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::Make(EFlockErrorType::Auth,
-				TEXT("RecordTransaction requires a signed-in player"))));
+			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Auth,
+				TEXT("RecordTransaction needs a signed-in player, and none is"), FFlockErrorHints::SignInFirst())));
 		}
 		return;
 	}
@@ -712,8 +767,8 @@ void FFlockAnalyticsProvider::RecordTransaction(const FFlockAnalyticsTransaction
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				FString::Printf(TEXT("Transaction amount must be non-negative, got: %f"), InRequest.Amount))));
+			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				FString::Printf(TEXT("The transaction amount is below zero: %f"), InRequest.Amount), TEXT("Pass an amount of zero or more."))));
 		}
 		return;
 	}
@@ -738,7 +793,7 @@ void FFlockAnalyticsProvider::RecordTransaction(const FFlockAnalyticsTransaction
 		if (OnComplete)
 		{
 			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::Make(EFlockErrorType::Serialization,
-				TEXT("Failed to serialize transaction"))));
+				TEXT("The SDK could not write the transaction's body"))));
 		}
 		return;
 	}
@@ -747,13 +802,14 @@ void FFlockAnalyticsProvider::RecordTransaction(const FFlockAnalyticsTransaction
 	const TSharedRef<FFlockAuthSession> SessionRef = AuthSessionRef;
 	const FString Url = AnalyticsUrl(FlockEndpoints::AnalyticsTransactions);
 
-	// Bare route: the response is a free-form object nobody reads, so success is the 2xx.
+	// Bare route: the response is a free-form object nobody reads, so success is the 2xx. Sent like a purchase: a transaction
+	// the server may already hold is never sent again (only 408 and 429 are), or its revenue would count twice.
 	Execute<FFlockAnalyticsAck>(
 		[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnAttempt)
 		{
 			return ClientRef->PostJsonAcceptingNoContent<FFlockAnalyticsAck>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
 		},
-		MoveTemp(OnComplete), TEXT("Record transaction"));
+		MoveTemp(OnComplete), TEXT("Record transaction"), /*bIdempotent*/ false);
 }
 
 void FFlockAnalyticsProvider::StartSession(const FString& InPlayerIdOrEmpty,
@@ -773,8 +829,8 @@ void FFlockAnalyticsProvider::StartSession(const FString& InPlayerIdOrEmpty,
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FString>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Analytics is disabled or consent has not been granted"))));
+			OnComplete(TFlockResult<FString>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Analytics is not collecting: it is turned off, or the player has not given consent"), TEXT("Turn on Analytics Enabled under Project Settings > Flock SDK. With Analytics Require Explicit Consent on, also record the player's consent with SetConsent(true) before starting a session."))));
 		}
 		return;
 	}
@@ -834,8 +890,8 @@ void FFlockAnalyticsProvider::RegisterActiveSession(TFunction<void(TFlockResult<
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<FString>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("No active session to register"))));
+			OnComplete(TFlockResult<FString>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("No analytics session is open to register"), TEXT("Start one with StartSession, or leave Analytics Auto Start Session on under Project Settings > Flock SDK."))));
 		}
 		return;
 	}
@@ -914,8 +970,8 @@ void FFlockAnalyticsProvider::RegisterActiveSession(TFunction<void(TFlockResult<
 				else
 				{
 					OnComplete(TFlockResult<FString>::Fail(Result.bSuccess
-						? FFlockError::Make(EFlockErrorType::Network,
-							TEXT("Session registration returned no session id"))
+						? FFlockError::MakeWithFix(EFlockErrorType::Network,
+							TEXT("The server's answer to the session registration has no session id"), FFlockErrorHints::NotFlocksAnswer())
 						: Result.Error));
 				}
 			}
@@ -1218,8 +1274,8 @@ void FFlockAnalyticsProvider::SendSpooledEnd(const FString& Handle, const FFlock
 				if (!Result.bSuccess || Result.Value.SessionId.IsEmpty())
 				{
 					const FFlockError Error = Result.bSuccess
-						? FFlockError::Make(EFlockErrorType::Network,
-							TEXT("Session registration returned no session id"))
+						? FFlockError::MakeWithFix(EFlockErrorType::Network,
+							TEXT("The server's answer to the session registration has no session id"), FFlockErrorHints::NotFlocksAnswer())
 						: Result.Error;
 					Self->HandleEndFailure(Handle, Snapshot.SessionId, Error, Delivered, OnComplete);
 					return;
@@ -1550,7 +1606,7 @@ void FFlockAnalyticsProvider::SendNextEventBatch(const TSharedRef<FDeliveryPass>
 		{
 			BatchPlayer = Entry.Event.PlayerId;
 		}
-		else if (Entry.Event.PlayerId != BatchPlayer)
+		else if (!Entry.Event.PlayerId.Equals(BatchPlayer, ESearchCase::CaseSensitive))
 		{
 			continue;
 		}

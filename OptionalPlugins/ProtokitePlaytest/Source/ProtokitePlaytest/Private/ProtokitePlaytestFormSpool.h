@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GenericPlatform/GenericPlatformFile.h"
 #include "ProtokitePlaytestFormSubmission.h"
 
 /**
@@ -35,6 +36,15 @@ public:
 
 	/** Forgets one, once the server has taken it or once it is past saving. */
 	bool Forget(const FString& FilePath) const;
+
+	/**
+	 * Claims one kept form for sending, so no other launch sends it meanwhile: a lock file beside it, shared with nobody, which
+	 * the operating system lets go of however this launch ends. Null when another launch holds it, or the form has gone.
+	 */
+	TUniquePtr<IFileHandle> Claim(const FString& FilePath) const;
+
+	/** Lets go of a claim and deletes its lock file. */
+	static void Release(TUniquePtr<IFileHandle>& Claim, const FString& FilePath);
 
 	/** How many are waiting, without reading them. */
 	int32 CountWaiting() const;

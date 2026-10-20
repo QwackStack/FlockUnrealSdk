@@ -27,7 +27,7 @@
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockCommandResultPin, const FFlockPlayerData&, Data, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockCommandFlushPin, int32, DeliveredCount, const FFlockError&, Error);
 
-/** Writes a set of fields onto a player-data row, or a single field onto one. */
+/** Replaces a player-data row, or writes a single field onto one. */
 UCLASS()
 class FLOCK_API UFlockUpdatePlayerDataAction : public UBlueprintAsyncActionBase
 {
@@ -40,11 +40,16 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FFlockCommandResultPin OnFailure;
 
+	/**
+	 * Replaces the row with Data. The server needs every field the template declares, nullable ones included; to
+	 * change one field, use Flock Update Player Data Field.
+	 */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
 		DisplayName = "Flock Update Player Data"), Category = "Flock|Commands")
 	static UFlockUpdatePlayerDataAction* UpdatePlayerData(UObject* WorldContextObject, const FString& PlayerDataId,
 		const FFlockCommandData& Data);
 
+	/** Writes one field of the row, leaving the others as they are. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
 		DisplayName = "Flock Update Player Data Field"), Category = "Flock|Commands")
 	static UFlockUpdatePlayerDataAction* UpdatePlayerDataField(UObject* WorldContextObject, const FString& PlayerDataId,

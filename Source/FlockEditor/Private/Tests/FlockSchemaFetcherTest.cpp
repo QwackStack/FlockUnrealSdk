@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -324,6 +325,38 @@ bool FFlockFetcherEmptyGameTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("no configs"), Result.Value.GameConfigs.Num(), 0);
 	TestEqual(TEXT("no shops"), Result.Value.Shops.Num(), 0);
 
+	return true;
+}
+
+// ── The snapshot comes back in one order, whatever order the server listed things in ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockFetcherOrderTest, "Flock.Editor.SchemaFetcher.SortsWhatItFetched",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockFetcherOrderTest::RunTest(const FString& Parameters)
+{
+	FFixture Fx;
+	Fx.RouteHappyPath();
+	Fx.Fake->On(TEXT("player_template"), FFlockFakeTransport::Ok(Enveloped(FString::Printf(TEXT("[%s,%s,%s]"),
+		*TemplateObj(TEXT("tmpl-b"), TEXT("Second"), TEXT("")), *TemplateObj(TEXT("tmpl-B"), TEXT("Capital"), TEXT("")),
+		*TemplateObj(TEXT("tmpl-a"), TEXT("First"), TEXT(""))))));
+	Fx.Fake->On(TEXT("game_config/version"), FFlockFakeTransport::Ok(Enveloped(FString::Printf(TEXT("[%s,%s]"),
+		*ConfigObj(TEXT("cfg-2"), TEXT("Later")), *ConfigObj(TEXT("cfg-1"), TEXT("Earlier"))))));
+	Fx.Fake->On(TEXT("shop_item/shop/shop-1"), FFlockFakeTransport::Ok(Enveloped(
+		TEXT("[{\"id\":\"item-2\",\"name\":\"B\",\"shop_id\":\"shop-1\",\"price\":1,\"currency\":\"Gold\"},")
+		TEXT("{\"id\":\"item-1\",\"name\":\"A\",\"shop_id\":\"shop-1\",\"price\":1,\"currency\":\"Gold\"}]"))));
+
+	const TFlockResult<FFlockSchemaSnapshot> Result = Fx.Run();
+	if (!TestTrue(TEXT("fetch succeeds"), Result.bSuccess) || !TestEqual(TEXT("three templates"), Result.Value.PlayerTemplates.Num(), 3))
+	{
+		return false;
+	}
+	// Letter for letter: `tmpl-B` sorts before `tmpl-a`, where an order that ignored case would put it between them.
+	TestEqualSensitive(TEXT("templates by id"), Result.Value.PlayerTemplates[0].Id, FString(TEXT("tmpl-B")));
+	TestEqualSensitive(TEXT("..."), Result.Value.PlayerTemplates[1].Id, FString(TEXT("tmpl-a")));
+	TestEqualSensitive(TEXT("..."), Result.Value.PlayerTemplates[2].Id, FString(TEXT("tmpl-b")));
+	TestEqualSensitive(TEXT("configs by id"), Result.Value.GameConfigs[0].Id, FString(TEXT("cfg-1")));
+	TestTrue(TEXT("a shop's items by id"), Result.Value.Shops.Num() == 1 && Result.Value.Shops[0].ShopItems.Num() == 2
+		&& Result.Value.Shops[0].ShopItems[0].Id == TEXT("item-1"));
 	return true;
 }
 

@@ -54,9 +54,14 @@ public:
 		TFunction<void(FFlockFileUploadOutcome)> OnComplete) = 0;
 };
 
+/** How long an upload may go without sending a byte or getting its answer before it is given up. A whole upload has no limit. */
+inline constexpr float FlockFileUploadStallSeconds = 60.f;
+
 /**
  * The production uploader, over the engine HTTP module. Behind a factory for the same reason
  * FlockCreateHttpAssetDownloader is: the HTTP module is a private dependency, so no public header may name an
- * engine HTTP type.
+ * engine HTTP type. An upload that sends nothing and hears nothing for StallSeconds is given up (the engine reports it as a
+ * connection failure), so a connection that stopped answering never holds what is being sent; zero or less never gives up.
  */
-FLOCK_API TSharedRef<IFlockFileUploader> FlockCreateHttpFileUploader(const TSharedRef<IFlockLogger>& Logger);
+FLOCK_API TSharedRef<IFlockFileUploader> FlockCreateHttpFileUploader(const TSharedRef<IFlockLogger>& Logger,
+	float StallSeconds = FlockFileUploadStallSeconds);

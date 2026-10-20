@@ -2,6 +2,7 @@
 
 #include "Models/FlockCommandModels.h"
 
+#include "Flock.h"
 #include "Http/FlockJsonUtils.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonReader.h"
@@ -153,6 +154,15 @@ FFlockCommandData& FFlockCommandData::Set(const FString& Key, const FFlockComman
 	// Re-parsed per Set so the JSON library owns every bit of escaping. A command bag holds a handful of
 	// fields, so the cost is noise next to the request it becomes.
 	const TSharedRef<FJsonObject> Object = ToJsonObject();
+	// Keys are compared letter for letter: `Score` and `score` are two fields. The engine's JSON object cannot keep both
+	// (it would replace one with the other without a word), so the second spelling is not set and the first stays.
+	const FString OtherSpelling = FFlockJsonUtils::OtherSpellingOf(FFlockJsonUtils::GetFieldNames(Object), Key);
+	if (!OtherSpelling.IsEmpty())
+	{
+		UE_LOG(LogFlock, Warning, TEXT("[Flock SDK] Field '%s' is not set: '%s' is already there, and the two are different fields (compared letter ")
+			TEXT("for letter), which this engine's JSON object cannot keep apart. The first stays."), *Key, *OtherSpelling);
+		return *this;
+	}
 	Object->SetField(Key, Value.ToJsonValue());
 	FieldsJson = SerializeObject(Object);
 	return *this;

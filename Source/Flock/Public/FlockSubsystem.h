@@ -22,6 +22,7 @@
 #include "Providers/FlockAssetProvider.h"
 #include "Providers/FlockLeaderboardProvider.h"
 #include "Providers/FlockNotificationProvider.h"
+#include "Providers/FlockMultiplayerProvider.h"
 #include "Providers/FlockShopProvider.h"
 #include "FlockSubsystem.generated.h"
 
@@ -75,7 +76,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Flock")
 	void InitializeWithConfig(const FFlockInitConfig& Config);
 
-	/** Tears down SDK state, allowing a later re-initialization. */
+	/**
+	 * Tears down SDK state, allowing a later re-initialization. A multiplayer seat the player holds is kept (the server gives it
+	 * up once it stops hearing from the player), so Get My Session finds it again after re-initializing; the game instance
+	 * shutting down gives it up instead.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Flock")
 	void ShutdownSdk();
 
@@ -225,11 +230,11 @@ public:
 
 	/**
 	 * Records a gameplay event (level_complete, purchase_view) for the Game Metrics dashboards — unlike Log
-	 * Analytics Event, which writes a diagnostic entry. Spooled and delivered on the next flush while a player
+	 * Diagnostic Event, which writes a diagnostic entry. Spooled and delivered on the next flush while a player
 	 * is signed in; recorded with nobody signed in, it is credited to whoever signs in next. Build Properties
-	 * with the Set Command nodes: keys stay verbatim and values keep their type. Returns false when refused —
-	 * analytics off, no consent, an empty name, or session_started, which the server records itself when a
-	 * session starts.
+	 * with the Flock Event Property nodes: keys stay verbatim and values keep their type. Returns false when
+	 * refused — analytics off, no consent, an empty name, a name over 200 characters or a category over 100 (the
+	 * server cannot store either), or session_started, which the server records itself when a session starts.
 	 *
 	 * Surface: analytics — read on Dashboards → Game Metrics.
 	 */
@@ -318,6 +323,11 @@ public:
 	 */
 	FFlockNotificationProvider* GetNotificationProvider() const { return NotificationProvider.Get(); }
 
+	// ── Multiplayer ──
+
+	/** The entry point for multiplayer. Null before initialization and after shutdown. C++ API. */
+	FFlockMultiplayerProvider* GetMultiplayerProvider() const { return MultiplayerProvider.Get(); }
+
 	// ── Player ──
 
 	/**
@@ -373,6 +383,9 @@ private:
 	/** Applies the baked-version gate and adopts the config. Returns false with OutError on failure. */
 	bool TryInitialize(const FFlockInitConfig& Config, FString& OutError);
 
+	/** ShutdownSdk's work. bGameEnding (the game instance shutting down) also gives up the player's multiplayer seat. */
+	void ShutdownSdkFor(bool bGameEnding);
+
 	/**
 	 * A session needs a player id, so it opens on sign-in rather than at init. Bound to the event hub
 	 * only while analytics is live.
@@ -382,6 +395,12 @@ private:
 
 	UFUNCTION()
 	void HandleAnalyticsLoggedOut();
+
+	/**
+	 * What ending a sign-in ends here, while the player is still known: the analytics session and the player's cached
+	 * data. Run by Logout before it clears the tokens, and by the auth session when the server refuses to refresh them.
+	 */
+	void EndSessionAndDropPlayerCaches();
 
 	/**
 	 * Signing in is the third auto-flush trigger (the provider's own pump covers foreground and reconnect):
@@ -425,6 +444,7 @@ private:
 	TSharedPtr<FFlockCommandProvider> CommandProvider;
 	TSharedPtr<FFlockLeaderboardProvider> LeaderboardProvider;
 	TSharedPtr<FFlockNotificationProvider> NotificationProvider;
+	TSharedPtr<FFlockMultiplayerProvider> MultiplayerProvider;
 
 	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
 	TSharedPtr<IFlockTokenStore> TestTokenStore;

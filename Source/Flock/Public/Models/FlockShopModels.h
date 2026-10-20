@@ -24,6 +24,19 @@ namespace FlockShopItemRewardTypes
 }
 
 /**
+ * Where a purchase has got to. A wallet purchase is born paid; the others belong to real-money checkouts, whose result comes
+ * later. An open set the server can widen, so compare against these, never a literal.
+ */
+namespace FlockPurchaseStatuses
+{
+	inline constexpr const TCHAR* Pending = TEXT("pending");
+	inline constexpr const TCHAR* Paid = TEXT("paid");
+	inline constexpr const TCHAR* Failed = TEXT("failed");
+	inline constexpr const TCHAR* Expired = TEXT("expired");
+	inline constexpr const TCHAR* Refunded = TEXT("refunded");
+}
+
+/**
  * One thing a reward-bearing shop item grants (OpenAPI ShopItemRewardSchema).
  *
  * Code is a currency code from the game version's currency config — the same namespace an item's
@@ -233,6 +246,10 @@ struct FLOCK_API FFlockPurchaseResult
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString ItemType;
 
+	/** Where the purchase has got to: one of FlockPurchaseStatuses. Paid when the server leaves it out, as its schema does. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Status = FlockPurchaseStatuses::Paid;
+
 	/** The row the purchase created. Empty Id when the item granted its contents outright. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FFlockPlayerInventory Inventory;
@@ -256,6 +273,9 @@ struct FLOCK_API FFlockPurchaseResult
 
 	/** True when the server reported the wallet — it does so only when currency actually moved. */
 	bool HasWallet() const { return !Wallet.Id.IsEmpty(); }
+
+	/** True when the purchase is paid, so what it grants is the player's. A pending one has handed nothing over yet. */
+	bool IsPaid() const { return Status.Equals(FlockPurchaseStatuses::Paid, ESearchCase::CaseSensitive); }
 
 	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockPurchaseResult& OutStruct, FString& OutError);
 };

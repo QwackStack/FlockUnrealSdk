@@ -311,4 +311,20 @@ bool FFlockCodegenPathGuardTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockManifestCaseTest, "Flock.Editor.CodegenManifest.IdsAreComparedLetterForLetter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockManifestCaseTest::RunTest(const FString& Parameters)
+{
+	FFlockSchemaSnapshot Fresh;
+	Fresh.GameVersionId = TEXT("ver-1");
+	FFlockCodegenManifest Stored = FFlockCodegenManifest::FromSnapshot(Fresh);
+	Stored.GameVersionId = TEXT("VER-1");
+	TestEqual(TEXT("a version id differing only in case is another version"),
+		FFlockCodegenManifest::Compare(Stored, Fresh), EFlockCodegenDrift::VersionChanged);
+	Fresh.BakedGameVersionId = TEXT("VER-1");
+	TestTrue(TEXT("and a bake differing only in case is stale"), Fresh.IsBakeStale());
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

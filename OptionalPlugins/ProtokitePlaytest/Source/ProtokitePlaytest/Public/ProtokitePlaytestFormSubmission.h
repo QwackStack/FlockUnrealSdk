@@ -52,6 +52,7 @@ struct PROTOKITEPLAYTEST_API FProtokitePlaytestFormSubmission
  *
  * Protokite reports a refused answer as a sentence naming the question in quotes ("Missing required answer 'steps'"),
  * with no field of its own to read, so the id is taken from the message or the complaint cannot be shown against the
- * question it belongs to. Returns empty when the message names nothing, which is how a general refusal reads.
+ * question it belongs to. Returns empty when the message names nothing, which is how a general refusal reads. Pass
+ * Protokite's own reason (FFlockError::ServerMessage), never the display text: the fix that follows it has apostrophes.
  */
 PROTOKITEPLAYTEST_API FString ProtokitePlaytestFindFieldIdInComplaint(const FString& Message);

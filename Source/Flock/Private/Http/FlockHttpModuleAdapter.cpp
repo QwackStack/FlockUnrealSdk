@@ -23,6 +23,11 @@ void FlockFinishRequestsBeforeShutdown()
 	FHttpModule::Get().GetHttpManager().Flush(EHttpFlushReason::Default);
 }
 
+bool FlockShouldFinishRequestsBeforeShutdown(bool bGameEnding, bool bSessionEndSent)
+{
+	return bGameEnding || bSessionEndSent;
+}
+
 FFlockHttpModuleAdapter::FFlockHttpModuleAdapter(float InDefaultTimeoutSeconds)
 	: DefaultTimeoutSeconds(InDefaultTimeoutSeconds)
 {
@@ -68,7 +73,7 @@ FFlockRequestHandle FFlockHttpModuleAdapter::SendAsync(const FFlockHttpRequest& 
 	HttpRequest->OnProcessRequestComplete().BindLambda(
 		[OnComplete, Token](FHttpRequestPtr HttpRequestPtr, FHttpResponsePtr HttpResponse, bool bConnectedSuccessfully)
 		{
-			if (!OnComplete)
+			if (!OnComplete || !Token->TryClaimAnswer())
 			{
 				return;
 			}
@@ -106,13 +111,15 @@ FFlockRequestHandle FFlockHttpModuleAdapter::SendAsync(const FFlockHttpRequest& 
 				break;
 			default:
 				Out.Result = EFlockHttpResult::ConnectionError;
-				Out.Body = TEXT("Network request failed");
+				Out.Body = FString::Printf(TEXT("The engine's request ended with no answer (failure reason %d)"), static_cast<int32>(Reason));
 				break;
 			}
 			OnComplete(Out);
 		});
 
-	if (!HttpRequest->ProcessRequest())
+	// A request the engine refuses to start may already have been answered through the completion above (UE 5.5 answers
+	// it before ProcessRequest returns), so this answers only when that did not.
+	if (!HttpRequest->ProcessRequest() && Token->TryClaimAnswer())
 	{
 		FFlockHttpResponse Out;
 		Out.Result = EFlockHttpResult::ConnectionError;

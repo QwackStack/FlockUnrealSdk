@@ -21,8 +21,8 @@
  * stay public because they also work by hand against a struct you authored yourself.
  *
  * Round trip: **Flock Data To Struct** → *Set members in struct* → **Flock Struct To Command Data** →
- * Flock Update Player Data. Member names go out to the server exactly as spelled, so a generated struct's
- * members carry the names its template declares.
+ * Flock Update Player Data. Member names go out to the server as spelled, unless the struct registered wire
+ * names (a generated C++ struct does), so a struct you author yourself names its members as its template does.
  */
 UCLASS()
 class FLOCK_API UFlockStructLibrary : public UBlueprintFunctionLibrary

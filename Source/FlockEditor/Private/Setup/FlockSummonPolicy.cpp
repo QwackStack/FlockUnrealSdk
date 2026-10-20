@@ -14,10 +14,10 @@ FFlockSummonDecision FFlockSummonPolicy::Decide(const FFlockSummonContext& Conte
 		return Decision; // both false
 	}
 
-	// From here a human is at the keyboard, so whatever we decide about the panel, this session counts as
-	// having had the chance to see it. Without this a healthy project would summon on every single launch.
-	Decision.bRecordSeen = true;
+	// Seen only when the panel opens: the upgrade notice lives inside it. A first add opens it, so it is
+	// recorded and the welcome does not come back on every launch.
 	Decision.bOpenPanel = ShouldSummon(Context);
+	Decision.bRecordSeen = Decision.bOpenPanel;
 
 	return Decision;
 }

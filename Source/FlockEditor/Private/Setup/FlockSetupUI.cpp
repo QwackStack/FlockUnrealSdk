@@ -68,6 +68,12 @@ TSharedRef<SDockTab> FFlockSetupUI::SpawnTab(const FSpawnTabArgs& Args)
 	TSharedRef<SFlockPanel> Panel = SNew(SFlockPanel);
 	LivePanel = Panel;
 
+	// The panel has read the findings, the upgrade notice included, and is in front of the developer now.
+	if (UFlockEditorUserSettings* Settings = UFlockEditorUserSettings::Get())
+	{
+		Settings->MarkSeen(UFlockSubsystem::SdkVersion);
+	}
+
 	return SNew(SDockTab)
 		.TabRole(ETabRole::NomadTab)
 		[

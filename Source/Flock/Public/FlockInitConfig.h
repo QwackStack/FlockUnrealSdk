@@ -47,6 +47,12 @@ struct FLOCK_API FFlockInitConfig
 	static FFlockInitConfig FromSettings(const UFlockConfig& Settings);
 
 	/**
+	 * The API URL as every request is built from it: surrounding spaces and trailing slashes removed, so a URL pasted as
+	 * "https://host/ " reaches the same routes at runtime as in the editor's tools.
+	 */
+	static FString TrimApiUrl(const FString& ApiUrl);
+
+	/**
 	 * Base HTTP headers every SDK request carries: X-Flock-API-Key and X-Game-Version-ID. The
 	 * Authorization: Bearer header is added by the auth
 	 * layer once it lands, not here.

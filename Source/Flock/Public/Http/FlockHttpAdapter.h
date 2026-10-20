@@ -53,8 +53,26 @@ struct FFlockCancelToken
 	/** Set once cancelled; callers check this to suppress a late completion. */
 	bool bCancelled = false;
 
+	/** Set once the request has been answered, so a transport that could answer twice answers once. */
+	bool bAnswered = false;
+
 	/** Performs the actual cancel for the current owner of in-flight work (e.g. IHttpRequest::CancelRequest). */
 	TFunction<void()> Canceller;
+
+	/**
+	 * Claims the one answer this request gets: true the first time, false after. The engine answers a request it
+	 * refuses to start through the completion before ProcessRequest returns, and ProcessRequest then says it failed, so
+	 * a transport asks here before each of its two answers and only the first goes out.
+	 */
+	bool TryClaimAnswer()
+	{
+		if (bAnswered)
+		{
+			return false;
+		}
+		bAnswered = true;
+		return true;
+	}
 };
 
 /**

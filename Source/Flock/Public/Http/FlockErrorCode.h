@@ -9,7 +9,7 @@
  * Typed view of the backend's coded-error contract (the `detail.code` string). Member name = wire code
  * PascalCased, e.g. "player.email_already_registered" -> PlayerEmailAlreadyRegistered. Unknown = no
  * code, or one this SDK version predates (read FFlockError::Code for the raw string). Keep in sync with
- * the backend OpenAPI spec when it adds codes.
+ * Tooling/WireErrorCodes.txt, whose header says how to refresh it from the backend.
  */
 UENUM(BlueprintType)
 enum class EFlockErrorCode : uint8
@@ -25,8 +25,10 @@ enum class EFlockErrorCode : uint8
 	// asset.*
 	AssetAssetNotFound,
 
-	// game.*
+	// game.* (InvalidApiKey and MissingApiKey come from the API key check every /v1 route makes first)
 	GameGameNotFound,
+	GameInvalidApiKey,
+	GameMissingApiKey,
 	GameMissingStudioId,
 
 	// game_command.*
@@ -67,6 +69,31 @@ enum class EFlockErrorCode : uint8
 	// log_event.*
 	LogEventGameNotFound,
 
+	// matchmaking.* (NotPartyLeader and PlayerNotEligible arrive as 403s that mean "not allowed", never "signed out")
+	MatchmakingAlreadyQueued,
+	MatchmakingMatchNotFound,
+	MatchmakingNotPartyLeader,
+	MatchmakingPartyTooLarge,
+	MatchmakingPlayerNotEligible,
+	MatchmakingQueueNotFound,
+	MatchmakingTicketNotCancelable,
+	MatchmakingTicketNotFound,
+	MatchmakingVersionMismatch,
+
+	// multiplayer.* (sessions and the relay; NotHost is a 403 that means "not allowed")
+	MultiplayerAlreadyInSession,
+	MultiplayerInvalidJoinCode,
+	MultiplayerInvalidJoinToken,
+	MultiplayerJoinCodeUnavailable,
+	MultiplayerMintRateLimited,
+	MultiplayerNotAParticipant,
+	MultiplayerNotHost,
+	MultiplayerSeatMintLimit,
+	MultiplayerSessionFull,
+	MultiplayerSessionNotFound,
+	MultiplayerTargetNotAParticipant,
+	MultiplayerVersionMismatch,
+
 	// notification_template.*
 	//
 	// The wire code is `notification_template.not_found`, so the PascalCased name collapses to this —
@@ -74,13 +101,24 @@ enum class EFlockErrorCode : uint8
 	// own; an unknown template is the only coded failure in the notification family.
 	NotificationTemplateNotFound,
 
-	// player.*
+	// party.* (NotPartyLeader is a 403 that means "not allowed")
+	PartyAlreadyInParty,
+	PartyCannotKickLeader,
+	PartyFull,
+	PartyInvalidInviteCode,
+	PartyNotAMember,
+	PartyNotFound,
+	PartyNotPartyLeader,
+	PartyTargetNotAMember,
+
+	// player.* (MissingToken, ExpiredToken and InvalidToken come from the sign-in check of a route that acts as the player)
 	PlayerAccountAlreadyLinked,
 	PlayerAccountNotLinked,
 	PlayerAppleAccountAlreadyRegistered,
 	PlayerCannotUnlinkLastCredential,
 	PlayerDeviceAlreadyRegistered,
 	PlayerEmailAlreadyRegistered,
+	PlayerExpiredToken,
 	PlayerGameJwkNotConfigured,
 	PlayerGameVersionIdRequired,
 	PlayerGoogleAccountAlreadyRegistered,
@@ -90,7 +128,9 @@ enum class EFlockErrorCode : uint8
 	PlayerInvalidRefreshToken,
 	PlayerInvalidRegistrationRequest,
 	PlayerInvalidResetCode,
+	PlayerInvalidToken,
 	PlayerInvalidVerificationCode,
+	PlayerMissingToken,
 	PlayerNameAlreadyRegistered,
 	PlayerNoEmailAccount,
 	PlayerOauthFailed,
@@ -113,6 +153,21 @@ enum class EFlockErrorCode : uint8
 	PlayerTemplateNotFound,
 	PlayerTemplateNotFoundByName,
 
+	// request.*
+	//
+	// The server's own codes for a failure no route raised itself: a route that does not exist, a request the framework
+	// refused before any route code ran (a member missing from the body), and the stock code for each status. Every /v1
+	// failure carries a code, so an error with none did not come from Flock's game API.
+	RequestConflict,
+	RequestFailed,
+	RequestForbidden,
+	RequestMethodNotAllowed,
+	RequestNotFound,
+	RequestPayloadTooLarge,
+	RequestRateLimited,
+	RequestUnauthorized,
+	RequestValidationFailed,
+
 	// shop.*
 	ShopCurrencyNotHeld,
 	ShopCurrencyTemplateNotFound,
@@ -121,6 +176,7 @@ enum class EFlockErrorCode : uint8
 	ShopMalformedReward,
 	ShopPackGrantsNothing,
 	ShopPlayerNotFound,
+	ShopRealCurrencyNeedsCheckout,
 	ShopRewardCurrencyNotHeld,
 	ShopShopNotFound,
 	ShopWalletNotFound,

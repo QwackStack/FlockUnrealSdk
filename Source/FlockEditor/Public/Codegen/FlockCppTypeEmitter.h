@@ -68,6 +68,25 @@ public:
 	/** "Player Level" + "Template" -> "FPlayerLevelTemplate". */
 	static FString MakeStructName(const FString& EntityName, const TCHAR* Suffix);
 
+	/** The struct name of every template and config, in the snapshot's order. */
+	struct FStructNames
+	{
+		TArray<FString> Templates;
+		TArray<FString> Configs;
+	};
+
+	/**
+	 * Every template's and config's struct name, templates first: where two would share one, the later takes
+	 * `_2`, `_3`..., the rule the Blueprint tier follows. Both C++ emitters name structs through this.
+	 */
+	static FStructNames MakeStructNames(const FFlockSchemaSnapshot& Snapshot);
+
+	/** Text for between the quotes of a generated `TEXT("...")`: quotes, backslashes and control characters escaped. */
+	static FString ToCppStringContents(const FString& Text);
+
+	/** Text for inside a generated comment: a star-slash that would end it early is broken up, and line breaks become spaces. */
+	static FString ToCppCommentText(const FString& Text);
+
 	/**
 	 * True when a declared field name can be a C++ member: an identifier, and not a reserved word.
 	 *

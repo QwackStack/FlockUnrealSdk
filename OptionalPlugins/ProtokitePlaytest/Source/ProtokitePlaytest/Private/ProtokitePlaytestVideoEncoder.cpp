@@ -121,6 +121,10 @@ bool FProtokitePlaytestVideoEncoder::Initialize(FIntPoint InFrameSize, int32 Fra
 	vpx_codec_control(&State->Codec, VP9E_SET_ROW_MT, 1);
 	vpx_codec_control(&State->Codec, VP9E_SET_TILE_COLUMNS, 1);
 	vpx_codec_control(&State->Codec, VP9E_SET_AQ_MODE, 3);
+	// The standard ConvertToVideoColours uses, written into every key frame so a player converts the colours back the same way
+	// rather than guessing (a guess of BT.709 shifts every colour of a recording this size).
+	vpx_codec_control(&State->Codec, VP9E_SET_COLOR_SPACE, static_cast<int>(VPX_CS_BT_601));
+	vpx_codec_control(&State->Codec, VP9E_SET_COLOR_RANGE, static_cast<int>(VPX_CR_STUDIO_RANGE));
 	return true;
 #else
 	OutError = TEXT("this build has no video encoder: video recording is built for 64-bit Windows only");

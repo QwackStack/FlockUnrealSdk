@@ -22,6 +22,9 @@
  * with a store attached, cache the success and serve the last-known value when the network is down. The
  * store is optional — without one (auth/analytics never attach it, offline cache disabled) every fetch is
  * a plain Execute.
+ *
+ * A provider written outside Flock adds "Json" and "JsonUtilities" to its module's dependencies: these templates and
+ * FFlockHttpClient's read JSON in the module that instantiates them.
  */
 class FLOCK_API FFlockProviderBase
 {
@@ -36,24 +39,8 @@ public:
 
 	virtual ~FFlockProviderBase() = default;
 
-	/**
-	 * Where the calls being dispatched right now come from — appended to every log line as
-	 * "<Context> [<origin>]" so a log shows whether a call came from C++ or a Blueprint graph.
-	 * Defaults to "C++"; the Blueprint async nodes set it for the duration of their dispatch via
-	 * FFlockCallOriginScope. Safe because dispatch is synchronous and game-thread only: the origin is
-	 * folded into the log strings before the call returns, so overlapping async calls can't mix it up.
-	 *
-	 * Also published ambiently (FFlockCallOrigin) so the HTTP layer underneath can stamp the same origin
-	 * onto its request/response trace — otherwise a provider line names the caller and the network lines
-	 * below it do not, which is the half that matters when a call fails. FFlockCallOriginScope restores
-	 * both on the way out, because it restores through this setter.
-	 */
-	void SetCallOrigin(const FString& InOrigin)
-	{
-		CallOrigin = InOrigin;
-		FFlockCallOrigin::Set(InOrigin);
-	}
-	const FString& GetCallOrigin() const { return CallOrigin; }
+	/** The SDK's logger this provider writes to, for a Blueprint node that has something of its own to tell the developer. */
+	IFlockLogger& GetLogger() const { return *Logger; }
 
 	/**
 	 * Attaches the offline snapshot store and the game version that scopes its entries. Without this,
@@ -86,10 +73,13 @@ protected:
 	/** Enables silent refresh-on-auth-failure for this provider's calls. Unset = pass-through. */
 	void SetAuthSession(const TSharedPtr<FFlockAuthSession>& InSession) { AuthSession = InSession; }
 
-	/** "Email login" -> "Email login [Blueprint 'bpTest']". Evaluate at dispatch, not in a completion. */
+	/**
+	 * "Email login" -> "Email login [Blueprint 'bpTest']": the caller making the calls dispatched now (FFlockCallOrigin), "C++"
+	 * unless a Blueprint node's FFlockCallOriginScope is open. Evaluate at dispatch, not in a completion.
+	 */
 	FString DecorateContext(const FString& Context) const
 	{
-		return FString::Printf(TEXT("%s [%s]"), *Context, *CallOrigin);
+		return FString::Printf(TEXT("%s [%s]"), *Context, *FFlockCallOrigin::Get());
 	}
 
 	/**
@@ -100,6 +90,10 @@ protected:
 	 * token refresh and a single replay of Operation (no fresh retry budget — the pre-refresh attempts
 	 * consumed it). Operations must fetch their auth headers inside the operation lambda so the replay
 	 * carries the refreshed bearer. Auth calls themselves pass bAllowAuthRetry=false.
+	 *
+	 * A 403 is never answered with a refresh: every sign-in failure the backend sends is a 401, and a 403 means
+	 * "not allowed" (not the host, not the party leader), which a new token would not change. The refresh is for the
+	 * sign-in the call went out under, so a 401 that lands after a sign-out or another sign-in refreshes nothing.
 	 */
 	template <typename T>
 	FFlockRequestHandle Execute(FFlockRetryHandler::FOperation<T> Operation, TFunction<void(TFlockResult<T>)> OnComplete,
@@ -120,8 +114,10 @@ protected:
 				// Some failures are a normal outcome the caller converts into a success (registering
 				// an identity that already exists). Logging those as errors is noise that devalues
 				// the real ones, so the caller can declare them and they drop to debug.
-				const FString Line = FString::Printf(TEXT("%s failed: %s"), *LoggedContext, *Result.Error.Message);
-				if (IsExpectedFailure && IsExpectedFailure(Result.Error))
+				// A cancel is the game's or the SDK's own choice (a handle cancelled, a sign-in ended), so it is no failure either.
+				// What went wrong and how to fix it, as the developer reads it everywhere else.
+				const FString Line = FString::Printf(TEXT("%s failed: %s"), *LoggedContext, *Result.Error.ReasonAndFix());
+				if (Result.Error.Type == EFlockErrorType::Cancelled || (IsExpectedFailure && IsExpectedFailure(Result.Error)))
 				{
 					Log->LogDebug(Line);
 				}
@@ -138,10 +134,17 @@ protected:
 
 		FFlockRetryHandler::FOperation<T> ReplayOperation = Operation; // copy held for the post-refresh replay
 		const TSharedPtr<FFlockAuthSession> Session = AuthSession;
-		return RetryHandler.Execute<T>(MoveTemp(Operation),
-			[Log, Finish, ReplayOperation, Session, bAllowAuthRetry](TFlockResult<T> Result)
+		const int32 SentUnderSignIn = Session.IsValid() ? Session->GetSignInNumber() : 0;
+		// The call's own handle covers the attempts, the refresh and the replay after it: the retry handler's handle ends
+		// when its attempts do, so cancelling through it alone left the replay running.
+		const TSharedRef<FFlockCancelToken> CallToken = MakeShared<FFlockCancelToken>();
+		const TSharedRef<FFlockRequestHandle> ReplayHandle = MakeShared<FFlockRequestHandle>();
+		const TWeakPtr<FFlockCancelToken> WeakCallToken = CallToken;
+		const FFlockRequestHandle RetryHandle = RetryHandler.Execute<T>(MoveTemp(Operation),
+			[Log, Finish, ReplayOperation, Session, SentUnderSignIn, bAllowAuthRetry, WeakCallToken, ReplayHandle](TFlockResult<T> Result)
 			{
 				const bool bTryRefresh = !Result.bSuccess && Result.Error.Type == EFlockErrorType::Auth
+					&& Result.Error.StatusCode != 403
 					&& bAllowAuthRetry && Session.IsValid() && Session->IsAuthenticated();
 				if (!bTryRefresh)
 				{
@@ -150,21 +153,75 @@ protected:
 				}
 
 				Log->LogDebug(TEXT("Access token rejected; attempting silent refresh"));
-				Session->RefreshAccessToken([Finish, ReplayOperation, Result](bool bRefreshed)
+				Session->RefreshAccessToken(SentUnderSignIn, [Finish, ReplayOperation, Result, WeakCallToken, ReplayHandle](bool bRefreshed)
 				{
+					const TSharedPtr<FFlockCancelToken> Call = WeakCallToken.Pin();
+					if (Call.IsValid() && Call->bCancelled)
+					{
+						Finish(TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Cancelled, TEXT("Request cancelled"))));
+						return;
+					}
 					if (!bRefreshed)
 					{
 						// Surface the original error; the session already raised OnAuthExpired if terminal.
 						Finish(Result);
 						return;
 					}
-					ReplayOperation([Finish](TFlockResult<T> ReplayResult)
+					*ReplayHandle = ReplayOperation([Finish](TFlockResult<T> ReplayResult)
 					{
 						Finish(ReplayResult);
 					});
 				});
 			},
 			bIdempotent, MaxRetriesOverride, IsExpectedFailure);
+		CallToken->Canceller = [RetryHandle, ReplayHandle]()
+		{
+			FFlockRequestHandle Attempts = RetryHandle;
+			Attempts.Cancel();
+			ReplayHandle->Cancel();
+		};
+		return FFlockRequestHandle(CallToken);
+	}
+
+	/**
+	 * For a call that acts as the signed-in player through their token: every attempt, retries and the replay after a
+	 * token refresh included, goes out only while the sign-in current now lasts, and fails Cancelled once it has ended,
+	 * so a retry never carries the next player's token. A call made signed out stops the same way once someone signs in.
+	 */
+	template <typename T>
+	FFlockRetryHandler::FOperation<T> ForTheCurrentSignInOnly(FFlockRetryHandler::FOperation<T> Operation) const
+	{
+		if (!AuthSession.IsValid())
+		{
+			return Operation;
+		}
+		return ForSignInOnly<T>(AuthSession.ToSharedRef(), AuthSession->GetSignInNumber(), MoveTemp(Operation));
+	}
+
+	/**
+	 * The same for a sign-in taken earlier, by a call that does other work first (a purchase reads its item, a schedule
+	 * looks up its template): a sign-in change meanwhile must not send it as the next player.
+	 */
+	template <typename T>
+	static FFlockRetryHandler::FOperation<T> ForSignInOnly(const TSharedRef<FFlockAuthSession>& Session, int32 SignInNumber,
+		FFlockRetryHandler::FOperation<T> Operation)
+	{
+		return [Session, SignInNumber, Operation = MoveTemp(Operation)](TFunction<void(TFlockResult<T>)> OnResult) -> FFlockRequestHandle
+		{
+			if (Session->GetSignInNumber() != SignInNumber)
+			{
+				OnResult(TFlockResult<T>::Fail(SignInEndedError()));
+				return FFlockRequestHandle();
+			}
+			return Operation(MoveTemp(OnResult));
+		};
+	}
+
+	/** The failure of a call whose sign-in ended before it was sent. */
+	static FFlockError SignInEndedError()
+	{
+		return FFlockError::Make(EFlockErrorType::Cancelled,
+			TEXT("The player signed out or another player signed in, so the request was not sent"));
 	}
 
 	// ── Snapshot-backed fetches ──
@@ -233,16 +290,21 @@ protected:
 	/** True when the server is considered reachable (default: always). */
 	bool IsServerReachable() const { return !ReachabilityProbe || ReachabilityProbe(); }
 
-	/** Reports a Validation failure and returns false when a required argument is empty. */
+	/**
+	 * Reports a Validation failure and returns false when a required argument is empty. Fix says what to do about it;
+	 * without one, the failure asks for the argument by Name.
+	 */
 	template <typename T>
-	bool RequireNotEmpty(const FString& Value, const FString& Name, const TFunction<void(TFlockResult<T>)>& OnComplete) const
+	bool RequireNotEmpty(const FString& Value, const FString& Name, const TFunction<void(TFlockResult<T>)>& OnComplete,
+		const FString& Fix = FString()) const
 	{
 		if (Value.IsEmpty())
 		{
 			if (OnComplete)
 			{
-				OnComplete(TFlockResult<T>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-					FString::Printf(TEXT("%s cannot be null or empty"), *Name))));
+				OnComplete(TFlockResult<T>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+					FString::Printf(TEXT("%s is empty"), *Name),
+					Fix.IsEmpty() ? FString::Printf(TEXT("Pass a %s; this call cannot run without one."), *Name) : Fix)));
 			}
 			return false;
 		}
@@ -316,8 +378,10 @@ private:
 				}
 
 				// A non-permanent failure with a cache to fall back on serves the cache; a permanent 4xx
-				// (an authoritative answer, e.g. the config was deleted) propagates regardless.
-				if (bHasCache && !FFlockError::IsPermanentStatus(Result.Error.StatusCode))
+				// (an authoritative answer, e.g. the config was deleted) propagates regardless, and so does a
+				// cancelled call, whose caller gave up or whose sign-in ended.
+				if (bHasCache && Result.Error.Type != EFlockErrorType::Cancelled
+					&& !FFlockError::IsPermanentStatus(Result.Error.StatusCode))
 				{
 					TValue Value;
 					if (Deserialize(Cached, Value))
@@ -342,28 +406,29 @@ private:
 	TSharedPtr<FFlockSnapshotStore> SnapshotStore;
 	FString GameVersionId;
 	TFunction<bool()> ReachabilityProbe;
-	FString CallOrigin = TEXT("C++");
 };
 
 /**
- * Tags a provider's calls with their caller for the duration of a synchronous dispatch, then restores
- * the previous origin. The Blueprint async nodes wrap their provider call in one of these so the log
- * names the graph that made the request; anything dispatched outside a scope logs as "C++".
+ * Tags the calls dispatched while it is open with their caller, then restores the previous origin. The Blueprint async nodes
+ * wrap their call in one of these so the log names the graph that made the request: every provider's line and the HTTP lines
+ * beneath it, whichever provider's requests the call goes through. Anything dispatched outside a scope logs as "C++". Safe
+ * because dispatch is synchronous and game-thread only: the origin is folded into the log strings before the call returns.
  */
 struct FLOCK_API FFlockCallOriginScope
 {
-	FFlockCallOriginScope(FFlockProviderBase& InProvider, const FString& Origin)
-		: Provider(InProvider)
-		, Previous(InProvider.GetCallOrigin())
+	explicit FFlockCallOriginScope(const FString& Origin)
+		: Previous(FFlockCallOrigin::Get())
 	{
-		Provider.SetCallOrigin(Origin);
+		FFlockCallOrigin::Set(Origin);
 	}
 
 	~FFlockCallOriginScope()
 	{
-		Provider.SetCallOrigin(Previous);
+		FFlockCallOrigin::Set(Previous);
 	}
 
-	FFlockProviderBase& Provider;
+	FFlockCallOriginScope(const FFlockCallOriginScope&) = delete;
+	FFlockCallOriginScope& operator=(const FFlockCallOriginScope&) = delete;
+
 	FString Previous;
 };

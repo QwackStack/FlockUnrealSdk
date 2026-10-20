@@ -1,33 +1,22 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Blueprint/FlockPlayerAsyncActions.h"
+#include "Blueprint/FlockBlueprintCallOrigin.h"
+#include "Http/FlockErrorHints.h"
 
-#include "Engine/BlueprintGeneratedClass.h"
 #include "FlockSubsystem.h"
 #include "Providers/FlockPlayerProvider.h"
 
 namespace
 {
-	FString ResolveCallOrigin(const UObject* WorldContextObject)
-	{
-		if (const UBlueprintGeneratedClass* BlueprintClass =
-			WorldContextObject ? Cast<UBlueprintGeneratedClass>(WorldContextObject->GetClass()) : nullptr)
-		{
-			FString AssetName = BlueprintClass->GetName();
-			AssetName.RemoveFromEnd(TEXT("_C"));
-			return FString::Printf(TEXT("Blueprint '%s'"), *AssetName);
-		}
-		return TEXT("Blueprint node");
-	}
-
 	FFlockPlayerProvider* ResolvePlayer(UObject* WorldContextObject, FFlockError& OutError)
 	{
 		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
 		FFlockPlayerProvider* Provider = Sdk ? Sdk->GetPlayerProvider() : nullptr;
 		if (!Provider)
 		{
-			OutError = FFlockError::Make(EFlockErrorType::Validation,
-				TEXT("Flock player provider is not available. Initialize the SDK first."));
+			OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("Flock player data is not available: Flock is not initialized"), FFlockErrorHints::InitializeFlockFirst());
 		}
 		return Provider;
 	}
@@ -54,7 +43,7 @@ void UFlockGetPlayerDataAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetPlayerDataAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetDataById(PlayerDataId, [WeakThis](TFlockResult<FFlockPlayerData> Result)
 	{
 		if (UFlockGetPlayerDataAction* Self = WeakThis.Get())
@@ -101,7 +90,7 @@ void UFlockGetAllPlayerDataAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetAllPlayerDataAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetAllData(PlayerId, Page, Limit, [WeakThis](TFlockResult<FFlockPlayerDataPage> Result)
 	{
 		if (UFlockGetAllPlayerDataAction* Self = WeakThis.Get())
@@ -131,7 +120,7 @@ UFlockGetMyPlayerDataAction* UFlockGetMyPlayerDataAction::GetMyDataByTemplate(UO
 	UFlockGetMyPlayerDataAction* Action = NewObject<UFlockGetMyPlayerDataAction>();
 	Action->WorldContextObject = WorldContextObject;
 	Action->bByTag = false;
-	Action->Argument = PlayerTemplateId;
+	Action->TemplateIdOrTag = PlayerTemplateId;
 	return Action;
 }
 
@@ -140,7 +129,7 @@ UFlockGetMyPlayerDataAction* UFlockGetMyPlayerDataAction::GetMyDataByTag(UObject
 	UFlockGetMyPlayerDataAction* Action = NewObject<UFlockGetMyPlayerDataAction>();
 	Action->WorldContextObject = WorldContextObject;
 	Action->bByTag = true;
-	Action->Argument = Tag;
+	Action->TemplateIdOrTag = Tag;
 	return Action;
 }
 
@@ -155,7 +144,7 @@ void UFlockGetMyPlayerDataAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetMyPlayerDataAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	auto OnDone = [WeakThis](TFlockResult<FFlockPlayerData> Result)
 	{
 		if (UFlockGetMyPlayerDataAction* Self = WeakThis.Get())
@@ -166,11 +155,11 @@ void UFlockGetMyPlayerDataAction::Activate()
 
 	if (bByTag)
 	{
-		Provider->GetMyDataByTag(Argument, OnDone);
+		Provider->GetMyDataByTag(TemplateIdOrTag, OnDone);
 	}
 	else
 	{
-		Provider->GetMyDataByTemplate(Argument, OnDone);
+		Provider->GetMyDataByTemplate(TemplateIdOrTag, OnDone);
 	}
 }
 
@@ -207,7 +196,7 @@ void UFlockGetPlayerTemplatesAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetPlayerTemplatesAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetTemplates([WeakThis](TFlockResult<TArray<FFlockPlayerTemplateSchema>> Result)
 	{
 		if (UFlockGetPlayerTemplatesAction* Self = WeakThis.Get())
@@ -237,7 +226,7 @@ UFlockGetPlayerTemplateAction* UFlockGetPlayerTemplateAction::GetPlayerTemplateB
 	UFlockGetPlayerTemplateAction* Action = NewObject<UFlockGetPlayerTemplateAction>();
 	Action->WorldContextObject = WorldContextObject;
 	Action->Mode = ELookup::ById;
-	Action->Argument = PlayerTemplateId;
+	Action->TemplateIdNameOrTag = PlayerTemplateId;
 	return Action;
 }
 
@@ -246,7 +235,7 @@ UFlockGetPlayerTemplateAction* UFlockGetPlayerTemplateAction::GetPlayerTemplateB
 	UFlockGetPlayerTemplateAction* Action = NewObject<UFlockGetPlayerTemplateAction>();
 	Action->WorldContextObject = WorldContextObject;
 	Action->Mode = ELookup::ByName;
-	Action->Argument = Name;
+	Action->TemplateIdNameOrTag = Name;
 	return Action;
 }
 
@@ -255,7 +244,7 @@ UFlockGetPlayerTemplateAction* UFlockGetPlayerTemplateAction::GetPlayerTemplateB
 	UFlockGetPlayerTemplateAction* Action = NewObject<UFlockGetPlayerTemplateAction>();
 	Action->WorldContextObject = WorldContextObject;
 	Action->Mode = ELookup::ByTag;
-	Action->Argument = Tag;
+	Action->TemplateIdNameOrTag = Tag;
 	return Action;
 }
 
@@ -270,7 +259,7 @@ void UFlockGetPlayerTemplateAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetPlayerTemplateAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	auto OnDone = [WeakThis](TFlockResult<FFlockPlayerTemplateSchema> Result)
 	{
 		if (UFlockGetPlayerTemplateAction* Self = WeakThis.Get())
@@ -282,14 +271,14 @@ void UFlockGetPlayerTemplateAction::Activate()
 	switch (Mode)
 	{
 	case ELookup::ByName:
-		Provider->GetTemplateByName(Argument, OnDone);
+		Provider->GetTemplateByName(TemplateIdNameOrTag, OnDone);
 		break;
 	case ELookup::ByTag:
-		Provider->GetTemplateByTag(Argument, OnDone);
+		Provider->GetTemplateByTag(TemplateIdNameOrTag, OnDone);
 		break;
 	case ELookup::ById:
 	default:
-		Provider->GetTemplateById(Argument, OnDone);
+		Provider->GetTemplateById(TemplateIdNameOrTag, OnDone);
 		break;
 	}
 }
@@ -328,7 +317,7 @@ void UFlockGetTemplatePlayerDataAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetTemplatePlayerDataAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetTemplatePlayerData(PlayerTemplateId, [WeakThis](TFlockResult<TArray<FFlockPlayerData>> Result)
 	{
 		if (UFlockGetTemplatePlayerDataAction* Self = WeakThis.Get())
@@ -372,7 +361,7 @@ void UFlockGetPlayerBanAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetPlayerBanAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(*Provider, ResolveCallOrigin(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
 	Provider->GetBan(PlayerId, [WeakThis](TFlockResult<FFlockPlayerBan> Result)
 	{
 		if (UFlockGetPlayerBanAction* Self = WeakThis.Get())

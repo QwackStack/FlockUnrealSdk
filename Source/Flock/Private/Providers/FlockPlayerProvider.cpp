@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Providers/FlockPlayerProvider.h"
+#include "Http/FlockErrorHints.h"
 
 #include "Http/FlockEndpoints.h"
 
@@ -83,7 +84,7 @@ void FFlockPlayerProvider::GetMyData(int32 Page, int32 Limit,
 	// call — the opposite of what this overload promises. Signed out is a Validation failure, not a
 	// silent whole-game read.
 	const FString PlayerId = Session->GetPlayerId();
-	if (!RequireNotEmpty(PlayerId, TEXT("Current Player ID (sign in first)"), OnComplete))
+	if (!RequireNotEmpty(PlayerId, TEXT("Signed-in player's id"), OnComplete, FFlockErrorHints::SignInFirst()))
 	{
 		return;
 	}
@@ -97,7 +98,7 @@ void FFlockPlayerProvider::GetMyDataByTemplate(const FString& PlayerTemplateId, 
 		return;
 	}
 	const FString PlayerId = Session->GetPlayerId();
-	if (!RequireNotEmpty(PlayerId, TEXT("Current Player ID (sign in first)"), OnComplete))
+	if (!RequireNotEmpty(PlayerId, TEXT("Signed-in player's id"), OnComplete, FFlockErrorHints::SignInFirst()))
 	{
 		return;
 	}
@@ -326,8 +327,8 @@ void FFlockPlayerProvider::GetTemplateByTag(const FString& Tag, TFunction<void(T
 					return;
 				}
 			}
-			OnComplete(TFlockResult<FFlockPlayerTemplateSchema>::Fail(FFlockError::Make(EFlockErrorType::Validation,
-				FString::Printf(TEXT("No player template tagged '%s' for this game."), *TagCopy))));
+			OnComplete(TFlockResult<FFlockPlayerTemplateSchema>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				FString::Printf(TEXT("No player template is tagged '%s' in this game version"), *TagCopy), TEXT("Tag a player-data template with it in the Flock dashboard, under the Game Version this build runs."))));
 		});
 }
 
@@ -356,7 +357,7 @@ void FFlockPlayerProvider::GetTemplatePlayerData(const FString& PlayerTemplateId
 void FFlockPlayerProvider::GetBan(const FString& PlayerId, TFunction<void(TFlockResult<FFlockPlayerBan>)> OnComplete)
 {
 	const FString ResolvedPlayerId = PlayerId.IsEmpty() ? Session->GetPlayerId() : PlayerId;
-	if (!RequireNotEmpty(ResolvedPlayerId, TEXT("Player ID (sign in first)"), OnComplete))
+	if (!RequireNotEmpty(ResolvedPlayerId, TEXT("Player ID"), OnComplete, FFlockErrorHints::SignInFirst()))
 	{
 		return;
 	}
@@ -400,7 +401,10 @@ void FFlockPlayerProvider::ApplyServerPlayerData(const FFlockPlayerData& Row)
 	// off a single row, and every other template would then read as absent without a refetch.
 	if (TMap<FString, FFlockPlayerData>* Rows = PlayerDataByPlayer.Find(Row.PlayerId))
 	{
-		Rows->Add(Row.PlayerTemplateId, Row);
+		// A refusal describes the one write it came back with, never the row a later read finds.
+		FFlockPlayerData Kept = Row;
+		Kept.LeaderboardRefusals.Reset();
+		Rows->Add(Row.PlayerTemplateId, Kept);
 	}
 }
 

@@ -40,6 +40,11 @@ namespace ProtokitePlaytestVideoTesting
 		int32 Height = 0;
 		uint64 TimecodeScaleNanoseconds = 0;
 		double DurationMs = -1.0;
+		/** The video track's colour standard, -1 for each the file does not state. */
+		int32 MatrixCoefficients = -1;
+		int32 Range = -1;
+		int32 TransferCharacteristics = -1;
+		int32 Primaries = -1;
 		/** False while a recording is still being written, or was cut off: its segment keeps the "size unknown" marker. */
 		bool bSegmentSizeWritten = false;
 		int64 FileBytes = 0;
@@ -198,6 +203,17 @@ namespace ProtokitePlaytestVideoTesting
 									{
 										Out.Height = static_cast<int32>(ReadBigEndian(Bytes, VideoStart, static_cast<int32>(VideoEnd - VideoStart)));
 									}
+									else if (VideoId == 0x55B0)
+									{
+										VisitEbmlChildren(Bytes, VideoStart, VideoEnd, [&Bytes, &Out](uint64 ColourId, int64 ColourStart, int64 ColourEnd, bool)
+										{
+											const int32 Value = static_cast<int32>(ReadBigEndian(Bytes, ColourStart, static_cast<int32>(ColourEnd - ColourStart)));
+											if (ColourId == 0x55B1) { Out.MatrixCoefficients = Value; }
+											else if (ColourId == 0x55B9) { Out.Range = Value; }
+											else if (ColourId == 0x55BA) { Out.TransferCharacteristics = Value; }
+											else if (ColourId == 0x55BB) { Out.Primaries = Value; }
+										});
+									}
 								});
 							}
 						});
@@ -286,13 +302,15 @@ namespace ProtokitePlaytestVideoTesting
 		{
 			++FramesAskedFor;
 			FProtokitePlaytestVideoFrame& Frame = Arrived.AddDefaulted_GetRef();
-			Frame.Size = FrameSize;
+			// A window that changed shape hands over a smaller picture of that shape.
+			const FIntPoint Size = PictureSize.X > 0 && PictureSize.Y > 0 ? PictureSize : FrameSize;
+			Frame.Size = Size;
 			Frame.TimestampMs = TimestampMs;
 			if (bNoisyPictures)
 			{
 				// Noise cannot be compressed, so the file grows as fast as the bitrate lets it.
 				FRandomStream Random(static_cast<int32>(TimestampMs));
-				Frame.Pixels.SetNum(FrameSize.X * FrameSize.Y);
+				Frame.Pixels.SetNum(Size.X * Size.Y);
 				for (FColor& Pixel : Frame.Pixels)
 				{
 					Pixel = FColor(static_cast<uint8>(Random.RandHelper(256)), static_cast<uint8>(Random.RandHelper(256)),
@@ -301,7 +319,11 @@ namespace ProtokitePlaytestVideoTesting
 			}
 			else
 			{
-				Frame.Pixels = MakeTestPixels(FrameSize, TimestampMs);
+				Frame.Pixels = MakeTestPixels(Size, TimestampMs);
+			}
+			if (bPixelsShortOfTheSize && Frame.Pixels.Num() > 0)
+			{
+				Frame.Pixels.SetNum(Frame.Pixels.Num() - 1);
 			}
 		}
 
@@ -318,6 +340,10 @@ namespace ProtokitePlaytestVideoTesting
 		}
 
 		FIntPoint FrameSize;
+		/** When set, frames come at this size instead, as after the window changed shape. */
+		FIntPoint PictureSize = FIntPoint::ZeroValue;
+		/** Frames come one pixel short of their stated size, as a broken capture would hand them over. */
+		bool bPixelsShortOfTheSize = false;
 		TArray<FProtokitePlaytestVideoFrame> Arrived;
 		int32 FramesAskedFor = 0;
 		bool bReadyForAnotherFrame = true;
@@ -330,7 +356,9 @@ namespace ProtokitePlaytestVideoTesting
 	 * Decodes every frame of a written file with libvpx's VP9 decoder. Returns how many pictures came out, and the
 	 * average brightness of the last one in OutLastAverageBrightness, or -1 when a frame could not be decoded.
 	 */
-	inline int32 DecodeVideoFile(const FVideoFileRead& File, FIntPoint& OutPictureSize, double& OutLastAverageBrightness)
+	/** Decodes every frame; the count, or -1. OutLeftEdges, when given, gets each picture's average brightness over its four leftmost columns. */
+	inline int32 DecodeVideoFile(const FVideoFileRead& File, FIntPoint& OutPictureSize, double& OutLastAverageBrightness,
+		TArray<double>* OutLeftEdges = nullptr)
 	{
 		vpx_codec_ctx_t Decoder;
 		if (vpx_codec_dec_init(&Decoder, vpx_codec_vp9_dx(), nullptr, 0) != VPX_CODEC_OK)
@@ -360,12 +388,85 @@ namespace ProtokitePlaytestVideoTesting
 					}
 				}
 				OutLastAverageBrightness = Sum / (static_cast<double>(Picture->d_w) * Picture->d_h);
+				if (OutLeftEdges != nullptr)
+				{
+					const uint32 EdgeColumns = FMath::Min<uint32>(4, Picture->d_w);
+					double EdgeSum = 0.0;
+					for (uint32 Row = 0; Row < Picture->d_h; ++Row)
+					{
+						const uint8* Line = Picture->planes[VPX_PLANE_Y] + Row * Picture->stride[VPX_PLANE_Y];
+						for (uint32 Column = 0; Column < EdgeColumns; ++Column)
+						{
+							EdgeSum += Line[Column];
+						}
+					}
+					OutLeftEdges->Add(EdgeSum / (static_cast<double>(EdgeColumns) * Picture->d_h));
+				}
 			}
 		}
 		vpx_codec_destroy(&Decoder);
 		return Pictures;
 	}
 #endif
+
+	/** Takes the video track's colour element out of a file's header, the way builds before it wrote the header, fixing the sizes around it. */
+	inline bool RemoveColourElementForTesting(TArray<uint8>& Bytes)
+	{
+		int64 TracksSizeAt = -1, EntrySizeAt = -1, VideoSizeAt = -1, ColourAt = -1, ColourBytes = 0;
+		VisitEbmlChildren(Bytes, 0, Bytes.Num(), [&](uint64 Id, int64 Start, int64 End, bool)
+		{
+			if (Id != 0x18538067)
+			{
+				return;
+			}
+			VisitEbmlChildren(Bytes, Start, Bytes.Num(), [&](uint64 SegmentId, int64 SegmentStart, int64 SegmentEnd, bool)
+			{
+				if (SegmentId != 0x1654AE6B)
+				{
+					return;
+				}
+				TracksSizeAt = SegmentStart - 4;
+				VisitEbmlChildren(Bytes, SegmentStart, SegmentEnd, [&](uint64, int64 EntryStart, int64 EntryEnd, bool)
+				{
+					EntrySizeAt = EntryStart - 4;
+					VisitEbmlChildren(Bytes, EntryStart, EntryEnd, [&](uint64 TrackId, int64 TrackStart, int64 TrackEnd, bool)
+					{
+						if (TrackId != 0xE0)
+						{
+							return;
+						}
+						VideoSizeAt = TrackStart - 1;
+						VisitEbmlChildren(Bytes, TrackStart, TrackEnd, [&](uint64 VideoId, int64 VideoStart, int64 VideoEnd, bool)
+						{
+							if (VideoId == 0x55B0)
+							{
+								ColourAt = VideoStart - 3;
+								ColourBytes = VideoEnd - ColourAt;
+							}
+						});
+					});
+				});
+			});
+		});
+		if (TracksSizeAt < 0 || EntrySizeAt < 0 || VideoSizeAt < 0 || ColourAt < 0)
+		{
+			return false;
+		}
+		auto Shrink4 = [&Bytes, ColourBytes](int64 At)
+		{
+			uint32 Size = (static_cast<uint32>(Bytes[At]) << 24) | (Bytes[At + 1] << 16) | (Bytes[At + 2] << 8) | Bytes[At + 3];
+			Size = 0x10000000 | ((Size & 0x0FFFFFFF) - static_cast<uint32>(ColourBytes));
+			Bytes[At] = static_cast<uint8>(Size >> 24);
+			Bytes[At + 1] = static_cast<uint8>(Size >> 16);
+			Bytes[At + 2] = static_cast<uint8>(Size >> 8);
+			Bytes[At + 3] = static_cast<uint8>(Size);
+		};
+		Shrink4(TracksSizeAt);
+		Shrink4(EntrySizeAt);
+		Bytes[VideoSizeAt] = static_cast<uint8>(0x80 | ((Bytes[VideoSizeAt] & 0x7F) - ColourBytes));
+		Bytes.RemoveAt(ColourAt, ColourBytes);
+		return true;
+	}
 }
 
 #endif

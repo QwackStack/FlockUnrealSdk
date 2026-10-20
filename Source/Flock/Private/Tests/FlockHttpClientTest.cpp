@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Misc/AutomationTest.h"
+#include "Misc/FlockEngineCompat.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -10,6 +11,7 @@
 #include "FlockLogger.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockRecordingLogger.h"
+#include "Tests/Support/FlockTestSafeIndex.h"
 
 namespace
 {
@@ -79,7 +81,7 @@ bool FFlockHttpClientDeserializeTest::RunTest(const FString& Parameters)
 	Client->Get<FFlockGameVersionSchema>(Url, {}, [&](TFlockResult<FFlockGameVersionSchema> R) { EmptyType = R.Error.Type; EmptyMessage = R.Error.Message; });
 	TestEqual(TEXT("empty body -> Serialization"), static_cast<int32>(EmptyType), static_cast<int32>(EFlockErrorType::Serialization));
 	// The message says what happened, rather than reporting a parse error for a body that was never there.
-	TestTrue(TEXT("empty body -> named as empty"), EmptyMessage.Contains(TEXT("Empty response from server"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("empty body -> named as empty"), EmptyMessage.Contains(TEXT("answer was empty"), ESearchCase::CaseSensitive));
 
 	return true;
 }
@@ -143,7 +145,7 @@ bool FFlockHttpClientAcceptsNoContentTest::RunTest(const FString& Parameters)
 			TestEqualSensitive(Label + TEXT(": value"), Outcome->Value.Id, FString(Case.ExpectedId));
 			if (Fake->Requests.Num() == 1)
 			{
-				TestEqualSensitive(Label + TEXT(": method"), Fake->Requests[0].Method, FString(Method));
+				TestEqualSensitive(Label + TEXT(": method"), FlockTestAt(Fake->Requests, 0).Method, FString(Method));
 			}
 			else
 			{
@@ -161,7 +163,7 @@ bool FFlockHttpClientAcceptsNoContentTest::RunTest(const FString& Parameters)
 	Client->PostJsonRaw<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, TEXT("{}"),
 		[&RawType, &RawMessage](TFlockResult<FFlockGameVersionSchema> R) { RawType = R.Error.Type; RawMessage = R.Error.Message; });
 	TestEqual(TEXT("bare read, 204 -> Serialization"), static_cast<int32>(RawType), static_cast<int32>(EFlockErrorType::Serialization));
-	TestTrue(TEXT("bare read, 204 -> named as empty"), RawMessage.Contains(TEXT("Empty response from server"), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("bare read, 204 -> named as empty"), RawMessage.Contains(TEXT("answer was empty"), ESearchCase::CaseSensitive));
 	EFlockErrorType PatchRawType = EFlockErrorType::None;
 	Client->PatchJsonRaw<FFlockGameVersionSchema>(TEXT("http://x/test"), {}, TEXT("{}"),
 		[&PatchRawType](TFlockResult<FFlockGameVersionSchema> R) { PatchRawType = R.Error.Type; });
@@ -255,9 +257,9 @@ bool FFlockHttpClientPostJsonTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("success"), bSuccess);
 	TestEqual(TEXT("unwrapped"), Id, FString(TEXT("p-1")));
 	TestEqual(TEXT("one request"), Fake->CountTo(TEXT("login")), 1);
-	TestEqual(TEXT("method"), Fake->Requests.Last().Method, FString(TEXT("POST")));
-	TestEqual(TEXT("body passed through"), Fake->Requests.Last().JsonBody, FString(TEXT("{\"login_type\":\"email\"}")));
-	TestTrue(TEXT("has body"), Fake->Requests.Last().bHasBody);
+	TestEqual(TEXT("method"), Fake->LastRequest().Method, FString(TEXT("POST")));
+	TestEqual(TEXT("body passed through"), Fake->LastRequest().JsonBody, FString(TEXT("{\"login_type\":\"email\"}")));
+	TestTrue(TEXT("has body"), Fake->LastRequest().bHasBody);
 	return true;
 }
 
@@ -308,6 +310,132 @@ bool FFlockHttpClientTraceTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("an unreachable server says so"),
 		FFlockRecordingLogger::AnyContains(OfflineLog->Warnings, TEXT("failed to reach the server")));
 
+	// A cancel is a choice, not a failure: it stays at debug and never says the server was unreachable.
+	const TSharedRef<FFlockRecordingLogger> CancelLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> CancelClient = MakeShared<FFlockHttpClient>(Fake, CancelLog);
+	FFlockHttpResponse Cancelled;
+	Cancelled.Result = EFlockHttpResult::Cancelled;
+	Fake->On(TEXT("dropped"), Cancelled);
+	CancelClient->Get<FFlockGameVersionSchema>(TEXT("http://x/dropped"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("a cancelled call is traced as cancelled"),
+		FFlockRecordingLogger::AnyContains(CancelLog->Debugs, TEXT("<- GET http://x/dropped [C++] cancelled")));
+	TestEqual(TEXT("and warns nothing"), CancelLog->Warnings.Num(), 0);
+
+	// A timeout reached the network, so it is not reported as an unreachable server either.
+	const TSharedRef<FFlockRecordingLogger> SlowLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> SlowClient = MakeShared<FFlockHttpClient>(Fake, SlowLog);
+	Fake->On(TEXT("slow"), FFlockFakeTransport::Timeout());
+	SlowClient->Get<FFlockGameVersionSchema>(TEXT("http://x/slow"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("a timeout says it had no answer in time"),
+		FFlockRecordingLogger::AnyContains(SlowLog->Warnings, TEXT("had no answer within the timeout")));
+	TestFalse(TEXT("and not that the server was unreachable"),
+		FFlockRecordingLogger::AnyContains(SlowLog->Warnings, TEXT("failed to reach the server")));
+
+	return true;
+}
+
+// ── "The player's search" answered not found is an answer a party refresh gets every few seconds, so it is traced at debug ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientNoSearchTraceTest, "Flock.Http.Client.APlayerWithNoSearchIsTracedAtDebugAndNothingElseIs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientNoSearchTraceTest::RunTest(const FString& Parameters)
+{
+	const FString NoSearch = TEXT("{\"detail\":{\"code\":\"matchmaking.ticket_not_found\",\"message\":\"Ticket not found\"}}");
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> Client = MakeShared<FFlockHttpClient>(Fake, Log);
+	Fake->On(TEXT("ticket/current"), FFlockFakeTransport::Status(404, NoSearch));
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/v1/matchmaking/ticket/current"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("traced at debug, saying what it means"),
+		FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("<- 404 GET http://x/v1/matchmaking/ticket/current")));
+	TestTrue(TEXT("the player has no search"), FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("the player has no search")));
+	TestEqual(TEXT("no warning"), Log->Warnings.Num(), 0);
+
+	// Counter-cases, each still a warning: the same code from another route, and another code from this route.
+	const TSharedRef<FFlockRecordingLogger> TicketLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> TicketClient = MakeShared<FFlockHttpClient>(Fake, TicketLog);
+	Fake->On(TEXT("ticket/01TICKET"), FFlockFakeTransport::Status(404, NoSearch));
+	TicketClient->Get<FFlockGameVersionSchema>(TEXT("http://x/v1/matchmaking/ticket/01TICKET000000000000000001"), {},
+		[](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("a search read by its id and not found warns"),
+		FFlockRecordingLogger::AnyContains(TicketLog->Warnings, TEXT("<- 404 GET http://x/v1/matchmaking/ticket/01TICKET")));
+
+	const TSharedRef<FFlockRecordingLogger> OtherLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> OtherClient = MakeShared<FFlockHttpClient>(Fake, OtherLog);
+	Fake->On(TEXT("ticket/current"), FFlockFakeTransport::Status(404, TEXT("{\"detail\":{\"code\":\"request.not_found\",\"message\":\"Not Found\"}}")));
+	OtherClient->Get<FFlockGameVersionSchema>(TEXT("http://x/v1/matchmaking/ticket/current"), {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("another 404 from the same route warns, with its code"),
+		FFlockRecordingLogger::AnyContains(OtherLog->Warnings, TEXT("request.not_found")));
+	TestFalse(TEXT("and never says the player has no search"), FFlockRecordingLogger::AnyContains(OtherLog->Debugs, TEXT("no search")));
+	return true;
+}
+
+// ── A join token Flock did not vouch for is an answer the host's check acts on, and anyone can send one: traced at debug ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientRefusedJoinTokenTraceTest, "Flock.Http.Client.AJoinTokenFlockDidNotVouchForIsTracedAtDebugAndNothingElseIs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientRefusedJoinTokenTraceTest::RunTest(const FString& Parameters)
+{
+	const FString NotVouched = TEXT("{\"detail\":{\"code\":\"multiplayer.invalid_join_token\",\"message\":\"Join token is not valid\"}}");
+	const FString Route = TEXT("http://x/v1/multiplayer/sessions/01SESSION/verify-join-token");
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> Client = MakeShared<FFlockHttpClient>(Fake, Log);
+	Fake->On(TEXT("verify-join-token"), FFlockFakeTransport::Status(400, NotVouched));
+	Client->Get<FFlockGameVersionSchema>(Route, {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("traced at debug, saying what it means"),
+		FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("<- 400 GET http://x/v1/multiplayer/sessions/01SESSION/verify-join-token")));
+	TestTrue(TEXT("the host turns that player away"), FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("so the host turns that player away")));
+	TestEqual(TEXT("no warning"), Log->Warnings.Num(), 0);
+
+	// Counter-cases, each still a warning: the same code from another route, another code from this route, and this route turning
+	// the host's checks away for volume (what the host's warning on an unanswered check points at).
+	const TSharedRef<FFlockRecordingLogger> TokenLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> TokenClient = MakeShared<FFlockHttpClient>(Fake, TokenLog);
+	Fake->On(TEXT("join-token-elsewhere"), FFlockFakeTransport::Status(400, NotVouched));
+	TokenClient->Get<FFlockGameVersionSchema>(TEXT("http://x/v1/multiplayer/sessions/01SESSION/join-token-elsewhere"), {},
+		[](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("the same code from another route warns"), FFlockRecordingLogger::AnyContains(TokenLog->Warnings, TEXT("multiplayer.invalid_join_token")));
+
+	const TSharedRef<FFlockRecordingLogger> OtherLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> OtherClient = MakeShared<FFlockHttpClient>(Fake, OtherLog);
+	Fake->On(TEXT("verify-join-token"), FFlockFakeTransport::Status(403, TEXT("{\"detail\":{\"code\":\"multiplayer.not_host\",\"message\":\"Not the host\"}}")));
+	OtherClient->Get<FFlockGameVersionSchema>(Route, {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("another code from this route warns, with its code"), FFlockRecordingLogger::AnyContains(OtherLog->Warnings, TEXT("multiplayer.not_host")));
+	TestFalse(TEXT("and never says the host turns a player away"), FFlockRecordingLogger::AnyContains(OtherLog->Debugs, TEXT("turns that player away")));
+
+	const TSharedRef<FFlockRecordingLogger> BusyLog = MakeShared<FFlockRecordingLogger>();
+	const TSharedRef<FFlockHttpClient> BusyClient = MakeShared<FFlockHttpClient>(Fake, BusyLog);
+	Fake->On(TEXT("verify-join-token"), FFlockFakeTransport::Status(429,
+		TEXT("{\"detail\":{\"code\":\"request.rate_limited\",\"message\":\"More than 60 join token checks a minute from this host\"}}")));
+	BusyClient->Get<FFlockGameVersionSchema>(Route, {}, [](TFlockResult<FFlockGameVersionSchema>) {});
+	TestTrue(TEXT("checks turned away for volume warn"), FFlockRecordingLogger::AnyContains(BusyLog->Warnings, TEXT("<- 429 GET")));
+	return true;
+}
+
+// ── A Retry-After the server got wrong never makes a retry wait less than nothing ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHttpClientNegativeRetryAfterTest, "Flock.Http.Client.NegativeRetryAfterMeansNow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHttpClientNegativeRetryAfterTest::RunTest(const FString& Parameters)
+{
+	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
+	const TSharedRef<FFlockHttpClient> Client = MakeClient(Fake);
+
+	FFlockHttpResponse Busy = FFlockFakeTransport::Status(429, TEXT(""));
+	Busy.RetryAfterHeader = TEXT("-5");
+	Fake->On(TEXT("busy"), Busy);
+	FFlockError Error;
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/busy"), {},
+		[&Error](TFlockResult<FFlockGameVersionSchema> R) { Error = R.Error; });
+	TestTrue(TEXT("the header was read"), Error.bHasRetryAfter);
+	TestEqual(TEXT("a negative wait reads as none"), Error.RetryAfterSeconds, 0.f);
+
+	Busy.RetryAfterHeader = TEXT("7");
+	Fake->On(TEXT("busy"), Busy);
+	Client->Get<FFlockGameVersionSchema>(TEXT("http://x/busy"), {},
+		[&Error](TFlockResult<FFlockGameVersionSchema> R) { Error = R.Error; });
+	TestEqual(TEXT("a positive wait is kept as it is"), Error.RetryAfterSeconds, 7.f);
 	return true;
 }
 

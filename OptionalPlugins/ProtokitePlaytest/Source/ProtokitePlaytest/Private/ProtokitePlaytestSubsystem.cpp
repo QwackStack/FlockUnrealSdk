@@ -1002,7 +1002,9 @@ void UProtokitePlaytestSubsystem::StartVideoRecordingWhenPossible()
 	// One attempt per launch, whether or not it starts: a second recording would replace the first when uploaded.
 	bVideoRecordingStartedThisLaunch = true;
 
-	const FProtokitePlaytestRecordingsRoom Room = FProtokitePlaytestRecordingsFolder::MakeRoom(RecordingsFolder, Settings.DiskBudgetBytes, Settings.BytesToMakeRoomFor());
+	const EProtokitePlaytestRecordingKind NewKind = bForThePlaytest ? EProtokitePlaytestRecordingKind::Playtest : EProtokitePlaytestRecordingKind::TestVideo;
+	const FProtokitePlaytestRecordingsRoom Room = FProtokitePlaytestRecordingsFolder::MakeRoom(RecordingsFolder, Settings.DiskBudgetBytes,
+		Settings.BytesToMakeRoomFor(), NewKind);
 	const int64 BudgetMb = Settings.DiskBudgetBytes / (1024 * 1024);
 	for (const FString& Deleted : Room.PlaytestRecordingsDeleted)
 	{
@@ -1026,8 +1028,7 @@ void UProtokitePlaytestSubsystem::StartVideoRecordingWhenPossible()
 	const int64 SizeLimitBytes = Settings.MaxBytes;
 	Settings.MaxBytes = FMath::Min(Settings.MaxBytes, Room.BytesLeftInBudget);
 	FString StartError;
-	VideoRecordingRun = FProtokitePlaytestRecordingRun::Create(RecordingsFolder,
-		bForThePlaytest ? EProtokitePlaytestRecordingKind::Playtest : EProtokitePlaytestRecordingKind::TestVideo, Settings.MaxBytes, StartError);
+	VideoRecordingRun = FProtokitePlaytestRecordingRun::Create(RecordingsFolder, NewKind, Settings.MaxBytes, StartError);
 	if (VideoRecordingRun.IsValid())
 	{
 		VideoRecording = FProtokitePlaytestVideoRecording::Start(Source.ToSharedRef(), Settings, VideoRecordingRun->GetVideoFilePath(), StartError,
@@ -1278,10 +1279,11 @@ void UProtokitePlaytestSubsystem::UploadThisLaunchsRecording()
 	const FProtokitePlaytestRecordingSession Session = VideoRecordingRun->LoadSession();
 	if (Session.IsEmpty())
 	{
-		UE_LOG(LogProtokitePlaytest, Warning, TEXT("The recording cannot be uploaded: no Protokite session started for it, so it has "
-			"nowhere to go. A Protokite session starts once a player signs in and their Flock session reaches the server. The "
-			"next launch deletes this recording."));
-		NotUploadedNow(TEXT("No Protokite session started for the recording, so it has nowhere to go."));
+		UE_LOG(LogProtokitePlaytest, Warning, TEXT("The recording cannot be uploaded yet: no Protokite session has started for it, "
+			"so it has nowhere to go. A Protokite session starts once a player signs in and their Flock session reaches the "
+			"server. The recording is kept: if a session starts this launch it is saved for it and a later launch uploads it; "
+			"if none does, the next launch deletes it."));
+		NotUploadedNow(TEXT("No Protokite session has started for the recording yet, so it has nowhere to go."));
 		return;
 	}
 	if (!Flock.IsValid() || !Flock->IsInitialized())
@@ -1442,7 +1444,8 @@ private:
 
 bool UProtokitePlaytestSubsystem::CanOpenFeedbackForm() const
 {
-	return GetStatus() == EProtokitePlaytestStatus::Ready && PlaytestConfig.HasForm();
+	// Whatever the consent answer: a report is the player's own message, which is what the question says.
+	return IsThePlaytestLoaded() && PlaytestConfig.HasForm();
 }
 
 bool UProtokitePlaytestSubsystem::OpenFeedbackForm()
@@ -1578,10 +1581,18 @@ bool UProtokitePlaytestSubsystem::SendFilledInForm(const FProtokitePlaytestFormA
 		return true;
 	}
 
+	// Claimed while it is sent, so a launch sending what earlier launches kept leaves it alone.
+	const TSharedRef<TUniquePtr<IFileHandle>> Claim = MakeShared<TUniquePtr<IFileHandle>>(KeptAt.IsEmpty() ? nullptr : Spool.Claim(KeptAt));
+	if (!KeptAt.IsEmpty() && !Claim->IsValid())
+	{
+		UE_LOG(LogProtokitePlaytest, Log, TEXT("The feedback form is kept, and another launch of the game is sending it."));
+		return true;
+	}
+
 	UE_LOG(LogProtokitePlaytest, Log, TEXT("Sending the feedback form."));
 	const FString SpoolFolder = Spool.GetDefaultFolder();
 	GetOrCreateProtokiteClient()->SubmitFeedbackForm(Flock->GetRequestHeaders(), Submission,
-		[KeptAt, SpoolFolderCopy = FormSpoolFolderForTesting.Get(SpoolFolder)]
+		[KeptAt, Claim, SpoolFolderCopy = FormSpoolFolderForTesting.Get(SpoolFolder)]
 		(TFlockResult<FProtokitePlaytestFormSubmitResult> Result)
 		{
 			const FProtokitePlaytestFormSpool Done(SpoolFolderCopy);
@@ -1591,6 +1602,7 @@ bool UProtokitePlaytestSubsystem::SendFilledInForm(const FProtokitePlaytestFormA
 				{
 					Done.Forget(KeptAt);
 				}
+				FProtokitePlaytestFormSpool::Release(*Claim, KeptAt);
 				UE_LOG(LogProtokitePlaytest, Log, TEXT("The feedback form was sent."));
 				return;
 			}
@@ -1602,9 +1614,10 @@ bool UProtokitePlaytestSubsystem::SendFilledInForm(const FProtokitePlaytestFormA
 			{
 				Done.Forget(KeptAt);
 			}
+			FProtokitePlaytestFormSpool::Release(*Claim, KeptAt);
 			// Protokite names the question it refused only inside the message, so it is pulled out and said plainly. A
 			// player cannot act on it -- the form has closed -- but whoever edited the form can.
-			const FString RefusedQuestion = ProtokitePlaytestFindFieldIdInComplaint(Result.Error.ToDisplayText());
+			const FString RefusedQuestion = ProtokitePlaytestFindFieldIdInComplaint(Result.Error.ServerMessage);
 			UE_LOG(LogProtokitePlaytest, Warning, TEXT("The feedback form was not sent%s%s: %s"),
 				bServerRefusedIt ? TEXT("") : TEXT(", and is kept for a later launch"),
 				RefusedQuestion.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (the question '%s' was refused)"), *RefusedQuestion),
@@ -1629,41 +1642,85 @@ void UProtokitePlaytestSubsystem::SendFormsKeptFromEarlierLaunches()
 		return;
 	}
 
-	UE_LOG(LogProtokitePlaytest, Log, TEXT("Sending %d feedback form(s) kept from an earlier launch."), Waiting.Num());
-	const TMap<FString, FString> LaunchHeaders = Flock->GetRequestHeaders();
+	UE_LOG(LogProtokitePlaytest, Log, TEXT("Sending %d feedback form(s) kept from an earlier launch, one at a time."), Waiting.Num());
+	SendKeptForm(MakeShared<TArray<TPair<FString, FProtokitePlaytestFormSubmission>>>(Waiting), 0, Flock->GetRequestHeaders(), Folder);
+}
 
-	for (const TPair<FString, FProtokitePlaytestFormSubmission>& Kept : Waiting)
+namespace
+{
+	/**
+	 * Whether Protokite answered this form itself, so the forms behind it may still go. No answer, a gateway, a limit, a refused
+	 * key or a refusal on the way (the route never sends a 403) says nothing about the form, and the rest wait.
+	 */
+	bool IsAboutThisFormAlone(const FFlockError& Error)
 	{
-		// This launch's own key, with the Game Version ID the form's own session ran under -- the same swap a kept
-		// recording needs, and for the same reason: Protokite finds the playtest from that version.
-		TMap<FString, FString> Headers = LaunchHeaders;
-		if (!Kept.Value.FlockGameVersionId.IsEmpty())
+		const int32 Status = Error.StatusCode;
+		if (Status > 0)
 		{
-			Headers.Add(TEXT("X-Game-Version-ID"), Kept.Value.FlockGameVersionId);
+			return Status != 401 && Status != 403 && Status != 408 && Status != 429 && Status != 502 && Status != 503 && Status != 504;
 		}
+		return Error.Type == EFlockErrorType::Serialization && Error.Body.TrimStart().StartsWith(TEXT("{"));
+	}
+}
 
-		const FString Path = Kept.Key;
-		GetOrCreateProtokiteClient()->SubmitFeedbackForm(Headers, Kept.Value,
-			[Path, Folder](TFlockResult<FProtokitePlaytestFormSubmitResult> Result)
+void UProtokitePlaytestSubsystem::SendKeptForm(TSharedRef<TArray<TPair<FString, FProtokitePlaytestFormSubmission>>> Waiting, int32 Index,
+	TMap<FString, FString> LaunchHeaders, FString Folder)
+{
+	if (!Waiting->IsValidIndex(Index))
+	{
+		return;
+	}
+	const TPair<FString, FProtokitePlaytestFormSubmission> Kept = (*Waiting)[Index];
+	const TSharedRef<TUniquePtr<IFileHandle>> Claim = MakeShared<TUniquePtr<IFileHandle>>(FProtokitePlaytestFormSpool(Folder).Claim(Kept.Key));
+	if (!Claim->IsValid())
+	{
+		// Another launch is sending it, or has sent it since the folder was read.
+		SendKeptForm(Waiting, Index + 1, MoveTemp(LaunchHeaders), MoveTemp(Folder));
+		return;
+	}
+
+	// This launch's own key, with the Game Version ID the form's own session ran under -- the same swap a kept recording needs,
+	// and for the same reason: Protokite finds the playtest from that version.
+	TMap<FString, FString> Headers = LaunchHeaders;
+	if (!Kept.Value.FlockGameVersionId.IsEmpty())
+	{
+		Headers.Add(TEXT("X-Game-Version-ID"), Kept.Value.FlockGameVersionId);
+	}
+
+	const TWeakObjectPtr<UProtokitePlaytestSubsystem> WeakThis(this);
+	const FString Path = Kept.Key;
+	GetOrCreateProtokiteClient()->SubmitFeedbackForm(Headers, Kept.Value,
+		[WeakThis, Waiting, Index, LaunchHeaders, Folder, Path, Claim](TFlockResult<FProtokitePlaytestFormSubmitResult> Result)
+		{
+			const FProtokitePlaytestFormSpool Done(Folder);
+			const bool bServerRefusedIt = Result.Error.StatusCode == 422 || Result.Error.StatusCode == 404;
+			if (Result.IsSuccess() || bServerRefusedIt)
 			{
-				const FProtokitePlaytestFormSpool Done(Folder);
-				const bool bServerRefusedIt = Result.Error.StatusCode == 422 || Result.Error.StatusCode == 404;
-				if (Result.IsSuccess() || bServerRefusedIt)
-				{
-					// Taken, or refused in a way that will not change. Either way it stops waiting.
-					Done.Forget(Path);
-				}
-				if (Result.IsSuccess())
-				{
-					UE_LOG(LogProtokitePlaytest, Log, TEXT("A kept feedback form was sent."));
-					return;
-				}
-				const FString RefusedQuestion = ProtokitePlaytestFindFieldIdInComplaint(Result.Error.ToDisplayText());
+				// Taken, or refused in a way that will not change. Either way it stops waiting, deleted while still claimed.
+				Done.Forget(Path);
+			}
+			FProtokitePlaytestFormSpool::Release(*Claim, Path);
+			if (Result.IsSuccess())
+			{
+				UE_LOG(LogProtokitePlaytest, Log, TEXT("A kept feedback form was sent."));
+			}
+			else
+			{
+				const FString RefusedQuestion = ProtokitePlaytestFindFieldIdInComplaint(Result.Error.ServerMessage);
 				UE_LOG(LogProtokitePlaytest, Warning, TEXT("A kept feedback form was not sent%s: %s"),
 					RefusedQuestion.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (the question '%s' was refused)"), *RefusedQuestion),
 					*Result.Error.ToDisplayText());
-			});
-	}
+			}
+			if (!Result.IsSuccess() && !bServerRefusedIt && !IsAboutThisFormAlone(Result.Error))
+			{
+				UE_LOG(LogProtokitePlaytest, Log, TEXT("The %d feedback form(s) behind it wait for a later launch."), Waiting->Num() - Index - 1);
+				return;
+			}
+			if (UProtokitePlaytestSubsystem* Self = WeakThis.Get())
+			{
+				Self->SendKeptForm(Waiting, Index + 1, LaunchHeaders, Folder);
+			}
+		});
 }
 
 bool UProtokitePlaytestSubsystem::IsThePlaytestLoaded() const

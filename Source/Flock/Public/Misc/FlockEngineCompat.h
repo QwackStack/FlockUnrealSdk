@@ -43,8 +43,9 @@
  * Moving either end
  * -----------------
  * Install the engine, run `Tooling/Build-AllEngines.ps1` (which builds *and* runs the test suite on
- * every installed engine, and reports what it could not cover), fix what breaks, then move the end here,
- * in `Flock.uplugin`, and in README.md together - the CI consistency job fails if those disagree.
+ * every installed engine, and reports what it could not cover), fix what breaks, then move the end here
+ * and in README.md together - the CI consistency job fails if those disagree. (`Flock.uplugin` carries no
+ * engine field and must not: see the README.)
  *
  * Known version-sensitive APIs the SDK already uses, for whoever does that work:
  *   - `EJsonObjectConversionFlags::SkipStandardizeCase`  (5.1+, so 5.0 can never be supported)
@@ -103,6 +104,22 @@ static_assert(!UE_VERSION_OLDER_THAN(FLOCK_ENGINE_FLOOR_MAJOR, FLOCK_ENGINE_FLOO
 	#define FLOCK_USER_DEFINED_STRUCT_HEADER "Engine/UserDefinedStruct.h"
 #else
 	#define FLOCK_USER_DEFINED_STRUCT_HEADER "StructUtils/UserDefinedStruct.h"
+#endif
+
+// From UE 5.5 the engine's allocator (FMalloc) zeroes memory and marks its per-thread caches through members of its own;
+// the relay's allocation test, which stands a counter in for the allocator, passes those on only where they exist.
+#define FLOCK_ENGINE_ALLOCATOR_MARKS_ITS_CACHES (!UE_VERSION_OLDER_THAN(5, 5, 0))
+
+// UE 5.5 added the allocator's size of free cached memory; UE 5.6 split it into what can be freed at once and the total.
+#define FLOCK_ENGINE_ALLOCATOR_TELLS_FREE_CACHED_MEMORY (!UE_VERSION_OLDER_THAN(5, 5, 0))
+#define FLOCK_ENGINE_ALLOCATOR_SPLITS_FREE_CACHED_MEMORY (!UE_VERSION_OLDER_THAN(5, 6, 0))
+
+// The pointer the engine allocates through, which the same test swaps for its counter: from UE 5.6 the global GMalloc is a
+// read-only reference to the engine's own UE::Private::GMalloc.
+#if UE_VERSION_OLDER_THAN(5, 6, 0)
+#define FLOCK_ENGINE_ALLOCATOR GMalloc
+#else
+#define FLOCK_ENGINE_ALLOCATOR UE::Private::GMalloc
 #endif
 
 // FAutomationTestBase::TestEqualSensitive - the string check that reads letter case - arrived in UE 5.5. Below that

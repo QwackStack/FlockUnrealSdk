@@ -194,10 +194,22 @@ TArray<FString> FFlockJsonUtils::GetFieldNames(const TSharedPtr<FJsonObject>& Ob
 	return Names;
 }
 
+FString FFlockJsonUtils::OtherSpellingOf(const TArray<FString>& Keys, const FString& Key)
+{
+	for (const FString& Existing : Keys)
+	{
+		if (Existing.Equals(Key, ESearchCase::IgnoreCase) && !Existing.Equals(Key, ESearchCase::CaseSensitive))
+		{
+			return Existing;
+		}
+	}
+	return FString();
+}
+
 TSharedRef<FJsonObject> FFlockJsonUtils::TransformObjectKeys(const TSharedRef<FJsonObject>& In, bool bToPascal)
 {
 	const TSharedPtr<FJsonValue> Transformed = TransformValue(MakeShared<FJsonValueObject>(In), bToPascal);
-	const TSharedPtr<FJsonObject> Obj = Transformed.IsValid() ? Transformed->AsObject() : nullptr;
+	const TSharedPtr<FJsonObject> Obj = FFlockJsonUtils::AsObjectOrNull(Transformed);
 	return Obj.IsValid() ? Obj.ToSharedRef() : MakeShared<FJsonObject>();
 }
 

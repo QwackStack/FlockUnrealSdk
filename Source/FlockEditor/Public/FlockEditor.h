@@ -42,7 +42,8 @@ private:
 	// project has a version name but no baked ID. Runtime init stays synchronous + network-free.
 	void OnConfigPropertyChanged(UObject* Object, FPropertyChangedEvent& PropertyChangedEvent);
 	void OnEditorInitialized(double Duration);
-	static void TryAutoResolve(const TCHAR* Reason);
+	/** Starts a resolve when one can succeed; OnFinished runs once it has answered. Returns whether one started. */
+	static bool TryAutoResolve(const TCHAR* Reason, TFunction<void()> OnFinished = nullptr);
 
 	FDelegateHandle ConfigChangedHandle;
 	FDelegateHandle EditorInitializedHandle;

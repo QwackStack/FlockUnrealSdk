@@ -22,10 +22,21 @@
 # then reconcile the result against the sections below. A code that appears and is not waived needs an
 # `EFlockErrorCode` member (name = the code PascalCased) and a hint in FlockErrorHints.cpp.
 #
-# Last refreshed against the live backend: 2026-08-31 (86 documented codes, 90 /v1 paths).
+# The spec is not the whole contract: it has dropped codes the backend still sends (most of shop.* and
+# game_command.* on 2026-10-06). Each backend package lists its codes in its enums.py, and the request-wide
+# request.* codes are in common/helpers/error_codes.py, so read those as well, from a backend checkout:
+#   grep -rhoE '"[a-z_]+\.[a-z_]+"' <backend>/flock/packages/*/enums.py <backend>/common/helpers/error_codes.py \
+#     | tr -d '"' | sort -u
+# Many of those are sent only by dashboard routes; read where a code is raised before deciding it needs a member.
+#
+# Last refreshed 2026-10-15 for the API key, sign-in and request.* codes, measured against the local backend.
+# Before that, on 2026-10-13, for the matchmaking, party and multiplayer codes, from the backend's enums.py files
+# (feat/cloudflare-relay, where multiplayer.seat_mint_limit is defined) and the spec as exported on 2026-10-05.
+# Before that: against the live backend on 2026-08-31 (86 documented codes, 90 /v1 paths).
 
 [documented]
-# Declared in the backend OpenAPI spec. Each must have an EFlockErrorCode member.
+# Declared in the backend OpenAPI spec when added (some since dropped from it; see the header). Each must have
+# an EFlockErrorCode member.
 analytics.invalid_currency_id
 analytics.player_not_found
 analytics.session_not_found
@@ -52,7 +63,33 @@ game_patch.patch_not_found
 game_version.game_version_by_name_not_found
 game_version.game_version_not_found
 log_event.game_not_found
+matchmaking.already_queued
+matchmaking.match_not_found
+matchmaking.not_party_leader
+matchmaking.party_too_large
+matchmaking.player_not_eligible
+matchmaking.queue_not_found
+matchmaking.ticket_not_cancelable
+matchmaking.ticket_not_found
+matchmaking.version_mismatch
+multiplayer.invalid_join_code
+multiplayer.invalid_join_token
+multiplayer.mint_rate_limited
+multiplayer.not_a_participant
+multiplayer.not_host
+multiplayer.session_full
+multiplayer.session_not_found
+multiplayer.target_not_a_participant
+multiplayer.version_mismatch
 notification_template.not_found
+party.already_in_party
+party.cannot_kick_leader
+party.full
+party.invalid_invite_code
+party.not_a_member
+party.not_found
+party.not_party_leader
+party.target_not_a_member
 player.account_already_linked
 player.account_not_linked
 player.apple_account_already_registered
@@ -82,6 +119,7 @@ player_inventory.inventory_entry_not_found
 player_inventory.player_not_found
 player_template.not_found
 player_template.not_found_by_name
+request.rate_limited
 shop.currency_not_held
 shop.currency_template_not_found
 shop.insufficient_funds
@@ -106,29 +144,71 @@ shop_item.shop_not_found
 #                          backend took over code-to-id resolution on 2026-08-26; kept because absence
 #                          from the spec is not evidence of absence from the server, as the line above
 #                          demonstrates. Retire it only after checking the backend, not the spec.
+# multiplayer.join_code_unavailable - 500 when creating a session finds no free join code after 8 tries.
+# multiplayer.already_in_session - 409 when two requests seat one player at the same moment (a database
+#                          race). Both read in the backend's code, not seen live.
+# shop.real_currency_needs_checkout - 422 from the purchase route for an item priced in a currency the game's
+#                          currency config lists as real money; the route's documented responses leave it out.
+#                          Read in the backend's shop settlement code on 2026-10-15.
+# multiplayer.seat_mint_limit - 429 when one seat has drawn its relay credentials 10 times (the default).
+#                          Defined and declared in the spec on the backend's feat/cloudflare-relay branch (the relay
+#                          on the dev cluster), read there on 2026-10-13; main's spec does not have it yet.
+# The backend also defines multiplayer.session_ended and multiplayer.invalid_connection_info, which nothing
+# raises (read 2026-10-13), and matchmaking.queue_has_open_tickets, which only a dashboard route sends. None
+# has a member; add one the day it can reach a game.
+# game.missing_api_key, game.invalid_api_key - 401 from the API key check every /v1 route makes first (a blank
+#                          key, an unknown one). A missing header never gets that far: the framework refuses it as
+#                          request.validation_failed naming header.X-Flock-API-Key. Measured live 2026-10-15.
+# player.missing_token, player.invalid_token - 401 from the sign-in check of a route that acts as the player (no
+#                          bearer, a bearer that is not this game's). Measured live 2026-10-15; player.expired_token
+#                          comes from the same check, read in the backend's code.
+# request.* - the backend's own codes for a failure no route raised itself (common/helpers/error_codes.py): every
+#                          /v1 error carries a code, falling back to one per status. request.not_found (a route
+#                          that does not exist, as when API URL ends in /v1, or a record a route did not find), request.method_not_allowed and
+#                          request.validation_failed (a member missing from the body) measured live 2026-10-15;
+#                          the rest read in the backend's handler.
 leaderboard.not_found
 analytics.currency_not_found
+multiplayer.join_code_unavailable
+multiplayer.already_in_session
+multiplayer.seat_mint_limit
+shop.real_currency_needs_checkout
+game.missing_api_key
+game.invalid_api_key
+player.missing_token
+player.invalid_token
+player.expired_token
+request.validation_failed
+request.unauthorized
+request.forbidden
+request.not_found
+request.method_not_allowed
+request.conflict
+request.payload_too_large
+request.failed
 
 [waived]
 # Documented, but for features this SDK does not call — there is no surface for the error to reach.
 # Adding a member for one of these means the feature arrived, so move the code up to [documented] in the
 # same change. CI fails if a waived code turns out to have a member, which is what keeps this list honest
 # rather than letting it become the place unwanted codes go to be forgotten.
-matchmaking.already_queued
-matchmaking.match_not_found
-matchmaking.not_party_leader
-matchmaking.party_too_large
-matchmaking.player_not_eligible
-matchmaking.queue_not_found
-matchmaking.ticket_not_cancelable
-matchmaking.ticket_not_found
-multiplayer.extras_paused
-multiplayer.mint_rate_limited
-party.already_in_party
-party.cannot_kick_leader
-party.full
-party.invalid_invite_code
-party.not_a_member
-party.not_found
-party.not_party_leader
-party.target_not_a_member
+#
+# dashboard.* and the payment provider and refund codes below are sent by dashboard routes only, except
+# payment_provider.checkout_failed, which comes from the player-facing shop checkout route this SDK does not
+# call yet: move it up when checkout is added.
+dashboard.ai_generation_failed
+dashboard.ai_limiter_unavailable
+dashboard.ai_provider_unavailable
+dashboard.ai_rate_limited
+dashboard.recommendation_not_found
+dashboard.recommendations_busy
+dashboard.recommendations_disabled
+dashboard.request_not_sent
+dashboard.request_rate_limited
+payment_provider.checkout_failed
+payment_provider.encryption_unavailable
+payment_provider.missing_credential_fields
+payment_provider.provider_not_found
+payment_provider.unknown_provider
+shop.purchase_not_found
+shop.purchase_not_refundable
