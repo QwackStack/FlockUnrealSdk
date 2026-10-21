@@ -3,7 +3,9 @@
 #include "Codegen/FlockCatalogBuilder.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Codegen/FlockCodegenPaths.h"
 #include "Codegen/FlockContentCatalog.h"
+#include "Codegen/FlockGeneratedAssets.h"
 #include "Codegen/FlockSchemaHasher.h"
 #include "FileHelpers.h"
 #include "Serialization/JsonReader.h"
@@ -146,28 +148,19 @@ void FFlockCatalogBuilder::Populate(const FFlockSchemaSnapshot& Snapshot, UFlock
 
 bool FFlockCatalogBuilder::Save(const FFlockSchemaSnapshot& Snapshot, const FString& ContentPath, FString& OutError)
 {
-	FString Root = ContentPath.TrimStartAndEnd();
-	if (Root.IsEmpty())
+	FString Root;
+	if (!FFlockCodegenPaths::TryResolveContentRoot(ContentPath, Root, OutError))
 	{
-		OutError = TEXT("Generated Content Path is empty in Project Settings > Flock SDK.");
 		return false;
 	}
-	if (!Root.StartsWith(TEXT("/")))
-	{
-		OutError = FString::Printf(
-			TEXT("Generated Content Path must be a package path such as /Game/Flock/Generated. Got '%s'."), *Root);
-		return false;
-	}
-	Root.RemoveFromEnd(TEXT("/"));
 
-	const FString PackageName = FString::Printf(TEXT("%s/%s"), *Root, AssetName);
-	UPackage* Package = CreatePackage(*PackageName);
+	UPackage* Package =
+		FFlockGeneratedAssets::OpenPackageFor(Root, AssetName, UFlockContentCatalog::StaticClass(), OutError);
 	if (!Package)
 	{
-		OutError = FString::Printf(TEXT("Could not create package '%s'."), *PackageName);
 		return false;
 	}
-	Package->FullyLoad();
+	const FString PackageName = Package->GetName();
 
 	// Reuse the existing asset when there is one, so references from other assets survive a re-sync.
 	UFlockContentCatalog* Catalog = FindObject<UFlockContentCatalog>(Package, AssetName);
@@ -184,11 +177,12 @@ bool FFlockCatalogBuilder::Save(const FFlockSchemaSnapshot& Snapshot, const FStr
 	}
 
 	Populate(Snapshot, *Catalog);
-	Catalog->MarkPackageDirty();
 	if (bIsNew)
 	{
 		FAssetRegistryModule::AssetCreated(Catalog);
 	}
+	FFlockGeneratedAssets::MarkEveryAssetIn(Package);
+	Catalog->MarkPackageDirty();
 
 	if (!UEditorLoadingAndSavingUtils::SavePackages({ Package }, /*bOnlyDirty*/ false))
 	{

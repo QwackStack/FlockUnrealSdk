@@ -1,0 +1,167 @@
+// Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
+
+#include "Codegen/FlockGeneratedAssets.h"
+
+#include "Algo/Count.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Codegen/FlockCodegenPaths.h"
+#include "Misc/FlockEngineCompat.h"
+#include "ObjectTools.h"
+#include "UObject/MetaData.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectHash.h"
+
+const FName FFlockGeneratedAssets::MarkKey(TEXT("FlockGenerated"));
+const TCHAR* const FFlockGeneratedAssets::MarkValue = TEXT("true");
+
+namespace
+{
+	/** How many kept assets a summary names before it only counts the rest. */
+	constexpr int32 KeptNamesShown = 5;
+
+	IAssetRegistry& AssetRegistry()
+	{
+		return FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+	}
+}
+
+void FFlockGeneratedAssets::RegisterMark()
+{
+	UObject::GetMetaDataTagsForAssetRegistry().Add(MarkKey);
+}
+
+void FFlockGeneratedAssets::UnregisterMark()
+{
+	UObject::GetMetaDataTagsForAssetRegistry().Remove(MarkKey);
+}
+
+void FFlockGeneratedAssets::MarkEveryAssetIn(UPackage* Package)
+{
+	if (!Package)
+	{
+		return;
+	}
+
+	// Gathered first: setting metadata can create the package's metadata object, and nothing may be created while
+	// the package's objects are being walked.
+	TArray<UObject*> Assets;
+	ForEachObjectWithPackage(Package, [&Assets](UObject* Object)
+		{
+			if (IsValid(Object) && Object->IsAsset())
+			{
+				Assets.Add(Object);
+			}
+			return true;
+		}, /*bIncludeNestedObjects*/ false);
+
+	for (const UObject* Asset : Assets)
+	{
+#if FLOCK_ENGINE_PACKAGE_METADATA_IS_A_MEMBER
+		Package->GetMetaData().SetValue(Asset, MarkKey, MarkValue);
+#else
+		Package->GetMetaData()->SetValue(Asset, MarkKey, MarkValue);
+#endif
+	}
+}
+
+bool FFlockGeneratedAssets::IsMarked(const FAssetData& Asset)
+{
+	FString Value;
+	return Asset.GetTagValue(MarkKey, Value) && Value.Equals(MarkValue, ESearchCase::CaseSensitive);
+}
+
+UPackage* FFlockGeneratedAssets::OpenPackageFor(const FString& ContentRoot, const FString& AssetName,
+	const UClass* AssetClass, FString& OutProblem)
+{
+	const FString PackageName = FString::Printf(TEXT("%s/%s"), *ContentRoot, *AssetName);
+	UPackage* Package = CreatePackage(*PackageName);
+	if (!Package)
+	{
+		OutProblem = FString::Printf(TEXT("Could not create package '%s'."), *PackageName);
+		return nullptr;
+	}
+	Package->FullyLoad();
+
+	const UObject* Existing = FindObjectFast<UObject>(Package, FName(*AssetName));
+	if (Existing && !Existing->IsA(AssetClass))
+	{
+		OutProblem = FString::Printf(
+			TEXT("'%s' is a %s, not the %s codegen makes under that name, so it was left as it is and nothing was "
+				"generated in its place. Rename or move it, or set Generated Content Path in Project Settings > Flock "
+				"SDK > Codegen to a folder of its own, such as /Game/Flock/Generated."),
+			*Existing->GetPathName(), *Existing->GetClass()->GetName(), *AssetClass->GetName());
+		return nullptr;
+	}
+	return Package;
+}
+
+FFlockGeneratedAssets::FDeleteResult FFlockGeneratedAssets::DeleteUnder(const FString& ContentPath,
+	bool bShowConfirmation, const TArray<const UClass*>& KindsToKeep)
+{
+	FDeleteResult Result;
+	FString Root;
+	if (!FFlockCodegenPaths::TryResolveContentRoot(ContentPath, Root, Result.Error))
+	{
+		return Result;
+	}
+
+	auto ToDelete = [&KindsToKeep](const FAssetData& Asset)
+	{
+		return IsMarked(Asset) && !KindsToKeep.ContainsByPredicate(
+			[&Asset](const UClass* Kind) { return Asset.IsInstanceOf(Kind); });
+	};
+
+	IAssetRegistry& Registry = AssetRegistry();
+	// Nothing forces a scan of a path no one has browsed, and an unscanned root reports zero assets.
+	Registry.ScanPathsSynchronous({ Root }, /*bForceRescan*/ true);
+
+	TArray<FAssetData> Assets;
+	Registry.GetAssetsByPath(FName(*Root), Assets, /*bRecursive*/ true);
+	TArray<FAssetData> Generated;
+	for (const FAssetData& Asset : Assets)
+	{
+		if (ToDelete(Asset))
+		{
+			Generated.Add(Asset);
+		}
+		else if (!IsMarked(Asset))
+		{
+			Result.Kept.Add(Asset);
+		}
+	}
+	if (Generated.Num() > 0)
+	{
+		Result.Deleted = ObjectTools::DeleteAssets(Generated, bShowConfirmation);
+	}
+
+	// Counted again rather than worked out from Deleted: the prompt lets someone untick an asset, and a refused
+	// delete reports nothing about which ones it kept.
+	TArray<FAssetData> After;
+	Registry.GetAssetsByPath(FName(*Root), After, /*bRecursive*/ true);
+	Result.GeneratedLeft = Algo::CountIf(After, ToDelete);
+	return Result;
+}
+
+FString FFlockGeneratedAssets::DescribeKept(const TArray<FAssetData>& Kept)
+{
+	if (Kept.IsEmpty())
+	{
+		return FString();
+	}
+
+	TArray<FString> Names;
+	for (int32 Index = 0; Index < FMath::Min(Kept.Num(), KeptNamesShown); ++Index)
+	{
+		Names.Add(Kept[Index].PackageName.ToString());
+	}
+	FString Listed = FString::Join(Names, TEXT(", "));
+	if (Kept.Num() > KeptNamesShown)
+	{
+		Listed += FString::Printf(TEXT(" and %d more"), Kept.Num() - KeptNamesShown);
+	}
+	return FString::Printf(
+		TEXT("Kept %d asset(s) that carry no Flock codegen mark: %s. Those are the game's own, or were generated by a "
+			"Flock SDK before 1.38.2, which did not mark what it made: sync once on the Blueprint target so codegen "
+			"marks every asset it still makes, then run this again, or delete the ones Flock made by hand."),
+		Kept.Num(), *Listed);
+}

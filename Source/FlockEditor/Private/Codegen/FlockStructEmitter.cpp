@@ -2,6 +2,8 @@
 
 #include "Codegen/FlockStructEmitter.h"
 
+#include "Codegen/FlockCodegenPaths.h"
+#include "Codegen/FlockGeneratedAssets.h"
 #include "Codegen/FlockSchemaTypes.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -334,12 +336,9 @@ FFlockStructEmitter::FEmitResult FFlockStructEmitter::Emit(const FFlockSchemaSna
 {
 	FEmitResult Result;
 
-	FString Root = ContentPath.TrimStartAndEnd();
-	Root.RemoveFromEnd(TEXT("/"));
-	if (Root.IsEmpty() || !Root.StartsWith(TEXT("/")))
+	FString Root;
+	if (!FFlockCodegenPaths::TryResolveContentRoot(ContentPath, Root, OutError))
 	{
-		OutError = FString::Printf(
-			TEXT("Generated Content Path must be a package path such as /Game/Flock/Generated. Got '%s'."), *ContentPath);
 		return Result;
 	}
 
@@ -348,17 +347,18 @@ FFlockStructEmitter::FEmitResult FFlockStructEmitter::Emit(const FFlockSchemaSna
 	TArray<UPackage*> Packages;
 	auto BuildInto = [&](const FString& StructName, const FString& SchemaJson, const FString& SourceId)
 	{
-		const FString PackageName = FString::Printf(TEXT("%s/%s"), *Root, *StructName);
-		UPackage* Package = CreatePackage(*PackageName);
+		FString Problem;
+		UPackage* Package =
+			FFlockGeneratedAssets::OpenPackageFor(Root, StructName, UUserDefinedStruct::StaticClass(), Problem);
 		if (!Package)
 		{
-			Result.Warnings.Add(FString::Printf(TEXT("Could not create package '%s'."), *PackageName));
+			Result.Warnings.Add(Problem);
 			return;
 		}
-		Package->FullyLoad();
 		if (UUserDefinedStruct* Struct = BuildStruct(Package, StructName, SchemaJson, Result.Warnings))
 		{
 			FAssetRegistryModule::AssetCreated(Struct);
+			FFlockGeneratedAssets::MarkEveryAssetIn(Package);
 			Struct->MarkPackageDirty();
 			Packages.Add(Package);
 			Result.StructNameById.Add(SourceId, StructName);

@@ -4,6 +4,8 @@
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Blueprint/FlockStructLibrary.h"
+#include "Codegen/FlockCodegenPaths.h"
+#include "Codegen/FlockGeneratedAssets.h"
 #include "Codegen/FlockStructEmitter.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
@@ -586,23 +588,17 @@ FFlockFunctionLibraryEmitter::FEmitResult FFlockFunctionLibraryEmitter::Emit(
 {
 	FEmitResult Result;
 
-	FString Root = ContentPath.TrimStartAndEnd();
-	Root.RemoveFromEnd(TEXT("/"));
-	if (Root.IsEmpty() || !Root.StartsWith(TEXT("/")))
+	FString Root;
+	if (!FFlockCodegenPaths::TryResolveContentRoot(ContentPath, Root, OutError))
 	{
-		OutError = FString::Printf(
-			TEXT("Generated Content Path must be a package path such as /Game/Flock/Generated. Got '%s'."), *ContentPath);
 		return Result;
 	}
 
-	const FString PackageName = FString::Printf(TEXT("%s/%s"), *Root, LibraryAssetName);
-	UPackage* Package = CreatePackage(*PackageName);
+	UPackage* Package = FFlockGeneratedAssets::OpenPackageFor(Root, LibraryAssetName, UBlueprint::StaticClass(), OutError);
 	if (!Package)
 	{
-		OutError = FString::Printf(TEXT("Could not create package '%s'."), *PackageName);
 		return Result;
 	}
-	Package->FullyLoad();
 
 	Result = BuildLibrary(Snapshot, Package, StructsById, EnumLookups);
 	if (!Result.IsValid())
@@ -612,10 +608,11 @@ FFlockFunctionLibraryEmitter::FEmitResult FFlockFunctionLibraryEmitter::Emit(
 	}
 
 	FAssetRegistryModule::AssetCreated(Result.Library);
+	FFlockGeneratedAssets::MarkEveryAssetIn(Package);
 	Result.Library->MarkPackageDirty();
 	if (!UEditorLoadingAndSavingUtils::SavePackages({ Package }, /*bOnlyDirty*/ false))
 	{
-		OutError = FString::Printf(TEXT("Could not save '%s'."), *PackageName);
+		OutError = FString::Printf(TEXT("Could not save '%s'."), *Package->GetName());
 		return Result;
 	}
 

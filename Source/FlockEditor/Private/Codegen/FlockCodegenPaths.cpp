@@ -3,6 +3,7 @@
 #include "Codegen/FlockCodegenPaths.h"
 
 #include "Config/FlockConfig.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 
 const TCHAR* const FFlockCodegenPaths::DefaultGeneratedPath = TEXT("Source/FlockGenerated");
@@ -70,6 +71,92 @@ bool FFlockCodegenPaths::TryResolveGeneratedRootFromSettings(FString& OutAbsolut
 	// A missing settings object is not a reason to fail: the default path is what an unconfigured project
 	// would get anyway, and this keeps a fresh clone working before anyone opens the settings page.
 	return TryResolveGeneratedRoot(Config ? Config->GeneratedCodePath : FString(), OutAbsoluteRoot, OutError);
+}
+
+bool FFlockCodegenPaths::TryResolveContentRoot(const FString& Configured, FString& OutRoot, FString& OutError)
+{
+	OutRoot.Reset();
+	const TCHAR* const Fix = TEXT("Set Generated Content Path in Project Settings > Flock SDK > Codegen to a folder of "
+		"its own, such as /Game/Flock/Generated.");
+
+	FString Root = Configured.TrimStartAndEnd();
+	while (Root.RemoveFromEnd(TEXT("/")))
+	{
+	}
+	if (Root.IsEmpty())
+	{
+		OutError = FString::Printf(TEXT("Generated Content Path is empty. %s"), Fix);
+		return false;
+	}
+	if (!Root.StartsWith(TEXT("/")))
+	{
+		OutError = FString::Printf(
+			TEXT("Generated Content Path must be a package path such as /Game/Flock/Generated, but it is '%s'. %s"),
+			*Configured, Fix);
+		return false;
+	}
+
+	// Each folder name checked on its own, so `/Game/Flock/..` cannot climb back to the whole content folder.
+	TArray<FString> Folders;
+	Root.RightChop(1).ParseIntoArray(Folders, TEXT("/"), /*InCullEmpty*/ false);
+	for (const FString& Folder : Folders)
+	{
+		if (Folder.IsEmpty() || Folder == TEXT(".") || Folder == TEXT(".."))
+		{
+			OutError = FString::Printf(
+				TEXT("Generated Content Path '%s' has an empty folder name, '.' or '..' in it. %s"), *Configured, Fix);
+			return false;
+		}
+	}
+	// A character a package name cannot hold (a space, a full stop inside a name) would reach CreatePackage otherwise.
+	FText Invalid;
+	if (!FPackageName::IsValidTextForLongPackageName(Root, &Invalid))
+	{
+		OutError = FString::Printf(TEXT("Generated Content Path '%s' is not a valid package path: %s %s"),
+			*Configured, *Invalid.ToString(), Fix);
+		return false;
+	}
+
+	const FName MountPoint = FPackageName::GetPackageMountPoint(Root, /*InWithoutSlashes*/ true);
+	if (MountPoint.IsNone())
+	{
+		OutError = FString::Printf(
+			TEXT("Generated Content Path '%s' is not inside a content folder this project has, such as /Game. %s"),
+			*Configured, Fix);
+		return false;
+	}
+	if (Root.Equals(TEXT("/") + MountPoint.ToString(), ESearchCase::IgnoreCase))
+	{
+		OutError = FString::Printf(
+			TEXT("Generated Content Path '%s' is a whole content folder, which holds the project's own assets. "
+				"Codegen writes and removes assets in the folder it is given. %s"), *Configured, Fix);
+		return false;
+	}
+
+	// The folder on disk, which for an engine mount or a plugin installed into the engine is not the project's.
+	FString Folder;
+	FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+	FPaths::NormalizeDirectoryName(ProjectDir);
+	if (!FPackageName::TryConvertLongPackageNameToFilename(Root, Folder))
+	{
+		OutError = FString::Printf(
+			TEXT("Generated Content Path '%s' has no folder on disk, so its assets could not be saved. %s"),
+			*Configured, Fix);
+		return false;
+	}
+	Folder = FPaths::ConvertRelativePathToFull(Folder);
+	FPaths::NormalizeDirectoryName(Folder);
+	if (!Folder.StartsWith(ProjectDir + TEXT("/"), ESearchCase::IgnoreCase))
+	{
+		OutError = FString::Printf(
+			TEXT("Generated Content Path '%s' is saved to '%s', which is outside this project's folder. %s"),
+			*Configured, *Folder, Fix);
+		return false;
+	}
+
+	OutRoot = Root;
+	OutError.Reset();
+	return true;
 }
 
 FString FFlockCodegenPaths::ManifestPath(const FString& GeneratedRoot)

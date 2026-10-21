@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.38.1.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.38.2.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -213,10 +213,11 @@ announced on the releases page.
   Development packages; 5.4 has the same engine code. Shipping packages leave out the part involved, so
   they should not be affected, though that has not been measured. If a script judges a packaged run on
   these engines, read the game's own exit lines in its log rather than the process's exit code.
-- **Platforms: verified on Windows (Win64).** The SDK is written against portable engine APIs and uses
-  no platform-specific code, so other targets are expected to work — but expected is not verified, and
-  this project states only what it has actually run. Windows is where the test suite has been executed;
-  macOS, Linux, console and mobile have not been exercised. Nothing restricts them: the plugin declares
+- **Platforms: verified on Windows (Win64), and on Android with UE 5.4.** The SDK is written against portable
+  engine APIs and uses no platform-specific code, so other targets are expected to work — but expected is not
+  verified, and this project states only what it has actually run. Windows is where the test suite has been
+  executed; an Android phone built with UE 5.4 has played multiplayer through Flock's relay and a direct path
+  (1.38.1). macOS, iOS, Linux, console, and Android with UE 5.5 or later have not been exercised. Nothing restricts them: the plugin declares
   no platform allow-list, so it builds and packages for any target your project supports. If you ship on
   one of them, treat the first run as something to check rather than assume, and please report what you
   find — that is how this line gets shorter.
@@ -568,7 +569,9 @@ so On Relay Lost brings the game back rather than a silent wait. **1.38.0 moves 
 once they and the host reach each other, and back to the relay when it goes quiet, the game's connection carrying on through
 both; a player connecting again through its relay address is back in within seconds rather than the engine's minute.
 **1.38.1 builds and runs on Android**, where no name was looked up before, so the relay could not be reached: a phone on mobile
-data plays through Flock's relay and moves to a direct path with a host on another network.
+data plays through Flock's relay and moves to a direct path with a host on another network. **1.38.2 makes codegen delete
+only what it made**: a Clean or a switch of Codegen Target keeps the game's own assets and files in the generated folders,
+and a Generated Content Path of a whole content folder such as `/Game` is refused.
 
 Deliberate omissions and known gaps:
 
