@@ -16,7 +16,7 @@
 #include "Http/FlockHttpShutdown.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.38.1");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.38.2");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {

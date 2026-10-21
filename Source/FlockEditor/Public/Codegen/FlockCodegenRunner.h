@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AssetRegistry/AssetData.h"
 #include "Codegen/FlockCodegenManifest.h"
 #include "Codegen/FlockSchemaSnapshot.h"
 
@@ -65,6 +66,12 @@ public:
 		int32 AssetsDeleted = 0;
 		bool bManifestRemoved = false;
 
+		/** Generated assets still there: the referencer prompt was declined, or a reference could not be cleared. */
+		int32 GeneratedAssetsLeft = 0;
+
+		/** The assets under the content path that codegen did not make. A clean keeps every one. */
+		TArray<FAssetData> KeptAssets;
+
 		FString Describe() const;
 	};
 
@@ -74,7 +81,9 @@ public:
 	static void Sync(FOnSyncComplete OnComplete);
 
 	/**
-	 * Removes everything a sync wrote: the generated assets, then the manifest.
+	 * Removes everything a sync wrote: the generated assets, then the manifest. Only what codegen made goes
+	 * (FFlockGeneratedAssets, FFlockGeneratedFiles): a game's own asset under Generated Content Path, or file under
+	 * Generated Code Path, stays, and a content path that is a whole content folder such as `/Game` is refused.
 	 *
 	 * Deletes through `ObjectTools::DeleteAssets` rather than the file system, because that raises the
 	 * engine's own referencer prompt — a Blueprint holding a hard reference to a generated struct is
@@ -94,9 +103,16 @@ public:
 	 */
 	static FCleanResult CleanAt(const FString& ContentPath, const FString& GeneratedRoot, bool bShowConfirmation);
 
-	/** Emits from an already-fetched snapshot. Synchronous, and the half worth testing. */
+	/** Emits from an already-fetched snapshot, for this project. Synchronous, and the half worth testing. */
 	static FRunResult EmitAll(const FFlockSchemaSnapshot& Snapshot, const FString& ContentPath,
 		const FString& GeneratedCodeRoot);
+
+	/**
+	 * EmitAll against an explicit .uproject, which the C++ target registers its module in: how a test drives the
+	 * C++ target without touching the real project's file. The target is still read from project settings.
+	 */
+	static FRunResult EmitAll(const FFlockSchemaSnapshot& Snapshot, const FString& ContentPath,
+		const FString& GeneratedCodeRoot, const FString& ProjectFilePath);
 
 	// ── Drift, without a network round trip ──
 

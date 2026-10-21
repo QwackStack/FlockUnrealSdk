@@ -23,6 +23,7 @@
 #include "Misc/FlockEngineCompat.h"
 #include FLOCK_USER_DEFINED_STRUCT_HEADER
 #include "UObject/Package.h"
+#include "Tests/Support/FlockCodegenTestContent.h"
 
 /**
  * A macro has no generated UFunction — it is expanded into whatever calls it — so unlike the function
@@ -40,62 +41,6 @@ namespace FlockMacroLibraryEmitterTestHelpers
 	{
 		return CreatePackage(*FString::Printf(TEXT("/Temp/FlockMacroTest_%s"),
 			*FGuid::NewGuid().ToString(EGuidFormats::Digits)));
-	}
-
-	inline FFlockPlayerTemplateSchema Template(const FString& Id, const FString& Name, const FString& Tag,
-		const FString& SchemaJson)
-	{
-		FFlockPlayerTemplateSchema Result;
-		Result.Id = Id;
-		Result.Name = Name;
-		Result.Tag = Tag;
-		Result.SchemaJson = SchemaJson;
-		return Result;
-	}
-
-	inline FFlockShopItem Item(const FString& Id, const FString& Name, const FString& Currency)
-	{
-		FFlockShopItem Result;
-		Result.Id = Id;
-		Result.Name = Name;
-		Result.Currency = Currency;
-		return Result;
-	}
-
-	/** Just a config, for the tests that only care about the read-only path. */
-	inline FFlockSchemaSnapshot ConfigOnlySnapshot()
-	{
-		FFlockSchemaSnapshot Result;
-		Result.GameVersionId = TEXT("ver-1");
-		FFlockGameConfigSchema Config;
-		Config.Id = TEXT("cfg-1");
-		Config.Name = TEXT("Gameplay");
-		Config.SchemaJson = TEXT("[{\"type\":\"int\",\"field_name\":\"move_speed\",\"type_name\":\"int\"}]");
-		Result.GameConfigs.Add(Config);
-		return Result;
-	}
-
-	/**
-	 * A game with everything the emitter can produce a macro from: a config, a writable template, the
-	 * `currency`-tagged wallet whose id `Add Funds` bakes, the `achievement`-tagged row the achievement
-	 * enum is built from, and a shop to give the item and currency enums members.
-	 */
-	inline FFlockSchemaSnapshot FullSnapshot()
-	{
-		FFlockSchemaSnapshot Result = ConfigOnlySnapshot();
-
-		Result.PlayerTemplates.Add(Template(TEXT("tmpl-wallet"), TEXT("Wallet"), TEXT("currency"),
-			TEXT("[{\"type\":\"int\",\"field_name\":\"gold\"},{\"type\":\"int\",\"field_name\":\"shards\"}]")));
-		Result.PlayerTemplates.Add(Template(TEXT("tmpl-trophies"), TEXT("Trophies"), TEXT("achievement"),
-			TEXT("[{\"type\":\"bool\",\"field_name\":\"first_win\"},{\"type\":\"bool\",\"field_name\":\"flawless_run\"}]")));
-
-		FFlockShop Shop;
-		Shop.Id = TEXT("shop-1");
-		Shop.Name = TEXT("Starter");
-		Shop.ShopItems.Add(Item(TEXT("item-1"), TEXT("Gem Pack"), TEXT("Gold")));
-		Result.Shops.Add(Shop);
-
-		return Result;
 	}
 
 	/** Runs the emitters in the order the sync does: structs, enums, functions, then macros. */
@@ -195,6 +140,7 @@ namespace FlockMacroLibraryEmitterTestHelpers
 }
 
 using namespace FlockMacroLibraryEmitterTestHelpers;
+using namespace FlockCodegenTestContent;
 
 // ── One node per config: the macro holds the fetch, so a caller supplies no id ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockMacroEmitTest, "Flock.Editor.MacroLibrary.EmitsOneNodePerConfig",
@@ -283,7 +229,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockMacroTemplateTest, "Flock.Editor.MacroLib
 
 bool FFlockMacroTemplateTest::RunTest(const FString& Parameters)
 {
-	const FBuilt Built = BuildAll(FullSnapshot());
+	const FBuilt Built = BuildAll(EverythingSnapshot());
 	for (const FString& Warning : Built.Macros.Warnings)
 	{
 		AddInfo(Warning);
@@ -347,7 +293,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockMacroCommandTest, "Flock.Editor.MacroLibr
 
 bool FFlockMacroCommandTest::RunTest(const FString& Parameters)
 {
-	const FBuilt Built = BuildAll(FullSnapshot());
+	const FBuilt Built = BuildAll(EverythingSnapshot());
 	if (!TestTrue(TEXT("macro library built"), Built.Macros.IsValid()))
 	{
 		return false;
@@ -429,7 +375,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockMacroConsumerTest, "Flock.Editor.MacroLib
 
 bool FFlockMacroConsumerTest::RunTest(const FString& Parameters)
 {
-	const FBuilt Built = BuildAll(FullSnapshot());
+	const FBuilt Built = BuildAll(EverythingSnapshot());
 	if (!TestTrue(TEXT("macro library built"), Built.Macros.IsValid()))
 	{
 		return false;

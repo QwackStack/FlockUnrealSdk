@@ -2,6 +2,7 @@
 
 #include "FlockEditor.h"
 #include "Codegen/FlockCodegenRunner.h"
+#include "Codegen/FlockGeneratedAssets.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Guards/FlockPlayModeGuard.h"
 #include "Setup/FlockSetupUI.h"
@@ -30,6 +31,9 @@ void FFlockEditorModule::StartupModule()
 	// guard live, since the guard is inert until a lookup reports CanResolve() == true.
 	FFlockVersionLookupRegistry::Set(MakeShared<FFlockHttpVersionLookup>());
 
+	// Before anything is generated, so every save writes the mark where the asset registry reads it.
+	FFlockGeneratedAssets::RegisterMark();
+
 	FFlockPlayModeGuard::Register();
 	FFlockSetupUI::Register();
 
@@ -52,6 +56,7 @@ void FFlockEditorModule::ShutdownModule()
 	UToolMenus::UnregisterOwner(this);
 	FFlockSetupUI::Unregister();
 	FFlockPlayModeGuard::Unregister();
+	FFlockGeneratedAssets::UnregisterMark();
 
 	// Revert to the stub so a later re-init doesn't dangle on this module's lookup.
 	FFlockVersionLookupRegistry::Reset();
@@ -101,8 +106,9 @@ void FFlockEditorModule::RegisterMenus()
 		"FlockCleanGenerated",
 		LOCTEXT("CleanGenerated", "Clean Generated"),
 		LOCTEXT("CleanGeneratedTooltip",
-			"Delete everything a schema sync generated, and the manifest recording it. Blueprints "
-			"referencing a generated struct or enum will be listed before anything is removed."),
+			"Delete everything a schema sync generated, and the manifest recording it. Assets and files of your "
+			"own in the generated folders are kept. Blueprints referencing a generated struct or enum will be "
+			"listed before anything is removed."),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Delete"),
 		FUIAction(FExecuteAction::CreateStatic(&FFlockEditorModule::OnCleanGenerated)));
 }
@@ -121,7 +127,7 @@ namespace
 
 	FAutoConsoleCommand GFlockCleanGeneratedCommand(
 		TEXT("Flock.CleanGenerated"),
-		TEXT("Deletes every generated Flock asset and the codegen manifest."),
+		TEXT("Deletes every asset and file Flock codegen generated, and the codegen manifest. Your own assets and files in the generated folders are kept."),
 		FConsoleCommandDelegate::CreateStatic(&FFlockEditorModule::OnCleanGenerated));
 }
 

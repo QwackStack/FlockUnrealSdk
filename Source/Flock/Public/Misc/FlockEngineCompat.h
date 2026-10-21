@@ -16,14 +16,17 @@
  * Almost all of the SDK is spanned by spellings that compile unchanged on every engine in the range,
  * and that is deliberate: where an engine API moved, the SDK was moved onto the portable API rather
  * than given a guard, because a guard is a thing somebody must re-audit every time the range changes.
- * **Two things have no portable spelling**, and both live at the bottom of this file:
+ * **A few things have no portable spelling**, and they live at the bottom of this file:
  *
  *   - `UUserDefinedStruct`'s header. It moved from `Engine/` to `StructUtils/` in 5.5, and the old
  *     path is not a fallback: from 5.6 the `Engine/` header forwards only under
  *     `UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_5`, which a module on the latest include order does
  *     not have. So 5.4 can use only one spelling and 5.6+ can use only the other.
+ *   - A package's metadata, which codegen marks each asset it makes with: `UPackage::GetMetaData()`
+ *     returns a `UMetaData*` below 5.6 and an `FMetaData&` from 5.6. Editor-only.
  *   - `FAutomationTestBase::TestEqualSensitive`, which arrived in 5.5. Below that the SDK supplies its
  *     own, so the tests read the same on every engine. Test-only: nothing a game compiles depends on it.
+ *   - The engine allocator's members and global, which one relay test stands a counter in for. Test-only.
  *
  * Everything else is still portable by construction, and a new guard belongs here rather than beside
  * the code that needs it - the CI job in .github/workflows/engine-claim.yml fails on one found
@@ -53,6 +56,8 @@
  *   - `FTSTicker`, `TObjectPtr`                          (5.0+)
  *   - `FJsonObject::Values` key type                     (FString, then an interned shared string)
  *   - `UUserDefinedStruct`'s header                      (Engine/ below 5.5, StructUtils/ from 5.5)
+ *   - `UPackage::GetMetaData()`                          (a UMetaData pointer below 5.6, an FMetaData
+ *     reference from 5.6)
  *   - `FAutomationTestBase::TestEqualSensitive`          (5.5+; stood in for below that)
  *   - `EAutomationTestFlags`                             (a struct-scoped enum, then an enum class in
  *     5.5 - the spellings the tests use compile as both, and nothing stores or returns the type)
@@ -105,6 +110,11 @@ static_assert(!UE_VERSION_OLDER_THAN(FLOCK_ENGINE_FLOOR_MAJOR, FLOCK_ENGINE_FLOO
 #else
 	#define FLOCK_USER_DEFINED_STRUCT_HEADER "StructUtils/UserDefinedStruct.h"
 #endif
+
+// A package's metadata - the editor-only notes each object in it can carry, which codegen marks every asset it makes
+// with - is a UMetaData object reached through a pointer below UE 5.6, and an FMetaData member reached by reference from
+// UE 5.6. Both have the same SetValue.
+#define FLOCK_ENGINE_PACKAGE_METADATA_IS_A_MEMBER (!UE_VERSION_OLDER_THAN(5, 6, 0))
 
 // From UE 5.5 the engine's allocator (FMalloc) zeroes memory and marks its per-thread caches through members of its own;
 // the relay's allocation test, which stands a counter in for the allocator, passes those on only where they exist.

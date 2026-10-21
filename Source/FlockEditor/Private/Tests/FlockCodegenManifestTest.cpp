@@ -8,6 +8,7 @@
 #include "Codegen/FlockCodegenPaths.h"
 #include "Codegen/FlockSchemaHasher.h"
 #include "HAL/FileManager.h"
+#include "Misc/FlockEngineCompat.h"
 #include "Misc/Paths.h"
 
 namespace FlockCodegenManifestTestHelpers
@@ -308,6 +309,60 @@ bool FFlockCodegenPathGuardTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("a same-prefixed sibling is rejected"),
 		FFlockCodegenPaths::TryResolveGeneratedRoot(TEXT("../UEBuildEnviromentEvil/Generated"), Root, Error));
 
+	return true;
+}
+
+// ── The content path is guarded too: codegen writes and removes assets in it, so it may not be /Game ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockContentPathGuardTest,
+	"Flock.Editor.CodegenPaths.RefusesAContentPathThatCoversTheProjectsContent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockContentPathGuardTest::RunTest(const FString& Parameters)
+{
+	FString Root;
+	FString Error;
+
+	TestTrue(TEXT("the default resolves"),
+		FFlockCodegenPaths::TryResolveContentRoot(TEXT("/Game/Flock/Generated"), Root, Error));
+	TestEqualSensitive(TEXT("as itself"), Root, FString(TEXT("/Game/Flock/Generated")));
+	TestTrue(TEXT("a trailing slash and spaces are trimmed"),
+		FFlockCodegenPaths::TryResolveContentRoot(TEXT("  /Game/Flock/Generated/ "), Root, Error));
+	TestEqualSensitive(TEXT("to the same folder"), Root, FString(TEXT("/Game/Flock/Generated")));
+
+	// Each one would have codegen write and remove assets among the project's own, or outside the project.
+	struct FRefused
+	{
+		const TCHAR* Path;
+		const TCHAR* Cause;
+	};
+	const FRefused Refused[] = {
+		{ TEXT("/Game"), TEXT("whole content folder") },
+		{ TEXT("/Game/"), TEXT("whole content folder") },
+		{ TEXT(" /Game// "), TEXT("whole content folder") },
+		{ TEXT("/Temp"), TEXT("whole content folder") },
+		{ TEXT(""), TEXT("is empty") },
+		{ TEXT("Game/Flock"), TEXT("package path") },
+		{ TEXT("C:/Somewhere"), TEXT("package path") },
+		{ TEXT("/Game/Flock/.."), TEXT("'..'") },
+		{ TEXT("/Game/./Flock"), TEXT("'.'") },
+		{ TEXT("/Game//Flock"), TEXT("empty folder name") },
+		{ TEXT("/Game/Flock.Generated"), TEXT("not a valid package path") },
+		{ TEXT("/Game/My Generated"), TEXT("not a valid package path") },
+		{ TEXT("/NoSuchContentFolder/Flock"), TEXT("not inside a content folder") },
+		{ TEXT("/Engine/Flock/Generated"), TEXT("outside this project's folder") },
+	};
+	for (const FRefused& Case : Refused)
+	{
+		Root = TEXT("left over");
+		Error.Reset();
+		TestFalse(FString::Printf(TEXT("'%s' is refused"), Case.Path),
+			FFlockCodegenPaths::TryResolveContentRoot(Case.Path, Root, Error));
+		TestTrue(FString::Printf(TEXT("'%s' resolves to nothing"), Case.Path), Root.IsEmpty());
+		TestTrue(FString::Printf(TEXT("'%s' says what is wrong (%s)"), Case.Path, *Error),
+			Error.Contains(Case.Cause));
+		TestTrue(FString::Printf(TEXT("'%s' says how to fix it"), Case.Path),
+			Error.Contains(TEXT("Project Settings > Flock SDK > Codegen")) && Error.Contains(TEXT("/Game/Flock/Generated")));
+	}
 	return true;
 }
 

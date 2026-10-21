@@ -25,6 +25,10 @@
  * function bodies, it does not add `USTRUCT`/`UENUM` types — so a restart is unavoidable however the
  * build is started. Given that, driving UnrealBuildTool would buy nothing and add a platform-specific
  * failure mode to own; the sync writes sources, registers the module, and says what to do next.
+ *
+ * **It does not take over the game's own module.** A file is replaced or removed only when it opens with
+ * the generated banner (FFlockGeneratedFiles), so a Generated Code Path at `Source/MyGame` is refused at
+ * `MyGame.Build.cs`, and the game's headers and sources there are never deleted.
  */
 class FLOCKEDITOR_API FFlockCppModuleEmitter
 {
@@ -55,9 +59,6 @@ public:
 	static FEmitResult Emit(const FString& GeneratedRoot, const FFlockCodegenManifest& Manifest,
 		const FString& ProjectFilePath);
 
-	/** Emit against the running project's .uproject. */
-	static FEmitResult EmitForProject(const FString& GeneratedRoot, const FFlockCodegenManifest& Manifest);
-
 	/**
 	 * Adds the module to a .uproject if absent. Idempotent and additive — an already-registered module is
 	 * a no-op that reports success, so a re-sync never rewrites the project file.
@@ -79,7 +80,8 @@ public:
 	 *
 	 * `bResetManifest` rewrites the manifest header with empty values rather than deleting it — anything
 	 * including it must keep compiling, and it must stop claiming a version nothing was generated for.
-	 * With no module skeleton (no `<ModuleName>.Build.cs`) it writes nothing and succeeds.
+	 * With no module skeleton of codegen's (no `<ModuleName>.Build.cs`, or one codegen did not write) it writes
+	 * nothing and succeeds. Only files that open with the generated banner are deleted.
 	 */
 	static bool RemoveGeneratedTypes(const FString& GeneratedRoot, const FString& ModuleName,
 		bool bResetManifest, FString& OutError);

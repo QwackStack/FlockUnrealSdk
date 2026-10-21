@@ -4,10 +4,18 @@
 
 #if WITH_AUTOMATION_TESTS
 
+#include "Codegen/FlockCatalogBuilder.h"
+#include "Codegen/FlockCodegenRunner.h"
 #include "Codegen/FlockCppModuleEmitter.h"
+#include "Codegen/FlockCppTypeEmitter.h"
+#include "Codegen/FlockGeneratedFiles.h"
+#include "Codegen/FlockStructEmitter.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
+#include "Misc/FlockEngineCompat.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
+#include "Tests/Support/FlockCodegenTestContent.h"
 
 /**
  * The C++ target's skeleton is the one piece of codegen whose failure mode is "the project no longer
@@ -29,28 +37,6 @@ namespace FlockCppModuleEmitterTestHelpers
 	inline FString ScratchProjectDir()
 	{
 		return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("FlockCppEmitTest"));
-	}
-
-	/**
-	 * A throwaway project that looks like a C++ one: a .uproject plus a *.Target.cs, which is what the
-	 * emitter actually tests for. The real project's file is never touched by a test.
-	 */
-	inline FString MakeScratchProject(const FString& ProjectDir)
-	{
-		IFileManager::Get().DeleteDirectory(*ProjectDir, /*RequireExists*/ false, /*Tree*/ true);
-		IFileManager::Get().MakeDirectory(*FPaths::Combine(ProjectDir, TEXT("Source")), /*Tree*/ true);
-
-		FFileHelper::SaveStringToFile(
-			TEXT("using UnrealBuildTool;\npublic class ScratchTarget : TargetRules {}\n"),
-			*FPaths::Combine(ProjectDir, TEXT("Source"), TEXT("Scratch.Target.cs")));
-
-		const FString ProjectFile = FPaths::Combine(ProjectDir, TEXT("Scratch.uproject"));
-		FFileHelper::SaveStringToFile(
-			TEXT("{\n\t\"FileVersion\": 3,\n\t\"EngineAssociation\": \"5.5\",\n\t\"Modules\": [\n")
-			TEXT("\t\t{\n\t\t\t\"Name\": \"Scratch\",\n\t\t\t\"Type\": \"Runtime\",\n")
-			TEXT("\t\t\t\"LoadingPhase\": \"Default\"\n\t\t}\n\t]\n}\n"),
-			*ProjectFile);
-		return ProjectFile;
 	}
 
 	inline FFlockCodegenManifest Manifest()
@@ -75,6 +61,7 @@ namespace FlockCppModuleEmitterTestHelpers
 }
 
 using namespace FlockCppModuleEmitterTestHelpers;
+using namespace FlockCodegenTestContent;
 
 // ── The skeleton: the three files a module needs, and the project entry that builds it ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCppModuleEmitTest, "Flock.Editor.CppModule.EmitsACompilableModule",
@@ -83,7 +70,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCppModuleEmitTest, "Flock.Editor.CppModul
 bool FFlockCppModuleEmitTest::RunTest(const FString& Parameters)
 {
 	const FString ProjectDir = ScratchProjectDir();
-	const FString ProjectFile = MakeScratchProject(ProjectDir);
+	const FString ProjectFile = MakeScratchCppProject(ProjectDir);
 	const FString Root = StableRoot();
 
 	const FFlockCppModuleEmitter::FEmitResult Result =
@@ -148,7 +135,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCppModuleIdempotentTest, "Flock.Editor.Cp
 bool FFlockCppModuleIdempotentTest::RunTest(const FString& Parameters)
 {
 	const FString ProjectDir = ScratchProjectDir();
-	const FString ProjectFile = MakeScratchProject(ProjectDir);
+	const FString ProjectFile = MakeScratchCppProject(ProjectDir);
 	const FString Root = StableRoot();
 
 	const FFlockCppModuleEmitter::FEmitResult First =
@@ -211,7 +198,7 @@ bool FFlockCppModuleRefusalTest::RunTest(const FString& Parameters)
 
 	// Outside Source/, UnrealBuildTool never discovers the module, so it would silently never compile.
 	const FString CppProjectDir = ScratchProjectDir();
-	const FString CppProjectFile = MakeScratchProject(CppProjectDir);
+	const FString CppProjectFile = MakeScratchCppProject(CppProjectDir);
 	const FFlockCppModuleEmitter::FEmitResult Outside = FFlockCppModuleEmitter::Emit(
 		FPaths::Combine(CppProjectDir, TEXT("NotSource"), TEXT("FlockGenerated")), Manifest(), CppProjectFile);
 	TestFalse(TEXT("a root outside Source/ is refused"), Outside.bSucceeded);
@@ -234,6 +221,226 @@ bool FFlockCppModuleNoSkeletonTest::RunTest(const FString& Parameters)
 		/*bResetManifest*/ true, Error));
 	TestFalse(TEXT("and no folder or stub was written"), IFileManager::Get().DirectoryExists(*Root));
 	IFileManager::Get().DeleteDirectory(*FPaths::GetPath(Root), /*RequireExists*/ false, /*Tree*/ true);
+	return true;
+}
+
+namespace FlockCppModuleEmitterTestHelpers
+{
+	inline bool Plant(const FString& Path, const FString& Contents)
+	{
+		return FFileHelper::SaveStringToFile(Contents, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	}
+
+	inline bool Exists(const FString& Path)
+	{
+		return IFileManager::Get().FileExists(*Path);
+	}
+}
+
+// ── A generated file is known by the banner it opens with, never by its name ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockGeneratedFilesBannerTest, "Flock.Editor.GeneratedFiles.KnowsAGeneratedFileByItsBanner",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockGeneratedFilesBannerTest::RunTest(const FString& Parameters)
+{
+	const FString Dir = FPaths::Combine(FPaths::ProjectSavedDir(),
+		FString::Printf(TEXT("FlockGeneratedFilesTest_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+	ON_SCOPE_EXIT { IFileManager::Get().DeleteDirectory(*Dir, /*RequireExists*/ false, /*Tree*/ true); };
+	auto At = [&Dir](const TCHAR* Name) { return FPaths::Combine(Dir, Name); };
+
+	const FString Banner = FFlockGeneratedFiles::Banner;
+	Plant(At(TEXT("A.h")), Banner + TEXT("#pragma once\n"));
+	FFileHelper::SaveStringToFile(Banner, *At(TEXT("Bom.h")), FFileHelper::EEncodingOptions::ForceUTF8);
+	Plant(At(TEXT("Crlf.h")), Banner.Replace(TEXT("\n"), TEXT("\r\n")));
+	Plant(At(TEXT("C.h")), TEXT("// <auto-generated>\n// by another tool\n"));
+	Plant(At(TEXT("D.h")), FString());
+	Plant(At(TEXT("Late.h")), TEXT("#pragma once\n\n\n// Generated by Flock. Do not edit by hand\n"));
+
+	TestTrue(TEXT("a file that opens with the banner is generated"), FFlockGeneratedFiles::IsGenerated(At(TEXT("A.h"))));
+	TestTrue(TEXT("a byte order mark does not hide the banner"), FFlockGeneratedFiles::IsGenerated(At(TEXT("Bom.h"))));
+	TestTrue(TEXT("nor do Windows line endings"), FFlockGeneratedFiles::IsGenerated(At(TEXT("Crlf.h"))));
+	TestFalse(TEXT("another generator's file is not"), FFlockGeneratedFiles::IsGenerated(At(TEXT("C.h"))));
+	TestFalse(TEXT("an empty file is not"), FFlockGeneratedFiles::IsGenerated(At(TEXT("D.h"))));
+	TestFalse(TEXT("the words further down are not the banner"), FFlockGeneratedFiles::IsGenerated(At(TEXT("Late.h"))));
+	TestFalse(TEXT("a missing file is not"), FFlockGeneratedFiles::IsGenerated(At(TEXT("Missing.h"))));
+
+	TestFalse(TEXT("a file codegen did not write is not deleted"), FFlockGeneratedFiles::DeleteIfGenerated(At(TEXT("C.h"))));
+	TestTrue(TEXT("and is still there"), Exists(At(TEXT("C.h"))));
+	TestTrue(TEXT("a generated one is"), FFlockGeneratedFiles::DeleteIfGenerated(At(TEXT("A.h"))));
+	TestFalse(TEXT("and is gone"), Exists(At(TEXT("A.h"))));
+
+	FString Error;
+	TestFalse(TEXT("a file codegen did not write is not overwritten"),
+		FFlockGeneratedFiles::WriteIfChanged(At(TEXT("C.h")), Banner, Error));
+	TestTrue(FString::Printf(TEXT("the refusal names the file and the fix (%s)"), *Error),
+		Error.Contains(TEXT("C.h")) && Error.Contains(TEXT("Source/FlockGenerated")));
+	FString Kept;
+	FFileHelper::LoadFileToString(Kept, *At(TEXT("C.h")));
+	TestEqual(TEXT("and it is unchanged"), Kept, FString(TEXT("// <auto-generated>\n// by another tool\n")));
+	TestTrue(TEXT("a generated file is rewritten"), FFlockGeneratedFiles::WriteIfChanged(At(TEXT("Crlf.h")), Banner, Error));
+	TestTrue(TEXT("and a new one is written"), FFlockGeneratedFiles::WriteIfChanged(At(TEXT("New.h")), Banner, Error));
+	return true;
+}
+
+// ── Removing the generated types leaves the game's own files in the module's folders ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCppModuleOwnFilesTest, "Flock.Editor.CppModule.RemovesOnlyFilesCodegenWrote",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCppModuleOwnFilesTest::RunTest(const FString& Parameters)
+{
+	const FString ProjectDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("FlockCppOwnFilesTest"));
+	ON_SCOPE_EXIT { IFileManager::Get().DeleteDirectory(*ProjectDir, /*RequireExists*/ false, /*Tree*/ true); };
+	const FString ProjectFile = MakeScratchCppProject(ProjectDir);
+	const FString Root = FPaths::Combine(ProjectDir, TEXT("Source"), TEXT("FlockGenerated"));
+	if (!TestTrue(TEXT("the module was emitted"), FFlockCppModuleEmitter::Emit(Root, Manifest(), ProjectFile).bSucceeded))
+	{
+		return false;
+	}
+
+	// A type and an accessor file a sync wrote, and the game's own files beside them.
+	const FString OldType = FPaths::Combine(Root, TEXT("Public"), TEXT("OldTypeTemplate.h"));
+	const FString OldAccessors = FPaths::Combine(Root, TEXT("Private"), TEXT("FlockGeneratedOldAccessors.cpp"));
+	const FString GameHeader = FPaths::Combine(Root, TEXT("Public"), TEXT("MyHelpers.h"));
+	const FString GameSource = FPaths::Combine(Root, TEXT("Private"), TEXT("MyHelpers.cpp"));
+	Plant(OldType, FString(FFlockGeneratedFiles::Banner) + TEXT("#pragma once\n"));
+	Plant(OldAccessors, FString(FFlockGeneratedFiles::Banner) + TEXT("// accessors\n"));
+	Plant(GameHeader, TEXT("#pragma once\n// the game's\n"));
+	Plant(GameSource, TEXT("// the game's\n"));
+
+	FString Error;
+	TestTrue(TEXT("the generated types are removed"),
+		FFlockCppModuleEmitter::RemoveGeneratedTypes(Root, TEXT("FlockGenerated"), /*bResetManifest*/ true, Error));
+	TestFalse(TEXT("the generated header went"), Exists(OldType));
+	TestFalse(TEXT("and the generated source"), Exists(OldAccessors));
+	TestTrue(TEXT("the game's header stays"), Exists(GameHeader));
+	TestTrue(TEXT("and the game's source"), Exists(GameSource));
+
+	// The type emitter's sweep of the headers a sync no longer writes keeps the game's header too.
+	const FFlockCppTypeEmitter::FEmitResult Types =
+		FFlockCppTypeEmitter::Emit(EverythingSnapshot(), Root, TEXT("FlockGenerated"));
+	TestTrue(FString::Printf(TEXT("the types were emitted (%s)"), *Types.Error), Types.bSucceeded);
+	TestTrue(TEXT("the game's header survives the sweep"), Exists(GameHeader));
+	return true;
+}
+
+// ── A Generated Code Path at the game's own module changes nothing in it ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCppModuleGameModuleTest, "Flock.Editor.CppModule.LeavesTheGamesOwnModuleAlone",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCppModuleGameModuleTest::RunTest(const FString& Parameters)
+{
+	const FString ProjectDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("FlockCppGameModuleTest"));
+	ON_SCOPE_EXIT { IFileManager::Get().DeleteDirectory(*ProjectDir, /*RequireExists*/ false, /*Tree*/ true); };
+	const FString ProjectFile = MakeScratchCppProject(ProjectDir);
+	const FString GameRoot = FPaths::Combine(ProjectDir, TEXT("Source"), TEXT("MyGame"));
+
+	// The game's module, with files under the very names the skeleton writes.
+	const TMap<FString, FString> GameFiles = {
+		{ FPaths::Combine(GameRoot, TEXT("MyGame.Build.cs")), TEXT("using UnrealBuildTool;\npublic class MyGame : ModuleRules {}\n") },
+		{ FPaths::Combine(GameRoot, TEXT("Public"), TEXT("MyGame.h")), TEXT("#pragma once\n") },
+		{ FPaths::Combine(GameRoot, TEXT("Public"), TEXT("Hero.h")), TEXT("#pragma once\nstruct FHero {};\n") },
+		{ FPaths::Combine(GameRoot, TEXT("Private"), TEXT("MyGame.cpp")), TEXT("#include \"MyGame.h\"\n") },
+		{ FPaths::Combine(GameRoot, TEXT("Private"), TEXT("MyGameModule.cpp")), TEXT("// the game's module\n") },
+	};
+	for (const TPair<FString, FString>& File : GameFiles)
+	{
+		Plant(File.Key, File.Value);
+	}
+	const FString ProjectBefore = Read(ProjectFile);
+
+	auto FilesInModule = [&GameRoot]()
+	{
+		TArray<FString> Files;
+		IFileManager::Get().FindFilesRecursive(Files, *GameRoot, TEXT("*"), /*Files*/ true, /*Directories*/ false);
+		Files.Sort();
+		return FString::Join(Files, TEXT("\n"));
+	};
+	const FString FilesBefore = FilesInModule();
+
+	// What a Blueprint sync and a Clean run against the code path: it neither deletes nor writes anything there.
+	FString Error;
+	TestTrue(TEXT("removing types from the game's module succeeds"),
+		FFlockCppModuleEmitter::RemoveGeneratedTypes(GameRoot, TEXT("MyGame"), /*bResetManifest*/ true, Error));
+	TestEqualSensitive(TEXT("and leaves exactly the game's files there, adding no stub"), FilesInModule(), FilesBefore);
+
+	// What a C++ sync runs first.
+	const FFlockCppModuleEmitter::FEmitResult Emitted = FFlockCppModuleEmitter::Emit(GameRoot, Manifest(), ProjectFile);
+	TestFalse(TEXT("a C++ sync into the game's module is refused"), Emitted.bSucceeded);
+	TestTrue(FString::Printf(TEXT("at the game's .Build.cs, with the fix (%s)"), *Emitted.Error),
+		Emitted.Error.Contains(TEXT("MyGame.Build.cs")) && Emitted.Error.Contains(TEXT("Source/FlockGenerated")));
+
+	for (const TPair<FString, FString>& File : GameFiles)
+	{
+		TestEqual(FString::Printf(TEXT("'%s' is unchanged"), *FPaths::GetCleanFilename(File.Key)), Read(File.Key), File.Value);
+	}
+	TestEqualSensitive(TEXT("nothing of codegen's was added"), FilesInModule(), FilesBefore);
+	TestEqual(TEXT("and the project file is untouched"), Read(ProjectFile), ProjectBefore);
+	return true;
+}
+
+// ── Switching to the C++ target deletes the Blueprint target's assets, and only those ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockCppSwitchKeepsGameAssetsTest,
+	"Flock.Editor.CppModule.SwitchingToCppKeepsAssetsCodegenDidNotMake",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockCppSwitchKeepsGameAssetsTest::RunTest(const FString& Parameters)
+{
+	const FCodegenTargetForThisTest OnCpp(EFlockCodegenTarget::Cpp);
+	const FString ProjectDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("FlockCppSwitchTest"));
+	const FScratchContentFolder Content(TEXT("FlockCppSwitchTest"));
+	const FString& Root = Content.Root;
+	ON_SCOPE_EXIT { IFileManager::Get().DeleteDirectory(*ProjectDir, /*RequireExists*/ false, /*Tree*/ true); };
+	const FString ProjectFile = MakeScratchCppProject(ProjectDir);
+	const FString CodeRoot = FPaths::Combine(ProjectDir, TEXT("Source"), TEXT("FlockGenerated"));
+
+	// What the Blueprint target left, made by its real emitters (a struct and the catalog both targets share), and the
+	// game's own assets beside and below it.
+	FString StructError;
+	const FFlockStructEmitter::FEmitResult Left = FFlockStructEmitter::Emit(ConfigOnlySnapshot(), Root, StructError);
+	FString CatalogError;
+	const bool bCatalogSaved = FFlockCatalogBuilder::Save(ConfigOnlySnapshot(), Root, CatalogError);
+	const FString CatalogPath = Root + TEXT("/") + FFlockCatalogBuilder::AssetName;
+	const TWeakObjectPtr<UObject> CatalogBefore =
+		FindObject<UObject>(nullptr, *(CatalogPath + TEXT(".") + FFlockCatalogBuilder::AssetName));
+	const FString LeftStruct = Root + TEXT("/GameplayConfig");
+	const FString GameStruct = Root + TEXT("/HeroNotes");
+	const FString GameEnumBelow = Root + TEXT("/Levels/LevelNames");
+	const FString GameActor = Root + TEXT("/Levels/DoorActor");
+	if (!TestTrue(TEXT("the Blueprint target's assets and the game's were made"),
+		Left.StructCount == 1 && IsOnDisk(LeftStruct) && bCatalogSaved && CatalogBefore.IsValid()
+			&& PlantGameStruct(GameStruct) && PlantGameEnum(GameEnumBelow) && PlantGameActorBlueprint(GameActor)))
+	{
+		return false;
+	}
+
+	const FFlockCodegenRunner::FRunResult Switched =
+		FFlockCodegenRunner::EmitAll(EverythingSnapshot(), Root, CodeRoot, ProjectFile);
+	if (!TestTrue(FString::Printf(TEXT("the C++ sync succeeded (%s)"), *Switched.Error), Switched.bSucceeded && Switched.bCppTarget))
+	{
+		return false;
+	}
+
+	TestFalse(TEXT("the Blueprint target's struct went"), IsOnDisk(LeftStruct));
+	TestTrue(TEXT("the game's struct beside it stays"), IsOnDisk(GameStruct));
+	TestTrue(TEXT("and the game's enum in the folder below"), IsOnDisk(GameEnumBelow));
+	TestTrue(TEXT("and the game's Actor Blueprint"), IsOnDisk(GameActor));
+	auto AnyWarningNames = [&Switched](const FString& What)
+	{
+		return Switched.Warnings.ContainsByPredicate([&What](const FString& Warning) { return Warning.Contains(What); });
+	};
+	TestTrue(TEXT("a warning names the kept struct, with what to do"), AnyWarningNames(GameStruct) && AnyWarningNames(TEXT("by hand")));
+	TestFalse(TEXT("but not the Actor Blueprint, which can never list a type twice"), AnyWarningNames(GameActor));
+	TestFalse(TEXT("and no generated asset is reported left behind"), AnyWarningNames(TEXT("are still in")));
+
+	// The catalog both targets share is kept, the same asset, so whatever refers to it still does, and marked.
+	TestTrue(TEXT("the catalog was not deleted and made again"),
+		CatalogBefore.IsValid() && CatalogBefore.Get() == FindObject<UObject>(nullptr,
+			*(CatalogPath + TEXT(".") + FFlockCatalogBuilder::AssetName)));
+	TestTrue(TEXT("and it is still marked"), AssetsUnder(Root).ContainsByPredicate([&CatalogPath](const FAssetData& Asset)
+		{
+			return Asset.PackageName.ToString().Equals(CatalogPath, ESearchCase::CaseSensitive)
+				&& FFlockGeneratedAssets::IsMarked(Asset);
+		}));
 	return true;
 }
 

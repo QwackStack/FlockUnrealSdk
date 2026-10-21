@@ -78,9 +78,10 @@ public:
 	// ──────────────────────────────── Codegen ─────────────────────────────────
 
 	/**
-	 * Project-relative folder where the Codegen step writes generated code (and Clean wipes).
-	 * Created automatically if missing. Treat this folder as Flock-owned — files in it will be
-	 * deleted on regen/clean.
+	 * Project-relative folder where the Codegen step writes generated code. Created automatically if
+	 * missing. Give it a folder of its own: a regen or a Clean replaces and deletes the files codegen
+	 * wrote there, and refuses to overwrite a file of yours, such as your own module's .Build.cs.
+	 * Files of your own in it are kept.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Codegen")
 	FString GeneratedCodePath = TEXT("Source/FlockGenerated");
@@ -91,7 +92,9 @@ public:
 	 * GeneratedCodePath because assets have to live under Content to be assets at all, while generated
 	 * C++ has to live under Source to be compiled.
 	 *
-	 * Flock-owned in the same way: regenerating replaces what is in here.
+	 * Give it a folder of its own, below a content folder: a whole content folder such as /Game is
+	 * refused. Regenerating replaces the assets codegen made here, and switching to the C++ target or
+	 * running Clean deletes them; assets of your own in it are kept.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Codegen")
 	FString GeneratedContentPath = TEXT("/Game/Flock/Generated");

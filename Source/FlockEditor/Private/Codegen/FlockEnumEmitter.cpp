@@ -4,7 +4,9 @@
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Codegen/FlockCatalogBuilder.h"
+#include "Codegen/FlockCodegenPaths.h"
 #include "Codegen/FlockContentCatalog.h"
+#include "Codegen/FlockGeneratedAssets.h"
 #include "Engine/UserDefinedEnum.h"
 #include "FileHelpers.h"
 #include "Kismet2/EnumEditorUtils.h"
@@ -201,12 +203,9 @@ FFlockEnumEmitter::FEmitResult FFlockEnumEmitter::Emit(const FFlockSchemaSnapsho
 {
 	FEmitResult Result;
 
-	FString Root = ContentPath.TrimStartAndEnd();
-	Root.RemoveFromEnd(TEXT("/"));
-	if (Root.IsEmpty() || !Root.StartsWith(TEXT("/")))
+	FString Root;
+	if (!FFlockCodegenPaths::TryResolveContentRoot(ContentPath, Root, OutError))
 	{
-		OutError = FString::Printf(
-			TEXT("Generated Content Path must be a package path such as /Game/Flock/Generated. Got '%s'."), *ContentPath);
 		return Result;
 	}
 
@@ -217,19 +216,19 @@ FFlockEnumEmitter::FEmitResult FFlockEnumEmitter::Emit(const FFlockSchemaSnapsho
 		{
 			return FEnumResult();
 		}
-		const FString PackageName = FString::Printf(TEXT("%s/%s"), *Root, *EnumName);
-		UPackage* Package = CreatePackage(*PackageName);
+		FString Problem;
+		UPackage* Package = FFlockGeneratedAssets::OpenPackageFor(Root, EnumName, UUserDefinedEnum::StaticClass(), Problem);
 		if (!Package)
 		{
-			Result.Warnings.Add(FString::Printf(TEXT("Could not create package '%s'."), *PackageName));
+			Result.Warnings.Add(Problem);
 			return FEnumResult();
 		}
-		Package->FullyLoad();
 
 		FEnumResult Built = BuildEnum(Package, EnumName, Members, Result.Warnings);
 		if (Built.IsValid())
 		{
 			FAssetRegistryModule::AssetCreated(Built.Enum);
+			FFlockGeneratedAssets::MarkEveryAssetIn(Package);
 			Built.Enum->MarkPackageDirty();
 			Packages.Add(Package);
 		}
