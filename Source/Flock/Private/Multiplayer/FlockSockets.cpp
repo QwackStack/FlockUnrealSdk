@@ -1,14 +1,14 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "IPAddress.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
 
-std::atomic<bool> FFlockUdpSockets::bDualStackRefusedForTesting{ false };
-std::atomic<bool> FFlockUdpSockets::bDualStackSendRefusedForTesting{ false };
-std::atomic<bool> FFlockUdpSockets::bDualStackConnectRefusedForTesting{ false };
-std::atomic<bool> FFlockUdpSockets::bDualStackRefused{ false };
+std::atomic<bool> FFlockSockets::bDualStackRefusedForTesting{ false };
+std::atomic<bool> FFlockSockets::bDualStackSendRefusedForTesting{ false };
+std::atomic<bool> FFlockSockets::bDualStackConnectRefusedForTesting{ false };
+std::atomic<bool> FFlockSockets::bDualStackRefused{ false };
 
 namespace
 {
@@ -26,17 +26,74 @@ namespace
 		return Socket.Bind(*Anywhere) && Socket.SetNonBlocking(true);
 	}
 
-	bool ConnectTo(FSocket& Socket, const FString& Ipv4Address, int32 Port)
+	bool ConnectTo(FSocket& Socket, const FString& Address, int32 Port)
 	{
-		if (FFlockUdpSockets::bDualStackConnectRefusedForTesting && FFlockUdpSockets::IsDualStack(Socket))
+		if (FFlockSockets::bDualStackConnectRefusedForTesting && FFlockSockets::IsDualStack(Socket) && !FFlockSockets::IsIpv6Address(Address))
 		{
 			return false;
 		}
-		return Socket.Connect(*FFlockUdpSockets::Toward(Socket, Ipv4Address, Port));
+		return Socket.Connect(*FFlockSockets::Toward(Socket, Address, Port));
 	}
 }
 
-void FFlockUdpSockets::ResetForTesting()
+bool FFlockSockets::CarriesIpv6()
+{
+#if PLATFORM_HAS_BSD_IPV6_SOCKETS
+	ISocketSubsystem* Sockets = FlockSockets();
+	if (Sockets == nullptr || bDualStackRefused || bDualStackRefusedForTesting)
+	{
+		return false;
+	}
+	// Whether this launch's platform makes IPv6 sockets does not change: asked of it once, by a probe socket.
+	static std::atomic<int32> MakesIpv6Sockets{ -1 };
+	if (MakesIpv6Sockets.load() < 0)
+	{
+		FSocket* Probe = Sockets->CreateSocket(NAME_Stream, TEXT("Flock IPv6 probe"), FNetworkProtocolTypes::IPv6);
+		if (Probe != nullptr)
+		{
+			Sockets->DestroySocket(Probe);
+		}
+		MakesIpv6Sockets = Probe != nullptr ? 1 : 0;
+	}
+	return MakesIpv6Sockets.load() == 1;
+#else
+	return false;
+#endif
+}
+
+FSocket* FFlockSockets::StartStreamTo(const FString& Address, int32 Port, const TCHAR* Description, FString& OutCause)
+{
+	OutCause.Reset();
+	ISocketSubsystem* Sockets = FlockSockets();
+	const bool bIpv6 = IsIpv6Address(Address);
+	if (bIpv6 && !CarriesIpv6())
+	{
+		OutCause = TEXT("this device's sockets reach no IPv6 address here");
+		return nullptr;
+	}
+	FSocket* Socket = Sockets != nullptr ? Sockets->CreateSocket(NAME_Stream, Description, bIpv6 ? FNetworkProtocolTypes::IPv6 : FNetworkProtocolTypes::IPv4) : nullptr;
+	if (Socket == nullptr)
+	{
+		OutCause = TEXT("no TCP socket could be made");
+		return nullptr;
+	}
+	bool bValid = false;
+	const TSharedRef<FInternetAddr> Server = Sockets->CreateInternetAddr(Socket->GetProtocol());
+	Server->SetIp(*Address, bValid);
+	Server->SetPort(Port);
+	// A game's small packets go at once rather than waiting to be joined.
+	Socket->SetNoDelay(true);
+	if (!bValid || !Socket->SetNonBlocking(true) || !Socket->Connect(*Server))
+	{
+		const ESocketErrors Error = Sockets->GetLastErrorCode();
+		OutCause = bValid ? FString::Printf(TEXT("the connection could not be started (%s)"), Sockets->GetSocketError(Error)) : TEXT("its address could not be read");
+		Close(Socket);
+		return nullptr;
+	}
+	return Socket;
+}
+
+void FFlockSockets::ResetForTesting()
 {
 	bDualStackRefusedForTesting = false;
 	bDualStackSendRefusedForTesting = false;
@@ -44,7 +101,7 @@ void FFlockUdpSockets::ResetForTesting()
 	bDualStackRefused = false;
 }
 
-FSocket* FFlockUdpSockets::Open(const TCHAR* Description)
+FSocket* FFlockSockets::Open(const TCHAR* Description)
 {
 	ISocketSubsystem* Sockets = FlockSockets();
 	if (Sockets == nullptr)
@@ -74,7 +131,7 @@ FSocket* FFlockUdpSockets::Open(const TCHAR* Description)
 	return OpenIpv4(Description);
 }
 
-FSocket* FFlockUdpSockets::OpenIpv4(const TCHAR* Description)
+FSocket* FFlockSockets::OpenIpv4(const TCHAR* Description)
 {
 	ISocketSubsystem* Sockets = FlockSockets();
 	if (Sockets == nullptr)
@@ -94,7 +151,7 @@ FSocket* FFlockUdpSockets::OpenIpv4(const TCHAR* Description)
 	return Ipv4;
 }
 
-FSocket* FFlockUdpSockets::OpenOnLoopback(const TCHAR* Description)
+FSocket* FFlockSockets::OpenOnLoopback(const TCHAR* Description)
 {
 	ISocketSubsystem* Sockets = FlockSockets();
 	FSocket* Socket = Sockets != nullptr ? Sockets->CreateSocket(NAME_DGram, Description, FNetworkProtocolTypes::IPv4) : nullptr;
@@ -117,7 +174,7 @@ FSocket* FFlockUdpSockets::OpenOnLoopback(const TCHAR* Description)
 	return Socket;
 }
 
-TSharedRef<FInternetAddr> FFlockUdpSockets::OnLoopback(int32 Port)
+TSharedRef<FInternetAddr> FFlockSockets::OnLoopback(int32 Port)
 {
 	bool bValid = false;
 	const TSharedRef<FInternetAddr> Address = FlockSockets()->CreateInternetAddr(FNetworkProtocolTypes::IPv4);
@@ -126,7 +183,7 @@ TSharedRef<FInternetAddr> FFlockUdpSockets::OnLoopback(int32 Port)
 	return Address;
 }
 
-bool FFlockUdpSockets::IsLoopback(const FInternetAddr& Address)
+bool FFlockSockets::IsLoopback(const FInternetAddr& Address)
 {
 	// 127.0.0.0/8, written as IPv4 or as IPv4 inside IPv6 (::ffff:127.x.y.z), as a dual-stack socket reads it.
 	const TArray<uint8> Raw = Address.GetRawIp();
@@ -148,26 +205,31 @@ bool FFlockUdpSockets::IsLoopback(const FInternetAddr& Address)
 	return false;
 }
 
-FSocket* FFlockUdpSockets::OpenConnectedTo(const FString& Ipv4Address, int32 Port, const TCHAR* Description)
+FSocket* FFlockSockets::OpenConnectedTo(const FString& Address, int32 Port, const TCHAR* Description)
 {
+	const bool bIpv6 = IsIpv6Address(Address);
+	if (bIpv6 && !CarriesIpv6())
+	{
+		return nullptr;
+	}
 	FSocket* Socket = Open(Description);
 	if (Socket == nullptr)
 	{
 		return nullptr;
 	}
-	if (ConnectTo(*Socket, Ipv4Address, Port))
+	if ((!bIpv6 || IsDualStack(*Socket)) && ConnectTo(*Socket, Address, Port))
 	{
 		return Socket;
 	}
 	const bool bWasDualStack = IsDualStack(*Socket);
 	Close(Socket);
-	if (!bWasDualStack)
+	if (!bWasDualStack || bIpv6)
 	{
 		return nullptr;
 	}
 	// A platform that makes a dual-stack socket but cannot connect it to an IPv4 address gets a plain IPv4 socket instead.
 	FSocket* Ipv4 = OpenIpv4(Description);
-	if (Ipv4 != nullptr && !ConnectTo(*Ipv4, Ipv4Address, Port))
+	if (Ipv4 != nullptr && !ConnectTo(*Ipv4, Address, Port))
 	{
 		Close(Ipv4);
 		return nullptr;
@@ -175,7 +237,7 @@ FSocket* FFlockUdpSockets::OpenConnectedTo(const FString& Ipv4Address, int32 Por
 	return Ipv4;
 }
 
-void FFlockUdpSockets::Close(FSocket* Socket)
+void FFlockSockets::Close(FSocket* Socket)
 {
 	if (Socket == nullptr)
 	{
@@ -188,27 +250,27 @@ void FFlockUdpSockets::Close(FSocket* Socket)
 	}
 }
 
-bool FFlockUdpSockets::IsDualStack(const FSocket& Socket)
+bool FFlockSockets::IsDualStack(const FSocket& Socket)
 {
 	return Socket.GetProtocol() == FNetworkProtocolTypes::IPv6;
 }
 
-TSharedRef<FInternetAddr> FFlockUdpSockets::Toward(const FSocket& Socket, const FString& Ipv4Address, int32 Port)
+TSharedRef<FInternetAddr> FFlockSockets::Toward(const FSocket& Socket, const FString& Ipv4OrIpv6Address, int32 Port)
 {
 	ISocketSubsystem* Sockets = FlockSockets();
 	const TSharedRef<FInternetAddr> Address = Sockets->CreateInternetAddr(Socket.GetProtocol());
 	bool bValid = false;
-	Address->SetIp(*(IsDualStack(Socket) ? TEXT("::ffff:") + Ipv4Address : Ipv4Address), bValid);
+	Address->SetIp(*(IsDualStack(Socket) && !IsIpv6Address(Ipv4OrIpv6Address) ? TEXT("::ffff:") + Ipv4OrIpv6Address : Ipv4OrIpv6Address), bValid);
 	Address->SetPort(Port);
 	return Address;
 }
 
-TSharedRef<FInternetAddr> FFlockUdpSockets::AnySender(const FSocket& Socket)
+TSharedRef<FInternetAddr> FFlockSockets::AnySender(const FSocket& Socket)
 {
 	return FlockSockets()->CreateInternetAddr(Socket.GetProtocol());
 }
 
-int32 FFlockUdpSockets::LocalPortOf(FSocket& Socket)
+int32 FFlockSockets::LocalPortOf(FSocket& Socket)
 {
 	return Socket.GetPortNo();
 }

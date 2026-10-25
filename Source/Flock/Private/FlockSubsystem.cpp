@@ -16,7 +16,7 @@
 #include "Http/FlockHttpShutdown.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.38.2");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.38.3");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -85,16 +85,6 @@ void UFlockSubsystem::InitializeFromSettings()
 
 void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 {
-	// Honor this config's debug-logs flag for the default logger (unless a custom one was injected).
-	if (!Logger.IsValid())
-	{
-		Logger = MakeShared<FFlockUnrealLogger>(Config.bEnableDebugLogs);
-		if (Events)
-		{
-			Events->SetLogger(Logger);
-		}
-	}
-
 	// Raise the log category so debug breadcrumbs actually reach the console.
 	//
 	// Without this, Enable Debug Logs appears to do nothing: LogDebug writes at Verbose, LogFlock is
@@ -116,6 +106,17 @@ void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 		GetLogger().LogWarning(
 			TEXT("SDK is already initialized. Call ShutdownSdk() first to re-initialize with a different config."));
 		return;
+	}
+
+	// Honor this config's debug-logs flag for the default logger (unless a custom one was injected): made again here even when
+	// something logged before initializing (Auto-Initialize On Load being off says so), which made it from the settings' flag.
+	if (!bLoggerSetByGame)
+	{
+		Logger = MakeShared<FFlockUnrealLogger>(Config.bEnableDebugLogs);
+		if (Events)
+		{
+			Events->SetLogger(Logger);
+		}
 	}
 
 	GetLogger().LogInfo(TEXT("Initializing Flock SDK."));
@@ -586,6 +587,7 @@ UFlockEvents* UFlockSubsystem::GetEvents()
 void UFlockSubsystem::SetLogger(const TSharedRef<IFlockLogger>& InLogger)
 {
 	Logger = InLogger;
+	bLoggerSetByGame = true;
 	if (Events)
 	{
 		Events->SetLogger(Logger);

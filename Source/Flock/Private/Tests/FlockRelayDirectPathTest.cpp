@@ -7,7 +7,7 @@
 #include "Dom/JsonObject.h"
 #include "Misc/FlockEngineCompat.h"
 #include "Multiplayer/FlockNameLookup.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "Multiplayer/Relay/FlockBridgeMessages.h"
 #include "Multiplayer/Relay/FlockDirectLink.h"
 #include "Multiplayer/Relay/FlockRelayBridge.h"
@@ -514,7 +514,7 @@ FLOCK_DIRECT_PATH_TEST(FFlockDirectIpv4Test, "WithoutIpv6_TwoBridges_StillGoDire
 bool FFlockDirectIpv4Test::RunTest(const FString& Parameters)
 {
 	FDirectFixture F;
-	FFlockUdpSockets::bDualStackRefusedForTesting = true;
+	FFlockSockets::bDualStackRefusedForTesting = true;
 	FPair Pair;
 	if (!F.Paired(*this, Pair) || !F.BothDirect(*this, Pair))
 	{
@@ -898,7 +898,7 @@ bool FFlockDirectClosingTest::RunTest(const FString& Parameters)
 	Anywhere->SetAnyAddress();
 	Anywhere->SetPort(HostsPort);
 	TestTrue(TEXT("The host's link let its port go"), Again != nullptr && Again->Bind(*Anywhere));
-	FFlockUdpSockets::Close(Again);
+	FFlockSockets::Close(Again);
 	return true;
 }
 

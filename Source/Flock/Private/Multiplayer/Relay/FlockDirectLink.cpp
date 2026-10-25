@@ -5,7 +5,7 @@
 #include "IPAddress.h"
 #include "Misc/ScopeLock.h"
 #include "Multiplayer/FlockDirectAddresses.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "Multiplayer/Relay/FlockRelayWire.h"
 #include "Sockets.h"
 
@@ -69,7 +69,7 @@ namespace
 FFlockDirectLink::FPtr FFlockDirectLink::Start(const FFlockRelayPeer& RelayServer, const TArray<FFlockRelayPeer>& StunServers,
 	FSendThroughTheRelay SendThroughTheRelay, FHandToTheEngine HandToTheEngine, const FString& PeerName)
 {
-	FSocket* Socket = FFlockUdpSockets::Open(ThreadName);
+	FSocket* Socket = FFlockSockets::Open(ThreadName);
 	if (Socket == nullptr)
 	{
 		return nullptr;
@@ -100,13 +100,18 @@ FFlockDirectLink::FFlockDirectLink(FSocket* InSocket, const FTiming& InTiming, c
 	, OurKey(FFlockBridgeKey::NewRandom())
 	, AddressTransaction(FFlockRelayWire::NewTransaction())
 	, AddressRequest(FFlockDirectAddresses::StunRequest(AddressTransaction))
-	, LocalPort(FFlockUdpSockets::LocalPortOf(*InSocket))
+	, LocalPort(FFlockSockets::LocalPortOf(*InSocket))
 	, Protocol(InSocket->GetProtocol())
-	, From(FFlockUdpSockets::AnySender(*InSocket))
+	, From(FFlockSockets::AnySender(*InSocket))
 	, Socket(InSocket)
 {
-	AddressServers.AddUnique(InRelayServer);
-	LanAddress = Ipv4Of(FFlockDirectAddresses::LanAddressToward(InRelayServer.Ip()));
+	// A relay reached over IPv6 has no IPv4 address here: it is not asked (its answer would name this socket's IPv6 address, which
+	// an offer cannot carry), and it says nothing of this device's IPv4 LAN address. Offers carry IPv4 alone.
+	if (InRelayServer.Address != 0)
+	{
+		AddressServers.AddUnique(InRelayServer);
+		LanAddress = Ipv4Of(FFlockDirectAddresses::LanAddressToward(InRelayServer.Ip()));
+	}
 	{
 		FScopeLock Locked(&OffersInsteadLock);
 		OffersInstead = MoveTemp(NextOffersInstead);
@@ -342,7 +347,7 @@ void FFlockDirectLink::HeardMessage(const uint8* Data, int32 Count, const FFlock
 			return;
 		}
 		// An answer proves both ways: this link's probe reached the peer, and the peer's answer came back.
-		if (!Socket->Connect(*FFlockUdpSockets::Toward(*Socket, Sender.Ip(), Sender.Port)))
+		if (!Socket->Connect(*FFlockSockets::Toward(*Socket, Sender.Ip(), Sender.Port)))
 		{
 			return;
 		}
@@ -505,7 +510,7 @@ void FFlockDirectLink::SendTo(const TArray<uint8>& Bytes, const FFlockRelayPeer&
 	if (!Direct.IsSet())
 	{
 		// A probe that could not go out; the next one may.
-		Socket->SendTo(Bytes.GetData(), Bytes.Num(), Sent, *FFlockUdpSockets::Toward(*Socket, To.Ip(), To.Port));
+		Socket->SendTo(Bytes.GetData(), Bytes.Num(), Sent, *FFlockSockets::Toward(*Socket, To.Ip(), To.Port));
 	}
 	else if (To == Direct.GetValue())
 	{
@@ -525,7 +530,7 @@ void FFlockDirectLink::CloseSocket()
 	FScopeLock Locked(&SocketLock);
 	if (Socket != nullptr)
 	{
-		FFlockUdpSockets::Close(Socket);
+		FFlockSockets::Close(Socket);
 		Socket = nullptr;
 	}
 }

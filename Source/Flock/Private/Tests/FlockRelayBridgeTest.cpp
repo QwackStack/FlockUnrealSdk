@@ -6,7 +6,7 @@
 
 #include "Misc/FlockEngineCompat.h"
 #include "Multiplayer/FlockDirectAddresses.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "Multiplayer/Relay/FlockRelayBridge.h"
 #include "Multiplayer/Relay/FlockRelayThreads.h"
 #include "Tests/Support/FlockRelayFixture.h"
@@ -193,7 +193,7 @@ bool FFlockBridgeLoopbackOnlyTest::RunTest(const FString& Parameters)
 {
 	FBridgeFixture F;
 	const FString Lan = FFlockDirectAddresses::LanAddressToward(TEXT("8.8.8.8"));
-	if (Lan.IsEmpty() || Lan == FFlockUdpSockets::LoopbackIpv4)
+	if (Lan.IsEmpty() || Lan == FFlockSockets::LoopbackIpv4)
 	{
 		AddInfo(TEXT("This machine has no network address of its own to send from: the check needs one."));
 		return true;
@@ -205,15 +205,15 @@ bool FFlockBridgeLoopbackOnlyTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	const FFlockRelayBridge::FPtr Bridge = F.ToTheHost(*this, Player, Host->GetAddress());
-	FSocket* FromTheNetwork = FFlockUdpSockets::OpenIpv4(TEXT("Flock test sender on the network"));
+	FSocket* FromTheNetwork = FFlockSockets::OpenIpv4(TEXT("Flock test sender on the network"));
 	if (!Bridge.IsValid() || !TestNotNull(TEXT("precondition: a socket on the network"), FromTheNetwork))
 	{
 		return false;
 	}
 	const TArray<uint8> Bytes = FFlockRelayWire::Utf8(TEXT("from the network"));
 	int32 Sent = 0;
-	FromTheNetwork->SendTo(Bytes.GetData(), Bytes.Num(), Sent, *FFlockUdpSockets::Toward(*FromTheNetwork, Lan, Bridge->GetLocalPort()));
-	FFlockUdpSockets::Close(FromTheNetwork);
+	FromTheNetwork->SendTo(Bytes.GetData(), Bytes.Num(), Sent, *FFlockSockets::Toward(*FromTheNetwork, Lan, Bridge->GetLocalPort()));
+	FFlockSockets::Close(FromTheNetwork);
 	TestFalse(TEXT("a packet sent to the bridge's port at the device's network address goes nowhere"), F.Arrives(Host, TEXT("from the network"), 0.5));
 	FEngineSocket Engine;
 	Engine.SendTo(Bridge->GetLocalPort(), TEXT("from this device"));

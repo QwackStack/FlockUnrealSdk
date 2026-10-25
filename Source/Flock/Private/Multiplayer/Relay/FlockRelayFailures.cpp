@@ -58,7 +58,8 @@ FString FlockRelayFailureReasons::FixFor(const FString& Reason)
 	}
 	if (Is(Reason, Unreachable))
 	{
-		return TEXT("Check the device is online and that a firewall lets the game send UDP to the relay; otherwise players connect directly.");
+		return TEXT("Check the device is online and that its network lets the game reach the relay over UDP, TCP or TLS (the reason above names "
+			"each way tried and why it failed); otherwise players connect directly.");
 	}
 	if (Is(Reason, WrongLogin))
 	{
@@ -119,4 +120,18 @@ FFlockRelayFailure FFlockRelayFailure::Cancelled(const FString& Message)
 	Failure.Error = FFlockError::Make(EFlockErrorType::Cancelled, Message);
 	Failure.Error.Operation = OpenTheRelay;
 	return Failure;
+}
+
+FString FFlockRelayFailure::OneLine(const FString& PlatformText)
+{
+	FString Line = PlatformText;
+	for (TCHAR& Character : Line)
+	{
+		if (FChar::IsControl(Character))
+		{
+			Character = TEXT(' ');
+		}
+	}
+	Line.TrimStartAndEndInline();
+	return Line;
 }

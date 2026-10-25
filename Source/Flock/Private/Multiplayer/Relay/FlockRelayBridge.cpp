@@ -4,7 +4,7 @@
 #include "HAL/PlatformTime.h"
 #include "IPAddress.h"
 #include "Misc/ScopeLock.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "Multiplayer/Relay/FlockBridgeMessages.h"
 #include "Multiplayer/Relay/FlockRelayThreads.h"
 #include "SocketSubsystem.h"
@@ -51,13 +51,13 @@ class FFlockRelayLoopback : public IFlockRelayThreadWork
 public:
 	FFlockRelayLoopback(FSocket* InSocket, const FFlockRelayPeer& InPeer, const TSharedRef<FFlockRelayConnection>& InRelay,
 		const TSharedRef<FFlockRelayBridgeShared, ESPMode::ThreadSafe>& InShared, bool bInFollowsTheEngine)
-		: Port(FFlockUdpSockets::LocalPortOf(*InSocket))
+		: Port(FFlockSockets::LocalPortOf(*InSocket))
 		, Peer(InPeer)
 		, Relay(InRelay)
 		, Shared(InShared)
 		, bFollowsTheEngine(bInFollowsTheEngine)
-		, ToTheEngine(FFlockUdpSockets::OnLoopback(0))
-		, From(FFlockUdpSockets::OnLoopback(0))
+		, ToTheEngine(FFlockSockets::OnLoopback(0))
+		, From(FFlockSockets::OnLoopback(0))
 		, Socket(InSocket)
 	{
 	}
@@ -203,7 +203,7 @@ private:
 		FScopeLock Locked(&SocketLock);
 		if (Socket != nullptr)
 		{
-			FFlockUdpSockets::Close(Socket);
+			FFlockSockets::Close(Socket);
 			Socket = nullptr;
 		}
 	}
@@ -345,7 +345,7 @@ TFlockRelayResult<FFlockRelayBridge::FPtr> FFlockRelayBridge::Register(const FRe
 
 TSharedPtr<FFlockRelayLoopback, ESPMode::ThreadSafe> FFlockRelayBridge::NewLoopback(const FFlockRelayPeer& Peer, FFlockRelayFailure& OutFailure) const
 {
-	FSocket* Socket = bSocketRefusedForTesting ? nullptr : FFlockUdpSockets::OpenOnLoopback(ThreadName);
+	FSocket* Socket = bSocketRefusedForTesting ? nullptr : FFlockSockets::OpenOnLoopback(ThreadName);
 	if (Socket == nullptr)
 	{
 		OutFailure.Error = FFlockError::MakeWithFix(EFlockErrorType::Network,

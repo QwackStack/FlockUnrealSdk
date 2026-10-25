@@ -723,6 +723,12 @@ FFlockJoinChecksOnHost& FFlockMultiplayerSessions::GetJoinChecks()
 
 void FFlockMultiplayerSessions::MoveConnectingOn()
 {
+	if (Relay.IsValid() && Relay->Ways.IsValid() && !Relay->Ways->IsDone())
+	{
+		// Held through its answers, which may end the session and close it.
+		const TSharedRef<FFlockRelayWays> Opening = Relay->Ways.ToSharedRef();
+		Opening->Tick();
+	}
 	if (Relay.IsValid() && Relay->Connection.IsValid())
 	{
 		// Held through its answers, which may close it and start another.
@@ -1318,6 +1324,10 @@ void FFlockMultiplayerSessions::TellTheHostMovedOnTheRelay(UFlockMultiplayerSess
 
 void FFlockMultiplayerSessions::StartRelay(UFlockMultiplayerSession* Session, const FString& Server)
 {
+	if (Relay.IsValid() && Relay->Ways.IsValid())
+	{
+		Relay->Ways->Close();
+	}
 	if (Relay.IsValid() && Relay->Connection.IsValid())
 	{
 		Relay->Connection->Close();
@@ -1370,9 +1380,10 @@ void FFlockMultiplayerSessions::RelayLoginsAnswered(const FRelayOpeningRef& Open
 	}
 	if (!Opening->ServerAsked.IsEmpty())
 	{
-		// Players reach the host only from the relay server it is on, since only that server's addresses share the IP it opened to.
+		// Players reach the host only on the relay server it is on, since only that server's addresses share the IP it opened to,
+		// though by any way in to it (the host on UDP, a player whose network blocks UDP over TLS).
 		const FString Asked = Opening->ServerAsked;
-		Logins.RemoveAll([&Asked](const FFlockRelayLogin& Login) { return !Login.ToString().Equals(Asked, ESearchCase::IgnoreCase); });
+		Logins.RemoveAll([&Asked](const FFlockRelayLogin& Login) { return !Login.IsOn(Asked); });
 		if (Logins.Num() == 0)
 		{
 			FinishRelay(Opening, TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(FFlockRelayFailure::Of(FlockRelayFailureReasons::ServerNotListed,
@@ -1380,27 +1391,15 @@ void FFlockMultiplayerSessions::RelayLoginsAnswered(const FRelayOpeningRef& Open
 			return;
 		}
 	}
-	Opening->Logins = MoveTemp(Logins);
-	// Looked up once, while the relays open: a direct link learns its own address from them, since a relay server may answer
-	// few of a device's ports.
+	// Looked up once, while the ways open: a direct link learns its own address from them, since a relay server may answer few of
+	// a device's ports.
 	for (const FFlockRelayStunServer& Server : FFlockRelayStunServer::InAnswer(Answered.Value))
 	{
 		Opening->StunServers.Add({ FFlockNameLookup::Start(Server.Host, RelayTiming.NameLookUpForTesting), Server.Port });
 	}
-	TryNextRelay(Opening);
-}
-
-void FFlockMultiplayerSessions::TryNextRelay(const FRelayOpeningRef& Opening)
-{
-	if (!Opening->Logins.IsValidIndex(Opening->NextLogin))
-	{
-		FinishRelay(Opening, TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(Opening->First.Get(FFlockRelayFailure())));
-		return;
-	}
-	const FFlockRelayLogin Login = Opening->Logins[Opening->NextLogin++];
 	const TWeakPtr<FFlockMultiplayerSessions> WeakSelf = AsShared();
 	const TWeakPtr<FRelayOpening> WeakOpening = Opening;
-	Opening->Connection = FFlockRelayConnection::Open(Login, Opening->StunServers, RelayTiming, Logger,
+	Opening->Ways = FFlockRelayWays::Start(Logins, Opening->StunServers, RelayTiming, Logger,
 		[WeakSelf, WeakOpening](TFlockRelayResult<TSharedPtr<FFlockRelayConnection>> Result)
 		{
 			const TSharedPtr<FFlockMultiplayerSessions> Self = WeakSelf.Pin();
@@ -1409,17 +1408,12 @@ void FFlockMultiplayerSessions::TryNextRelay(const FRelayOpeningRef& Opening)
 			{
 				return;
 			}
-			// Closed by the session's end: answered Cancelled, at once, from inside the close.
-			if (Result.bSuccess || Result.Failure.IsCancelled())
+			// Held before anyone hears of it, so a caller that ends the session from its answer closes it with the session.
+			if (Result.bSuccess)
 			{
-				Self->FinishRelay(Pinned.ToSharedRef(), Result);
-				return;
+				Pinned->Connection = Result.Value;
 			}
-			if (!Pinned->First.IsSet())
-			{
-				Pinned->First = Result.Failure;
-			}
-			Self->TryNextRelay(Pinned.ToSharedRef());
+			Self->FinishRelay(Pinned.ToSharedRef(), Result);
 		});
 }
 
@@ -1453,6 +1447,11 @@ void FFlockMultiplayerSessions::CloseRelayOf(const UFlockMultiplayerSession* Ses
 	// Every caller still waiting hears why first; what the cancel and the close answer after it changes nothing.
 	FinishRelay(Closing, TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>::Fail(FFlockRelayFailure::Cancelled(TEXT("The session ended while its relay opened"))));
 	Closing->LoginsRead.Cancel();
+	if (Closing->Ways.IsValid())
+	{
+		// No other way starts, and every way started gives back what it reserved, one that opened as the session ended among them.
+		Closing->Ways->Close();
+	}
 	if (Closing->Connection.IsValid())
 	{
 		Closing->Connection->Close();
@@ -1466,8 +1465,8 @@ bool FFlockMultiplayerSessions::HasFailed(const FRelayOpening& Opening)
 
 bool FFlockMultiplayerSessions::IsOn(const FRelayOpening& Opening, const FString& Server)
 {
-	return Server.IsEmpty() || Opening.ServerAsked.Equals(Server, ESearchCase::IgnoreCase)
-		|| (Opening.bDone && Opening.Result.bSuccess && Opening.Result.Value.IsValid() && Opening.Result.Value->GetServer().Equals(Server, ESearchCase::IgnoreCase));
+	return Server.IsEmpty() || FFlockRelayLogin::SameServer(Opening.ServerAsked, Server)
+		|| (Opening.bDone && Opening.Result.bSuccess && Opening.Result.Value.IsValid() && FFlockRelayLogin::SameServer(Opening.Result.Value->GetServer(), Server));
 }
 
 FFlockRelayFailure FFlockMultiplayerSessions::RelayLoginsRefused(const FFlockError& Failure)

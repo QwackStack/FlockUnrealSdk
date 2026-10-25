@@ -499,12 +499,34 @@ the travel ends `relay_failed`, and `RelayFailureReason` says why:
 | `relay_too_many_logins` | more than 12 requests for relay logins a minute, or the seat drew the most logins one seat may (10) |
 | `relay_not_in_session` | Flock says the player has no seat in the session |
 | `flock_unreachable`, `relay_logins_refused` | Flock did not answer the request for relay logins, or refused it for another reason |
-| `relay_unreachable`, `relay_wrong_login`, `relay_full`, `relay_open_refused`, `relay_refused` | the relay server could not be reached, refused the login, had no room, would not let the host's packets in, or refused for another reason |
+| `relay_unreachable` | no way in to the relay worked: UDP, TCP and TLS, each way Flock lists, over IPv4 and IPv6 (see [Ways in to the relay](#ways-in-to-the-relay)); the reason names every way tried and why it failed. A network that blocks all of them, or inspects encrypted traffic, leaves none |
+| `relay_wrong_login`, `relay_full`, `relay_open_refused`, `relay_refused` | the relay server refused the login, had no room, would not let the host's packets in, or refused for another reason |
 | `relay_lost`, `relay_closed` | the relay let the address go or has answered nothing for 45 s (this device's packets no longer reach it), or it was closed (the session's end) |
 | `relay_no_thread` | the relay needs threads of its own, and this launch runs without threads (`-nothreading`) |
 
 Each reason carries its own fix in the warning the log shows. A host whose relay cannot be opened publishes directly under
 When Needed (saying why, unless the relay is switched off for the game) and stops hosting under Always (`relay_failed`).
+
+#### Ways in to the relay
+
+The relay is reached over UDP. On a network that blocks UDP to it (some phone hotspots, offices, schools and hotels), the
+SDK reaches the same relay over UDP on IPv6, then TCP, then TLS, on every port Flock lists: each starts once the one before
+it has failed or had its time, half a second for another port of the same kind and 2 seconds otherwise, so a blocked way
+costs the player about that, and a network where UDP works opens nothing else. The first way to open is kept and every other
+is closed, giving back any relay address it reserved. The host and a player need not use the same way: a player reaches the
+host's relay server (told apart by its name) by whichever way its own network allows. Over TCP or TLS a lost packet holds back
+the ones after it until it is sent again, so play may stutter on a poor connection. With **Enable Debug Logs** on, the log
+says once, at Info, which way the relay is reached by when it is not UDP over IPv4, and why, and at Verbose each way as it is
+tried and how and when each ended, so a slow opening on a player's network can be read off their log. UDP is tried over IPv6
+too before any TCP or TLS (a phone hotspot
+that dropped UDP over IPv4 carried it over IPv6), and every way is tried over IPv6 for a network with IPv6 alone; the relay
+still gives an IPv4 relay address, so such a player plays with everyone else, and a direct path still offers IPv4 addresses
+only. The relay server's IPv6 address is asked of the platform's own resolver, since the engine's lookup drops IPv6 answers
+while `net.DisableIPv6` is 1 (its default); the game's setting is left as it is. TLS is checked against the certificates the engine trusts (the platform's own, as the engine's HTTP module uses, and any
+keys the game pins), so a network that inspects encrypted traffic is refused, and the reason says so. TLS is built where the
+engine builds its SSL module (Windows, Android, Mac, iOS, Linux). On Android the engine's sockets carry no IPv6 address, so
+an IPv6 way is refused at once there and the phone uses the IPv4 ways, which Android itself carries over a mobile network
+with IPv6 alone (its 464XLAT translation).
 
 #### Direct paths for relayed players (When Needed)
 
@@ -521,7 +543,7 @@ engine's connection carries on unchanged: the host's net driver hears the player
 4. When no direct path proves itself (the other end never offers within 20 s, or no probe is answered within 6 s), the pair stays
    on the relay for that connection; a connection the game makes again tries again.
 
-Each move is said once in the log, at Info: `Packets to the host now go directly`, `The direct path to the host went quiet`,
+With **Enable Debug Logs** on, each move is said once in the log, at Info: `Packets to the host now go directly`, `The direct path to the host went quiet`,
 `could not be reached directly (...)`. A host offers its addresses only to players its check let in, and only probes naming
 both ends' random keys count, so nobody else on the relay or the internet opens a path. Each end learns the other's public
 address this way; **Always** keeps every address hidden and never moves. A device on an SDK before 1.38.0 at either end stays on

@@ -29,6 +29,15 @@ struct FFlockRelayTiming
 	int32 SocketsTriedAtOnce = 8;
 	int32 RoundsOfSocketsTried = 3;
 	double SocketRoundWaitSeconds = 1.0;
+	/** How long a TCP connection to the relay, and a TLS handshake after it, may take. */
+	double ConnectWaitSeconds = 5.0;
+	/**
+	 * The next way in to the relay starts once the one before it failed or has had this long to open, so a way a network blocks
+	 * costs this rather than its own waits.
+	 */
+	double NextWayAfterSeconds = 2.0;
+	/** As NextWayAfterSeconds, for another port of the same transport and family (UDP on 443 after 3478): a network blocks them alike more often than not. */
+	double NextPortAfterSeconds = 0.5;
 	/** The reservation is renewed at half the time the relay grants, and at least this often. */
 	double LongestBetweenReservationRenewalsSeconds = 240.0;
 	double RenewOpeningsEverySeconds = 240.0;
@@ -53,10 +62,10 @@ struct FFlockRelayTiming
 };
 
 /**
- * One address on Flock's relay for one session, kept alive on a thread of its own ("Flock relay"); it hands raw packets over
- * without waiting on the relay. Its answers reach the game on the game thread, from Tick, which its owner runs once a frame.
- * Game thread, but for Send, TryReceive, KeepChannelTo, LetChannelGo and the arrivals' hand-over, which any thread may call.
- * Exported for the engine plug-in and the harness's real-player probe; the header stays private.
+ * One address on Flock's relay for one session, reached over UDP, TCP or TLS and kept alive on a thread of its own ("Flock
+ * relay", and "Flock relay sending" beside it for a stream); it hands raw packets over without waiting on the relay. Its answers
+ * reach the game on the game thread, from Tick, which its owner runs once a frame. Game thread, but for Send, TryReceive,
+ * KeepChannelTo, LetChannelGo and the arrivals' hand-over, which any thread may call. Exported for the engine plug-in and the harness's real-player probe; the header stays private.
  */
 class FLOCK_API FFlockRelayConnection : public TSharedFromThis<FFlockRelayConnection>
 {
@@ -70,8 +79,8 @@ public:
 	using FOnOpened = TFunction<void(TFlockRelayResult<TSharedPtr<FFlockRelayConnection>>)>;
 
 	/**
-	 * Reserves an address on the relay with Login, on a thread of its own. OnOpened answers once, on the game thread: the
-	 * connection open, or why not; Close before then answers it Cancelled. It is answered once the STUN servers being looked up
+	 * Reserves an address on the relay with Login, by its way in, on a thread of its own. OnOpened answers once, on the game
+	 * thread: the connection open, or why not; Close before then answers it Cancelled. It is answered once the STUN servers being looked up
 	 * are, or the lookup's wait is over; one that could not be looked up is left out.
 	 */
 	static TSharedRef<FFlockRelayConnection> Open(const FFlockRelayLogin& Login, const TArray<FFlockRelayStunLookUp>& StunServers,
@@ -89,11 +98,23 @@ public:
 	/** This player's address on the relay; the host publishes it, and players send to it. Empty until open. */
 	FFlockRelayPeer GetAddress() const;
 
-	/** The relay server's IPv4 address and port; it also answers a STUN request with the address it saw the request come from. Empty until looked up. */
+	/**
+	 * The relay server's IPv4 address and the port of the way in; over UDP it also answers a STUN request with the address it saw
+	 * the request come from. Empty until looked up, and for a way in over IPv6: a direct link asks no IPv6 server where it sees it.
+	 */
 	FFlockRelayPeer GetServerEndpoint() const;
 
-	/** The relay server this address is on, as "name:port" from the login Flock minted; players reserve on the server the host uses. */
+	/** The relay server this address is on, as "name:port" from the login Flock minted; players reserve on the server the host uses, by any way in to it. */
 	FString GetServer() const;
+
+	/** How this connection reaches the relay server: UDP, or TCP or TLS on a network that blocks UDP to it. */
+	EFlockRelayTransport GetTransport() const;
+
+	/** True when the relay server is reached at its IPv6 address, for a network with IPv6 alone. */
+	bool IsOverIpv6() const;
+
+	/** The way in as a message names it, such as "turn.example.com:5349 over TLS". */
+	FString GetWay() const;
 
 	/** The STUN servers Flock listed with the login, looked up (one that could not be is left out); a direct link asks them too. Set before the opening is answered. */
 	TArray<FFlockRelayPeer> GetStunServers() const;

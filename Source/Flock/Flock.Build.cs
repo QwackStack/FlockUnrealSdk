@@ -54,11 +54,27 @@ public class Flock : ModuleRules
 			{
 				"Projects",
 				"HTTP",
-				// UDP for the STUN request, Flock's relay and its loopback bridge, and the transport tests' stalling server.
+				// UDP for the STUN request, Flock's relay and its loopback bridge, and the transport tests' stalling server; TCP for a
+				// relay reached over TCP or TLS.
 				"Sockets",
 				// A host closing a player's earlier connection that went silent (UNetConnection::Close's close reason).
 				"NetCore",
 			}
 			);
+
+		// TLS for a relay reached over TLS (a network that blocks UDP and TCP to the relay): the engine's OpenSSL, with the
+		// certificates the engine's SSL module trusts (the platform's own, as the engine's HTTP module does). On these platforms
+		// the engine's HTTP module already links both, so a packaged game links nothing new; elsewhere TLS ways are left out.
+		bool bRelayOverTls = Target.Platform == UnrealTargetPlatform.Win64
+			|| Target.Platform == UnrealTargetPlatform.Mac
+			|| Target.Platform == UnrealTargetPlatform.IOS
+			|| Target.Platform == UnrealTargetPlatform.Android
+			|| Target.IsInPlatformGroup(UnrealPlatformGroup.Unix);
+		if (bRelayOverTls)
+		{
+			PrivateDependencyModuleNames.Add("SSL");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
+		}
+		PrivateDefinitions.Add("FLOCK_RELAY_OVER_TLS=" + (bRelayOverTls ? "1" : "0"));
 	}
 }

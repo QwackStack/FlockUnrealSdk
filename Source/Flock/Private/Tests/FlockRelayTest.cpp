@@ -10,15 +10,17 @@
 #include "HAL/PlatformTLS.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/FlockEngineCompat.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "Multiplayer/Relay/FlockRelayConnection.h"
 #include "Multiplayer/Relay/FlockRelayRequests.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
 #include "Tests/Support/FlockConnectingFixture.h"
+#include "Tests/Support/FlockFakeRelayCertificate.h"
 #include "Tests/Support/FlockFakeRelayServer.h"
 #include "Tests/Support/FlockRelayFixture.h"
 #include "Tests/Support/FlockRecordingLogger.h"
+#include "Tests/Support/FlockSessionRelayFixture.h"
 #include "Tests/Support/FlockSessionTestListener.h"
 #include "Tests/Support/FlockTestRetries.h"
 #include "Tests/Support/FlockTestSpelling.h"
@@ -182,7 +184,7 @@ bool FFlockRelayLookUpHangsTest::RunTest(const FString& Parameters)
 	FRelayFixture F;
 	FFlockRelayTiming Timing = Quick();
 	Timing.NameLookUpWaitSeconds = 0.5;
-	Timing.NameLookUpForTesting = [](const FString&, TFunction<void(const FString&)>) {};
+	Timing.NameLookUpForTesting = [](const FString&, TFunction<void(const TArray<FString>&)>) {};
 	const double Started = FPlatformTime::Seconds();
 	const TSharedRef<FOpening> Opening = F.Open(F.Login(RelayPlayerA, TEXT("relay.test")), Timing);
 	F.Until([&]() { return Opening->bAnswered; });
@@ -519,6 +521,65 @@ bool FFlockRelayNoAllocationTest::RunTest(const FString& Parameters)
 	TestTrue(FString::Printf(TEXT("control: the count sees allocations (%d)"), Control), Control >= 10);
 	TestEqual(TEXT("sending and taking 100 packets a frame for 10 frames allocates nothing on the game thread"), Working, 0);
 	TestTrue(FString::Printf(TEXT("control: packets were taken while counted (%d)"), Received), Received > 100);
+	return true;
+}
+
+FLOCK_RELAY_TEST(FFlockRelayStreamNoAllocationTest, "Stream.PacketsOverTcpAndTlsAllocateNothingOnTheGamesThread")
+bool FFlockRelayStreamNoAllocationTest::RunTest(const FString& Parameters)
+{
+	for (const EFlockRelayTransport Transport : { EFlockRelayTransport::Tcp, EFlockRelayTransport::Tls })
+	{
+		const TCHAR* Over = Transport == EFlockRelayTransport::Tls ? TEXT("TLS") : TEXT("TCP");
+		FRelayFixture F(/*bWithStreams*/ true);
+		FFlockRelayTls::SetTrustedCertificateForTesting(FlockFakeRelayCertificate::Certificate);
+		FFlockRelayTiming Timing = Quick();
+		Timing.NameLookUpForTesting = EveryNameOnLoopback();
+		const TSharedRef<FOpening> HostOpening = F.Open(F.Login(RelayPlayerA), Timing);
+		const TSharedRef<FOpening> PlayerOpening = F.Open(F.Login(RelayPlayerB, TEXT("relay.test"), Transport), Timing);
+		F.Until([&]() { return HostOpening->bAnswered && PlayerOpening->bAnswered; });
+		if (!TestTrue(FString::Printf(TEXT("precondition: a host over UDP and a player over %s (%s)"), Over, *PlayerOpening->Result.Failure.Error.Message),
+			HostOpening->Result.bSuccess && PlayerOpening->Result.bSuccess))
+		{
+			return false;
+		}
+		const TSharedPtr<FFlockRelayConnection> Host = HostOpening->Result.Value;
+		const TSharedPtr<FFlockRelayConnection> Player = PlayerOpening->Result.Value;
+		const TSharedRef<FOpenedTo> HostOpen = F.OpenTo(Host, Host->GetAddress());
+		const TSharedRef<FOpenedTo> PlayerOpen = F.OpenTo(Player, Host->GetAddress());
+		F.Until([&]() { return HostOpen->bAnswered && PlayerOpen->bAnswered; });
+		F.Delivered(*this, Player, Host->GetAddress(), Host, TEXT("warm up"));
+		F.Delivered(*this, Host, Player->GetAddress(), Player, TEXT("warm up back"));
+		Player->KeepChannelTo(Host->GetAddress());
+		Host->KeepChannelTo(Player->GetAddress());
+		F.Until([&]() { return Player->ChannelNumberForTesting(Host->GetAddress()) != 0 && Host->ChannelNumberForTesting(Player->GetAddress()) != 0; }, 3.0);
+		F.RealSeconds(0.3);
+
+		const FFlockRelayPeer HostAddress = Host->GetAddress();
+		uint8 Payload[201] = {};
+		uint8 Buffer[FFlockRelayConnection::MostBytesInAPacket];
+		int32 Received = 0;
+		int32 Working = 0;
+		{
+			FAllocationsCounted Counted;
+			for (int32 Frame = 0; Frame < 10; ++Frame)
+			{
+				for (int32 Index = 0; Index < 50; ++Index)
+				{
+					Player->Send(HostAddress, Payload, UE_ARRAY_COUNT(Payload));
+				}
+				int32 Count = 0;
+				FFlockRelayPeer From;
+				while (Player->TryReceive(Buffer, UE_ARRAY_COUNT(Buffer), Count, From) || Host->TryReceive(Buffer, UE_ARRAY_COUNT(Buffer), Count, From))
+				{
+					++Received;
+				}
+				FPlatformProcess::Sleep(0.005f);
+			}
+			Working = Counted.Taken();
+		}
+		TestEqual(FString::Printf(TEXT("sending 50 packets a frame over %s for 10 frames allocates nothing on the game thread"), Over), Working, 0);
+		TestTrue(FString::Printf(TEXT("control: the packets went over %s and arrived while counted (%d)"), Over, Received), Received > 50);
+	}
 	return true;
 }
 
@@ -1417,7 +1478,7 @@ FLOCK_RELAY_TEST(FFlockRelayConnectRefusedTest, "Reach.ARelayADualStackSocketCan
 bool FFlockRelayConnectRefusedTest::RunTest(const FString& Parameters)
 {
 	FRelayFixture F;
-	FFlockUdpSockets::bDualStackConnectRefusedForTesting = true;
+	FFlockSockets::bDualStackConnectRefusedForTesting = true;
 	F.Relay->AnswersOnlyPortsHeard = TSet<int32>({ 3 });
 	FFlockRelayTiming Timing = Quick();
 	Timing.SocketRoundWaitSeconds = 0.4;
@@ -1435,7 +1496,7 @@ FLOCK_RELAY_TEST(FFlockRelayNoIpv6Test, "Reach.WithoutIpv6ARelayIsReachedFromAPl
 bool FFlockRelayNoIpv6Test::RunTest(const FString& Parameters)
 {
 	FRelayFixture F;
-	FFlockUdpSockets::bDualStackRefusedForTesting = true;
+	FFlockSockets::bDualStackRefusedForTesting = true;
 	F.Relay->AnswersOnlyPortsHeard = TSet<int32>({ 3 });
 	FFlockRelayTiming Timing = Quick();
 	Timing.SocketRoundWaitSeconds = 0.4;
@@ -1446,7 +1507,7 @@ bool FFlockRelayNoIpv6Test::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("a platform without IPv6 gets a plain IPv4 socket"), Opened->GetSocketProtocolForTesting() == FNetworkProtocolTypes::IPv4);
 	TestTrue(TEXT("open"), Opened->IsOpen());
-	TestTrue(TEXT("the refusal is remembered for the launch"), FFlockUdpSockets::RemembersARefusalForTesting());
+	TestTrue(TEXT("the refusal is remembered for the launch"), FFlockSockets::RemembersARefusalForTesting());
 	return true;
 }
 
@@ -1548,47 +1609,6 @@ bool FFlockRelayRefusedAgainTest::RunTest(const FString& Parameters)
 namespace FlockRelayTestHelpers
 {
 	using namespace FlockConnectingTestHelpers;
-
-	/** The session stack over the fake session server, whose seats draw logins for a fake relay on loopback. */
-	struct FSessionRelayFixture : FConnectingFixture
-	{
-		TUniquePtr<FFlockFakeRelayServer> Relay = MakeUnique<FFlockFakeRelayServer>();
-
-		explicit FSessionRelayFixture(int32 MaxRetries = 0)
-			: FConnectingFixture(MaxRetries)
-		{
-			Server->RelayUrls.Add(Relay->Url());
-			Sessions().SetRelayTimingForTesting(Quick());
-		}
-
-		TSharedRef<FOpening> OpenRelay(UFlockMultiplayerSession* Of, const FString& OnServer = FString(), FFlockRequestHandle* OutHandle = nullptr)
-		{
-			const TSharedRef<FOpening> Answer = MakeShared<FOpening>();
-			const FFlockRequestHandle Handle = Sessions().OpenRelay(Of, OnServer, Into(Answer));
-			if (OutHandle != nullptr)
-			{
-				*OutHandle = Handle;
-			}
-			return Answer;
-		}
-
-		/** Runs frames, a millisecond apart, until Done or Seconds pass. */
-		bool RelayFramesUntil(TFunctionRef<bool()> Done, double Seconds = 10.0)
-		{
-			const double Ends = FPlatformTime::Seconds() + Seconds;
-			while (!Done() && FPlatformTime::Seconds() < Ends)
-			{
-				Frame();
-				FPlatformProcess::Sleep(0.001f);
-			}
-			Frame();
-			return Done();
-		}
-
-		void RealSeconds(double Seconds) { RelayFramesUntil([]() { return false; }, Seconds); }
-
-		TArray<FFlockHttpRequest> Logins() const { return Server->RequestsTo(ERoute::RelayCredentials); }
-	};
 }
 
 FLOCK_RELAY_TEST(FFlockSessionRelayNamesTest, "Session.OpenRelayNamesTheSessionAndReservesWithFlocksLogin")
@@ -1652,7 +1672,7 @@ bool FFlockSessionRelayStunNotFoundTest::RunTest(const FString& Parameters)
 	F.Server->StunUrls.Add(TEXT("stun:127.0.0.1:3479"));
 	FFlockRelayTiming Timing = Quick();
 	// The resolver finds nothing for the name.
-	Timing.NameLookUpForTesting = [](const FString&, TFunction<void(const FString&)> Answer) { Answer(FString()); };
+	Timing.NameLookUpForTesting = [](const FString&, TFunction<void(const TArray<FString>&)> Answer) { Answer({}); };
 	F.Sessions().SetRelayTimingForTesting(Timing);
 	F.SignIn(PlayerA);
 	UFlockMultiplayerSession* Session = F.Hosted(*this);
@@ -1697,7 +1717,8 @@ bool FFlockSessionRelayHostsServerTest::RunTest(const FString& Parameters)
 {
 	FSessionRelayFixture F;
 	FFlockFakeRelayServer Hosts;
-	F.Server->RelayUrls.Add(Hosts.Url());
+	// Two servers, each its own name: a server is its name, whatever its port.
+	F.NameEachServer({ F.Relay->UrlNamed(TEXT("main.relay.test")), Hosts.UrlNamed(TEXT("hosts.relay.test")) });
 	F.SignIn(PlayerA);
 	UFlockMultiplayerSession* Session = F.Hosted(*this);
 	if (Session == nullptr)
@@ -1708,7 +1729,7 @@ bool FFlockSessionRelayHostsServerTest::RunTest(const FString& Parameters)
 	F.RelayFramesUntil([&]() { return AnyServer->bAnswered; });
 	TestEqual(TEXT("precondition: on the first server Flock lists"), F.Relay->Reservations(), 1);
 
-	const FString HostsServer = FString::Printf(TEXT("127.0.0.1:%d"), Hosts.GetPort());
+	const FString HostsServer = FString::Printf(TEXT("hosts.relay.test:%d"), Hosts.GetPort());
 	const TSharedRef<FOpening> OnTheHosts = F.OpenRelay(Session, HostsServer);
 	F.RelayFramesUntil([&]() { return OnTheHosts->bAnswered; });
 	if (!TestTrue(FString::Printf(TEXT("opened on the host's server (%s)"), *OnTheHosts->Result.Failure.Error.Message), OnTheHosts->Result.bSuccess))
@@ -1734,7 +1755,7 @@ bool FFlockSessionRelayHostsServerWhileOpeningTest::RunTest(const FString& Param
 {
 	FSessionRelayFixture F;
 	FFlockFakeRelayServer Hosts;
-	F.Server->RelayUrls.Add(Hosts.Url());
+	F.NameEachServer({ F.Relay->UrlNamed(TEXT("main.relay.test")), Hosts.UrlNamed(TEXT("hosts.relay.test")) });
 	F.SignIn(PlayerA);
 	UFlockMultiplayerSession* Session = F.Hosted(*this);
 	if (Session == nullptr)
@@ -1744,7 +1765,7 @@ bool FFlockSessionRelayHostsServerWhileOpeningTest::RunTest(const FString& Param
 	F.Relay->bHoldReservationAnswers = true;
 	const TSharedRef<FOpening> AnyServer = F.OpenRelay(Session);
 	F.RelayFramesUntil([&]() { return F.Relay->SeenRequests(FFlockFakeRelayServer::MethodAllocate).FilterByPredicate([](const FSeen& Seen) { return Seen.bSigned; }).Num() > 0; });
-	const FString HostsServer = FString::Printf(TEXT("127.0.0.1:%d"), Hosts.GetPort());
+	const FString HostsServer = FString::Printf(TEXT("hosts.relay.test:%d"), Hosts.GetPort());
 	const TSharedRef<FOpening> OnTheHosts = F.OpenRelay(Session, HostsServer);
 	F.RealSeconds(0.2);
 	TestFalse(TEXT("waits while the other opening is under way"), OnTheHosts->bAnswered);
@@ -1794,10 +1815,10 @@ bool FFlockSessionRelayNextServerTest::RunTest(const FString& Parameters)
 	Timing.AnswerWaitSeconds = 1.0;
 	Timing.SocketRoundWaitSeconds = 0.2;
 	const TSharedRef<std::atomic<int32>, ESPMode::ThreadSafe> StunLookUps = MakeShared<std::atomic<int32>, ESPMode::ThreadSafe>(0);
-	Timing.NameLookUpForTesting = [StunLookUps](const FString& Host, TFunction<void(const FString&)> Answer)
+	Timing.NameLookUpForTesting = [StunLookUps](const FString& Host, TFunction<void(const TArray<FString>&)> Answer)
 	{
 		*StunLookUps += Host == TEXT("stun.counted.test") ? 1 : 0;
-		Answer(TEXT("127.0.0.1"));
+		Answer({ TEXT("127.0.0.1") });
 	};
 	F.Sessions().SetRelayTimingForTesting(Timing);
 	F.SignIn(PlayerA);
@@ -1809,7 +1830,7 @@ bool FFlockSessionRelayNextServerTest::RunTest(const FString& Parameters)
 	const TSharedRef<FOpening> Opening = F.OpenRelay(Session);
 	F.RelayFramesUntil([&]() { return Opening->bAnswered; });
 	TestTrue(FString::Printf(TEXT("opened (%s)"), *Opening->Result.Failure.Error.Message), Opening->Result.bSuccess);
-	TestTrue(TEXT("precondition: the first relay was asked"), Silent.SeenRequests(FFlockFakeRelayServer::MethodAllocate).Num() > 0);
+	TestTrue(TEXT("precondition: the first relay was tried"), Silent.AllSeen().Num() > 0);
 	TestEqual(TEXT("reserved on the next relay Flock lists"), F.Relay->Reservations(), 1);
 	TestEqual(TEXT("the STUN server was looked up once for both relays tried"), StunLookUps->load(), 1);
 	TestTrue(TEXT("and the relay that opened has it"), Opening->Result.bSuccess && Opening->Result.Value->GetStunServers().Num() == 1);
@@ -1822,12 +1843,11 @@ bool FFlockSessionRelayFirstReasonTest::RunTest(const FString& Parameters)
 	FSessionRelayFixture F;
 	FFlockFakeRelayServer Silent;
 	Silent.bSilent = true;
-	F.Server->RelayUrls.Insert(Silent.Url(), 0);
-	F.Relay->Password = TEXT("not-what-flock-minted");
 	FFlockRelayTiming Timing = Quick();
 	Timing.AnswerWaitSeconds = 1.0;
 	Timing.SocketRoundWaitSeconds = 0.2;
-	F.Sessions().SetRelayTimingForTesting(Timing);
+	F.NameEachServer({ Silent.UrlNamed(TEXT("main.relay.test")), F.Relay->UrlNamed(TEXT("next.relay.test")) }, Timing);
+	F.Relay->Password = TEXT("not-what-flock-minted");
 	F.SignIn(PlayerA);
 	UFlockMultiplayerSession* Session = F.Hosted(*this);
 	if (Session == nullptr)
@@ -1865,7 +1885,7 @@ bool FFlockSessionRelayNotOfferedTest::RunTest(const FString& Parameters)
 {
 	FSessionRelayFixture F;
 	F.Server->RelayUrls.Reset();
-	F.Server->RelayUrls.Add(TEXT("turn:relay.test:3479?transport=tcp"));
+	F.Server->RelayUrls.Add(TEXT("turns:relay.test:5349?transport=udp"));
 	F.SignIn(PlayerA);
 	UFlockMultiplayerSession* Session = F.Hosted(*this);
 	if (Session == nullptr)
@@ -1874,7 +1894,7 @@ bool FFlockSessionRelayNotOfferedTest::RunTest(const FString& Parameters)
 	}
 	const TSharedRef<FOpening> Opening = F.OpenRelay(Session);
 	F.RelayFramesUntil([&]() { return Opening->bAnswered; });
-	TestEqualSensitive(TEXT("a relay over TCP alone is none this client can use"), Opening->Result.Failure.Reason, FString(FlockRelayFailureReasons::NotOffered));
+	TestEqualSensitive(TEXT("a relay over DTLS alone is none this client can use"), Opening->Result.Failure.Reason, FString(FlockRelayFailureReasons::NotOffered));
 	return true;
 }
 

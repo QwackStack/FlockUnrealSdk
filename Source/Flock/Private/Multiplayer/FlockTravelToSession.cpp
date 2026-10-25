@@ -6,7 +6,7 @@
 #include "Multiplayer/FlockJoinChecksOnHost.h"
 #include "Multiplayer/FlockMultiplayerSession.h"
 #include "Multiplayer/FlockMultiplayerSessions.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -878,7 +878,7 @@ void FFlockTravels::ConnectThroughTheBridge(const FTravelRef& Travel)
 		return;
 	}
 	Travel->Bridge = Made.Value;
-	StartConnecting(Travel, FFlockUdpSockets::LoopbackIpv4, Made.Value->GetLocalPort());
+	StartConnecting(Travel, FFlockSockets::LoopbackIpv4, Made.Value->GetLocalPort());
 }
 
 void FFlockTravels::StartConnecting(const FTravelRef& Travel, const FString& Address, int32 Port)

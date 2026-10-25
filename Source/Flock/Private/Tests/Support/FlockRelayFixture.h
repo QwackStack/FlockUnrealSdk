@@ -7,9 +7,12 @@
 #include "HAL/PlatformTLS.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/AutomationTest.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "Multiplayer/Relay/FlockRelayConnection.h"
+#include "Multiplayer/Relay/FlockRelayStream.h"
 #include "Multiplayer/Relay/FlockRelayThreads.h"
+#include "Multiplayer/Relay/FlockRelayTls.h"
+#include "Multiplayer/Relay/FlockRelayWays.h"
 #include "Multiplayer/Relay/FlockRelayWire.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
@@ -60,6 +63,26 @@ namespace FlockRelayTestHelpers
 		return Timing;
 	}
 
+	/** Stands in for the system's lookup: every name is on this machine's loopback, 127.0.0.1, and ::1 too when bWithIpv6. */
+	inline FFlockNameLookup::FLookUp EveryNameOnLoopback(bool bWithIpv6 = false)
+	{
+		return [bWithIpv6](const FString&, TFunction<void(const TArray<FString>&)> Answer)
+		{
+			TArray<FString> Addresses = { TEXT("127.0.0.1") };
+			if (bWithIpv6)
+			{
+				Addresses.Add(TEXT("::1"));
+			}
+			Answer(Addresses);
+		};
+	}
+
+	/** As a network with IPv6 alone answers a name: a native or translated IPv6 address and no IPv4 one. */
+	inline FFlockNameLookup::FLookUp EveryNameOnIpv6Loopback()
+	{
+		return [](const FString&, TFunction<void(const TArray<FString>&)> Answer) { Answer({ TEXT("::1") }); };
+	}
+
 	inline FFlockRelayPeer Peer(const FString& Text)
 	{
 		FFlockRelayPeer Out;
@@ -72,19 +95,19 @@ namespace FlockRelayTestHelpers
 	/** A UDP socket on 127.0.0.1 standing in for the engine's net driver. */
 	struct FEngineSocket
 	{
-		FSocket* Socket = FFlockUdpSockets::OpenOnLoopback(TEXT("Flock test engine"));
-		int32 Port = Socket != nullptr ? FFlockUdpSockets::LocalPortOf(*Socket) : 0;
+		FSocket* Socket = FFlockSockets::OpenOnLoopback(TEXT("Flock test engine"));
+		int32 Port = Socket != nullptr ? FFlockSockets::LocalPortOf(*Socket) : 0;
 		/** Everything it heard so far, and the port each came from. */
 		TArray<TPair<FString, int32>> Heard;
 
 		FEngineSocket() = default;
 		FEngineSocket(const FEngineSocket&) = delete;
-		~FEngineSocket() { FFlockUdpSockets::Close(Socket); }
+		~FEngineSocket() { FFlockSockets::Close(Socket); }
 
 		bool SendTo(int32 ToPort, const TArray<uint8>& Bytes) const
 		{
 			int32 Sent = 0;
-			return Socket != nullptr && Socket->SendTo(Bytes.GetData(), Bytes.Num(), Sent, *FFlockUdpSockets::OnLoopback(ToPort));
+			return Socket != nullptr && Socket->SendTo(Bytes.GetData(), Bytes.Num(), Sent, *FFlockSockets::OnLoopback(ToPort));
 		}
 
 		bool SendTo(int32 ToPort, const FString& Text) const { return SendTo(ToPort, FFlockRelayWire::Utf8(Text)); }
@@ -93,7 +116,7 @@ namespace FlockRelayTestHelpers
 		{
 			uint8 Buffer[2048];
 			int32 Read = 0;
-			const TSharedRef<FInternetAddr> From = FFlockUdpSockets::OnLoopback(0);
+			const TSharedRef<FInternetAddr> From = FFlockSockets::OnLoopback(0);
 			while (Socket != nullptr && Socket->RecvFrom(Buffer, UE_ARRAY_COUNT(Buffer), Read, *From))
 			{
 				Heard.Emplace(FFlockRelayWire::FromUtf8(Buffer, Read), From->GetPort());
@@ -108,19 +131,36 @@ namespace FlockRelayTestHelpers
 		}
 	};
 
-	/** Relay connections over a fake relay on loopback; each is closed when the test ends. */
+	/** Relay connections over a fake relay on loopback (taking TCP and TLS too when made with streams); each is closed when the test ends. */
 	struct FRelayFixture
 	{
-		TUniquePtr<FFlockFakeRelayServer> Relay = MakeUnique<FFlockFakeRelayServer>();
+		TUniquePtr<FFlockFakeRelayServer> Relay;
 		TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
 		TArray<TSharedRef<FFlockRelayConnection>> Connections;
+		TArray<TSharedRef<FFlockRelayWays>> Races;
+		/** The connection each race kept, ticked with every frame and closed when the test ends. */
+		TSharedRef<TArray<TSharedRef<FFlockRelayConnection>>> Kept = MakeShared<TArray<TSharedRef<FFlockRelayConnection>>>();
 		/** The STUN servers each relay opened from now on lists with its login, as Flock lists them. */
 		TArray<FFlockRelayStunLookUp> StunServers;
 
-		FRelayFixture() { FFlockUdpSockets::ResetForTesting(); }
+		explicit FRelayFixture(bool bWithStreams = false)
+			: Relay(MakeUnique<FFlockFakeRelayServer>(bWithStreams))
+		{
+			FFlockSockets::ResetForTesting();
+		}
 
 		~FRelayFixture()
 		{
+			for (const TSharedRef<FFlockRelayWays>& Race : Races)
+			{
+				Race->Close();
+			}
+			Races.Reset();
+			for (const TSharedRef<FFlockRelayConnection>& Connection : *Kept)
+			{
+				Connection->Close();
+			}
+			Kept->Reset();
 			for (const TSharedRef<FFlockRelayConnection>& Connection : Connections)
 			{
 				Connection->Close();
@@ -128,17 +168,42 @@ namespace FlockRelayTestHelpers
 			Connections.Reset();
 			FFlockRelayConnection::MostOpeningsForTesting = 0;
 			FFlockRelayThreads::bRefusedForTesting = false;
-			FFlockUdpSockets::ResetForTesting();
+			FFlockRelayWays::AfterAWayOpenedForTesting = nullptr;
+			FFlockRelayTls::SetTrustedCertificateForTesting(FString());
+			FFlockRelayStream::bHoldsSendsForTesting = false;
+			FFlockSockets::ResetForTesting();
 		}
 
-		FFlockRelayLogin Login(const FString& Player, const FString& Host = TEXT("127.0.0.1")) const
+		/** A way in to the fake relay over Transport, at its port for that transport. */
+		FFlockRelayLogin Login(const FString& Player, const FString& Host = TEXT("127.0.0.1"), EFlockRelayTransport Transport = EFlockRelayTransport::Udp) const
 		{
 			FFlockRelayLogin Made;
 			Made.Host = Host;
-			Made.Port = Relay->GetPort();
+			Made.Port = Transport == EFlockRelayTransport::Tls ? Relay->GetTlsPort() : Transport == EFlockRelayTransport::Tcp ? Relay->GetTcpPort() : Relay->GetPort();
 			Made.Username = TEXT("1760000000:game:") + Player;
 			Made.Password = TEXT("minted-for-the-test");
+			Made.Transport = Transport;
 			return Made;
+		}
+
+		/** Races Logins as a session does; the race is ticked with every frame and closed when the test ends. */
+		TSharedRef<FOpening> Race(const TArray<FFlockRelayLogin>& Logins, const FFlockRelayTiming& Timing = Quick())
+		{
+			const TSharedRef<FOpening> Answer = MakeShared<FOpening>();
+			const TSharedRef<FOpening> Into = Answer;
+			const TSharedRef<TArray<TSharedRef<FFlockRelayConnection>>> KeptHere = Kept;
+			Races.Add(FFlockRelayWays::Start(Logins, StunServers, Timing, Log, [KeptHere, Into](FOpenedResult Result)
+			{
+				if (Result.bSuccess && Result.Value.IsValid())
+				{
+					KeptHere->Add(Result.Value.ToSharedRef());
+				}
+				Into->bAnswered = true;
+				++Into->Times;
+				Into->Result = Result;
+				Into->AnsweredOnThread = FPlatformTLS::GetCurrentThreadId();
+			}));
+			return Answer;
 		}
 
 		TSharedRef<FOpening> Open(const FFlockRelayLogin& WithLogin, const FFlockRelayTiming& Timing = Quick())
@@ -150,10 +215,16 @@ namespace FlockRelayTestHelpers
 
 		TSharedRef<FOpening> Open(const FString& Player, const FFlockRelayTiming& Timing = Quick()) { return Open(Login(Player), Timing); }
 
-		/** One frame: every connection hands the game what it has. */
+		/** One frame: every race and every connection hands the game what it has. */
 		void Frame()
 		{
-			const TArray<TSharedRef<FFlockRelayConnection>> Each = Connections;
+			const TArray<TSharedRef<FFlockRelayWays>> EachRace = Races;
+			for (const TSharedRef<FFlockRelayWays>& Racing : EachRace)
+			{
+				Racing->Tick();
+			}
+			TArray<TSharedRef<FFlockRelayConnection>> Each = Connections;
+			Each.Append(*Kept);
 			for (const TSharedRef<FFlockRelayConnection>& Connection : Each)
 			{
 				Connection->Tick();

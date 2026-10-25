@@ -85,7 +85,7 @@ void FFlockRelayRequests::SendAgainOrGiveUp(double Now)
 			Waiting.RemoveAt(Index);
 			Request->Done(NoAnswer, TEXT("no answer"), nullptr);
 		}
-		else if (Request->Sends < MostSends && Now >= Request->NextSendAt)
+		else if (Socket.LosesPackets() && Request->Sends < MostSends && Now >= Request->NextSendAt)
 		{
 			SendBytes(Request->Bytes);
 			Request->NextSendAt = Now + FirstResendSeconds * static_cast<double>(1 << Request->Sends);

@@ -5,7 +5,7 @@
 #include "IPAddress.h"
 #include "Misc/Guid.h"
 #include "Multiplayer/FlockMultiplayerSessionRequests.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "Multiplayer/FlockWireFields.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -221,7 +221,7 @@ void FFlockDirectAddresses::Ask(const FSearchRef& Search)
 		Search->Transaction.Add(static_cast<uint8>(Part >> 8));
 		Search->Transaction.Add(static_cast<uint8>(Part));
 	}
-	Search->Socket = FFlockUdpSockets::Open(TEXT("Flock STUN request"));
+	Search->Socket = FFlockSockets::Open(TEXT("Flock STUN request"));
 	if (Search->Socket == nullptr || !SendRequest(Search))
 	{
 		NextServer(Search);
@@ -236,26 +236,26 @@ bool FFlockDirectAddresses::SendRequest(const FSearchRef& Search)
 	const int32 Port = Search->Servers[Search->Index].Port;
 	int32 Sent = 0;
 	AskedFrom = Search->Socket->GetProtocol();
-	const bool bSendRefused = FFlockUdpSockets::bDualStackSendRefusedForTesting && FFlockUdpSockets::IsDualStack(*Search->Socket);
+	const bool bSendRefused = FFlockSockets::bDualStackSendRefusedForTesting && FFlockSockets::IsDualStack(*Search->Socket);
 	if (!bSendRefused && Search->Socket->SendTo(Request.GetData(), Request.Num(), Sent,
-		*FFlockUdpSockets::Toward(*Search->Socket, Search->ServerAddress, Port)) && Sent == Request.Num())
+		*FFlockSockets::Toward(*Search->Socket, Search->ServerAddress, Port)) && Sent == Request.Num())
 	{
 		return true;
 	}
-	if (!FFlockUdpSockets::IsDualStack(*Search->Socket))
+	if (!FFlockSockets::IsDualStack(*Search->Socket))
 	{
 		return false;
 	}
 	// A platform that makes a dual-stack socket but cannot send IPv4 through it gets a plain IPv4 socket instead.
 	CloseSocket(*Search);
-	Search->Socket = FFlockUdpSockets::OpenIpv4(TEXT("Flock STUN request"));
+	Search->Socket = FFlockSockets::OpenIpv4(TEXT("Flock STUN request"));
 	if (Search->Socket == nullptr)
 	{
 		return false;
 	}
 	AskedFrom = Search->Socket->GetProtocol();
 	return Search->Socket->SendTo(Request.GetData(), Request.Num(), Sent,
-		*FFlockUdpSockets::Toward(*Search->Socket, Search->ServerAddress, Port)) && Sent == Request.Num();
+		*FFlockSockets::Toward(*Search->Socket, Search->ServerAddress, Port)) && Sent == Request.Num();
 }
 
 void FFlockDirectAddresses::Advance(const FSearchRef& Search)
@@ -264,7 +264,7 @@ void FFlockDirectAddresses::Advance(const FSearchRef& Search)
 	{
 		if (Search->LookUp->IsDone())
 		{
-			Search->ServerAddress = Search->LookUp->GetIpv4();
+			Search->ServerAddress = Search->LookUp->GetAddress();
 			if (Search->ServerAddress.IsEmpty())
 			{
 				NextServer(Search);
@@ -288,7 +288,7 @@ void FFlockDirectAddresses::Advance(const FSearchRef& Search)
 	for (int32 Reads = 0; Reads < MostReadsAFrame; ++Reads)
 	{
 		int32 Received = 0;
-		const TSharedRef<FInternetAddr> Sender = FFlockUdpSockets::AnySender(*Search->Socket);
+		const TSharedRef<FInternetAddr> Sender = FFlockSockets::AnySender(*Search->Socket);
 		if (!Search->Socket->RecvFrom(Buffer, UE_ARRAY_COUNT(Buffer), Received, *Sender) || Received <= 0)
 		{
 			break;
@@ -350,7 +350,7 @@ void FFlockDirectAddresses::EndWith(const FSearchRef& Search, const FFlockError&
 
 void FFlockDirectAddresses::CloseSocket(FSearch& Search)
 {
-	FFlockUdpSockets::Close(Search.Socket);
+	FFlockSockets::Close(Search.Socket);
 	Search.Socket = nullptr;
 }
 

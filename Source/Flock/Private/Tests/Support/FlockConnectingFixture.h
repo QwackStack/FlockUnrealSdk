@@ -13,7 +13,7 @@
 #include "Multiplayer/FlockMultiplayerSession.h"
 #include "Multiplayer/FlockMultiplayerSessions.h"
 #include "Multiplayer/FlockTravelToSession.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "Providers/FlockMultiplayerProvider.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -128,7 +128,7 @@ namespace FlockConnectingTestHelpers
 				TMap<FString, FString>{ { TEXT("X-Flock-API-Key"), TEXT("k") }, { TEXT("X-Game-Version-ID"), FFlockFakeSessionServer::GameBuild } }))
 			, Provider(MakeShared<FFlockMultiplayerProvider>(Client, Retries(MaxRetries), Log, Session, TEXT("http://x/v1"), 0.0))
 		{
-			FFlockUdpSockets::ResetForTesting();
+			FFlockSockets::ResetForTesting();
 			const TSharedRef<double> Clock = Now;
 			Provider->GetRepeatingCalls().SetClockForTesting([Clock]() { return *Clock; }, []() { return 0.5; });
 			Sessions().SetConnectionWaitSecondsForTesting(0.2);
@@ -154,7 +154,7 @@ namespace FlockConnectingTestHelpers
 			// The test's game ends with it: no level of its stays open to players past the test.
 			Game->State = FFlockGameNetState();
 			Provider->Shutdown();
-			FFlockUdpSockets::ResetForTesting();
+			FFlockSockets::ResetForTesting();
 		}
 
 		static FFlockRetryPolicy Retries(int32 MaxRetries)

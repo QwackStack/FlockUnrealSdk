@@ -21,7 +21,7 @@
 #include "Multiplayer/FlockMultiplayerSession.h"
 #include "Multiplayer/FlockMultiplayerSessions.h"
 #include "Multiplayer/FlockTravelToSession.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "Providers/FlockMultiplayerProvider.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -104,7 +104,7 @@ FLOCK_CONNECTING_TEST(FFlockConnectingNoIpv6Test, "WithoutIpv6PublishDirectStill
 bool FFlockConnectingNoIpv6Test::RunTest(const FString& Parameters)
 {
 	FConnectingFixture F;
-	FFlockUdpSockets::bDualStackRefusedForTesting = true;
+	FFlockSockets::bDualStackRefusedForTesting = true;
 	F.SignIn(PlayerA);
 	UFlockMultiplayerSession* Session = F.Hosted(*this);
 	if (Session == nullptr)
@@ -116,7 +116,7 @@ bool FFlockConnectingNoIpv6Test::RunTest(const FString& Parameters)
 	TestTrue(TEXT("published"), Published->Succeeded());
 	TestEqualSensitive(TEXT("asked from a plain IPv4 socket, as before"), F.Field(F.LastPublished(), TEXT("public_address")), HostsPublicAddress);
 	TestTrue(TEXT("the IPv4 socket"), F.Sessions().GetDirectAddressesForTesting().GetAskedFromForTesting() == FNetworkProtocolTypes::IPv4);
-	TestTrue(TEXT("the refusal is remembered for the launch"), FFlockUdpSockets::RemembersARefusalForTesting());
+	TestTrue(TEXT("the refusal is remembered for the launch"), FFlockSockets::RemembersARefusalForTesting());
 	TestEqual(TEXT("one STUN request"), F.Stun->Requests, 1);
 	return true;
 }
@@ -130,7 +130,7 @@ bool FFlockConnectingDualStackSendTest::RunTest(const FString& Parameters)
 		AddInfo(TEXT("This machine makes no dual-stack sockets: nothing to replace."));
 		return true;
 	}
-	FFlockUdpSockets::bDualStackSendRefusedForTesting = true;
+	FFlockSockets::bDualStackSendRefusedForTesting = true;
 	F.SignIn(PlayerA);
 	UFlockMultiplayerSession* Session = F.Hosted(*this);
 	if (Session == nullptr)
@@ -228,7 +228,7 @@ bool FFlockConnectingLookUpNeverAnswersTest::RunTest(const FString& Parameters)
 {
 	FConnectingFixture F;
 	F.Server->StunUrls = { TEXT("stun:stun.example.test:19302") };
-	F.Sessions().GetDirectAddressesForTesting().SetNameLookUpForTesting([](const FString&, TFunction<void(const FString&)>) {});
+	F.Sessions().GetDirectAddressesForTesting().SetNameLookUpForTesting([](const FString&, TFunction<void(const TArray<FString>&)>) {});
 	F.SignIn(PlayerA);
 	UFlockMultiplayerSession* Session = F.Hosted(*this);
 	if (Session == nullptr)
@@ -251,7 +251,7 @@ bool FFlockConnectingCancelPublishTest::RunTest(const FString& Parameters)
 	FConnectingFixture F;
 	F.Sessions().GetDirectAddressesForTesting().SetStunWaitForTesting(30.0);
 	F.Server->StunUrls = { TEXT("stun:stun.example.test:19302") };
-	F.Sessions().GetDirectAddressesForTesting().SetNameLookUpForTesting([](const FString&, TFunction<void(const FString&)>) {});
+	F.Sessions().GetDirectAddressesForTesting().SetNameLookUpForTesting([](const FString&, TFunction<void(const TArray<FString>&)>) {});
 	F.SignIn(PlayerA);
 	UFlockMultiplayerSession* Session = F.Hosted(*this);
 	if (Session == nullptr)

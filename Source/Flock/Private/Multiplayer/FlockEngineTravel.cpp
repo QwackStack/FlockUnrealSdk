@@ -12,7 +12,7 @@
 #include "IPAddress.h"
 #include "Kismet/GameplayStatics.h"
 #include "Multiplayer/FlockJoinChecks.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "SocketTypes.h"
 #include "UObject/ObjectKey.h"
 
@@ -303,7 +303,7 @@ namespace
 		static int32 LoopbackPortOfConnection(UNetConnection* Connection)
 		{
 			const TSharedPtr<const FInternetAddr> Remote = Connection != nullptr ? Connection->GetRemoteAddr() : nullptr;
-			return Remote.IsValid() && FFlockUdpSockets::IsLoopback(*Remote) ? Remote->GetPort() : 0;
+			return Remote.IsValid() && FFlockSockets::IsLoopback(*Remote) ? Remote->GetPort() : 0;
 		}
 
 		/** The options of a request URL as the engine hands them to PreLoginAsync: from its first '?'. */

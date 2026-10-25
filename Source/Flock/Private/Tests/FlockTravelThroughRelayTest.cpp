@@ -195,7 +195,7 @@ namespace FlockRelayTravelTestHelpers
 		/** The connection B's game makes through its relay address, let in or not by this host: its join answer. */
 		FJoining JoinsThroughTheRelay(const FString& Token, int32 LoopbackPort)
 		{
-			return Joins(WithToken(Token), nullptr, nullptr, TOptional<FString>(), FFlockUdpSockets::LoopbackIpv4, LoopbackPort);
+			return Joins(WithToken(Token), nullptr, nullptr, TOptional<FString>(), FFlockSockets::LoopbackIpv4, LoopbackPort);
 		}
 
 		/** Relay logins asked for a session: the route without a session reads Flock's STUN servers alone. */
@@ -443,7 +443,7 @@ bool FFlockRelayTravelLetInTest::RunTest(const FString& Parameters)
 	const FJoining Joining = F.JoinsThroughTheRelay(F.SeatedWithToken(PlayerB), Port);
 	TestTrue(TEXT("let in"), Joining.Answer->LetIn());
 	TestEqualSensitive(TEXT("the game's check saw the loopback address"), F.GameAsked.Num() > 0 ? F.GameAsked.Last().Address : FString(),
-		FString(FFlockUdpSockets::LoopbackIpv4));
+		FString(FFlockSockets::LoopbackIpv4));
 	TestTrue(TEXT("its packets ride on a channel now"), Relay->KeepsChannelToForTesting(Player->GetAddress()));
 	F.PlaysThrough(Joining.Connection);
 	TestEqualSensitive(TEXT("known by its connection"), Session->PlayerForConnection(JoinedController()), PlayerB);

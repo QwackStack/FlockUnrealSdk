@@ -48,8 +48,9 @@ public:
 	static constexpr uint32 ThreadStackBytes = 64 * 1024;
 
 	/**
-	 * A link to the peer the relay knows as PeerName, started at once: it asks StunServers and RelayServer where they see its socket,
-	 * then offers through SendThroughTheRelay. Null when no socket can be opened or no thread started; the peer stays on the relay.
+	 * A link to the peer the relay knows as PeerName, started at once: it asks StunServers and RelayServer (unless empty, as for a
+	 * relay reached over IPv6) where they see its socket, then offers through SendThroughTheRelay. Null when no socket can be opened
+	 * or no thread started; the peer stays on the relay.
 	 */
 	static FPtr Start(const FFlockRelayPeer& RelayServer, const TArray<FFlockRelayPeer>& StunServers, FSendThroughTheRelay SendThroughTheRelay,
 		FHandToTheEngine HandToTheEngine, const FString& PeerName);
