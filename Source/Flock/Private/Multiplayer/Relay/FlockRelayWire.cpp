@@ -169,12 +169,14 @@ int32 FFlockRelayWire::WriteSendIndication(uint8* Into, const uint8* Transaction
 	return SendIndicationOverhead + Count + Padding;
 }
 
-int32 FFlockRelayWire::WriteChannelFrame(uint8* Into, uint16 Channel, const uint8* Data, int32 Count)
+int32 FFlockRelayWire::WriteChannelFrame(uint8* Into, uint16 Channel, const uint8* Data, int32 Count, bool bPadded)
 {
+	const int32 Padding = bPadded ? (4 - Count % 4) % 4 : 0;
 	WriteUInt16(Into, 0, Channel);
 	WriteUInt16(Into, 2, static_cast<uint16>(Count));
 	FMemory::Memcpy(Into + ChannelFrameHeaderLength, Data, Count);
-	return ChannelFrameHeaderLength + Count;
+	FMemory::Memzero(Into + ChannelFrameHeaderLength + Count, Padding);
+	return ChannelFrameHeaderLength + Count + Padding;
 }
 
 bool FFlockRelayWire::TryReadChannelFrame(const uint8* Packet, int32 Length, uint16& OutChannel, int32& OutDataLength)

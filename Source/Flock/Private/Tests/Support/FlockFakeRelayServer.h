@@ -15,6 +15,7 @@
 #include "Misc/SecureHash.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
+#include "Tests/Support/FlockFakeRelayTls.h"
 #include <atomic>
 
 /**
@@ -25,8 +26,13 @@
  * reservation and a renewal after it is 437, and data is relayed between its own reservations (channel frames to a peer that
  * bound a channel back, data indications otherwise). Every success to a signed request is signed and every answer
  * fingerprinted. A test chooses silences, refusals, stale nonces and lifetimes, and can make it answer as Cloudflare's relay
- * did on 2026-10-12: an IP of its own for each reservation, and only some client ports answered. Its own codec, so it checks
- * the SDK's rather than sharing it. Include only from guarded test files.
+ * did on 2026-10-12: an IP of its own for each reservation, and only some client ports answered. Made with streams, it also
+ * takes TURN over TCP and over TLS (FlockFakeRelayCertificate, which no platform trusts), framed as Cloudflare's relay framed
+ * them on 2026-10-25: each message whole, channel frames padded to 4 bytes; a reservation made over a stream ends when the
+ * stream does, as coturn does. It listens on IPv6 loopback too, on the same ports, where the machine has one (HasIpv6), and
+ * gives a client reaching it over IPv6 an IPv4 relay address, as Cloudflare's relay did on 2026-10-25; a test can make it ignore
+ * UDP, UDP over IPv4 alone, or either family, as a network without them would. Its own codec, so it checks the SDK's rather than
+ * sharing it. Include only from guarded test files.
  */
 class FFlockFakeRelayServer : public FRunnable
 {
@@ -49,7 +55,10 @@ public:
 		bool bSigned = false;
 		FString Transaction;
 		TOptional<uint32> LifetimeAsked;
+		/** The port the client sent from: its UDP socket's, or its stream's. */
 		int32 ClientPort = 0;
+		bool bOverAStream = false;
+		bool bOverIpv6 = false;
 	};
 
 	/** The password every login is checked against. */
@@ -79,26 +88,72 @@ public:
 	TOptional<TSet<int32>> AnswersOnlyPortsHeard;
 	/** Binding requests answered with the address they came from; off for a relay that ignores them. */
 	std::atomic<bool> bAnswersBindings{ true };
+	/** Nothing sent over UDP reaches the relay, as on a network that blocks UDP to it; streams still do. */
+	std::atomic<bool> bIgnoresUdp{ false };
+	/** UDP over IPv4 alone never reaches the relay, as through a phone hotspot that carried UDP over IPv6 only (measured 2026-10-25). */
+	std::atomic<bool> bIgnoresUdpOverIpv4{ false };
+	/** Nothing from a client of this family reaches the relay (a stream of it is closed at once), as on a network without it. */
+	std::atomic<bool> bIgnoresIpv4{ false };
+	std::atomic<bool> bIgnoresIpv6{ false };
+	/** Streams are taken and then never read from or answered (no TLS handshake either), as a network that lets the connection through and nothing after it. */
+	std::atomic<bool> bStreamsSilent{ false };
+	/** Streams are not read from while this is set, so what a client sends piles up behind them. */
+	std::atomic<bool> bPauseStreamReading{ false };
 
-	FFlockFakeRelayServer()
+	explicit FFlockFakeRelayServer(bool bWithStreams = false)
 	{
 		ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-		Socket = Sockets->CreateSocket(NAME_DGram, TEXT("Fake relay server"), FNetworkProtocolTypes::IPv4);
-		if (Socket == nullptr)
+		// One port on both loopbacks, so a login's one port reaches either; another pair is tried when the IPv6 port is taken.
+		for (int32 Attempt = 0; Attempt < 20 && Socket6 == nullptr; ++Attempt)
 		{
-			return;
+			CloseSocket(Socket);
+			Socket = Bound(NAME_DGram, TEXT("127.0.0.1"), 0, TEXT("Fake relay server"));
+			if (Socket == nullptr)
+			{
+				return;
+			}
+			Port = Socket->GetPortNo();
+			Socket6 = Bound(NAME_DGram, TEXT("::1"), Port, TEXT("Fake relay server on IPv6"));
+			if (!bMachineHasIpv6Loopback)
+			{
+				break;
+			}
 		}
-		const TSharedRef<FInternetAddr> Loopback = Sockets->CreateInternetAddr(FNetworkProtocolTypes::IPv4);
-		bool bValid = false;
-		Loopback->SetIp(TEXT("127.0.0.1"), bValid);
-		Loopback->SetPort(0);
-		if (!Socket->Bind(*Loopback) || !Socket->SetNonBlocking(true))
+		if (bWithStreams)
 		{
-			Sockets->DestroySocket(Socket);
-			Socket = nullptr;
-			return;
+			bTakesStreams = true;
+			for (int32 Attempt = 0; Attempt < 20; ++Attempt)
+			{
+				CloseSocket(TcpListener);
+				CloseSocket(TcpListener6);
+				TcpListener = Listening(TEXT("127.0.0.1"), 0);
+				TcpPort = TcpListener != nullptr ? TcpListener->GetPortNo() : 0;
+				TcpListener6 = Socket6 != nullptr && TcpListener != nullptr ? Listening(TEXT("::1"), TcpPort) : nullptr;
+				if (Socket6 == nullptr || TcpListener6 != nullptr)
+				{
+					break;
+				}
+			}
+			for (int32 Attempt = 0; Attempt < 20; ++Attempt)
+			{
+				CloseSocket(TlsListener);
+				CloseSocket(TlsListener6);
+				TlsListener = Listening(TEXT("127.0.0.1"), 0);
+				TlsPort = TlsListener != nullptr ? TlsListener->GetPortNo() : 0;
+				TlsListener6 = Socket6 != nullptr && TlsListener != nullptr ? Listening(TEXT("::1"), TlsPort) : nullptr;
+				if (Socket6 == nullptr || TlsListener6 != nullptr)
+				{
+					break;
+				}
+			}
+			if (TcpListener6 == nullptr || TlsListener6 == nullptr)
+			{
+				// Streams on IPv6 too, or no IPv6 at all: a test on IPv6 alone needs every way there.
+				CloseSocket(Socket6);
+				CloseSocket(TcpListener6);
+				CloseSocket(TlsListener6);
+			}
 		}
-		Port = Socket->GetPortNo();
 		Thread = FRunnableThread::Create(this, TEXT("Fake relay server"));
 	}
 
@@ -110,16 +165,30 @@ public:
 			Thread->WaitForCompletion();
 			delete Thread;
 		}
-		if (Socket != nullptr)
+		for (const TPair<int32, TSharedPtr<FStreamClient>>& Each : Streams)
 		{
-			Socket->Close();
-			ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Socket);
+			CloseSocket(Each.Value->Socket);
 		}
+		CloseSocket(Socket);
+		CloseSocket(Socket6);
+		CloseSocket(TcpListener);
+		CloseSocket(TcpListener6);
+		CloseSocket(TlsListener);
+		CloseSocket(TlsListener6);
 	}
 
-	bool IsReady() const { return Socket != nullptr && Port > 0; }
+	bool IsReady() const { return Socket != nullptr && Port > 0 && (!bTakesStreams || (TcpPort > 0 && TlsPort > 0)); }
 	int32 GetPort() const { return Port; }
+	int32 GetTcpPort() const { return TcpPort; }
+	int32 GetTlsPort() const { return TlsPort; }
+	/** True when it listens on IPv6 loopback too; a machine with none (as some build containers) has no IPv6 test. */
+	bool HasIpv6() const { return Socket6 != nullptr; }
 	FString Url() const { return FString::Printf(TEXT("turn:127.0.0.1:%d?transport=udp"), Port); }
+	FString UrlNamed(const FString& Host) const { return FString::Printf(TEXT("turn:%s:%d?transport=udp"), *Host, Port); }
+	FString TcpUrl() const { return FString::Printf(TEXT("turn:127.0.0.1:%d?transport=tcp"), TcpPort); }
+	FString TcpUrlNamed(const FString& Host) const { return FString::Printf(TEXT("turn:%s:%d?transport=tcp"), *Host, TcpPort); }
+	/** Its certificate names relay.test, localhost and 127.0.0.1. */
+	FString TlsUrlNamed(const FString& Host = TEXT("relay.test")) const { return FString::Printf(TEXT("turns:%s:%d?transport=tcp"), *Host, TlsPort); }
 
 	void DropNext(uint16 Method, int32 Times)
 	{
@@ -200,34 +269,57 @@ public:
 		}
 	}
 
+	/** Streams open now. */
+	int32 StreamConnections() const
+	{
+		FScopeLock Locked(&Lock);
+		return Streams.Num();
+	}
+
+	/** Streams taken so far, open or not. */
+	int32 StreamsAccepted() const { return StreamsTaken.load(); }
+
+	/** Bytes a client sent on a stream that were no TURN message (a channel frame sent without its padding misreads the next). */
+	int32 UnreadableStreamBytes() const { return UnreadableBytes.load(); }
+
+	/** Every stream is closed by the relay, as a relay that went away does. */
+	void CloseEveryStream() { bCloseEveryStream = true; WaitForTheThreadToSee(bCloseEveryStream); }
+
+	/** Every stream is reset by the relay (no orderly end), as a relay that crashed does. */
+	void ResetEveryStream() { bResetEveryStream = true; WaitForTheThreadToSee(bResetEveryStream); }
+
 	virtual uint32 Run() override
 	{
 		uint8 Packet[2048];
 		while (!bStopped)
 		{
 			SendDue();
-			if (!Socket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(5)))
+			SendToStreams();
+			TakeNewStreams();
+			EndStreamsAsAsked();
+			ReadStreams();
+			if (!Socket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(Streams.Num() > 0 || Socket6 != nullptr ? 2 : 5))
+				&& (Socket6 == nullptr || !Socket6->Wait(ESocketWaitConditions::WaitForRead, FTimespan::Zero())))
 			{
 				continue;
 			}
-			for (int32 Reads = 0; Reads < 64; ++Reads)
-			{
-				int32 Read = 0;
-				const TSharedRef<FInternetAddr> From = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr(FNetworkProtocolTypes::IPv4);
-				if (!Socket->RecvFrom(Packet, UE_ARRAY_COUNT(Packet), Read, *From) || Read <= 0)
-				{
-					break;
-				}
-				Handle(Packet, Read, From->GetPort());
-			}
+			ReadUdp(Socket, false, Packet, UE_ARRAY_COUNT(Packet));
+			ReadUdp(Socket6, true, Packet, UE_ARRAY_COUNT(Packet));
 		}
 		return 0;
 	}
 
 private:
+	/**
+	 * Who sent a message: a UDP client by its port (over IPv4) or its port plus Ipv6Clients (over IPv6), a stream by its number
+	 * plus StreamClients. Every reservation, answer and filter is kept by it, so a stream or an IPv6 sender never shares a UDP one's.
+	 */
+	static constexpr int32 Ipv6Clients = 1 << 17;
+	static constexpr int32 StreamClients = 1 << 20;
+
 	struct FReservation
 	{
-		int32 ClientPort = 0;
+		int32 Client = 0;
 		FString Ip;
 		int32 RelayedPort = 0;
 		FString AllocateTransaction;
@@ -236,6 +328,334 @@ private:
 		/** Channel number to the peer ("ip:port") and when it lapses. */
 		TMap<uint16, TPair<FString, double>> Channels;
 	};
+
+	struct FStreamClient
+	{
+		FSocket* Socket = nullptr;
+		int32 Port = 0;
+		bool bOverIpv6 = false;
+		/** The relay's side of TLS, for a stream taken on the TLS port. */
+		TUniquePtr<FFlockFakeRelayTls> Tls;
+		/** What arrived and is not yet a whole message. */
+		TArray<uint8> Held;
+	};
+
+	static bool IsStream(int32 Client) { return Client >= StreamClients; }
+	static bool IsUdpOverIpv6(int32 Client) { return !IsStream(Client) && Client >= Ipv6Clients; }
+
+	bool IsOverIpv6(int32 Client) const
+	{
+		if (!IsStream(Client))
+		{
+			return IsUdpOverIpv6(Client);
+		}
+		const TSharedPtr<FStreamClient>* Found = Streams.Find(Client);
+		return Found != nullptr && (*Found)->bOverIpv6;
+	}
+
+	int32 PortOf(int32 Client) const
+	{
+		if (!IsStream(Client))
+		{
+			return Client % Ipv6Clients;
+		}
+		const TSharedPtr<FStreamClient>* Found = Streams.Find(Client);
+		return Found != nullptr ? (*Found)->Port : 0;
+	}
+
+	bool bMachineHasIpv6Loopback = true;
+	bool bTakesStreams = false;
+
+	FSocket* Bound(const FName& Type, const TCHAR* Ip, int32 OnPort, const TCHAR* Description)
+	{
+		ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+		const bool bIpv6 = FString(Ip).Contains(TEXT(":"));
+		FSocket* Made = Sockets->CreateSocket(Type, Description, bIpv6 ? FNetworkProtocolTypes::IPv6 : FNetworkProtocolTypes::IPv4);
+		if (Made == nullptr)
+		{
+			bMachineHasIpv6Loopback &= !bIpv6;
+			return nullptr;
+		}
+		const TSharedRef<FInternetAddr> At = Sockets->CreateInternetAddr(Made->GetProtocol());
+		bool bValid = false;
+		At->SetIp(Ip, bValid);
+		At->SetPort(OnPort);
+		if (!bValid || !Made->Bind(*At) || !Made->SetNonBlocking(true))
+		{
+			if (!bValid && bIpv6)
+			{
+				bMachineHasIpv6Loopback = false;
+			}
+			Sockets->DestroySocket(Made);
+			return nullptr;
+		}
+		return Made;
+	}
+
+	FSocket* Listening(const TCHAR* Ip, int32 OnPort)
+	{
+		FSocket* Made = Bound(NAME_Stream, Ip, OnPort, TEXT("Fake relay server stream listener"));
+		if (Made != nullptr && !Made->Listen(16))
+		{
+			CloseSocket(Made);
+		}
+		return Made;
+	}
+
+	static void CloseSocket(FSocket*& ToClose)
+	{
+		if (ToClose != nullptr)
+		{
+			ToClose->Close();
+			ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ToClose);
+			ToClose = nullptr;
+		}
+	}
+
+	void WaitForTheThreadToSee(const std::atomic<bool>& Asked) const
+	{
+		const double Until = FPlatformTime::Seconds() + 2.0;
+		while (Asked.load() && FPlatformTime::Seconds() < Until)
+		{
+			FPlatformProcess::Sleep(0.001f);
+		}
+	}
+
+	void ReadUdp(FSocket* From, bool bOverIpv6, uint8* Packet, int32 Size)
+	{
+		if (From == nullptr)
+		{
+			return;
+		}
+		for (int32 Reads = 0; Reads < 64; ++Reads)
+		{
+			int32 Read = 0;
+			const TSharedRef<FInternetAddr> Sender = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr(From->GetProtocol());
+			if (!From->RecvFrom(Packet, Size, Read, *Sender) || Read <= 0)
+			{
+				break;
+			}
+			Handle(Packet, Read, Sender->GetPort() + (bOverIpv6 ? Ipv6Clients : 0));
+		}
+	}
+
+	// ---- streams, on the relay's thread ----
+
+	void TakeNewStreams()
+	{
+		struct FListener { FSocket* Socket; bool bOverIpv6; bool bTls; };
+		const FListener Listeners[] = { { TcpListener, false, false }, { TcpListener6, true, false }, { TlsListener, false, true }, { TlsListener6, true, true } };
+		for (const FListener& Listener : Listeners)
+		{
+			bool bPending = false;
+			if (Listener.Socket == nullptr || !Listener.Socket->HasPendingConnection(bPending) || !bPending)
+			{
+				continue;
+			}
+			const TSharedRef<FInternetAddr> From = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr(Listener.Socket->GetProtocol());
+			FSocket* Taken = Listener.Socket->Accept(*From, TEXT("Fake relay server stream"));
+			if (Taken == nullptr)
+			{
+				continue;
+			}
+			++StreamsTaken;
+			if (Listener.bOverIpv6 ? bIgnoresIpv6.load() : bIgnoresIpv4.load())
+			{
+				CloseSocket(Taken);
+				continue;
+			}
+			Taken->SetNonBlocking(true);
+			Taken->SetNoDelay(true);
+			const TSharedPtr<FStreamClient> Client = MakeShared<FStreamClient>();
+			Client->Socket = Taken;
+			Client->Port = From->GetPort();
+			Client->bOverIpv6 = Listener.bOverIpv6;
+			if (Listener.bTls)
+			{
+				Client->Tls = FFlockFakeRelayTls::Start();
+			}
+			FScopeLock Locked(&Lock);
+			Streams.Add(StreamClients + NextStreamNumber++, Client);
+		}
+	}
+
+	void EndStreamsAsAsked()
+	{
+		const bool bClose = bCloseEveryStream.load();
+		const bool bReset = bResetEveryStream.load();
+		if (!bClose && !bReset)
+		{
+			return;
+		}
+		TArray<int32> Ending;
+		{
+			FScopeLock Locked(&Lock);
+			Streams.GetKeys(Ending);
+		}
+		for (const int32 Client : Ending)
+		{
+			if (bReset)
+			{
+				// No lingering: the connection is reset rather than ended in order.
+				FScopeLock Locked(&Lock);
+				Streams[Client]->Socket->SetLinger(true, 0);
+			}
+			EndStream(Client);
+		}
+		bCloseEveryStream = false;
+		bResetEveryStream = false;
+	}
+
+	/** A stream closed by either side: the reservation made over it ends with it. */
+	void EndStream(int32 Client)
+	{
+		FScopeLock Locked(&Lock);
+		TSharedPtr<FStreamClient> Ended;
+		if (!Streams.RemoveAndCopyValue(Client, Ended))
+		{
+			return;
+		}
+		CloseSocket(Ended->Socket);
+		Kept.RemoveAll([Client](const FReservation& Each) { return Each.Client == Client; });
+	}
+
+	void ReadStreams()
+	{
+		TArray<TPair<int32, TSharedPtr<FStreamClient>>> Open;
+		{
+			FScopeLock Locked(&Lock);
+			for (const TPair<int32, TSharedPtr<FStreamClient>>& Each : Streams)
+			{
+				Open.Add(Each);
+			}
+		}
+		uint8 Chunk[16384];
+		for (const TPair<int32, TSharedPtr<FStreamClient>>& Each : Open)
+		{
+			FStreamClient& Client = *Each.Value;
+			if (bPauseStreamReading)
+			{
+				continue;
+			}
+			int32 Read = 0;
+			if (!Client.Socket->Recv(Chunk, sizeof(Chunk), Read))
+			{
+				EndStream(Each.Key);
+				continue;
+			}
+			if (Read <= 0 || bStreamsSilent)
+			{
+				continue;
+			}
+			if (Client.Tls.IsValid())
+			{
+				TArray<uint8> Plain;
+				const bool bStillTls = Client.Tls->Arrived(Chunk, Read, Plain);
+				TArray<uint8> ForTheClient;
+				Client.Tls->TakeForTheNetwork(ForTheClient);
+				WriteWhole(*Client.Socket, ForTheClient);
+				if (!bStillTls)
+				{
+					EndStream(Each.Key);
+					continue;
+				}
+				Client.Held.Append(Plain);
+			}
+			else
+			{
+				Client.Held.Append(Chunk, Read);
+			}
+			CutWholeMessages(Each.Key, Client);
+		}
+	}
+
+	void CutWholeMessages(int32 Client, FStreamClient& Stream)
+	{
+		while (Stream.Held.Num() >= 4)
+		{
+			const int32 Length = Read16(Stream.Held.GetData(), 2);
+			int32 Whole = 0;
+			if ((Stream.Held[0] & 0xC0) == 0x40)
+			{
+				Whole = 4 + Length + (4 - Length % 4) % 4;
+			}
+			else if ((Stream.Held[0] & 0xC0) == 0 && (Stream.Held.Num() < 8 || Read32(Stream.Held.GetData(), 4) == 0x2112A442))
+			{
+				if (Stream.Held.Num() < 8)
+				{
+					return;
+				}
+				Whole = 20 + Length;
+			}
+			else
+			{
+				UnreadableBytes += Stream.Held.Num();
+				EndStream(Client);
+				return;
+			}
+			if (Stream.Held.Num() < Whole)
+			{
+				return;
+			}
+			const TArray<uint8> Message(Stream.Held.GetData(), Whole);
+			Stream.Held.RemoveAt(0, Whole);
+			Handle(Message.GetData(), Message.Num(), Client);
+		}
+	}
+
+	void SendToStreams()
+	{
+		TArray<TPair<int32, TArray<uint8>>> Due;
+		{
+			FScopeLock Locked(&Lock);
+			Due = MoveTemp(StreamOutgoing);
+			StreamOutgoing.Reset();
+		}
+		for (const TPair<int32, TArray<uint8>>& Each : Due)
+		{
+			TSharedPtr<FStreamClient> Client;
+			{
+				FScopeLock Locked(&Lock);
+				const TSharedPtr<FStreamClient>* Found = Streams.Find(Each.Key);
+				Client = Found != nullptr ? *Found : nullptr;
+			}
+			if (!Client.IsValid())
+			{
+				continue;
+			}
+			if (Client->Tls.IsValid())
+			{
+				TArray<uint8> ForTheClient;
+				if (Client->Tls->Write(Each.Value.GetData(), Each.Value.Num()))
+				{
+					Client->Tls->TakeForTheNetwork(ForTheClient);
+				}
+				WriteWhole(*Client->Socket, ForTheClient);
+			}
+			else
+			{
+				WriteWhole(*Client->Socket, Each.Value);
+			}
+		}
+	}
+
+	static void WriteWhole(FSocket& To, const TArray<uint8>& Bytes)
+	{
+		int32 Sent = 0;
+		const double Until = FPlatformTime::Seconds() + 1.0;
+		while (Sent < Bytes.Num() && FPlatformTime::Seconds() < Until)
+		{
+			int32 Now = 0;
+			if (To.Send(Bytes.GetData() + Sent, Bytes.Num() - Sent, Now) && Now > 0)
+			{
+				Sent += Now;
+				continue;
+			}
+			To.Wait(ESocketWaitConditions::WaitForWrite, FTimespan::FromMilliseconds(5));
+		}
+	}
+
+	// ---- TURN ----
 
 	static uint16 Read16(const uint8* Bytes, int32 At) { return static_cast<uint16>((Bytes[At] << 8) | Bytes[At + 1]); }
 	static uint32 Read32(const uint8* Bytes, int32 At)
@@ -380,24 +800,29 @@ private:
 
 	FString CurrentNonce() const { return FString::Printf(TEXT("nonce-%d"), NonceNumber); }
 
-	FReservation* ReservationOf(int32 ClientPort)
+	FReservation* ReservationOf(int32 Client)
 	{
 		const double Now = FPlatformTime::Seconds();
-		return Kept.FindByPredicate([ClientPort, Now](const FReservation& Each) { return Each.ClientPort == ClientPort && Each.ExpiresAt > Now; });
+		return Kept.FindByPredicate([Client, Now](const FReservation& Each) { return Each.Client == Client && Each.ExpiresAt > Now; });
 	}
 
-	void Handle(const uint8* Packet, int32 Length, int32 ClientPort)
+	void Handle(const uint8* Packet, int32 Length, int32 Client)
 	{
 		FScopeLock Locked(&Lock);
-		if (PortsNoLongerHeard.Contains(ClientPort))
+		const bool bOverIpv6 = IsOverIpv6(Client);
+		if ((!IsStream(Client) && (bIgnoresUdp || (!bOverIpv6 && bIgnoresUdpOverIpv4))) || (bOverIpv6 ? bIgnoresIpv6 : bIgnoresIpv4))
 		{
 			return;
 		}
-		if (!PortsHeard.Contains(ClientPort))
+		if (PortsNoLongerHeard.Contains(Client))
 		{
-			PortsHeard.Add(ClientPort, PortsHeard.Num() + 1);
+			return;
 		}
-		if (AnswersOnlyPortsHeard.IsSet() && !AnswersOnlyPortsHeard->Contains(PortsHeard[ClientPort]))
+		if (!PortsHeard.Contains(Client))
+		{
+			PortsHeard.Add(Client, PortsHeard.Num() + 1);
+		}
+		if (AnswersOnlyPortsHeard.IsSet() && !AnswersOnlyPortsHeard->Contains(PortsHeard[Client]))
 		{
 			return;
 		}
@@ -405,7 +830,9 @@ private:
 		{
 			FSeen Frame;
 			Frame.Method = ChannelFrame;
-			Frame.ClientPort = ClientPort;
+			Frame.ClientPort = PortOf(Client);
+			Frame.bOverAStream = IsStream(Client);
+			Frame.bOverIpv6 = bOverIpv6;
 			Seen.Add(Frame);
 			if (bSilent)
 			{
@@ -413,7 +840,7 @@ private:
 			}
 			const uint16 Number = Read16(Packet, 0);
 			const int32 DataLength = FMath::Min(static_cast<int32>(Read16(Packet, 2)), Length - 4);
-			FReservation* Sender = ReservationOf(ClientPort);
+			FReservation* Sender = ReservationOf(Client);
 			const TPair<FString, double>* Bound = Sender != nullptr ? Sender->Channels.Find(Number) : nullptr;
 			if (Bound == nullptr || Bound->Value < FPlatformTime::Seconds())
 			{
@@ -461,7 +888,9 @@ private:
 		{
 			Request.LifetimeAsked = Read32(Lifetime->GetData(), 0);
 		}
-		Request.ClientPort = ClientPort;
+		Request.ClientPort = PortOf(Client);
+		Request.bOverAStream = IsStream(Client);
+		Request.bOverIpv6 = bOverIpv6;
 		Seen.Add(Request);
 		if (bSilent)
 		{
@@ -471,7 +900,7 @@ private:
 		{
 			if (Method == MethodSend && Attributes.Contains(0x0012) && Attributes.Contains(0x0013))
 			{
-				if (FReservation* Sender = ReservationOf(ClientPort))
+				if (FReservation* Sender = ReservationOf(Client))
 				{
 					int32 PeerPort = 0;
 					const FString PeerIp = ReadAddress(Attributes[0x0012], PeerPort);
@@ -488,7 +917,7 @@ private:
 		{
 			if (bAnswersBindings)
 			{
-				SendTo(Answer(Type, Transaction, 0x0100, { Attribute(0x0020, Address(TEXT("127.0.0.1"), ClientPort)) }, TArray<uint8>()), ClientPort);
+				SendTo(Answer(Type, Transaction, 0x0100, { Attribute(0x0020, Address(TEXT("127.0.0.1"), PortOf(Client))) }, TArray<uint8>()), Client);
 			}
 			return;
 		}
@@ -503,7 +932,7 @@ private:
 		}
 		if (!bSigned)
 		{
-			SendTo(Error(Type, Transaction, 401, TEXT("Unauthorized"), true, TArray<uint8>()), ClientPort);
+			SendTo(Error(Type, Transaction, 401, TEXT("Unauthorized"), true, TArray<uint8>()), Client);
 			return;
 		}
 		const FString Username = TextOf(Attributes[0x0006]);
@@ -516,7 +945,7 @@ private:
 		FSHA1::HMACBuffer(SignWith.GetData(), SignWith.Num(), Signed.GetData(), Signed.Num(), Expected);
 		if (IntegrityAt + 24 > Length || FMemory::Memcmp(Packet + IntegrityAt + 4, Expected, 20) != 0)
 		{
-			SendTo(Error(Type, Transaction, 401, TEXT("Unauthorized"), true, TArray<uint8>()), ClientPort);
+			SendTo(Error(Type, Transaction, 401, TEXT("Unauthorized"), true, TArray<uint8>()), Client);
 			return;
 		}
 		if (StaleNonceAnswersLeft != 0)
@@ -526,32 +955,32 @@ private:
 				--StaleNonceAnswersLeft;
 			}
 			++NonceNumber;
-			SendTo(Error(Type, Transaction, 438, TEXT("Stale Nonce"), true, TArray<uint8>()), ClientPort);
+			SendTo(Error(Type, Transaction, 438, TEXT("Stale Nonce"), true, TArray<uint8>()), Client);
 			return;
 		}
 		const TArray<uint8>* Nonce = Attributes.Find(0x0015);
 		if (Nonce != nullptr && TextOf(*Nonce) != CurrentNonce())
 		{
-			SendTo(Error(Type, Transaction, 438, TEXT("Stale Nonce"), true, TArray<uint8>()), ClientPort);
+			SendTo(Error(Type, Transaction, 438, TEXT("Stale Nonce"), true, TArray<uint8>()), Client);
 			return;
 		}
-		const TArray<uint8> Reply = AnswerTo(Method, Type, Transaction, Attributes, ClientPort, SignWith);
+		const TArray<uint8> Reply = AnswerTo(Method, Type, Transaction, Attributes, Client, SignWith);
 		if (Reply.Num() == 0)
 		{
 			return;
 		}
 		if (Method == MethodAllocate && bHoldReservationAnswers)
 		{
-			HeldAnswers.Emplace(Reply, ClientPort);
+			HeldAnswers.Emplace(Reply, Client);
 			return;
 		}
-		SendTo(Reply, ClientPort);
+		SendTo(Reply, Client);
 	}
 
-	TArray<uint8> AnswerTo(uint16 Method, uint16 Type, const TArray<uint8>& Transaction, const TMap<uint16, TArray<uint8>>& Attributes, int32 ClientPort,
+	TArray<uint8> AnswerTo(uint16 Method, uint16 Type, const TArray<uint8>& Transaction, const TMap<uint16, TArray<uint8>>& Attributes, int32 Client,
 		const TArray<uint8>& SignWith)
 	{
-		FReservation* Reservation = ReservationOf(ClientPort);
+		FReservation* Reservation = ReservationOf(Client);
 		const FString Id = Hex(Transaction);
 		const double Now = FPlatformTime::Seconds();
 		switch (Method)
@@ -569,7 +998,7 @@ private:
 			if (Reservation == nullptr)
 			{
 				FReservation Made;
-				Made.ClientPort = ClientPort;
+				Made.Client = Client;
 				Made.Ip = RelayIps[ReservationsMade++ % RelayIps.Num()];
 				Made.RelayedPort = NextPort++;
 				Made.AllocateTransaction = Id;
@@ -581,12 +1010,13 @@ private:
 			{
 				bForgeNextReservation = false;
 				SendTo(Answer(Type, Transaction, 0x0100, { Attribute(0x0016, Address(TEXT("198.51.100.66"), 4444)) }, Key(TEXT("someone-else"), TEXT("forged"))),
-					ClientPort);
+					Client);
 			}
 			TArray<uint8> Lifetime;
 			Add32(Lifetime, static_cast<uint32>(ReservationLifetimeSeconds));
+			// The relay address is IPv4 whatever family the client reached the relay by, as Cloudflare's relay answered over IPv6.
 			return Answer(Type, Transaction, 0x0100, { Attribute(0x0016, Address(Reservation->Ip, Reservation->RelayedPort)),
-				Attribute(0x0020, Address(TEXT("127.0.0.1"), ClientPort)), Attribute(0x000D, Lifetime) }, SignWith);
+				Attribute(0x0020, Address(TEXT("127.0.0.1"), PortOf(Client))), Attribute(0x000D, Lifetime) }, SignWith);
 		}
 		case MethodRefresh:
 		{
@@ -599,8 +1029,8 @@ private:
 			TArray<uint8> Lifetime;
 			if (Asked == 0)
 			{
-				const int32 Released = ClientPort;
-				Kept.RemoveAll([Released](const FReservation& Each) { return Each.ClientPort == Released; });
+				const int32 Released = Client;
+				Kept.RemoveAll([Released](const FReservation& Each) { return Each.Client == Released; });
 				Add32(Lifetime, 0);
 				return Answer(Type, Transaction, 0x0100, { Attribute(0x000D, Lifetime) }, SignWith);
 			}
@@ -688,7 +1118,7 @@ private:
 				{
 					Frame.Add(0);
 				}
-				SendTo(Frame, Receiver->ClientPort);
+				SendTo(Frame, Receiver->Client);
 				return;
 			}
 		}
@@ -698,18 +1128,18 @@ private:
 		Add32(Transaction, Random.B);
 		Add32(Transaction, Random.C);
 		SendTo(Answer(0x0017, Transaction, 0x0010, { Attribute(0x0012, Address(Sender.Ip, Sender.RelayedPort)), Attribute(0x0013, Data) }, TArray<uint8>(), false),
-			Receiver->ClientPort);
+			Receiver->Client);
 	}
 
-	void SendTo(const TArray<uint8>& Bytes, int32 ClientPort)
+	void SendTo(const TArray<uint8>& Bytes, int32 Client)
 	{
 		const double Delay = AnswerDelaySeconds;
 		if (Delay > 0.0)
 		{
-			Later.Add({ FPlatformTime::Seconds() + Delay, Bytes, ClientPort });
+			Later.Add({ FPlatformTime::Seconds() + Delay, Bytes, Client });
 			return;
 		}
-		SendNow(Bytes, ClientPort);
+		SendNow(Bytes, Client);
 	}
 
 	void SendDue()
@@ -729,32 +1159,55 @@ private:
 		}
 		for (const FLater& Each : Due)
 		{
-			SendNow(Each.Bytes, Each.ClientPort);
+			SendNow(Each.Bytes, Each.Client);
 		}
 	}
 
-	void SendNow(const TArray<uint8>& Bytes, int32 ClientPort)
+	void SendNow(const TArray<uint8>& Bytes, int32 Client)
 	{
-		const TSharedRef<FInternetAddr> To = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr(FNetworkProtocolTypes::IPv4);
+		if (IsStream(Client))
+		{
+			// Written by the relay's own thread, which alone touches a stream.
+			FScopeLock Locked(&Lock);
+			StreamOutgoing.Emplace(Client, Bytes);
+			return;
+		}
+		FSocket* From = IsUdpOverIpv6(Client) ? Socket6 : Socket;
+		if (From == nullptr)
+		{
+			return;
+		}
+		const TSharedRef<FInternetAddr> To = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr(From->GetProtocol());
 		bool bValid = false;
-		To->SetIp(TEXT("127.0.0.1"), bValid);
-		To->SetPort(ClientPort);
+		To->SetIp(IsUdpOverIpv6(Client) ? TEXT("::1") : TEXT("127.0.0.1"), bValid);
+		To->SetPort(Client % Ipv6Clients);
 		int32 Sent = 0;
 		// A client already gone.
-		Socket->SendTo(Bytes.GetData(), Bytes.Num(), Sent, *To);
+		From->SendTo(Bytes.GetData(), Bytes.Num(), Sent, *To);
 	}
 
 	struct FLater
 	{
 		double At = 0.0;
 		TArray<uint8> Bytes;
-		int32 ClientPort = 0;
+		int32 Client = 0;
 	};
 
 	FSocket* Socket = nullptr;
+	FSocket* Socket6 = nullptr;
+	FSocket* TcpListener = nullptr;
+	FSocket* TcpListener6 = nullptr;
+	FSocket* TlsListener = nullptr;
+	FSocket* TlsListener6 = nullptr;
 	int32 Port = 0;
+	int32 TcpPort = 0;
+	int32 TlsPort = 0;
 	FRunnableThread* Thread = nullptr;
 	std::atomic<bool> bStopped{ false };
+	std::atomic<bool> bCloseEveryStream{ false };
+	std::atomic<bool> bResetEveryStream{ false };
+	std::atomic<int32> StreamsTaken{ 0 };
+	std::atomic<int32> UnreadableBytes{ 0 };
 	mutable FCriticalSection Lock;
 	TArray<FReservation> Kept;
 	TArray<FSeen> Seen;
@@ -767,6 +1220,9 @@ private:
 	TSet<int32> PortsNoLongerHeard;
 	TArray<TPair<TArray<uint8>, int32>> HeldAnswers;
 	TArray<FLater> Later;
+	TMap<int32, TSharedPtr<FStreamClient>> Streams;
+	int32 NextStreamNumber = 0;
+	TArray<TPair<int32, TArray<uint8>>> StreamOutgoing;
 };
 
 #endif

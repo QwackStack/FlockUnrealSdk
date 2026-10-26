@@ -59,7 +59,10 @@ public:
 	/** Sends a request with a new transaction: first, and again once a realm or nonce is taken. */
 	void Send(const FFlockRelayRequestRef& Request);
 
-	/** An answer may be lost on the way: the same bytes again, under the same transaction, so the relay knows it for a repeat; given up on after the answer wait. */
+	/**
+	 * Over UDP an answer may be lost on the way: the same bytes again, under the same transaction, so the relay knows it for a repeat
+	 * (a stream delivers it or ends, so it goes once); given up on after the answer wait.
+	 */
 	void SendAgainOrGiveUp(double Now);
 
 	/** Asks the relay (a binding request) every AskTheRelayEverySeconds, whatever else goes; it also keeps the way open through a router or Docker's port forwarding. */

@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "HAL/Runnable.h"
+#include <atomic>
 
 /** Work the relay runs on a thread of its own: a relay connection's, or one of a bridge's loopback sockets. */
 class IFlockRelayThreadWork : public FRunnable
@@ -40,5 +41,5 @@ public:
 	static bool IsCleaningUpForTesting();
 
 	/** Makes Start answer false, as in a launch without threads. */
-	static bool bRefusedForTesting;
+	static std::atomic<bool> bRefusedForTesting;
 };

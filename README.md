@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.38.2.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.38.3.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -571,7 +571,10 @@ both; a player connecting again through its relay address is back in within seco
 **1.38.1 builds and runs on Android**, where no name was looked up before, so the relay could not be reached: a phone on mobile
 data plays through Flock's relay and moves to a direct path with a host on another network. **1.38.2 makes codegen delete
 only what it made**: a Clean or a switch of Codegen Target keeps the game's own assets and files in the generated folders,
-and a Generated Content Path of a whole content folder such as `/Game` is refused.
+and a Generated Content Path of a whole content folder such as `/Game` is refused. **1.38.3 reaches the relay another way
+when a network blocks UDP to it**: UDP over IPv4, then UDP over IPv6, then TCP and TLS, each way Flock lists, so a player on a
+phone hotspot or an office network that drops UDP, or on a network with IPv6 alone, still hosts and joins through the relay;
+when no way opens, `relay_unreachable` names each way and why it failed.
 
 Deliberate omissions and known gaps:
 

@@ -129,7 +129,7 @@ namespace
 	};
 }
 
-bool FFlockRelayThreads::bRefusedForTesting = false;
+std::atomic<bool> FFlockRelayThreads::bRefusedForTesting{ false };
 
 bool FFlockRelayThreads::Start(const TSharedRef<IFlockRelayThreadWork, ESPMode::ThreadSafe>& Work, const TCHAR* Name, uint32 StackBytes)
 {

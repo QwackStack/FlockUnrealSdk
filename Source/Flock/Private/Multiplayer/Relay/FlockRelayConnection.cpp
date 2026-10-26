@@ -6,11 +6,13 @@
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTLS.h"
 #include "HAL/PlatformTime.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
 #include "Multiplayer/Relay/FlockRelayRenewals.h"
 #include "Multiplayer/Relay/FlockRelayRequests.h"
 #include "Multiplayer/Relay/FlockRelaySocket.h"
+#include "Multiplayer/Relay/FlockRelayStream.h"
 #include "Multiplayer/Relay/FlockRelayThreads.h"
+#include "Multiplayer/Relay/FlockRelayTls.h"
 #include "Multiplayer/Relay/FlockRelayWire.h"
 #include <atomic>
 
@@ -51,6 +53,7 @@ public:
 		: Login(InLogin)
 		, StunLookUps(InStunLookUps)
 		, Timing(InTiming)
+		, Socket(InLogin.Transport != EFlockRelayTransport::Udp)
 		, Requests(Login, Socket, Timing)
 		, Packets(Socket)
 		, Renewals(Requests, Packets, Timing,
@@ -64,7 +67,8 @@ public:
 	virtual uint32 Run() override
 	{
 		ThreadId = FPlatformTLS::GetCurrentThreadId();
-		Received.SetNumUninitialized(65536);
+		// Room for the largest whole message a stream can carry: a STUN header and the most its length can say.
+		Received.SetNumUninitialized(FFlockRelayWire::HeaderLength + MAX_uint16);
 		OpenTheSocket();
 		Serve();
 		Socket.Close();
@@ -162,12 +166,19 @@ public:
 private:
 	bool IsStopping() const { return bStopping.load() || bQuitNow.load(); }
 
-	/** Looks the relay server up, finds a socket it answers, and asks for the reservation; a failure stops the connection. */
+	/** Looks the relay server up in the way's family, opens the way (a socket the server answers, or a stream), and asks for the reservation; a failure stops the connection. */
 	void OpenTheSocket()
 	{
 		const double Started = FPlatformTime::Seconds();
-		const TSharedRef<FFlockNameLookup, ESPMode::ThreadSafe> ServerLookUp = FFlockNameLookup::Start(Login.Host, Timing.NameLookUpForTesting);
 		StunDeadline = Started + Timing.NameLookUpWaitSeconds;
+		if (Login.bOverIpv6 && !FFlockSockets::CarriesIpv6())
+		{
+			// Refused at once, so the next way starts now rather than after this one's waits.
+			Fail(FlockRelayFailureReasons::Unreachable, FString::Printf(TEXT("The relay at %s could not be tried: this device's sockets reach no IPv6 address here."),
+				*Login.GetWay()));
+			return;
+		}
+		const TSharedRef<FFlockNameLookup, ESPMode::ThreadSafe> ServerLookUp = FFlockNameLookup::Start(Login.Host, Timing.NameLookUpForTesting, Login.bOverIpv6);
 		while (!ServerLookUp->IsDone() && !IsStopping() && FPlatformTime::Seconds() - Started < Timing.NameLookUpWaitSeconds)
 		{
 			FPlatformProcess::Sleep(0.005f);
@@ -176,32 +187,54 @@ private:
 		{
 			return;
 		}
-		const FString ServerIp = ServerLookUp->IsDone() ? ServerLookUp->GetIpv4() : FString();
+		const FString ServerIp = ServerLookUp->IsDone() ? ServerLookUp->GetAddress() : FString();
 		FFlockRelayPeer Endpoint;
-		if (ServerIp.IsEmpty() || !FFlockRelayPeer::TryParse(ServerIp + FString::Printf(TEXT(":%d"), Login.Port), Endpoint))
+		if (ServerIp.IsEmpty() || (!Login.bOverIpv6 && !FFlockRelayPeer::TryParse(ServerIp + FString::Printf(TEXT(":%d"), Login.Port), Endpoint)))
 		{
-			Fail(FlockRelayFailureReasons::Unreachable, FString::Printf(TEXT("The relay server's name %s could not be looked up within %.1f s"),
-				*Login.Host, Timing.NameLookUpWaitSeconds));
+			Fail(FlockRelayFailureReasons::Unreachable, FString::Printf(TEXT("The relay server's name %s gave no %s address within %.1f s"),
+				*Login.Host, Login.bOverIpv6 ? TEXT("IPv6") : TEXT("IPv4"), Timing.NameLookUpWaitSeconds));
 			return;
 		}
 		{
+			// An IPv6 server is left out: a direct link asks it nothing, since its answer would name an address no offer carries.
 			FScopeLock Locked(&Lock);
 			ServerEndpoint = Endpoint;
 		}
-		// Reserved from a socket the server answered; when none was, from a new one as before, and the reservation's own wait judges the server.
-		FSocket* Answered = FFlockRelaySocket::FindOneTheServerAnswers(ServerIp, Login.Port, Timing.SocketsTriedAtOnce, Timing.RoundsOfSocketsTried,
-			Timing.SocketRoundWaitSeconds, [this]() { return IsStopping(); });
-		if (Answered == nullptr && !IsStopping())
+		if (Login.Transport == EFlockRelayTransport::Udp)
 		{
-			Answered = FFlockUdpSockets::OpenConnectedTo(ServerIp, Login.Port, TEXT("Flock relay"));
-			if (Answered == nullptr)
+			// Reserved from a socket the server answered; when none was, from a new one as before, and the reservation's own wait judges the server.
+			FSocket* Answered = FFlockRelaySocket::FindOneTheServerAnswers(ServerIp, Login.Port, Timing.SocketsTriedAtOnce, Timing.RoundsOfSocketsTried,
+				Timing.SocketRoundWaitSeconds, [this]() { return IsStopping(); });
+			if (Answered == nullptr && !IsStopping())
 			{
-				Fail(FlockRelayFailureReasons::Unreachable, FString::Printf(TEXT("No way to send to the relay at %s: no UDP socket could be made "
-					"and aimed at it"), *Login.ToString()));
+				Answered = FFlockSockets::OpenConnectedTo(ServerIp, Login.Port, TEXT("Flock relay"));
+				if (Answered == nullptr)
+				{
+					Fail(FlockRelayFailureReasons::Unreachable, FString::Printf(TEXT("No way to send to the relay at %s: no UDP socket could be made "
+						"and aimed at it"), *Login.GetWay()));
+					return;
+				}
+			}
+			Socket.Attach(Answered);
+		}
+		else
+		{
+			// A connection the relay accepted, and over TLS a certificate the platform trusts for the relay's name, each within the connect wait.
+			FString Cause;
+			bool bNoThread = false;
+			const TSharedPtr<FFlockRelayStream, ESPMode::ThreadSafe> Stream = FFlockRelayStream::Open(ServerIp, Login.Port, Login.Host,
+				Login.Transport == EFlockRelayTransport::Tls, Timing.ConnectWaitSeconds, [this]() { return IsStopping(); }, Cause, bNoThread);
+			if (!Stream.IsValid())
+			{
+				if (!IsStopping())
+				{
+					Fail(bNoThread ? FlockRelayFailureReasons::NoThread : FlockRelayFailureReasons::Unreachable,
+						FString::Printf(TEXT("The relay at %s %s."), *Login.GetWay(), *Cause));
+				}
 				return;
 			}
+			Socket.AttachStream(Stream.ToSharedRef());
 		}
-		Socket.Attach(Answered);
 		if (IsStopping())
 		{
 			return;
@@ -233,6 +266,20 @@ private:
 			if (Socket.WaitToRead(LongestPollSeconds))
 			{
 				ReadEverythingWaiting();
+			}
+			if (Socket.HasTheConnectionEnded())
+			{
+				// A stream the relay closed takes the reservation with it: told at once, not after the relay's silence.
+				if (GetState() == EState::Opening)
+				{
+					Fail(FlockRelayFailureReasons::Unreachable, FString::Printf(TEXT("The relay at %s stopped before it reserved an address: %s."),
+						*Login.GetWay(), *Socket.WhyTheConnectionEnded()));
+				}
+				else
+				{
+					Lose(Socket.WhyTheConnectionEnded());
+				}
+				continue;
 			}
 			// Any step may stop the relay (a refusal read, a request given up on, a renewal lapsed); the requests send nothing
 			// after that but the release.
@@ -308,7 +355,7 @@ private:
 		{
 			FFlockRelayPeer Server;
 			// A server that cannot be looked up is left out, never failing the relay.
-			if (Each.LookUp->IsDone() && FFlockRelayPeer::TryParse(Each.LookUp->GetIpv4() + FString::Printf(TEXT(":%d"), Each.Port), Server))
+			if (Each.LookUp->IsDone() && FFlockRelayPeer::TryParse(Each.LookUp->GetAddress() + FString::Printf(TEXT(":%d"), Each.Port), Server))
 			{
 				Found.Add(Server);
 			}
@@ -328,7 +375,7 @@ private:
 			FFlockRelayPeer Reservation;
 			if (Answer == nullptr || !Answer->TryGetAddress(FFlockRelayWire::XorRelayedAddressAttribute, Reservation))
 			{
-				Fail(FlockRelayFailureReasons::Refused, FString::Printf(TEXT("The relay at %s answered with no IPv4 relay address."), *Login.ToString()));
+				Fail(FlockRelayFailureReasons::Refused, FString::Printf(TEXT("The relay at %s answered with no IPv4 relay address."), *Login.GetWay()));
 				return;
 			}
 			{
@@ -345,22 +392,22 @@ private:
 		}
 		if (Code == FFlockRelayRequests::NoAnswer)
 		{
-			Fail(FlockRelayFailureReasons::Unreachable, FString::Printf(TEXT("The relay at %s did not answer within %.1f s."), *Login.ToString(),
+			Fail(FlockRelayFailureReasons::Unreachable, FString::Printf(TEXT("The relay at %s did not answer within %.1f s."), *Login.GetWay(),
 				Timing.AnswerWaitSeconds));
 		}
 		else if (Code == 401 || Code == 441)
 		{
-			Fail(FlockRelayFailureReasons::WrongLogin, FString::Printf(TEXT("The relay at %s refused the login Flock minted (%d %s)."), *Login.ToString(),
+			Fail(FlockRelayFailureReasons::WrongLogin, FString::Printf(TEXT("The relay at %s refused the login Flock minted (%d %s)."), *Login.GetWay(),
 				Code, *Words));
 		}
 		else if (Code == 486 || Code == 508)
 		{
-			Fail(FlockRelayFailureReasons::Full, FString::Printf(TEXT("The relay at %s has no room for another address (%d %s)."), *Login.ToString(),
+			Fail(FlockRelayFailureReasons::Full, FString::Printf(TEXT("The relay at %s has no room for another address (%d %s)."), *Login.GetWay(),
 				Code, *Words));
 		}
 		else
 		{
-			Fail(FlockRelayFailureReasons::Refused, FString::Printf(TEXT("The relay at %s refused the reservation (%d %s)."), *Login.ToString(), Code,
+			Fail(FlockRelayFailureReasons::Refused, FString::Printf(TEXT("The relay at %s refused the reservation (%d %s)."), *Login.GetWay(), Code,
 				*Words));
 		}
 	}
@@ -369,7 +416,7 @@ private:
 
 	void Lose(const FString& What)
 	{
-		StopConnection(EState::Failed, FlockRelayFailureReasons::Lost, FString::Printf(TEXT("The relay connection to %s was lost: %s."), *Login.ToString(), *What));
+		StopConnection(EState::Failed, FlockRelayFailureReasons::Lost, FString::Printf(TEXT("The relay connection to %s was lost: %s."), *Login.GetWay(), *What));
 	}
 
 	/** The state, the reason, the addresses and the requests handed over. */
@@ -397,6 +444,11 @@ private:
 TSharedRef<FFlockRelayConnection> FFlockRelayConnection::Open(const FFlockRelayLogin& Login, const TArray<FFlockRelayStunLookUp>& StunServers,
 	const FFlockRelayTiming& Timing, const TSharedRef<IFlockLogger>& Logger, FOnOpened OnOpened)
 {
+	if (Login.Transport == EFlockRelayTransport::Tls)
+	{
+		// The engine's SSL module is first reached here, on the game thread; the relay's thread uses what it trusts.
+		FFlockRelayTls::ReadyOnTheGameThread();
+	}
 	const TSharedRef<FFlockRelayCore, ESPMode::ThreadSafe> Core = MakeShared<FFlockRelayCore, ESPMode::ThreadSafe>(Login, StunServers, Timing);
 	const TSharedRef<FFlockRelayConnection> Connection = MakeShareable(new FFlockRelayConnection(Core, Logger, MoveTemp(OnOpened)));
 	if (!FFlockRelayThreads::Start(Core, ThreadName, 0))
@@ -501,6 +553,21 @@ FFlockRelayPeer FFlockRelayConnection::GetServerEndpoint() const
 FString FFlockRelayConnection::GetServer() const
 {
 	return Core->Login.ToString();
+}
+
+EFlockRelayTransport FFlockRelayConnection::GetTransport() const
+{
+	return Core->Login.Transport;
+}
+
+bool FFlockRelayConnection::IsOverIpv6() const
+{
+	return Core->Login.bOverIpv6;
+}
+
+FString FFlockRelayConnection::GetWay() const
+{
+	return Core->Login.GetWay();
 }
 
 TArray<FFlockRelayPeer> FFlockRelayConnection::GetStunServers() const

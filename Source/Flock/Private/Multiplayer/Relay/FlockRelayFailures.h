@@ -29,6 +29,12 @@ struct FFlockRelayFailure
 
 	/** The caller stopped waiting, or the relay was closed while the call waited. */
 	static FFlockRelayFailure Cancelled(const FString& Message);
+
+	/**
+	 * A platform's own words (a socket error, TLS's reason) as one line, for quoting inside a cause: a line break in them would
+	 * cut the player's log line short of every way after it and of the fix (Windows' text for a reset connection ends in one).
+	 */
+	static FString OneLine(const FString& PlatformText);
 };
 
 /** A relay call's answer: the value, or why the relay could not be used. */

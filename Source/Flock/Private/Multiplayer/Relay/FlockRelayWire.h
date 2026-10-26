@@ -83,8 +83,11 @@ public:
 	/** A send indication carrying Count bytes to To, written into Into (room for SendIndicationOverhead + Count + 3) without allocating; its length. */
 	static int32 WriteSendIndication(uint8* Into, const uint8* Transaction, const FFlockRelayPeer& To, const uint8* Data, int32 Count);
 
-	/** A channel frame carrying Count bytes, written into Into without allocating; its length. */
-	static int32 WriteChannelFrame(uint8* Into, uint16 Channel, const uint8* Data, int32 Count);
+	/**
+	 * A channel frame carrying Count bytes, written into Into without allocating, padded to 4 bytes when bPadded (on a TCP or TLS
+	 * stream, as the standard asks); its length.
+	 */
+	static int32 WriteChannelFrame(uint8* Into, uint16 Channel, const uint8* Data, int32 Count, bool bPadded = false);
 
 	/** A channel frame's number and how many of its bytes are data (they start after its four-byte header); false when the packet is not a whole channel frame. */
 	static bool TryReadChannelFrame(const uint8* Packet, int32 Length, uint16& OutChannel, int32& OutDataLength);

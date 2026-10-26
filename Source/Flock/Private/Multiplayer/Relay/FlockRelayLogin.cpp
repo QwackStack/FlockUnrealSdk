@@ -61,7 +61,7 @@ TArray<FFlockRelayLogin> FFlockRelayLogin::InAnswer(const FFlockRelayLoginList& 
 		for (const FString& Url : Entry.Urls)
 		{
 			FFlockRelayLogin Login;
-			if (TryReadUdpServer(Url, Login.Host, Login.Port))
+			if (TryReadServer(Url, Login.Host, Login.Port, Login.Transport))
 			{
 				Login.Username = Entry.Username;
 				Login.Password = Entry.Credential;
@@ -72,35 +72,128 @@ TArray<FFlockRelayLogin> FFlockRelayLogin::InAnswer(const FFlockRelayLoginList& 
 	return Logins;
 }
 
-bool FFlockRelayLogin::TryReadUdpServer(const FString& Url, FString& OutHost, int32& OutPort)
+FString FFlockRelayLogin::GetWay() const
+{
+	const TCHAR* Over = Transport == EFlockRelayTransport::Tls ? TEXT("TLS") : Transport == EFlockRelayTransport::Tcp ? TEXT("TCP") : TEXT("UDP");
+	return FString::Printf(TEXT("%s over %s%s"), *ToString(), Over, bOverIpv6 ? TEXT(" on IPv6") : TEXT(""));
+}
+
+namespace
+{
+	/** The name in "name:port", or the whole text when it ends in no port. */
+	FString NameOf(const FString& Server)
+	{
+		int32 Colon = INDEX_NONE;
+		if (Server.FindLastChar(TEXT(':'), Colon) && Colon > 0 && Server.Mid(Colon + 1).IsNumeric())
+		{
+			return Server.Left(Colon);
+		}
+		return Server;
+	}
+}
+
+bool FFlockRelayLogin::SameServer(const FString& One, const FString& Other)
+{
+	return !One.IsEmpty() && !Other.IsEmpty() && NameOf(One).Equals(NameOf(Other), ESearchCase::IgnoreCase);
+}
+
+TArray<FFlockRelayLogin> FFlockRelayLogin::InTheOrderTried(const TArray<FFlockRelayLogin>& Logins)
+{
+	struct FTurn
+	{
+		EFlockRelayTransport Transport;
+		bool bOverIpv6;
+	};
+	// TCP and TLS are for a network that blocks UDP to the relay; IPv6 for one that has IPv6 alone.
+	static const FTurn TheOrder[] = {
+		{ EFlockRelayTransport::Udp, false }, { EFlockRelayTransport::Udp, true },
+		{ EFlockRelayTransport::Tcp, false }, { EFlockRelayTransport::Tls, false },
+		{ EFlockRelayTransport::Tcp, true }, { EFlockRelayTransport::Tls, true },
+	};
+	TArray<FFlockRelayLogin> Ordered;
+	Ordered.Reserve(Logins.Num() * 2);
+	for (const FTurn& Turn : TheOrder)
+	{
+		for (const FFlockRelayLogin& Login : Logins)
+		{
+			if (Login.Transport != Turn.Transport)
+			{
+				continue;
+			}
+			if (!Turn.bOverIpv6)
+			{
+				Ordered.Add(Login);
+			}
+			else if (FFlockDirectAddresses::Ipv4Value(Login.Host).IsEmpty())
+			{
+				// A server Flock names: its IPv6 address is looked up for this way; one given as an address has no other.
+				FFlockRelayLogin OverIpv6 = Login;
+				OverIpv6.bOverIpv6 = true;
+				Ordered.Add(MoveTemp(OverIpv6));
+			}
+		}
+	}
+	return Ordered;
+}
+
+bool FFlockRelayLogin::TryReadServer(const FString& Url, FString& OutHost, int32& OutPort, EFlockRelayTransport& OutTransport)
 {
 	OutHost.Reset();
 	OutPort = 0;
-	if (!Url.StartsWith(TEXT("turn:"), ESearchCase::IgnoreCase))
+	OutTransport = EFlockRelayTransport::Udp;
+	bool bOverTls = false;
+	FString Rest;
+	if (Url.StartsWith(TEXT("turns:"), ESearchCase::IgnoreCase))
+	{
+		bOverTls = true;
+		Rest = Url.Mid(6);
+	}
+	else if (Url.StartsWith(TEXT("turn:"), ESearchCase::IgnoreCase))
+	{
+		Rest = Url.Mid(5);
+	}
+	else
 	{
 		return false;
 	}
-	FString Rest = Url.Mid(5);
+	FString Asked;
+	bool bNamesTransport = false;
 	int32 Query = INDEX_NONE;
 	if (Rest.FindChar(TEXT('?'), Query))
 	{
 		TArray<FString> Parts;
 		Rest.Mid(Query + 1).ParseIntoArray(Parts, TEXT("&"));
-		FString Transport;
-		bool bNamesTransport = false;
 		for (const FString& Part : Parts)
 		{
 			if (Part.StartsWith(TEXT("transport="), ESearchCase::IgnoreCase))
 			{
 				bNamesTransport = true;
-				Transport = Part.Mid(10);
+				Asked = Part.Mid(10);
 			}
 		}
-		if (bNamesTransport && !Transport.Equals(TEXT("udp"), ESearchCase::IgnoreCase))
+		Rest.LeftInline(Query);
+	}
+	EFlockRelayTransport Transport = EFlockRelayTransport::Udp;
+	if (bOverTls)
+	{
+		// TLS rides on TCP; "turns:" over UDP is DTLS, which this client does not speak.
+		if (bNamesTransport && !Asked.Equals(TEXT("tcp"), ESearchCase::IgnoreCase))
 		{
 			return false;
 		}
-		Rest.LeftInline(Query);
+		Transport = EFlockRelayTransport::Tls;
+	}
+	else if (!bNamesTransport || Asked.Equals(TEXT("udp"), ESearchCase::IgnoreCase))
+	{
+		Transport = EFlockRelayTransport::Udp;
+	}
+	else if (Asked.Equals(TEXT("tcp"), ESearchCase::IgnoreCase))
+	{
+		Transport = EFlockRelayTransport::Tcp;
+	}
+	else
+	{
+		return false;
 	}
 	if (Rest.IsEmpty() || Rest.StartsWith(TEXT("[")))
 	{
@@ -110,7 +203,8 @@ bool FFlockRelayLogin::TryReadUdpServer(const FString& Url, FString& OutHost, in
 	if (!Rest.FindLastChar(TEXT(':'), Colon))
 	{
 		OutHost = Rest;
-		OutPort = DefaultPort;
+		OutPort = bOverTls ? DefaultTlsPort : DefaultPort;
+		OutTransport = Transport;
 		return true;
 	}
 	const FString PortText = Rest.Mid(Colon + 1);
@@ -132,6 +226,7 @@ bool FFlockRelayLogin::TryReadUdpServer(const FString& Url, FString& OutHost, in
 	}
 	OutHost = Rest.Left(Colon);
 	OutPort = Port;
+	OutTransport = Transport;
 	return true;
 }
 

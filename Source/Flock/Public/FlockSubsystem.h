@@ -416,6 +416,8 @@ private:
 	FString InitializationError;
 	FFlockInitConfig ActiveConfig;
 	TSharedPtr<IFlockLogger> Logger;
+	/** The game handed in its own logger (SetLogger); otherwise each initialization makes the default one from its config. */
+	bool bLoggerSetByGame = false;
 
 	/** Backing store for GetEvents(); created on first use so events can be bound before init. */
 	UPROPERTY(Transient)

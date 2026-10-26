@@ -5,6 +5,7 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Dom/JsonObject.h"
+#include "Multiplayer/Relay/FlockRelayFailures.h"
 #include "Multiplayer/Relay/FlockRelayLogin.h"
 #include "Multiplayer/Relay/FlockRelayPeer.h"
 #include "Multiplayer/Relay/FlockRelayWire.h"
@@ -268,59 +269,94 @@ bool FFlockRelayWireClassTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-FLOCK_RELAY_WIRE_TEST(FFlockRelayWireUdpServersTest, "RelayServerUdpAddressesAreRead")
-bool FFlockRelayWireUdpServersTest::RunTest(const FString& Parameters)
+namespace FlockRelayWireTestHelpers
 {
-	struct FCase { const TCHAR* Url; const TCHAR* Host; int32 Port; };
+	FFlockRelayLogin Way(const TCHAR* Host, int32 Port, EFlockRelayTransport Transport = EFlockRelayTransport::Udp)
+	{
+		FFlockRelayLogin Login;
+		Login.Host = Host;
+		Login.Port = Port;
+		Login.Username = TEXT("u");
+		Login.Password = TEXT("p");
+		Login.Transport = Transport;
+		return Login;
+	}
+
+	FString WaysOf(const TArray<FFlockRelayLogin>& Logins)
+	{
+		TArray<FString> Ways;
+		for (const FFlockRelayLogin& Login : Logins)
+		{
+			Ways.Add(Login.GetWay());
+		}
+		return FString::Join(Ways, TEXT(" | "));
+	}
+}
+
+FLOCK_RELAY_WIRE_TEST(FFlockRelayWireServersTest, "RelayServerUdpTcpAndTlsAddressesAreRead")
+bool FFlockRelayWireServersTest::RunTest(const FString& Parameters)
+{
+	struct FCase { const TCHAR* Url; const TCHAR* Host; int32 Port; EFlockRelayTransport Transport; };
 	const FCase Cases[] = {
-		{ TEXT("turn:relay.test:3479?transport=udp"), TEXT("relay.test"), 3479 },
-		{ TEXT("turn:relay.test:3479"), TEXT("relay.test"), 3479 },
-		{ TEXT("turn:relay.test"), TEXT("relay.test"), 3478 },
-		{ TEXT("TURN:Relay.Test:5000?Transport=UDP"), TEXT("Relay.Test"), 5000 },
-		{ TEXT("turn:203.0.113.9:3479?transport=udp"), TEXT("203.0.113.9"), 3479 },
+		{ TEXT("turn:relay.test:3479?transport=udp"), TEXT("relay.test"), 3479, EFlockRelayTransport::Udp },
+		{ TEXT("turn:relay.test:3479"), TEXT("relay.test"), 3479, EFlockRelayTransport::Udp },
+		{ TEXT("turn:relay.test"), TEXT("relay.test"), 3478, EFlockRelayTransport::Udp },
+		{ TEXT("TURN:Relay.Test:5000?Transport=UDP"), TEXT("Relay.Test"), 5000, EFlockRelayTransport::Udp },
+		{ TEXT("turn:203.0.113.9:3479?transport=udp"), TEXT("203.0.113.9"), 3479, EFlockRelayTransport::Udp },
+		{ TEXT("turn:relay.test:3479?transport=tcp"), TEXT("relay.test"), 3479, EFlockRelayTransport::Tcp },
+		{ TEXT("turn:relay.test:80?TRANSPORT=TCP"), TEXT("relay.test"), 80, EFlockRelayTransport::Tcp },
+		{ TEXT("turn:relay.test?transport=tcp"), TEXT("relay.test"), 3478, EFlockRelayTransport::Tcp },
+		{ TEXT("turns:relay.test:5349?transport=tcp"), TEXT("relay.test"), 5349, EFlockRelayTransport::Tls },
+		{ TEXT("turns:relay.test:443"), TEXT("relay.test"), 443, EFlockRelayTransport::Tls },
+		{ TEXT("TURNS:relay.test"), TEXT("relay.test"), 5349, EFlockRelayTransport::Tls },
 	};
 	for (const FCase& Case : Cases)
 	{
 		FString Host;
 		int32 Port = 0;
-		TestTrue(FString::Printf(TEXT("%s is read"), Case.Url), FFlockRelayLogin::TryReadUdpServer(Case.Url, Host, Port));
+		EFlockRelayTransport Transport = EFlockRelayTransport::Udp;
+		TestTrue(FString::Printf(TEXT("%s is read"), Case.Url), FFlockRelayLogin::TryReadServer(Case.Url, Host, Port, Transport));
 		TestEqualSensitive(FString::Printf(TEXT("%s: its host as written"), Case.Url), Host, FString(Case.Host));
 		TestEqual(FString::Printf(TEXT("%s: its port"), Case.Url), Port, Case.Port);
+		TestEqual(FString::Printf(TEXT("%s: its transport"), Case.Url), static_cast<int32>(Transport), static_cast<int32>(Case.Transport));
 	}
 	return true;
 }
 
-FLOCK_RELAY_WIRE_TEST(FFlockRelayWireNotUdpServersTest, "RelayServerAnythingElseIsLeftOut")
-bool FFlockRelayWireNotUdpServersTest::RunTest(const FString& Parameters)
+FLOCK_RELAY_WIRE_TEST(FFlockRelayWireNotServersTest, "RelayServerAnythingElseIsLeftOut")
+bool FFlockRelayWireNotServersTest::RunTest(const FString& Parameters)
 {
-	const TCHAR* Cases[] = { TEXT("turn:relay.test:3479?transport=tcp"), TEXT("turns:relay.test:5349?transport=tcp"), TEXT("turn:[::1]:3478"),
-		TEXT("turn::3478"), TEXT("turn:relay.test:70000"), TEXT("turn:relay.test:port"), TEXT("stun:stun.l.google.com:19302"), TEXT("") };
+	const TCHAR* Cases[] = { TEXT("turns:relay.test:5349?transport=udp"), TEXT("turn:relay.test:3479?transport=sctp"), TEXT("turn:[::1]:3478"),
+		TEXT("turns:[::1]:5349"), TEXT("turn::3478"), TEXT("turn:relay.test:70000"), TEXT("turn:relay.test:port"), TEXT("stun:stun.l.google.com:19302"),
+		TEXT("stuns:stun.test:5349"), TEXT("") };
 	for (const TCHAR* Url : Cases)
 	{
 		FString Host;
 		int32 Port = 0;
-		TestFalse(FString::Printf(TEXT("\"%s\" is left out"), Url), FFlockRelayLogin::TryReadUdpServer(Url, Host, Port));
+		EFlockRelayTransport Transport = EFlockRelayTransport::Udp;
+		TestFalse(FString::Printf(TEXT("\"%s\" is left out"), Url), FFlockRelayLogin::TryReadServer(Url, Host, Port, Transport));
 	}
 	return true;
 }
 
-FLOCK_RELAY_WIRE_TEST(FFlockRelayWireLoginsTest, "LoginsAreFlocksUdpRelaysInFlocksOrder")
+FLOCK_RELAY_WIRE_TEST(FFlockRelayWireLoginsTest, "LoginsAreEveryWayInFlockListsInFlocksOrder")
 bool FFlockRelayWireLoginsTest::RunTest(const FString& Parameters)
 {
 	FFlockRelayLoginList Answer;
-	Answer.Entries.Add({ { TEXT("turn:main.test:3479?transport=udp"), TEXT("turn:main.test:3479?transport=tcp") }, TEXT("u1"), TEXT("p1") });
+	Answer.Entries.Add({ { TEXT("turns:main.test:5349?transport=tcp"), TEXT("turn:main.test:3479?transport=udp"), TEXT("turn:main.test:3479?transport=tcp") },
+		TEXT("u1"), TEXT("p1") });
 	Answer.Entries.Add({ { TEXT("turn:no-login.test:3479") }, FString(), FString() });
-	Answer.Entries.Add({ { TEXT("turn:next.test:3480") }, TEXT("u2"), TEXT("p2") });
+	Answer.Entries.Add({ { TEXT("turn:next.test:3480"), TEXT("turns:next.test:5349?transport=udp") }, TEXT("u2"), TEXT("p2") });
 	Answer.Entries.Add({ { TEXT("stun:stun.test:19302") }, FString(), FString() });
 	const TArray<FFlockRelayLogin> Logins = FFlockRelayLogin::InAnswer(Answer);
-	if (!TestEqual(TEXT("two UDP relays with a login"), Logins.Num(), 2))
+	TestEqualSensitive(TEXT("every way Flock lists that this client speaks, in Flock's order (DTLS left out)"), FlockRelayWireTestHelpers::WaysOf(Logins),
+		FString(TEXT("main.test:5349 over TLS | main.test:3479 over UDP | main.test:3479 over TCP | next.test:3480 over UDP")));
+	if (!TestEqual(TEXT("four ways"), Logins.Num(), 4))
 	{
 		return false;
 	}
-	TestEqualSensitive(TEXT("Flock's main relay first"), Logins[0].ToString(), FString(TEXT("main.test:3479")));
-	TestEqualSensitive(TEXT("then the next"), Logins[1].ToString(), FString(TEXT("next.test:3480")));
 	TestEqualSensitive(TEXT("the first's login"), Logins[0].Username, FString(TEXT("u1")));
-	TestEqualSensitive(TEXT("the second's password"), Logins[1].Password, FString(TEXT("p2")));
+	TestEqualSensitive(TEXT("the last's password"), Logins[3].Password, FString(TEXT("p2")));
 	TestEqual(TEXT("no servers listed"), FFlockRelayLogin::InAnswer(FFlockRelayLoginList()).Num(), 0);
 	const TArray<FFlockRelayStunServer> Stun = FFlockRelayStunServer::InAnswer(Answer);
 	TestTrue(TEXT("the STUN server Flock listed"), Stun.Num() == 1 && Stun[0].Host.Equals(TEXT("stun.test"), ESearchCase::CaseSensitive) && Stun[0].Port == 19302);
@@ -345,7 +381,8 @@ bool FFlockRelayWireLoginsAnswerTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("its ttl"), Read.TtlSeconds, 600);
 	TestFalse(TEXT("not paused"), Read.bRelayPaused);
 	const TArray<FFlockRelayLogin> Logins = FFlockRelayLogin::InAnswer(Read);
-	TestTrue(TEXT("one UDP relay, its TCP form left out"), Logins.Num() == 1 && Logins[0].ToString().Equals(TEXT("localhost:3479"), ESearchCase::CaseSensitive));
+	TestEqualSensitive(TEXT("both ways in to the relay, UDP and TCP"), FlockRelayWireTestHelpers::WaysOf(Logins),
+		FString(TEXT("localhost:3479 over UDP | localhost:3479 over TCP")));
 	TestTrue(TEXT("the STUN entry's null login is no login"), Read.Entries.Num() == 2 && Read.Entries[1].Username.IsEmpty());
 
 	TSharedPtr<FJsonObject> NoList;
@@ -354,6 +391,101 @@ bool FFlockRelayWireLoginsAnswerTest::RunTest(const FString& Parameters)
 	TSharedPtr<FJsonObject> OtherSpelling;
 	FJsonSerializer::Deserialize(TJsonReaderFactory<TCHAR>::Create(TEXT("{\"ICE_SERVERS\": []}")), OtherSpelling);
 	TestFalse(TEXT("keys are read as the backend spells them"), FFlockRelayLoginList::FromWireObject(OtherSpelling.ToSharedRef(), Read, Error));
+	return true;
+}
+
+FLOCK_RELAY_WIRE_TEST(FFlockRelayWireWayOrderTest, "WaysAreTriedUdpOnEitherFamilyThenTcpAndTlsOverIpv4ThenOverIpv6EachInFlocksOrder")
+bool FFlockRelayWireWayOrderTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockRelayWireTestHelpers;
+	const TArray<FFlockRelayLogin> Listed = { Way(TEXT("main.test"), 5349, EFlockRelayTransport::Tls), Way(TEXT("main.test"), 3479, EFlockRelayTransport::Tcp),
+		Way(TEXT("main.test"), 3479), Way(TEXT("next.test"), 443, EFlockRelayTransport::Tls), Way(TEXT("next.test"), 3480) };
+	const TArray<FFlockRelayLogin> Tried = FFlockRelayLogin::InTheOrderTried(Listed);
+	TestEqualSensitive(TEXT("UDP on either family first, then the streams over IPv4, then over IPv6"), WaysOf(Tried),
+		FString(TEXT("main.test:3479 over UDP | next.test:3480 over UDP | main.test:3479 over UDP on IPv6 | next.test:3480 over UDP on IPv6 | ")
+			TEXT("main.test:3479 over TCP | main.test:5349 over TLS | next.test:443 over TLS | ")
+			TEXT("main.test:3479 over TCP on IPv6 | main.test:5349 over TLS on IPv6 | next.test:443 over TLS on IPv6")));
+	const TArray<FFlockRelayLogin> OnIpv6 = Tried.FilterByPredicate([](const FFlockRelayLogin& Login) { return Login.GetWay().EndsWith(TEXT("on IPv6")); });
+	TestEqual(TEXT("five ways over IPv6"), OnIpv6.Num(), 5);
+	TestTrue(TEXT("the same logins, at the server's IPv6 address"), OnIpv6.Num() > 0 && !OnIpv6.ContainsByPredicate([](const FFlockRelayLogin& Login)
+	{
+		return !Login.bOverIpv6 || !Login.Username.Equals(TEXT("u"), ESearchCase::CaseSensitive) || !Login.Password.Equals(TEXT("p"), ESearchCase::CaseSensitive);
+	}));
+	return true;
+}
+
+FLOCK_RELAY_WIRE_TEST(FFlockRelayWireAlternatePortsTest, "WaysCloudflaresAlternatePortsAreTriedRightAfterTheirKind")
+bool FFlockRelayWireAlternatePortsTest::RunTest(const FString& Parameters)
+{
+	// Flock's answer once it lists Cloudflare's alternate listeners: its own URLs, then UDP 443, TCP 80 and TLS 443 (backend, 2026-10-25).
+	FFlockRelayLoginList Answer;
+	Answer.Entries.Add({ { TEXT("turn:turn.cloudflare.com:3478?transport=udp"), TEXT("turn:turn.cloudflare.com:3478?transport=tcp"),
+		TEXT("turns:turn.cloudflare.com:5349?transport=tcp"), TEXT("turn:turn.cloudflare.com:443?transport=udp"), TEXT("turn:turn.cloudflare.com:80?transport=tcp"),
+		TEXT("turns:turn.cloudflare.com:443?transport=tcp") }, TEXT("u"), TEXT("p") });
+	TestEqualSensitive(TEXT("each port right after its kind"), FlockRelayWireTestHelpers::WaysOf(FFlockRelayLogin::InTheOrderTried(FFlockRelayLogin::InAnswer(Answer))),
+		FString(TEXT("turn.cloudflare.com:3478 over UDP | turn.cloudflare.com:443 over UDP | turn.cloudflare.com:3478 over UDP on IPv6 | ")
+			TEXT("turn.cloudflare.com:443 over UDP on IPv6 | turn.cloudflare.com:3478 over TCP | turn.cloudflare.com:80 over TCP | ")
+			TEXT("turn.cloudflare.com:5349 over TLS | turn.cloudflare.com:443 over TLS | turn.cloudflare.com:3478 over TCP on IPv6 | ")
+			TEXT("turn.cloudflare.com:80 over TCP on IPv6 | turn.cloudflare.com:5349 over TLS on IPv6 | turn.cloudflare.com:443 over TLS on IPv6")));
+	return true;
+}
+
+FLOCK_RELAY_WIRE_TEST(FFlockRelayWireNoIpv6TwinTest, "WaysToAServerGivenAsAnIpv4AddressHaveNoIpv6Twin")
+bool FFlockRelayWireNoIpv6TwinTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockRelayWireTestHelpers;
+	TestEqualSensitive(TEXT("only the named server has a way over IPv6"), WaysOf(FFlockRelayLogin::InTheOrderTried({ Way(TEXT("203.0.113.9"), 3478), Way(TEXT("relay.test"), 3478) })),
+		FString(TEXT("203.0.113.9:3478 over UDP | relay.test:3478 over UDP | relay.test:3478 over UDP on IPv6")));
+	return true;
+}
+
+FLOCK_RELAY_WIRE_TEST(FFlockRelayWireSameServerTest, "SameServerIsTheSameNameOverAnyPort")
+bool FFlockRelayWireSameServerTest::RunTest(const FString& Parameters)
+{
+	struct FCase { const TCHAR* One; const TCHAR* Other; bool bSame; };
+	const FCase Cases[] = {
+		{ TEXT("turn.example.com:3478"), TEXT("turn.example.com:5349"), true },
+		{ TEXT("Turn.Example.com:3478"), TEXT("turn.example.com:443"), true },
+		{ TEXT("turn.example.com:3478"), TEXT("turn.example.com"), true },
+		{ TEXT("turn.example.com:3478"), TEXT("other.example.com:3478"), false },
+		{ TEXT("turn.example.com:3478"), TEXT("turn.example.com.evil.test:3478"), false },
+		{ TEXT("turn.example.com:3478"), TEXT(""), false },
+	};
+	for (const FCase& Case : Cases)
+	{
+		TestEqual(FString::Printf(TEXT("%s and %s"), Case.One, Case.Other), FFlockRelayLogin::SameServer(Case.One, Case.Other), Case.bSame);
+		FString Name;
+		FString(Case.One).Split(TEXT(":"), &Name, nullptr);
+		TestEqual(FString::Printf(TEXT("a way to %s is on %s"), *Name, Case.Other), FlockRelayWireTestHelpers::Way(*Name, 3478).IsOn(Case.Other), Case.bSame);
+	}
+	return true;
+}
+
+FLOCK_RELAY_WIRE_TEST(FFlockRelayWirePaddedChannelFrameTest, "ChannelFrameOnAStreamIsPaddedToFourBytesWithZeros")
+bool FFlockRelayWirePaddedChannelFrameTest::RunTest(const FString& Parameters)
+{
+	const uint8 Data[] = { 1, 2, 3, 4, 5 };
+	uint8 Buffer[16];
+	FMemory::Memset(Buffer, 0xEE, sizeof(Buffer));
+	const int32 Length = FFlockRelayWire::WriteChannelFrame(Buffer, 0x4001, Data, 5, /*bPadded*/ true);
+	TestEqual(TEXT("four bytes before the data, five of data, three of padding"), Length, 12);
+	TestTrue(TEXT("the padding is zeros"), Buffer[9] == 0 && Buffer[10] == 0 && Buffer[11] == 0);
+	uint16 Channel = 0;
+	int32 DataLength = 0;
+	TestTrue(TEXT("read back"), FFlockRelayWire::TryReadChannelFrame(Buffer, Length, Channel, DataLength));
+	TestEqual(TEXT("the frame still says how much of it is data"), DataLength, 5);
+	TestEqual(TEXT("data already a multiple of 4 gets no padding"), FFlockRelayWire::WriteChannelFrame(Buffer, 0x4001, Data, 4, /*bPadded*/ true), 8);
+	TestEqual(TEXT("over UDP no padding"), FFlockRelayWire::WriteChannelFrame(Buffer, 0x4001, Data, 5), 9);
+	return true;
+}
+
+FLOCK_RELAY_WIRE_TEST(FFlockRelayWireOneLineTest, "PlatformTextQuotedInARelayCauseIsOneLine")
+bool FFlockRelayWireOneLineTest::RunTest(const FString& Parameters)
+{
+	// As Windows words a reset connection: a line break at the end, here with a tab inside too.
+	TestEqualSensitive(TEXT("the line breaks at the end gone"), FFlockRelayFailure::OneLine(TEXT("An existing connection was forcibly closed by the remote host.\r\n")),
+		FString(TEXT("An existing connection was forcibly closed by the remote host.")));
+	TestEqualSensitive(TEXT("a line break inside is a space"), FFlockRelayFailure::OneLine(TEXT("two lines\r\none")), FString(TEXT("two lines  one")));
 	return true;
 }
 

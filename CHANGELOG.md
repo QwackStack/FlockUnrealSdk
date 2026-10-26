@@ -5,6 +5,51 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.38.3] - 2026-10-25
+
+Flock's relay reached over UDP, TCP or TLS, and over IPv6.
+
+### Fixed
+
+- **A player whose network blocks UDP to Flock's relay now reaches it another way.** Until now the relay was reached over UDP
+  and IPv4 alone, so on a network that drops UDP to it (some phone hotspots, offices, schools and hotels) hosting or joining
+  through the relay failed with `relay_unreachable`. The SDK now tries UDP over IPv4, then UDP over IPv6, then TCP and TLS over
+  IPv4, then over IPv6, each way Flock lists (for Flock's relay today: UDP and TCP on 3478, TLS on 5349). Each next way starts
+  once the one before it has failed or had 2 seconds (half a second for another port of the same kind), so a blocked way costs
+  about that, and a network where UDP over IPv4 works tries nothing else. The first way to open is kept and every other is
+  closed, giving back any relay address it reserved. Over TCP or TLS a lost packet holds back the ones after it until it is sent
+  again, so play may stutter on a poor connection; with Enable Debug Logs on, the log says once, at Info, which way the relay is
+  reached by and why. Sends
+  over TCP or TLS never wait on the network: a sending thread of the relay's own writes them, and a full queue drops a whole
+  packet, as UDP does.
+- **TLS is checked against what the engine trusts**: the platform's own certificates, as the engine's HTTP module uses, and any
+  keys the game pins; the relay's certificate must name it. A network that inspects encrypted traffic is refused, and the reason
+  says the certificate is not trusted.
+- **A player on a network with IPv6 alone reaches the relay at its IPv6 address.** The relay still gives an IPv4 relay address,
+  so the player plays with everyone else, and a direct path still offers IPv4 addresses alone. The relay server's IPv6 address
+  is asked of the platform's own resolver: the engine's lookup drops every IPv6 answer while `net.DisableIPv6` is 1, its
+  default, and the SDK leaves that setting and the engine's own networking as they are. On Android, whose engine sockets carry
+  no IPv6 address, an IPv6 way is refused at once rather than waited on.
+- **A joining player reaches the host's relay server by any way in to it**, not only by the exact address and port the host
+  used: a host on UDP and a player on TLS play together. A relay server is told apart by its name.
+- **When no way in opens, `relay_unreachable` names every way tried and why each failed** on one line (no answer within 5 s, the
+  connection refused, a certificate this device does not trust), then one fix, which now names UDP, TCP and TLS. When one way
+  reached the relay and was refused (a wrong login, no room), that reason is told rather than another way's silence.
+- **A relay connection over TCP or TLS that the relay closes is told lost at once** (On Relay Lost, `relay_lost`), not after the
+  relay's 45 s of silence.
+- **With Enable Debug Logs on, the log says each way in to the relay as it is tried, and how and when each ended**, so a slow
+  opening on a player's network can be read off the player's log.
+- **`InitializeWithConfig` honors its config's Enable Debug Logs again when something logged before it.** With Auto-Initialize On
+  Load off, the SDK says so at start, which made its default logger from the settings' Enable Debug Logs; the config the game then
+  initialized with was ignored for it, so turning debug logs on in that config showed nothing (and turning them off there left
+  the settings' breadcrumbs on). A logger the game hands in with `SetLogger` is still kept as it is. A game that builds its
+  config in code and wants the settings' flag sets `bEnableDebugLogs` from them, or starts from `FFlockInitConfig::FromSettings`.
+
+### Changed
+
+- The plugin's `Flock` module links the engine's `SSL` module and its OpenSSL on Windows, Android, Mac, iOS and Linux, for TLS.
+  A packaged game links nothing new there: the engine's HTTP module already links both.
+
 ## [1.38.2] - 2026-10-21
 
 Codegen deletes only what it made.

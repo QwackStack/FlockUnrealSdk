@@ -4,7 +4,8 @@
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "Multiplayer/FlockDirectAddresses.h"
-#include "Multiplayer/FlockUdpSockets.h"
+#include "Multiplayer/FlockSockets.h"
+#include "Multiplayer/Relay/FlockRelayStream.h"
 #include "Multiplayer/Relay/FlockRelayWire.h"
 #include "Sockets.h"
 
@@ -30,7 +31,7 @@ FFlockRelaySocket::~FFlockRelaySocket()
 	Close();
 }
 
-FSocket* FFlockRelaySocket::FindOneTheServerAnswers(const FString& ServerIpv4, int32 Port, int32 SocketsAtOnce, int32 Rounds, double RoundWaitSeconds,
+FSocket* FFlockRelaySocket::FindOneTheServerAnswers(const FString& ServerAddress, int32 Port, int32 SocketsAtOnce, int32 Rounds, double RoundWaitSeconds,
 	TFunctionRef<bool()> ShouldStop)
 {
 	uint8 Received[2048];
@@ -41,7 +42,7 @@ FSocket* FFlockRelaySocket::FindOneTheServerAnswers(const FString& ServerIpv4, i
 		for (int32 Index = 0; Index < SocketsAtOnce; ++Index)
 		{
 			// A socket that cannot be made or aimed is left out; with none, the caller's own socket says why.
-			if (FSocket* Socket = FFlockUdpSockets::OpenConnectedTo(ServerIpv4, Port, TEXT("Flock relay search")))
+			if (FSocket* Socket = FFlockSockets::OpenConnectedTo(ServerAddress, Port, TEXT("Flock relay search")))
 			{
 				Trying.Add(Socket);
 				Transactions.Add(FFlockRelayWire::NewTransaction());
@@ -80,7 +81,7 @@ FSocket* FFlockRelaySocket::FindOneTheServerAnswers(const FString& ServerIpv4, i
 		{
 			if (Socket != Kept)
 			{
-				FFlockUdpSockets::Close(Socket);
+				FFlockSockets::Close(Socket);
 			}
 		}
 		if (Kept != nullptr || ShouldStop())
@@ -96,17 +97,46 @@ void FFlockRelaySocket::Attach(FSocket* Connected)
 	FScopeLock Locked(&Lock);
 	if (bClosed || Connected == nullptr)
 	{
-		FFlockUdpSockets::Close(Connected);
+		FFlockSockets::Close(Connected);
 		return;
 	}
 	Socket = Connected;
 	Protocol = Socket->GetProtocol();
-	LocalPort = FFlockUdpSockets::LocalPortOf(*Socket);
+	LocalPort = FFlockSockets::LocalPortOf(*Socket);
+}
+
+void FFlockRelaySocket::AttachStream(const TSharedRef<FFlockRelayStream, ESPMode::ThreadSafe>& Opened)
+{
+	FScopeLock Locked(&Lock);
+	if (bClosed)
+	{
+		Opened->Close();
+		return;
+	}
+	Stream = Opened;
+	Protocol = Opened->GetProtocol();
+	LocalPort = Opened->GetLocalPort();
+}
+
+bool FFlockRelaySocket::HasTheConnectionEnded() const
+{
+	FScopeLock Locked(&Lock);
+	return Stream.IsValid() && Stream->HasTheConnectionEnded();
+}
+
+FString FFlockRelaySocket::WhyTheConnectionEnded() const
+{
+	FScopeLock Locked(&Lock);
+	return Stream.IsValid() ? Stream->WhyTheConnectionEnded() : FString();
 }
 
 bool FFlockRelaySocket::TrySend(const uint8* Bytes, int32 Count)
 {
 	FScopeLock Locked(&Lock);
+	if (Stream.IsValid())
+	{
+		return Stream->TrySend(Bytes, Count);
+	}
 	if (Socket == nullptr)
 	{
 		return false;
@@ -122,9 +152,15 @@ bool FFlockRelaySocket::TrySend(const uint8* Bytes, int32 Count)
 bool FFlockRelaySocket::WaitToRead(double Seconds)
 {
 	FSocket* Reading = nullptr;
+	TSharedPtr<FFlockRelayStream, ESPMode::ThreadSafe> ReadingStream;
 	{
 		FScopeLock Locked(&Lock);
 		Reading = Socket;
+		ReadingStream = Stream;
+	}
+	if (ReadingStream.IsValid())
+	{
+		return ReadingStream->WaitToRead(Seconds);
 	}
 	if (Reading == nullptr)
 	{
@@ -139,9 +175,15 @@ bool FFlockRelaySocket::Receive(uint8* Into, int32 Size, int32& OutRead)
 {
 	OutRead = 0;
 	FSocket* Reading = nullptr;
+	TSharedPtr<FFlockRelayStream, ESPMode::ThreadSafe> ReadingStream;
 	{
 		FScopeLock Locked(&Lock);
 		Reading = Socket;
+		ReadingStream = Stream;
+	}
+	if (ReadingStream.IsValid())
+	{
+		return ReadingStream->Receive(Into, Size, OutRead);
 	}
 	return Reading != nullptr && Reading->Recv(Into, Size, OutRead) && OutRead > 0;
 }
@@ -156,6 +198,12 @@ void FFlockRelaySocket::Close()
 {
 	FScopeLock Locked(&Lock);
 	bClosed = true;
-	FFlockUdpSockets::Close(Socket);
+	FFlockSockets::Close(Socket);
 	Socket = nullptr;
+	if (Stream.IsValid())
+	{
+		// Its socket is given back once its sending thread let go of it too.
+		Stream->Close();
+		Stream.Reset();
+	}
 }

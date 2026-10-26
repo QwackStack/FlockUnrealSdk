@@ -49,7 +49,7 @@ bool FFlockRelayPackets::Send(const FFlockRelayPeer& To, const uint8* Data, int3
 	int32 Length = 0;
 	if (Channel != 0)
 	{
-		Length = FFlockRelayWire::WriteChannelFrame(SendBuffer, Channel, Data, Count);
+		Length = FFlockRelayWire::WriteChannelFrame(SendBuffer, Channel, Data, Count, Socket.PadsChannelFrames());
 	}
 	else
 	{
