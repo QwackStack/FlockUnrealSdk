@@ -145,11 +145,15 @@ namespace ProtokitePlaytestSubsystemTesting
 		}
 	};
 
-	/** An access token for PlayerId that stays valid for an hour. Only its player and expiry are read. */
-	inline FString MakeAccessToken(const FString& PlayerId)
+	/**
+	 * An access token for PlayerId that runs out SecondsLeft from now (already expired when negative). Only its player and
+	 * expiry are read; Marker, when given, tells two tokens for the same player apart.
+	 */
+	inline FString MakeAccessToken(const FString& PlayerId, int64 SecondsLeft = 3600, const FString& Marker = FString())
 	{
-		const FString Payload = FString::Printf(TEXT("{\"sub\":\"%s\",\"exp\":%lld}"), *PlayerId,
-			FDateTime::UtcNow().ToUnixTimestamp() + 3600);
+		const FString Payload = FString::Printf(TEXT("{\"sub\":\"%s\",\"exp\":%lld%s}"), *PlayerId,
+			FDateTime::UtcNow().ToUnixTimestamp() + SecondsLeft,
+			Marker.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(",\"jti\":\"%s\""), *Marker));
 		FString Encoded = FBase64::Encode(Payload);
 		Encoded.ReplaceInline(TEXT("+"), TEXT("-"));
 		Encoded.ReplaceInline(TEXT("/"), TEXT("_"));
@@ -328,9 +332,9 @@ namespace ProtokitePlaytestSubsystemTesting
 		 * Brings a signed-in player back when the Flock SDK initializes, and answers the Flock SDK's requests on the same
 		 * fake transport, so the analytics events it is handed can be delivered and read. Call before StartFlock.
 		 */
-		void SignInToFlockOnStart(const FString& PlayerId = ProtokitePlaytestFixtures::FlockPlayerId)
+		void SignInToFlockOnStart(const FString& PlayerId = ProtokitePlaytestFixtures::FlockPlayerId, int64 SecondsLeft = 3600)
 		{
-			TokenStore->Stored.AccessToken = MakeAccessToken(PlayerId);
+			TokenStore->Stored.AccessToken = MakeAccessToken(PlayerId, SecondsLeft);
 			TokenStore->Stored.RefreshToken = TEXT("refresh-token");
 			TokenStore->Stored.AuthMethod = EFlockAuthMethod::Device;
 			TokenStore->bHasTokens = true;
@@ -394,7 +398,9 @@ namespace ProtokitePlaytestSubsystemTesting
 			FString Message;
 		};
 
-		FPlaytestLogCapture()
+		/** Every category and verbosity when bEveryCategory, otherwise the playtest plugin's lines only. */
+		explicit FPlaytestLogCapture(bool bEveryCategory = false)
+			: bCaptureEveryCategory(bEveryCategory)
 		{
 			GLog->AddOutputDevice(this);
 		}
@@ -406,7 +412,7 @@ namespace ProtokitePlaytestSubsystemTesting
 
 		virtual void Serialize(const TCHAR* Message, ELogVerbosity::Type Verbosity, const FName& Category) override
 		{
-			if (Category == PlaytestCategory)
+			if (bCaptureEveryCategory || Category == PlaytestCategory)
 			{
 				FScopeLock Lock(&LinesLock);
 				Lines.Add({ static_cast<ELogVerbosity::Type>(Verbosity & ELogVerbosity::VerbosityMask), Message });
@@ -425,6 +431,14 @@ namespace ProtokitePlaytestSubsystemTesting
 			return Lines.FilterByPredicate([](const FLine& Line) { return Line.Verbosity <= ELogVerbosity::Log; });
 		}
 
+		/** Whether any line captured, at any verbosity, contains Needle in this exact spelling. */
+		bool AnyLineContains(const FString& Needle)
+		{
+			GLog->Flush();
+			FScopeLock Lock(&LinesLock);
+			return Lines.ContainsByPredicate([&Needle](const FLine& Line) { return Line.Message.Contains(Needle, ESearchCase::CaseSensitive); });
+		}
+
 		/** The lines logged at Log or louder that contain Needle, in order. */
 		TArray<FLine> LinesContaining(const FString& Needle)
 		{
@@ -433,6 +447,7 @@ namespace ProtokitePlaytestSubsystemTesting
 
 	private:
 		const FName PlaytestCategory = TEXT("LogProtokitePlaytest");
+		bool bCaptureEveryCategory = false;
 		FCriticalSection LinesLock;
 		TArray<FLine> Lines;
 	};

@@ -520,4 +520,224 @@ bool FFlockSignInOptedInCallsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * The server keeps one refresh token per player and replaces it on every renewal, so a renewal answered after its sign-in
+ * ended holds the only pair the server still takes. A shut-down leaves the saved sign-in as it was: the new pair is saved
+ * there for the next initialization. Nothing else changes, and a sign-out or another player's sign-in is left alone.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSignInRefreshAfterShutdownTest, "Flock.Auth.SignIn.RefreshAnsweredAfterShutdownSavesItsNewPairOnly",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSignInRefreshAfterShutdownTest::RunTest(const FString& Parameters)
+{
+	// Granted after a shut-down: saved for the next initialization, and nothing else.
+	{
+		FSignInRulesFixture F;
+		F.SignIn(TEXT("player-a"));
+		const FString Renewed = SignInJwt(TEXT("player-a"), 1);
+		F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Ok(TokenReply(TEXT("player-a"), Renewed, TEXT("r-2"))));
+		F.Fake->bDeferred = true;
+		TOptional<bool> Refreshed;
+		F.Session->RefreshAccessToken([&Refreshed](bool bOk) { Refreshed = bOk; });
+		F.Session->EndSignInForShutdown();
+		const int32 ClearsBefore = F.Store->ClearCount;
+		F.DeliverHeldReplies();
+
+		TestFalse(TEXT("granted: answered as not refreshed here"), Refreshed.Get(true));
+		TestFalse(TEXT("granted: this initialization stays signed out"), F.Session->IsAuthenticated());
+		TestEqualSensitive(TEXT("granted: the new access token is saved"), F.Store->Stored.AccessToken, Renewed);
+		TestEqualSensitive(TEXT("granted: with the new refresh token"), F.Store->Stored.RefreshToken, FString(TEXT("r-2")));
+		TestEqual(TEXT("granted: nothing cleared"), F.Store->ClearCount, ClearsBefore);
+		TestEqual(TEXT("granted: no refreshed event"), F.Listener->TokenRefreshedCount, 0);
+		TestEqual(TEXT("granted: no expired event"), F.Listener->AuthExpiredCount, 0);
+	}
+	// Refused after a shut-down: the saved sign-in is the next initialization's to renew.
+	{
+		FSignInRulesFixture F;
+		F.SignIn(TEXT("player-a"));
+		const FString Saved = F.Session->GetAccessToken();
+		F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Status(401, TEXT("")));
+		F.Fake->bDeferred = true;
+		F.Session->RefreshAccessToken([](bool) {});
+		F.Session->EndSignInForShutdown();
+		const int32 ClearsBefore = F.Store->ClearCount;
+		F.DeliverHeldReplies();
+
+		TestEqual(TEXT("refused: nothing cleared"), F.Store->ClearCount, ClearsBefore);
+		TestEqualSensitive(TEXT("refused: the saved sign-in is kept"), F.Store->Stored.AccessToken, Saved);
+		TestEqual(TEXT("refused: no expired event"), F.Listener->AuthExpiredCount, 0);
+	}
+	// Granted after another player signed in with the same refresh token: that player's saved sign-in stays.
+	{
+		FSignInRulesFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Ok(TokenReply(TEXT("player-a"), SignInJwt(TEXT("player-a"), 1), TEXT("r-2"))));
+		F.Fake->bDeferred = true;
+		F.Session->RefreshAccessToken([](bool) {});
+		F.SignIn(TEXT("player-b"));
+		const FString PlayerBToken = F.Session->GetAccessToken();
+		F.DeliverHeldReplies();
+
+		TestEqualSensitive(TEXT("switched: player B's saved token stays"), F.Store->Stored.AccessToken, PlayerBToken);
+		TestEqualSensitive(TEXT("switched: with player B's refresh token"), F.Store->Stored.RefreshToken, FString(TEXT("r-1")));
+	}
+	// Granted after the same player signed in again: the new sign-in's saved pair stays.
+	{
+		FSignInRulesFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Ok(TokenReply(TEXT("player-a"), SignInJwt(TEXT("player-a"), 1), TEXT("r-2"))));
+		F.Fake->bDeferred = true;
+		F.Session->RefreshAccessToken([](bool) {});
+		FString Error;
+		F.Session->SetTokens(SignInJwt(TEXT("player-a"), 3), TEXT("r-new"), Error);
+		const FString NewSignInToken = F.Session->GetAccessToken();
+		F.DeliverHeldReplies();
+
+		TestEqualSensitive(TEXT("signed in again: the new sign-in's token stays saved"), F.Store->Stored.AccessToken, NewSignInToken);
+		TestEqualSensitive(TEXT("signed in again: with its refresh token"), F.Store->Stored.RefreshToken, FString(TEXT("r-new")));
+	}
+	return true;
+}
+
+/**
+ * A refusal while the saved sign-in holds a newer pair for the same player (another initialization or another run of the
+ * game renewed it, which made the refresh token sent here stale) carries on with that pair instead of signing out.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSignInTakesANewerSavedSignInTest, "Flock.Auth.SignIn.ARefusalTakesANewerSavedSignInOfTheSamePlayer",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSignInTakesANewerSavedSignInTest::RunTest(const FString& Parameters)
+{
+	// A newer saved pair that has not run out is taken as it is.
+	{
+		FSignInRulesFixture F;
+		F.SignIn(TEXT("player-a"));
+		const int32 SignIn = F.Session->GetSignInNumber();
+		const FString Newer = SignInJwt(TEXT("player-a"), 5);
+		F.Store->Stored.AccessToken = Newer;
+		F.Store->Stored.RefreshToken = TEXT("r-9");
+		F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Status(401, TEXT("")));
+		TOptional<bool> Refreshed;
+		F.Session->RefreshAccessToken([&Refreshed](bool bOk) { Refreshed = bOk; });
+
+		TestTrue(TEXT("newer: answered as refreshed"), Refreshed.Get(false));
+		TestTrue(TEXT("newer: still signed in"), F.Session->IsAuthenticated());
+		TestEqualSensitive(TEXT("newer: with the saved token"), F.Session->GetAccessToken(), Newer);
+		TestEqualSensitive(TEXT("newer: and the saved refresh token"), F.Session->GetRefreshTokenValue(), FString(TEXT("r-9")));
+		TestEqual(TEXT("newer: the same sign-in"), F.Session->GetSignInNumber(), SignIn);
+		TestEqual(TEXT("newer: one refresh sent"), F.Fake->CountTo(TEXT("token/refresh")), 1);
+		TestEqual(TEXT("newer: the game hears of the new token"), F.Listener->TokenRefreshedCount, 1);
+		TestEqual(TEXT("newer: no expired event"), F.Listener->AuthExpiredCount, 0);
+	}
+	// A newer saved pair whose access token has run out is renewed once more, with its own refresh token.
+	{
+		FSignInRulesFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.Store->Stored.AccessToken = SignInJwt(TEXT("player-a"), -7200);
+		F.Store->Stored.RefreshToken = TEXT("r-9");
+		const FString Renewed = SignInJwt(TEXT("player-a"), 6);
+		F.Fake->OnSequence(TEXT("token/refresh"), { FFlockFakeTransport::Status(401, TEXT("")),
+			FFlockFakeTransport::Ok(TokenReply(TEXT("player-a"), Renewed, TEXT("r-10"))) });
+		TOptional<bool> Refreshed;
+		F.Session->RefreshAccessToken([&Refreshed](bool bOk) { Refreshed = bOk; });
+
+		TestTrue(TEXT("expired: answered as refreshed"), Refreshed.Get(false));
+		TestEqual(TEXT("expired: two refreshes sent"), F.Fake->CountTo(TEXT("token/refresh")), 2);
+		TestTrue(TEXT("expired: the second carries the saved refresh token"),
+			F.Fake->LastRequest().JsonBody.Contains(TEXT("\"refresh_token\":\"r-9\""), ESearchCase::CaseSensitive));
+		TestEqualSensitive(TEXT("expired: signed in with the renewed token"), F.Session->GetAccessToken(), Renewed);
+		TestEqual(TEXT("expired: no expired event"), F.Listener->AuthExpiredCount, 0);
+	}
+	// The saved pair is taken once: a second refusal signs the player out.
+	{
+		FSignInRulesFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.Store->Stored.AccessToken = SignInJwt(TEXT("player-a"), -7200);
+		F.Store->Stored.RefreshToken = TEXT("r-9");
+		F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Status(401, TEXT("")));
+		F.Session->RefreshAccessToken([](bool) {});
+
+		TestEqual(TEXT("twice refused: two refreshes sent"), F.Fake->CountTo(TEXT("token/refresh")), 2);
+		TestFalse(TEXT("twice refused: signed out"), F.Session->IsAuthenticated());
+		TestEqual(TEXT("twice refused: the game hears it"), F.Listener->AuthExpiredCount, 1);
+	}
+	// Another player's saved pair is not this player's: signed out as before.
+	{
+		FSignInRulesFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.Store->Stored.AccessToken = SignInJwt(TEXT("player-b"), 5);
+		F.Store->Stored.RefreshToken = TEXT("r-9");
+		F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Status(401, TEXT("")));
+		F.Session->RefreshAccessToken([](bool) {});
+
+		TestFalse(TEXT("another player's: signed out"), F.Session->IsAuthenticated());
+		TestEqual(TEXT("another player's: one refresh sent"), F.Fake->CountTo(TEXT("token/refresh")), 1);
+		TestEqual(TEXT("another player's: the game hears it"), F.Listener->AuthExpiredCount, 1);
+	}
+	// Control: the saved pair is the one refused, so there is nothing newer.
+	{
+		FSignInRulesFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Status(401, TEXT("")));
+		F.Session->RefreshAccessToken([](bool) {});
+
+		TestFalse(TEXT("control: signed out"), F.Session->IsAuthenticated());
+		TestEqual(TEXT("control: the game hears it"), F.Listener->AuthExpiredCount, 1);
+	}
+	return true;
+}
+
+/**
+ * A renewal answered after Flock shut down and initialized again saves through the running initialization's store, the
+ * one that reads the saved file with the running Game Name; the ended one's store is never read (a store that cannot read
+ * the file deletes it).
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSignInLateRenewalSavesThroughTheRunningStoreTest, "Flock.Auth.SignIn.ALateRenewalSavesThroughTheRunningInitializationsStore",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSignInLateRenewalSavesThroughTheRunningStoreTest::RunTest(const FString& Parameters)
+{
+	FSignInRulesFixture Ended;
+	Ended.Session->BecomeTheRunningSession();
+	Ended.SignIn(TEXT("player-a"));
+	const FString Renewed = SignInJwt(TEXT("player-a"), 1);
+	Ended.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Ok(TokenReply(TEXT("player-a"), Renewed, TEXT("r-2"))));
+	Ended.Fake->bDeferred = true;
+	Ended.Session->RefreshAccessToken([](bool) {});
+	Ended.Session->EndSignInForShutdown();
+
+	// The next initialization, whose store holds the same saved sign-in.
+	FSignInRulesFixture Next;
+	Next.Store->Stored = Ended.Store->Stored;
+	Next.Store->bHasTokens = true;
+	Next.Session->BecomeTheRunningSession();
+	const int32 EndedLoadsBefore = Ended.Store->LoadCount;
+	const int32 EndedSavesBefore = Ended.Store->SaveCount;
+	Ended.DeliverHeldReplies();
+
+	TestEqualSensitive(TEXT("saved in the running initialization's store"), Next.Store->Stored.AccessToken, Renewed);
+	TestEqualSensitive(TEXT("with the new refresh token"), Next.Store->Stored.RefreshToken, FString(TEXT("r-2")));
+	TestEqual(TEXT("the ended initialization's store is not read"), Ended.Store->LoadCount, EndedLoadsBefore);
+	TestEqual(TEXT("nor written"), Ended.Store->SaveCount, EndedSavesBefore);
+	return true;
+}
+
+/** A saved pair with no refresh token cannot be renewed again, so it is not taken: the player is signed out as before. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSignInSavedPairWithoutRefreshTokenTest, "Flock.Auth.SignIn.ASavedPairWithNoRefreshTokenIsNotTaken",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSignInSavedPairWithoutRefreshTokenTest::RunTest(const FString& Parameters)
+{
+	FSignInRulesFixture F;
+	F.SignIn(TEXT("player-a"));
+	F.Store->Stored.AccessToken = SignInJwt(TEXT("player-a"), 5);
+	F.Store->Stored.RefreshToken = FString();
+	F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Status(401, TEXT("")));
+	F.Session->RefreshAccessToken([](bool) {});
+
+	TestFalse(TEXT("signed out"), F.Session->IsAuthenticated());
+	TestEqual(TEXT("the game hears it"), F.Listener->AuthExpiredCount, 1);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

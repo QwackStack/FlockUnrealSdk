@@ -184,7 +184,13 @@ Four coded errors are worth handling in-game:
   fails with `EFlockErrorType::Cancelled`. A call that looks something up first (a purchase reads its item,
   scheduling by name looks up the template, cancelling every schedule reads the list) is not sent at all if
   the sign-in changed meanwhile. A token refresh that comes back after the sign-in it was for has ended is
-  dropped: it does not sign the new player out or replace their token.
+  dropped: it does not sign the new player out or replace their token. One that comes back after `ShutdownSdk`
+  still has its new tokens saved for the next initialization, but only where the saved sign-in still holds the
+  same player's token it replaced, since the server no longer takes that one; Flock initialized again meanwhile
+  waits for that answer rather than sending the same refresh token again. A sign-in answered after
+  `ShutdownSdk` is not kept, and its caller hears `EFlockErrorType::Cancelled`. And when the server refuses a
+  refresh because another run of the game, sharing the saved sign-in, renewed it first, the player carries on
+  with that newer sign-in instead of being signed out.
 
 ---
 

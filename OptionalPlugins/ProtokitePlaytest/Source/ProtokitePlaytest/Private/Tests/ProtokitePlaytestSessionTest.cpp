@@ -6,6 +6,7 @@
 
 #include "ProtokitePlaytestIdentity.h"
 #include "ProtokitePlaytestSession.h"
+#include "Providers/FlockAuthProvider.h"
 #include "Misc/App.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/FileHelper.h"
@@ -680,6 +681,367 @@ bool FProtokitePlaytestSessionWithoutTestSourcesUsesTheDeviceIdUnderSavedTest::R
 	TestFalse(TEXT("The file under Saved holds a device id"), DeviceId.IsEmpty());
 	TestEqual(TEXT("That device id is sent"), StringMember(Body, TEXT("device_id")), DeviceId);
 	TestEqual(TEXT("And no Steam id"), StringMember(Body, TEXT("steam_id")), FString(TEXT("<absent>")));
+	return true;
+}
+
+namespace
+{
+	const TCHAR* const TokenRefreshRoute = TEXT("player/token/refresh");
+
+	/** The Flock API's answer to a renewal, at the root as its token routes send it. */
+	FFlockHttpResponse RenewedAnswer(const FString& AccessToken)
+	{
+		return FProtokitePlaytestFakeTransport::Status(200, FString::Printf(
+			TEXT("{\"player_id\":\"%s\",\"access_token\":\"%s\",\"refresh_token\":\"refresh-2\"}"), FlockPlayerId, *AccessToken));
+	}
+
+	/** The header the latest session start carried, or "<absent>". */
+	FString PlayerTokenOnLastRequestTo(const FPlaytestFixture& Fixture, const TCHAR* Route)
+	{
+		const FFlockHttpRequest* Request = Fixture.Transport->FindLastRequestEndingWith(Route);
+		const FString* Token = Request != nullptr ? Request->Headers.Find(ProtokitePlaytestSessionHeaders::PlayerToken) : nullptr;
+		return Token != nullptr ? *Token : FString(TEXT("<absent>"));
+	}
+
+	/** Gives the playtest the chances to start it would have over a few frames: new Flock sessions, and the ticker. */
+	void TryTheStartAFewTimes(FPlaytestFixture& Fixture)
+	{
+		for (int32 Frame = 0; Frame < 5; ++Frame)
+		{
+			Fixture.RegisterFlockSession(SecondFlockSessionId);
+			FTSTicker::GetCoreTicker().Tick(0.016f);
+		}
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionStartCarriesThePlayersRawTokenTest,
+	"Protokite.Playtest.Session.StartCarriesThePlayersRawToken",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionStartCarriesThePlayersRawTokenTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestLogCapture Log(/*bEveryCategory*/ true);
+	FPlaytestFixture Fixture;
+	Fixture.SignInToFlockOnStart();
+	Fixture.StartFlock();
+	TestEqual(TEXT("Precondition: the signed-in player's Flock session started the session"), Fixture.SessionStarts(), 1);
+
+	const FString Token = Fixture.TokenStore->Stored.AccessToken;
+	const FFlockHttpRequest* Start = Fixture.Transport->FindLastRequestEndingWith(PlaytestSessionStartRoute);
+	if (!TestNotNull(TEXT("A start was sent"), Start))
+	{
+		return false;
+	}
+	TestEqualSensitive(TEXT("The raw access token, with no Bearer prefix"), PlayerTokenOnLastRequestTo(Fixture, PlaytestSessionStartRoute), Token);
+	TArray<FString> HeaderNames;
+	Start->Headers.GetKeys(HeaderNames);
+	TestTrue(TEXT("Spelled X-Flock-Player-Token exactly"), HeaderNames.ContainsByPredicate([](const FString& Name) { return Name.Equals(TEXT("X-Flock-Player-Token"), ESearchCase::CaseSensitive); }));
+	TestFalse(TEXT("And no Authorization header"), Start->Headers.Contains(TEXT("Authorization")));
+	TestEqual(TEXT("The body is unchanged"), StringMember(Fixture.LastSessionStartBody(), TEXT("flock_player_id")),
+		FString(TEXT("<absent>")));
+	TestEqual(TEXT("The config read never carries it"), PlayerTokenOnLastRequestTo(Fixture, PlaytestConfigRoute),
+		FString(TEXT("<absent>")));
+
+	TestTrue(TEXT("The session ends"), Fixture.Playtest->EndPlaytestSession());
+	TestEqual(TEXT("The end, sent after the sign-in may be gone, never carries it"),
+		PlayerTokenOnLastRequestTo(Fixture, TEXT("/end")), FString(TEXT("<absent>")));
+
+	TestFalse(TEXT("The token is never logged, in any category"), Log.AnyLineContains(Token));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionWithNoPlayerSignedInTheTokenIsLeftOutTest,
+	"Protokite.Playtest.Session.WithNoPlayerSignedInTheTokenIsLeftOut",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionWithNoPlayerSignedInTheTokenIsLeftOutTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	Fixture.StartFlock();
+	Fixture.RegisterFlockSession(FirstFlockSessionId);
+
+	TestEqual(TEXT("The session starts"), Fixture.SessionStarts(), 1);
+	TestEqual(TEXT("Without the header"), PlayerTokenOnLastRequestTo(Fixture, PlaytestSessionStartRoute), FString(TEXT("<absent>")));
+	TestEqual(TEXT("Unlinked, but started"), Fixture.Playtest->GetPlaytestSessionId(), FString(PlaytestSessionId));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionAnExpiredSignInIsRenewedAndTheStartWaitsTest,
+	"Protokite.Playtest.Session.AnExpiredSignInIsRenewedAndTheStartWaits",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionAnExpiredSignInIsRenewedAndTheStartWaitsTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	const FString Renewed = MakeAccessToken(FlockPlayerId, 3600, TEXT("renewed"));
+	Fixture.Transport->Answer(TokenRefreshRoute, RenewedAnswer(Renewed));
+	Fixture.Transport->HoldRepliesToUrlsContaining.Add(TokenRefreshRoute);
+	FPlaytestLogCapture Log;
+	Fixture.SignInToFlockOnStart(FlockPlayerId, -60);
+	Fixture.StartFlock();
+	Fixture.RegisterFlockSession(FirstFlockSessionId);
+	TryTheStartAFewTimes(Fixture);
+	TestEqual(TEXT("Nothing starts while the renewal is on its way"), Fixture.SessionStarts(), 0);
+	TestEqual(TEXT("The wait is logged once"), Log.LinesContaining(TEXT("sign-in, a minute or less from running out")).Num(), 1);
+
+	Fixture.Transport->ReleaseAllHeldReplies();
+	TestEqual(TEXT("The renewal answering starts the session"), Fixture.SessionStarts(), 1);
+	TestEqual(TEXT("Renewed once"), Fixture.Transport->CountRequestsEndingWith(TokenRefreshRoute), 1);
+	TestEqualSensitive(TEXT("With the renewed token"), PlayerTokenOnLastRequestTo(Fixture, PlaytestSessionStartRoute), Renewed);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionASignInAboutToRunOutIsRenewedFirstTest,
+	"Protokite.Playtest.Session.ASignInAboutToRunOutIsRenewedFirst",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionASignInAboutToRunOutIsRenewedFirstTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	const FString Renewed = MakeAccessToken(FlockPlayerId, 3600, TEXT("renewed"));
+	Fixture.Transport->Answer(TokenRefreshRoute, RenewedAnswer(Renewed));
+	Fixture.SignInToFlockOnStart(FlockPlayerId, 20);
+	Fixture.StartFlock();
+
+	TestEqual(TEXT("Renewed once"), Fixture.Transport->CountRequestsEndingWith(TokenRefreshRoute), 1);
+	TestEqual(TEXT("One start, though the renewal answered at once"), Fixture.SessionStarts(), 1);
+	TestEqualSensitive(TEXT("20 s left is too close to send"), PlayerTokenOnLastRequestTo(Fixture, PlaytestSessionStartRoute), Renewed);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionARenewalFlockRefusesStillStartsTheSessionUnlinkedTest,
+	"Protokite.Playtest.Session.ARenewalFlockRefusesStillStartsTheSessionUnlinked",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionARenewalFlockRefusesStillStartsTheSessionUnlinkedTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	Fixture.Transport->Answer(TokenRefreshRoute, FProtokitePlaytestFakeTransport::Status(401, TEXT("{\"detail\":\"Invalid refresh token\"}")));
+	Fixture.Transport->HoldRepliesToUrlsContaining.Add(TokenRefreshRoute);
+	// Signed in with 20 s left, so the Flock session is running when the renewal is refused.
+	Fixture.SignInToFlockOnStart(FlockPlayerId, 20);
+	Fixture.StartFlock();
+	TestTrue(TEXT("Precondition: a Flock session is running"), Fixture.Flock->HasActiveAnalyticsSession());
+	TestEqual(TEXT("Nothing starts while the renewal is on its way"), Fixture.SessionStarts(), 0);
+
+	// Answered a frame later, as over a real network.
+	FTSTicker::GetCoreTicker().Tick(0.016f);
+	Fixture.Transport->ReleaseAllHeldReplies();
+
+	TestFalse(TEXT("Precondition: the refusal signed the player out"), Fixture.Flock->IsAuthenticated());
+	TestFalse(TEXT("Precondition: and ended the Flock session"), Fixture.Flock->HasActiveAnalyticsSession());
+	TestEqual(TEXT("The start still went out"), Fixture.SessionStarts(), 1);
+	TestEqual(TEXT("Without the header"), PlayerTokenOnLastRequestTo(Fixture, PlaytestSessionStartRoute), FString(TEXT("<absent>")));
+	TestEqual(TEXT("Named after the Flock session it was ready under"),
+		StringMember(Fixture.LastSessionStartBody(), TEXT("flock_session_id")), FString(FirstFlockSessionId));
+	TestEqual(TEXT("And started"), Fixture.Playtest->GetPlaytestSessionId(), FString(PlaytestSessionId));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionASignInThatCannotBeRenewedStartsWithoutTheTokenTest,
+	"Protokite.Playtest.Session.ASignInThatCannotBeRenewedStartsWithoutTheToken",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionASignInThatCannotBeRenewedStartsWithoutTheTokenTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	Fixture.Transport->Answer(TokenRefreshRoute, FProtokitePlaytestFakeTransport::ConnectionFailure());
+	// Held so the renewal the sign-in's restore sends and the playtest's are the one request.
+	Fixture.Transport->HoldRepliesToUrlsContaining.Add(TokenRefreshRoute);
+	Fixture.SignInToFlockOnStart(FlockPlayerId, -60);
+	Fixture.StartFlock();
+	Fixture.RegisterFlockSession(FirstFlockSessionId);
+	TestEqual(TEXT("Nothing starts while the renewal is on its way"), Fixture.SessionStarts(), 0);
+	AddExpectedError(TEXT("Renewing the sign-in failed"), EAutomationExpectedErrorFlags::Contains, 1);
+	// One reply released, not every held one: a second renewal of the same sign-in would be held again and counted.
+	Fixture.Transport->ReleaseOldestHeldReply();
+
+	TestEqual(TEXT("Tried once, then the start goes ahead"), Fixture.Transport->CountRequestsEndingWith(TokenRefreshRoute), 1);
+	TestEqual(TEXT("The session starts"), Fixture.SessionStarts(), 1);
+	TestEqual(TEXT("An expired token is never sent"), PlayerTokenOnLastRequestTo(Fixture, PlaytestSessionStartRoute),
+		FString(TEXT("<absent>")));
+	TestEqual(TEXT("And started"), Fixture.Playtest->GetPlaytestSessionId(), FString(PlaytestSessionId));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionATokenWhoseRenewalFailedIsSentWhileItLastsTest,
+	"Protokite.Playtest.Session.ATokenWhoseRenewalFailedIsSentWhileItLasts",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionATokenWhoseRenewalFailedIsSentWhileItLastsTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	Fixture.Transport->Answer(TokenRefreshRoute, FProtokitePlaytestFakeTransport::ConnectionFailure());
+	AddExpectedError(TEXT("Renewing the sign-in failed"), EAutomationExpectedErrorFlags::Contains, 1);
+	Fixture.SignInToFlockOnStart(FlockPlayerId, 20);
+	Fixture.StartFlock();
+
+	TestEqual(TEXT("Tried once"), Fixture.Transport->CountRequestsEndingWith(TokenRefreshRoute), 1);
+	TestEqual(TEXT("The session starts"), Fixture.SessionStarts(), 1);
+	TestEqualSensitive(TEXT("With the token that has not run out yet: Protokite may still take it"),
+		PlayerTokenOnLastRequestTo(Fixture, PlaytestSessionStartRoute), Fixture.TokenStore->Stored.AccessToken);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionATokenWithMoreThanAMinuteLeftIsSentAsItIsTest,
+	"Protokite.Playtest.Session.ATokenWithMoreThanAMinuteLeftIsSentAsItIs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionATokenWithMoreThanAMinuteLeftIsSentAsItIsTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	Fixture.Transport->Answer(TokenRefreshRoute, RenewedAnswer(MakeAccessToken(FlockPlayerId, 3600, TEXT("renewed"))));
+	Fixture.SignInToFlockOnStart(FlockPlayerId, 120);
+	Fixture.StartFlock();
+
+	TestEqual(TEXT("Two minutes left needs no renewal"), Fixture.Transport->CountRequestsEndingWith(TokenRefreshRoute), 0);
+	TestEqual(TEXT("The session starts"), Fixture.SessionStarts(), 1);
+	TestEqualSensitive(TEXT("With the token the player has"), PlayerTokenOnLastRequestTo(Fixture, PlaytestSessionStartRoute),
+		Fixture.TokenStore->Stored.AccessToken);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionARenewalAnsweredAfterTeardownStartsNothingTest,
+	"Protokite.Playtest.Session.ARenewalAnsweredAfterTeardownStartsNothing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionARenewalAnsweredAfterTeardownStartsNothingTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	Fixture.Transport->Answer(TokenRefreshRoute, RenewedAnswer(MakeAccessToken(FlockPlayerId, 3600, TEXT("renewed"))));
+	Fixture.Transport->HoldRepliesToUrlsContaining.Add(TokenRefreshRoute);
+	Fixture.SignInToFlockOnStart(FlockPlayerId, 20);
+	Fixture.StartFlock();
+	TestEqual(TEXT("Precondition: the start waits for the renewal"), Fixture.SessionStarts(), 0);
+
+	// The game instance shuts down while the renewal is on its way.
+	Fixture.Playtest->Deinitialize();
+	Fixture.Transport->ReleaseAllHeldReplies();
+
+	TestEqual(TEXT("Its answer starts nothing for a launch that has ended"), Fixture.SessionStarts(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionASignOutDuringTheRenewalStopsTheWaitTest,
+	"Protokite.Playtest.Session.ASignOutDuringTheRenewalStopsTheWait",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionASignOutDuringTheRenewalStopsTheWaitTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	Fixture.Transport->Answer(TokenRefreshRoute, RenewedAnswer(MakeAccessToken(FlockPlayerId, 3600, TEXT("renewed"))));
+	Fixture.Transport->HoldRepliesToUrlsContaining.Add(TokenRefreshRoute);
+	Fixture.SignInToFlockOnStart(FlockPlayerId, 20);
+	Fixture.StartFlock();
+	TestEqual(TEXT("Precondition: the start waits for the renewal"), Fixture.SessionStarts(), 0);
+
+	// The player signs out while the renewal is on its way, and the start is tried again.
+	Fixture.Flock->Logout();
+	Fixture.RegisterFlockSession(SecondFlockSessionId);
+
+	TestEqual(TEXT("The renewal of an ended sign-in holds nothing up"), Fixture.SessionStarts(), 1);
+	TestEqual(TEXT("Unlinked, with no one signed in"), PlayerTokenOnLastRequestTo(Fixture, PlaytestSessionStartRoute),
+		FString(TEXT("<absent>")));
+	TestEqual(TEXT("Naming the first Flock session"), StringMember(Fixture.LastSessionStartBody(), TEXT("flock_session_id")),
+		FString(FirstFlockSessionId));
+
+	Fixture.Transport->ReleaseAllHeldReplies();
+	TestEqual(TEXT("Its late answer starts nothing more"), Fixture.SessionStarts(), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionAPlayerSwitchSendsNoTokenTest,
+	"Protokite.Playtest.Session.APlayerSwitchSinceTheFlockSessionRegisteredSendsNoToken",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionAPlayerSwitchSendsNoTokenTest::RunTest(const FString& Parameters)
+{
+	// The start names the first Flock session, which belongs to the player signed in when it registered. Protokite links
+	// that session to whoever's token the start carries, so another player signed in while the start waits sends none.
+	for (const bool bSwitch : { false, true })
+	{
+		const FString Case = bSwitch ? TEXT("Switched") : TEXT("Control, the same player");
+		FScopedPlaytestSettings Settings(true, UsableUrl);
+		FPlaytestFixture Fixture;
+		Fixture.Transport->HoldRepliesToUrlsContaining.Add(PlaytestConfigRoute);
+		Fixture.SignInToFlockOnStart();
+		Fixture.StartFlock();
+		const FString FirstToken = Fixture.TokenStore->Stored.AccessToken;
+		TestEqual(FString::Printf(TEXT("%s: nothing starts before the config"), *Case), Fixture.SessionStarts(), 0);
+
+		FString SecondToken;
+		if (bSwitch)
+		{
+			// A minute or less left, which the start would otherwise renew and wait for.
+			SecondToken = MakeAccessToken(TEXT("another-player"), 20);
+			Fixture.TokenStore->Stored.AccessToken = SecondToken;
+			Fixture.TokenStore->Stored.RefreshToken = TEXT("refresh-another");
+			FFlockAuthProvider* Auth = Fixture.Flock->GetAuthProvider();
+			if (!TestNotNull(FString::Printf(TEXT("%s: Flock's sign-in is wired"), *Case), Auth))
+			{
+				return false;
+			}
+			Auth->TryRestoreSession([](bool) {});
+			TestEqualSensitive(FString::Printf(TEXT("%s: precondition: another player is signed in"), *Case),
+				Fixture.Flock->GetPlayerId(), FString(TEXT("another-player")));
+		}
+
+		Fixture.Transport->ReleaseAllHeldReplies();
+		TryTheStartAFewTimes(Fixture);
+		TestEqual(FString::Printf(TEXT("%s: the session starts"), *Case), Fixture.SessionStarts(), 1);
+		TestEqual(FString::Printf(TEXT("%s: naming the first Flock session"), *Case),
+			StringMember(Fixture.LastSessionStartBody(), TEXT("flock_session_id")), FString(FirstFlockSessionId));
+		TestEqualSensitive(FString::Printf(TEXT("%s: the token goes only for the player that session belongs to"), *Case),
+			PlayerTokenOnLastRequestTo(Fixture, PlaytestSessionStartRoute), bSwitch ? FString(TEXT("<absent>")) : FirstToken);
+		if (bSwitch)
+		{
+			TestEqual(TEXT("Switched: no renewal is sent for a token the start will not carry"),
+				Fixture.Transport->CountRequestsEndingWith(TokenRefreshRoute), 0);
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionARegistrationAnsweredAfterASwitchTest,
+	"Protokite.Playtest.Session.AFlockSessionRegisteredAfterAPlayerSwitchSendsNoToken",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionARegistrationAnsweredAfterASwitchTest::RunTest(const FString& Parameters)
+{
+	// A Flock session belongs to the player signed in when it started. Its registration can answer after another player
+	// signed in; the start that names it then carries no token, rather than the second player's.
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	Fixture.Transport->HoldRepliesToUrlsContaining.Add(TEXT("/analytics/sessions"));
+	Fixture.SignInToFlockOnStart();
+	Fixture.StartFlock();
+	Fixture.Flock->GetEvents()->InvokeSessionStarted(TEXT("local-") + FString(FirstFlockSessionId));
+
+	Fixture.TokenStore->Stored.AccessToken = MakeAccessToken(TEXT("another-player"), 3600);
+	Fixture.TokenStore->Stored.RefreshToken = TEXT("refresh-another");
+	FFlockAuthProvider* Auth = Fixture.Flock->GetAuthProvider();
+	if (!TestNotNull(TEXT("Flock's sign-in is wired"), Auth))
+	{
+		return false;
+	}
+	Auth->TryRestoreSession([](bool) {});
+	TestEqualSensitive(TEXT("Precondition: another player is signed in"), Fixture.Flock->GetPlayerId(), FString(TEXT("another-player")));
+
+	Fixture.RegisterFlockSession(FirstFlockSessionId);
+	TestEqual(TEXT("The session starts"), Fixture.SessionStarts(), 1);
+	TestEqual(TEXT("Naming the first player's Flock session"), StringMember(Fixture.LastSessionStartBody(), TEXT("flock_session_id")),
+		FString(FirstFlockSessionId));
+	TestEqual(TEXT("Without the second player's token"), PlayerTokenOnLastRequestTo(Fixture, PlaytestSessionStartRoute), FString(TEXT("<absent>")));
 	return true;
 }
 

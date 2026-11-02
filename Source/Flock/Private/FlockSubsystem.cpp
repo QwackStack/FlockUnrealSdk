@@ -16,7 +16,7 @@
 #include "Http/FlockHttpShutdown.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.38.3");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.39.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -212,6 +212,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 
 	AuthSession = MakeShared<FFlockAuthSession>(HttpClient.ToSharedRef(), TokenStore, LoggerRef,
 		GetVersionedApiUrl(), Config.GetBaseHeaders());
+	AuthSession->BecomeTheRunningSession();
 	AuthSession->SetEvents(GetEvents());
 	// A sign-in the server will not refresh ends here as a sign-out does, or its analytics session runs on with no player.
 	AuthSession->SetBeforeExpiredSignInEnds([WeakThis = TWeakObjectPtr<UFlockSubsystem>(this)]()
@@ -560,6 +561,11 @@ void UFlockSubsystem::ShutdownSdkFor(bool bGameEnding)
 	NotificationProvider.Reset();
 	SnapshotStore.Reset();
 	AuthProvider.Reset();
+	// A refresh still on its way lives on in its completion: its answer must not land on the next initialization's player.
+	if (AuthSession.IsValid())
+	{
+		AuthSession->EndSignInForShutdown();
+	}
 	AuthSession.Reset();
 	HttpClient.Reset();
 	TokenStore.Reset();

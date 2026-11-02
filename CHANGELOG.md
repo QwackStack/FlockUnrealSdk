@@ -5,6 +5,47 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] - 2026-11-02
+
+A playtest session started while a player is signed in carries their sign-in; a token renewal on its way at shut-down no
+longer reaches the next initialization.
+
+### Added
+
+- **Protokite Playtest: a playtest session started while a player is signed in to Flock carries that player's sign-in**, so
+  Protokite can link the session to their Qwacks Community account. The session start (`POST /game/sdk/playtest-session`)
+  sends the player's access token in `X-Flock-Player-Token`, raw, never the refresh token. A sign-in with a minute or less
+  left is renewed first, once per sign-in, and the start waits for it. With no one signed in, or a sign-in that has run out
+  and cannot be renewed, the session starts as before, unlinked; a token whose renewal failed but has not run out yet is
+  still sent. A renewal Flock refuses signs the player out, and the session still starts, named after
+  the Flock session it was ready under, unless the game shuts the Flock SDK down in answer. The token goes only for the
+  sign-in the launch's first Flock session started under (even when that session reaches the server later): when the player signs out, anyone
+  signs in, or the Flock SDK shuts down while the start waits, the session starts unlinked rather than linking one
+  player's play to another's account. The request body is unchanged, and `X-Flock-Player-Token` goes on the start alone
+  (not the end, uploads, feedback forms or the config read) and is never logged. Protokite servers that do not link
+  sessions yet ignore the header. The Flock SDK now lets the playtest plugin read the player's sign-in; no public call
+  changes.
+
+### Fixed
+
+- **A token renewal still on its way when the game shuts Flock down no longer reaches the next initialization.** Its answer
+  used to land on the ended initialization's sign-in as if it were current: a refusal deleted the saved sign-in, ended the
+  next initialization's analytics session and raised On Auth Expired while a player was signed in; a renewal saved its
+  tokens with nothing checking whose they were. `ShutdownSdk` now ends the sign-in in that initialization alone (the saved
+  sign-in stays for the next one to restore), so a late answer changes nothing there. The server takes only the newest
+  refresh token it gave a player, so a late renewal's new pair is still saved when the saved sign-in holds the token it
+  replaced, and only then: never over a sign-out or another sign-in. When Flock is initialized again before that answer,
+  its restore does not send the same refresh token a second time (the two would race, and the server keeps one answer):
+  it waits for the first answer and carries on with the pair it saved. A sign-in the server answers after `ShutdownSdk`
+  is not kept either: its caller hears it was cancelled, and the next initialization neither saves it nor raises On
+  Authenticated for it; a restore still renewing at shut-down raises no On Session Restored there, and a link or unlink
+  answered after it raises no On Account Linked or On Account Unlinked.
+- **A renewal refused because the sign-in was renewed elsewhere carries on with that renewal instead of signing the player
+  out.** Another initialization, or another run of the game on the same computer, sharing the saved sign-in, renews it and
+  makes the refresh token this one holds stale. When the server refuses it and the saved sign-in holds a newer pair for the
+  same player, that pair is taken (renewed once more when its access token has run out); otherwise the player is signed
+  out as before.
+
 ## [1.38.3] - 2026-10-25
 
 Flock's relay reached over UDP, TCP or TLS, and over IPv6.

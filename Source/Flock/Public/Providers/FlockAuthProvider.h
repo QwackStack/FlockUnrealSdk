@@ -280,8 +280,10 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 			{
 				if (OnComplete)
 				{
-					OnComplete(TFlockResult<FFlockPlayerLoginResponse>::Fail(
-						FFlockError::MakeWithFix(EFlockErrorType::Auth, SetError, FFlockErrorHints::NotFlocksAnswer())));
+					// Answered after Flock shut down: nothing is wrong with the answer, the sign-in came too late to keep.
+					OnComplete(TFlockResult<FFlockPlayerLoginResponse>::Fail(SessionRef->IsShutDown()
+						? FFlockError::MakeWithFix(EFlockErrorType::Cancelled, SetError, FFlockErrorHints::InitializeFlockFirst())
+						: FFlockError::MakeWithFix(EFlockErrorType::Auth, SetError, FFlockErrorHints::NotFlocksAnswer())));
 				}
 				return;
 			}
@@ -372,7 +374,8 @@ FFlockRequestHandle FFlockAuthProvider::Link(const TReq& Request, const FString&
 			{
 				AdoptAccounts(Result.Value);
 				Log->LogInfo(FString::Printf(TEXT("%s succeeded for player: %s"), *LoggedContext, *SessionRef->GetPlayerId()));
-				if (UFlockEvents* Hub = EventsWeak.Get())
+				// Answered after Flock shut down: the next initialization's listeners did not ask.
+				if (UFlockEvents* Hub = SessionRef->IsShutDown() ? nullptr : EventsWeak.Get())
 				{
 					Hub->InvokeAccountLinked(Provider);
 				}

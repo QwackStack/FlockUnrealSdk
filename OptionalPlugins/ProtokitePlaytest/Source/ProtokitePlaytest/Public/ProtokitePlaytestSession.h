@@ -14,6 +14,18 @@ namespace ProtokitePlaytestSessionLimits
 	inline constexpr int32 FlockSessionIdLength = 26;
 }
 
+namespace ProtokitePlaytestSessionHeaders
+{
+	/**
+	 * The signed-in player's Flock access token, raw (no "Bearer "), on the session start alone, so Protokite can link
+	 * the session to the player's Qwacks Community account. Left out with no one signed in.
+	 */
+	inline constexpr const TCHAR* PlayerToken = TEXT("X-Flock-Player-Token");
+
+	/** A token with this many seconds or fewer left is renewed before the start, so Protokite still takes it on arrival. */
+	inline constexpr int32 PlayerTokenRenewalMarginSeconds = 60;
+}
+
 /** Where this launch's Protokite session is. A launch starts at most one. */
 enum class EProtokitePlaytestSessionState : uint8
 {

@@ -4,6 +4,7 @@
 #include "FlockEvents.h"
 #include "Http/FlockEndpoints.h"
 #include "Http/FlockHttpClient.h"
+#include "Misc/ScopeExit.h"
 #include "Models/FlockAuthModels.h"
 
 FFlockAuthSession::FFlockAuthSession(const TSharedRef<FFlockHttpClient>& InClient,
@@ -29,6 +30,12 @@ bool FFlockAuthSession::SetTokens(const FString& InAccessToken, const FString& I
 
 bool FFlockAuthSession::AdoptTokens(const FString& InAccessToken, const FString& InRefreshToken, FString& OutError)
 {
+	// A sign-in answered after Flock shut down belongs to no initialization: the saved sign-in is the next one's.
+	if (bShutDown)
+	{
+		OutError = TEXT("Flock was shut down before the server answered this sign-in, so it was not kept");
+		return false;
+	}
 	TOptional<FFlockJwtClaims> NewClaims;
 	if (!InAccessToken.IsEmpty())
 	{
@@ -65,14 +72,55 @@ void FFlockAuthSession::SetAuthMethod(EFlockAuthMethod Method)
 void FFlockAuthSession::ClearTokens()
 {
 	Logger->LogInfo(TEXT("Clearing authentication tokens"));
+	ForgetTokensInMemory();
+	if (Store.IsValid())
+	{
+		Store->Clear();
+	}
+}
+
+void FFlockAuthSession::EndSignInForShutdown()
+{
+	Logger->LogDebug(TEXT("Letting go of this initialization's tokens; the saved sign-in stays"));
+	ForgetTokensInMemory();
+	bShutDown = true;
+}
+
+void FFlockAuthSession::BecomeTheRunningSession()
+{
+	RunningSession() = AsShared();
+}
+
+void FFlockAuthSession::ForgetTokensInMemory()
+{
 	++SignInNumber;
 	AccessToken.Empty();
 	RefreshToken.Empty();
 	Claims.Reset();
 	AuthMethod.Reset();
-	if (Store.IsValid())
+}
+
+TWeakPtr<FFlockAuthSession>& FFlockAuthSession::RunningSession()
+{
+	static TWeakPtr<FFlockAuthSession> Running;
+	return Running;
+}
+
+TMap<FString, FFlockAuthSession::FRefreshOnItsWay>& FFlockAuthSession::RefreshesOnTheirWay()
+{
+	static TMap<FString, FRefreshOnItsWay> OnTheirWay;
+	return OnTheirWay;
+}
+
+void FFlockAuthSession::LetTheWaitersCarryOn(const FString& SentRefreshToken)
+{
+	FRefreshOnItsWay OnItsWay;
+	if (RefreshesOnTheirWay().RemoveAndCopyValue(SentRefreshToken, OnItsWay))
 	{
-		Store->Clear();
+		for (const TFunction<void()>& Waiter : OnItsWay.Waiters)
+		{
+			Waiter();
+		}
 	}
 }
 
@@ -139,6 +187,40 @@ void FFlockAuthSession::RefreshAccessToken(int32 ForSignInNumber, TFunction<void
 	Refresh->Callbacks.Add(MoveTemp(OnComplete));
 	RefreshInFlight = Refresh;
 
+	// An earlier initialization sent this very refresh token before Flock shut down, and has not heard back. A second
+	// request with it would race the first, and the server keeps one answer only: wait, then carry on with what that answer
+	// left in the saved sign-in.
+	FRefreshOnItsWay* OnItsWay = RefreshesOnTheirWay().Find(RefreshToken);
+	if (OnItsWay != nullptr && OnItsWay->Refresh.IsValid() && OnItsWay->SentBy.IsValid() && !OnItsWay->SentBy.HasSameObject(this))
+	{
+		Refresh->PlayerId = GetPlayerId();
+		Refresh->SentRefreshToken = RefreshToken;
+		const TSharedRef<FFlockAuthSession> Self = AsShared();
+		OnItsWay->Waiters.Add([Self, Refresh]() { Self->CarryOnAfterTheRefreshOnItsWay(Refresh); });
+		Logger->LogDebug(TEXT("Waiting for the renewal of this sign-in an earlier initialization sent"));
+		return;
+	}
+	SendRefresh(Refresh);
+}
+
+void FFlockAuthSession::CarryOnAfterTheRefreshOnItsWay(const TSharedRef<FRefreshInFlight>& Refresh)
+{
+	if (Refresh->SignInNumber != SignInNumber)
+	{
+		FinishRefresh(Refresh, false);
+		return;
+	}
+	if (!TakeANewerSavedSignIn(Refresh))
+	{
+		SendRefresh(Refresh);
+	}
+}
+
+void FFlockAuthSession::SendRefresh(const TSharedRef<FRefreshInFlight>& Refresh)
+{
+	Refresh->PlayerId = GetPlayerId();
+	Refresh->SentRefreshToken = RefreshToken;
+
 	FFlockPlayerRefreshTokenRequest Request;
 	Request.PlayerId = GetPlayerId();
 	Request.RefreshToken = RefreshToken;
@@ -156,16 +238,29 @@ void FFlockAuthSession::RefreshAccessToken(int32 ForSignInNumber, TFunction<void
 	// callers own their retry semantics, and a second POST could invalidate a rotated token.
 	// Raw (non-enveloped): the token routes return the model at the root.
 	const TSharedRef<FFlockAuthSession> Self = AsShared();
+	FRefreshOnItsWay& OnItsWay = RefreshesOnTheirWay().FindOrAdd(Refresh->SentRefreshToken);
+	OnItsWay.Refresh = Refresh;
+	OnItsWay.SentBy = Self;
 	Client->PostJsonRaw<FFlockPlayerLoginResponse>(
 		FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, FlockEndpoints::PlayerTokenRefresh),
 		BaseHeaders, Json,
-		[Self, Refresh](TFlockResult<FFlockPlayerLoginResponse> Result)
+		[Self, Refresh, Sent = Refresh->SentRefreshToken](TFlockResult<FFlockPlayerLoginResponse> Result)
 		{
-			// A sign-out or another sign-in came first: the answer belongs to a sign-in that is over, so it keeps,
-			// clears and raises nothing.
+			// Whoever waits on this refresh token carries on once this answer has been dealt with.
+			ON_SCOPE_EXIT
+			{
+				LetTheWaitersCarryOn(Sent);
+			};
+
+			// A sign-out, another sign-in or a shut-down came first: the answer belongs to a sign-in that is over, so it
+			// keeps, clears and raises nothing here. Its new pair is still the only one the server takes for that player.
 			if (Refresh->SignInNumber != Self->SignInNumber)
 			{
 				Self->Logger->LogDebug(TEXT("Token refresh answered after the sign-in it was for had ended; the answer is not used"));
+				if (Result.bSuccess && !Result.Value.AccessToken.IsEmpty())
+				{
+					Self->SaveNewPairWhereTheSentOneIsStillSaved(*Refresh, Result.Value.AccessToken, Result.Value.RefreshToken);
+				}
 				Self->FinishRefresh(Refresh, false);
 				return;
 			}
@@ -177,6 +272,11 @@ void FFlockAuthSession::RefreshAccessToken(int32 ForSignInNumber, TFunction<void
 				// that is not the server's JSON).
 				if (Result.Error.Type == EFlockErrorType::Auth)
 				{
+					// Taken once: the pair taken is the one sent next, so a refusal of it finds nothing newer.
+					if (Self->TakeANewerSavedSignIn(Refresh))
+					{
+						return;
+					}
 					Self->Logger->LogWarning(TEXT("Token refresh failed: session expired"));
 					Self->FailRefreshAsExpired(Refresh);
 				}
@@ -211,6 +311,63 @@ void FFlockAuthSession::RefreshAccessToken(int32 ForSignInNumber, TFunction<void
 			}
 			Self->FinishRefresh(Refresh, true);
 		});
+}
+
+void FFlockAuthSession::SaveNewPairWhereTheSentOneIsStillSaved(const FRefreshInFlight& Refresh, const FString& NewAccessToken,
+	const FString& NewRefreshToken) const
+{
+	// Through the running initialization's store when Flock was initialized again since: the saved file is the same, and
+	// only that store reads it with the running Game Name (a store that cannot read the file deletes it).
+	const TSharedPtr<FFlockAuthSession> Running = RunningSession().Pin();
+	const TSharedPtr<IFlockTokenStore> SavedIn = Running.IsValid() && !Running->bShutDown ? Running->Store : Store;
+	// The saved sign-in moved on (a sign-out cleared it, another sign-in or a renewal replaced it): that one is current.
+	FFlockStoredTokens Saved;
+	if (Refresh.SentRefreshToken.IsEmpty() || !LoadSavedSignInOf(SavedIn, Refresh.PlayerId, Saved)
+		|| !Saved.RefreshToken.Equals(Refresh.SentRefreshToken, ESearchCase::CaseSensitive))
+	{
+		return;
+	}
+	Saved.AccessToken = NewAccessToken;
+	Saved.RefreshToken = NewRefreshToken;
+	SavedIn->Save(Saved);
+	Logger->LogDebug(TEXT("The renewed sign-in was saved for the next initialization, as the server no longer takes the one it replaced"));
+}
+
+bool FFlockAuthSession::TakeANewerSavedSignIn(const TSharedRef<FRefreshInFlight>& Refresh)
+{
+	FFlockStoredTokens Saved;
+	if (!LoadSavedSignInOf(Store, Refresh->PlayerId, Saved) || Saved.RefreshToken.IsEmpty()
+		|| Saved.RefreshToken.Equals(Refresh->SentRefreshToken, ESearchCase::CaseSensitive))
+	{
+		return false;
+	}
+	FString AdoptError;
+	if (!AdoptTokens(Saved.AccessToken, Saved.RefreshToken, AdoptError))
+	{
+		return false;
+	}
+	Logger->LogInfo(TEXT("Carrying on with the player's sign-in as renewed elsewhere (another initialization or another run of the game)"));
+	// The same sign-in carries on. A saved access token that has run out is renewed once more, with the saved refresh token.
+	if (IsTokenExpired())
+	{
+		SendRefresh(Refresh);
+		return true;
+	}
+	if (UFlockEvents* Hub = Events.Get())
+	{
+		Hub->InvokeTokenRefreshed();
+	}
+	FinishRefresh(Refresh, true);
+	return true;
+}
+
+bool FFlockAuthSession::LoadSavedSignInOf(const TSharedPtr<IFlockTokenStore>& From, const FString& PlayerId, FFlockStoredTokens& OutSaved)
+{
+	FFlockJwtClaims SavedClaims;
+	FString ParseError;
+	return !PlayerId.IsEmpty() && From.IsValid() && From->Load(OutSaved)
+		&& FFlockJwt::Parse(OutSaved.AccessToken, SavedClaims, ParseError)
+		&& SavedClaims.PlayerId.Equals(PlayerId, ESearchCase::CaseSensitive);
 }
 
 void FFlockAuthSession::FinishRefresh(const TSharedRef<FRefreshInFlight>& Refresh, bool bSuccess)
