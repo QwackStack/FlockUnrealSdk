@@ -6,7 +6,7 @@ Protokite. While a playtest runs, each launch of the game becomes one session on
 
 | Playtest feature | What the game sends | Where it shows |
 |---|---|---|
-| Always | One session per launch, named after the player's Steam id or this install's device id | Protokite **Sessions** |
+| Always | One session per launch, named after the player's Steam id or this install's device id; when a player is signed in to Flock, their sign-in too, so the session can be linked to their Qwacks Community account | Protokite **Sessions** |
 | `video_recording` | A recording of the game's screen, uploaded when it ends | The session's recording player |
 | `heavy_analytics` | A performance window every ten seconds of play, each level load, and your own playtest events | Flock **Game Metrics**, under the `playtest` category |
 | `exception_capturing` | Nothing extra: the Flock SDK already reports exceptions, and the playtest only asks for them | Flock **Diagnostics → Errors** |
@@ -62,6 +62,13 @@ a Game Version that is not a playtest's, and the settings a playtest session wai
 once your game signs a player in, with **Analytics Enabled** and **Analytics Auto Start Session** on (or a Start
 Session call) and consent granted when **Analytics Require Explicit Consent** is on. A device sign-in is enough and
 needs no account.
+
+When a player is signed in to Flock, the session start also carries their sign-in, renewed first (once per sign-in) if it
+has a minute or less left, so Protokite can link the session to the player's Qwacks Community account when they have one. Nothing else is
+needed from the game. With no one signed in, or a sign-in that has run out and cannot be renewed, the session starts as
+before, unlinked; one that could not be renewed but has not run out yet is still sent. The session is linked only to the
+sign-in the launch's first Flock session started under: if the player signs out, anyone signs
+in, or the Flock SDK shuts down before the session starts, it starts unlinked. The sign-in goes with the session start alone and is never logged.
 
 A playtest build with no sign-in screen of its own can sign in from the console in Development builds:
 `Flock.LoginWithDevice`.

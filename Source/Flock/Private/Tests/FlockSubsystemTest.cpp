@@ -307,6 +307,227 @@ bool FFlockSubsystemExpiredSignInEndsAsASignOutDoesTest::RunTest(const FString& 
 	return true;
 }
 
+/**
+ * A token refresh still on its way when the game shuts Flock down answers into an initialization that has ended. The next
+ * initialization, which restored the same saved sign-in at once, is left signed in whatever that answer is: a refusal clears
+ * nothing and raises nothing, and a renewal's new pair (the only one the server still takes) is saved, and taken by the next
+ * initialization when its own renewal with the old refresh token is refused.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemRefreshAnsweredAfterShutdownTest, "Flock.Runtime.Subsystem.ARefreshAnsweredAfterShutdownLeavesTheNextInitializationSignedIn",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSubsystemRefreshAnsweredAfterShutdownTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockSubsystemAuthTestHelpers;
+
+	for (const bool bGranted : { false, true })
+	{
+		const FString Case = bGranted ? TEXT("granted") : TEXT("refused");
+		FSubsystemAuthFixture F;
+		F.Store->bHasTokens = true;
+		F.Store->Stored.AccessToken = MakeJwt(TEXT("p-sd"));
+		F.Store->Stored.RefreshToken = TEXT("r-1");
+		F.Store->Stored.AuthMethod = EFlockAuthMethod::Device;
+		const FString Renewed = MakeJwt(TEXT("p-sd"), 3700);
+		if (bGranted)
+		{
+			// The first renewal is the one answered late; the second is the next initialization's, sent with the old token.
+			F.Fake->OnSequence(TEXT("token/refresh"), { FFlockFakeTransport::Ok(FString::Printf(
+				TEXT("{\"player_id\":\"p-sd\",\"access_token\":\"%s\",\"refresh_token\":\"r-2\"}"), *Renewed)),
+				FFlockFakeTransport::Status(401, TEXT("")) });
+		}
+		else
+		{
+			F.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Status(401, TEXT("")));
+		}
+		F.Sdk->InitializeWithConfig(MakeValidConfig());
+		FFlockAuthProvider* Auth = F.Sdk->GetAuthProvider();
+		if (!TestNotNull(FString::Printf(TEXT("%s: auth wired"), *Case), Auth) || !TestTrue(FString::Printf(TEXT("%s: precondition: signed in"), *Case), F.Sdk->IsAuthenticated()))
+		{
+			F.Sdk->ShutdownSdk();
+			return false;
+		}
+		F.Fake->bDeferred = true;
+		Auth->RefreshToken([](bool) {});
+		F.Sdk->ShutdownSdk();
+
+		F.Fake->bDeferred = false;
+		F.Sdk->InitializeWithConfig(MakeValidConfig());
+		UFlockEventTestListener* Next = NewObject<UFlockEventTestListener>();
+		F.Sdk->GetEvents()->OnAuthExpired.AddDynamic(Next, &UFlockEventTestListener::HandleAuthExpired);
+		F.Sdk->GetEvents()->OnTokenRefreshed.AddDynamic(Next, &UFlockEventTestListener::HandleTokenRefreshed);
+		TestTrue(FString::Printf(TEXT("%s: the next initialization restored the player"), *Case), F.Sdk->IsAuthenticated());
+		const int32 ClearsBefore = F.Store->ClearCount;
+		F.Fake->FlushPending();
+
+		TestTrue(FString::Printf(TEXT("%s: the next initialization is still signed in"), *Case), F.Sdk->IsAuthenticated());
+		TestEqual(FString::Printf(TEXT("%s: the saved sign-in was not cleared"), *Case), F.Store->ClearCount, ClearsBefore);
+		TestEqual(FString::Printf(TEXT("%s: the next initialization hears no expiry"), *Case), Next->AuthExpiredCount, 0);
+		TestEqual(FString::Printf(TEXT("%s: nor a renewal of its own"), *Case), Next->TokenRefreshedCount, 0);
+		if (bGranted)
+		{
+			TestEqualSensitive(TEXT("granted: the late renewal's pair is saved"), F.Store->Stored.RefreshToken, FString(TEXT("r-2")));
+			FFlockAuthProvider* NextAuth = F.Sdk->GetAuthProvider();
+			bool bRefreshed = false;
+			if (NextAuth != nullptr)
+			{
+				NextAuth->RefreshToken([&bRefreshed](bool bOk) { bRefreshed = bOk; });
+			}
+			TestTrue(TEXT("granted: the next renewal, refused for the old token, carries on with the saved pair"), bRefreshed);
+			TestTrue(TEXT("granted: still signed in"), F.Sdk->IsAuthenticated());
+			TestEqual(TEXT("granted: still no expiry"), Next->AuthExpiredCount, 0);
+		}
+		F.Sdk->ShutdownSdk();
+	}
+	return true;
+}
+
+/**
+ * A restore renewing an expired sign-in when the game shuts Flock down and initializes it again at once: the next
+ * initialization restores the same saved sign-in, whose refresh token is already on its way. Sending it again would race
+ * the first request, and the server keeps one answer only, so it waits for that answer and carries on with the pair it
+ * left. The ended restore raises nothing on the next initialization.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemRestoreWaitsForTheEarlierRenewalTest, "Flock.Runtime.Subsystem.ARestoreWaitsForTheRenewalAnEarlierInitializationSent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSubsystemRestoreWaitsForTheEarlierRenewalTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockSubsystemAuthTestHelpers;
+
+	FSubsystemAuthFixture F;
+	F.Store->bHasTokens = true;
+	F.Store->Stored.AccessToken = MakeJwt(TEXT("p-wait"), -60);
+	F.Store->Stored.RefreshToken = TEXT("r-1");
+	F.Store->Stored.AuthMethod = EFlockAuthMethod::Device;
+	const FString Renewed = MakeJwt(TEXT("p-wait"), 3600);
+	// One renewal granted, and any second request with the same refresh token refused, as the server would after it.
+	F.Fake->OnSequence(TEXT("token/refresh"), { FFlockFakeTransport::Ok(FString::Printf(
+		TEXT("{\"player_id\":\"p-wait\",\"access_token\":\"%s\",\"refresh_token\":\"r-2\"}"), *Renewed)),
+		FFlockFakeTransport::Status(401, TEXT("")) });
+	F.Fake->bDeferred = true;
+	F.Sdk->InitializeWithConfig(MakeValidConfig());
+	TestEqual(TEXT("precondition: the first restore is renewing"), F.Fake->CountTo(TEXT("token/refresh")), 1);
+	F.Sdk->ShutdownSdk();
+	F.Sdk->InitializeWithConfig(MakeValidConfig());
+	TestEqual(TEXT("the next restore sends no second renewal while the first is on its way"), F.Fake->CountTo(TEXT("token/refresh")), 1);
+
+	const int32 RestoredBefore = F.Listener->SessionRestoredCount;
+	const int32 AuthenticatedBefore = F.Listener->AuthenticatedCount;
+	F.Fake->bDeferred = false;
+	F.Fake->FlushPending();
+
+	TestTrue(TEXT("the next initialization is signed in"), F.Sdk->IsAuthenticated());
+	TestEqualSensitive(TEXT("with the first renewal's token saved"), F.Store->Stored.AccessToken, Renewed);
+	TestEqual(TEXT("still one renewal sent in all"), F.Fake->CountTo(TEXT("token/refresh")), 1);
+	TestEqualSensitive(TEXT("its pair is saved"), F.Store->Stored.RefreshToken, FString(TEXT("r-2")));
+	TestEqual(TEXT("one restore heard: the next initialization's own"), F.Listener->SessionRestoredCount - RestoredBefore, 1);
+	TestTrue(TEXT("and it succeeded"), F.Listener->bLastSessionRestored);
+	TestEqual(TEXT("one sign-in heard"), F.Listener->AuthenticatedCount - AuthenticatedBefore, 1);
+	F.Sdk->ShutdownSdk();
+	return true;
+}
+
+/** A sign-in the server answers after Flock shut down is not kept: the next initialization neither hears it nor saves it. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemLoginAnsweredAfterShutdownTest, "Flock.Runtime.Subsystem.ASignInAnsweredAfterShutdownIsNotKept",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSubsystemLoginAnsweredAfterShutdownTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockSubsystemAuthTestHelpers;
+
+	FSubsystemAuthFixture F;
+	F.Fake->On(TEXT("player/login/device"), FFlockFakeTransport::Ok(FString::Printf(
+		TEXT("{\"player_id\":\"p-late\",\"access_token\":\"%s\",\"refresh_token\":\"r-late\"}"), *MakeJwt(TEXT("p-late")))));
+	F.Sdk->InitializeWithConfig(MakeValidConfig());
+	FFlockAuthProvider* Auth = F.Sdk->GetAuthProvider();
+	if (!TestNotNull(TEXT("auth wired"), Auth))
+	{
+		F.Sdk->ShutdownSdk();
+		return false;
+	}
+	F.Fake->bDeferred = true;
+	TOptional<FFlockError> Answer;
+	Auth->LoginWithDevice(TEXT("dev-late"), [&Answer](TFlockResult<FFlockPlayerLoginResponse> Result) { Answer = Result.Error; });
+	F.Sdk->ShutdownSdk();
+	F.Fake->bDeferred = false;
+	F.Sdk->InitializeWithConfig(MakeValidConfig());
+	const int32 AuthenticatedBefore = F.Listener->AuthenticatedCount;
+	const int32 SavesBefore = F.Store->SaveCount;
+	F.Fake->FlushPending();
+
+	TestFalse(TEXT("the next initialization is not signed in by it"), F.Sdk->IsAuthenticated());
+	TestEqual(TEXT("nor hears a sign-in"), F.Listener->AuthenticatedCount, AuthenticatedBefore);
+	TestEqual(TEXT("and nothing is saved"), F.Store->SaveCount, SavesBefore);
+	TestTrue(TEXT("the caller hears the sign-in was not kept"), Answer.IsSet() && Answer.GetValue().Type == EFlockErrorType::Cancelled);
+	TestTrue(TEXT("with what to do"), Answer.IsSet() && !Answer.GetValue().Hint.IsEmpty());
+	F.Sdk->ShutdownSdk();
+	return true;
+}
+
+/** A link or unlink the server answers after Flock shut down raises nothing for the next initialization's listeners. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemLinkAnsweredAfterShutdownTest, "Flock.Runtime.Subsystem.ALinkOrUnlinkAnsweredAfterShutdownRaisesNothing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSubsystemLinkAnsweredAfterShutdownTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockSubsystemAuthTestHelpers;
+
+	for (const bool bLink : { true, false })
+	{
+		const FString Case = bLink ? TEXT("link") : TEXT("unlink");
+		FSubsystemAuthFixture F;
+		F.Store->bHasTokens = true;
+		F.Store->Stored.AccessToken = MakeJwt(TEXT("p-link"));
+		F.Store->Stored.RefreshToken = TEXT("r-link");
+		F.Store->Stored.AuthMethod = EFlockAuthMethod::Device;
+		const FString Accounts = TEXT("{\"accounts\":[{\"provider\":\"device_id\",\"provider_user_id\":\"d-1\",\"email\":\"\",\"email_verified\":false}]}");
+		F.Fake->On(TEXT("player/link/device"), FFlockFakeTransport::Ok(Accounts));
+		F.Fake->On(TEXT("player/unlink/"), FFlockFakeTransport::Ok(Accounts));
+		UFlockEventTestListener* Heard = NewObject<UFlockEventTestListener>();
+		F.Sdk->GetEvents()->OnAccountLinked.AddDynamic(Heard, &UFlockEventTestListener::HandleAccountLinked);
+		F.Sdk->GetEvents()->OnAccountUnlinked.AddDynamic(Heard, &UFlockEventTestListener::HandleAccountUnlinked);
+		F.Sdk->InitializeWithConfig(MakeValidConfig());
+		FFlockAuthProvider* Auth = F.Sdk->GetAuthProvider();
+		if (!TestNotNull(FString::Printf(TEXT("%s: auth wired"), *Case), Auth) || !TestTrue(FString::Printf(TEXT("%s: precondition: signed in"), *Case), F.Sdk->IsAuthenticated()))
+		{
+			F.Sdk->ShutdownSdk();
+			return false;
+		}
+
+		// Control: answered while Flock runs, the event is raised.
+		if (bLink)
+		{
+			Auth->LinkDevice(TEXT("d-1"), [](TFlockResult<FFlockPlayerAccountsResponse>) {});
+		}
+		else
+		{
+			Auth->Unlink(EFlockCredentialProvider::DeviceId, [](TFlockResult<FFlockPlayerAccountsResponse>) {});
+		}
+		TestEqual(FString::Printf(TEXT("%s: control: raised while Flock runs"), *Case),
+			bLink ? Heard->AccountLinkedCount : Heard->AccountUnlinkedCount, 1);
+
+		F.Fake->bDeferred = true;
+		if (bLink)
+		{
+			Auth->LinkDevice(TEXT("d-1"), [](TFlockResult<FFlockPlayerAccountsResponse>) {});
+		}
+		else
+		{
+			Auth->Unlink(EFlockCredentialProvider::DeviceId, [](TFlockResult<FFlockPlayerAccountsResponse>) {});
+		}
+		F.Sdk->ShutdownSdk();
+		F.Fake->bDeferred = false;
+		F.Sdk->InitializeWithConfig(MakeValidConfig());
+		F.Fake->FlushPending();
+
+		TestEqual(FString::Printf(TEXT("%s: nothing raised for the next initialization"), *Case),
+			bLink ? Heard->AccountLinkedCount : Heard->AccountUnlinkedCount, 1);
+		F.Sdk->ShutdownSdk();
+	}
+	return true;
+}
+
 // ── A pasted API URL with a space or a trailing slash reaches the same routes as the editor's tools ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemTrimsTheApiUrlTest, "Flock.Runtime.Subsystem.TrimsTheApiUrl",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

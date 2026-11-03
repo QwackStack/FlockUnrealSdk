@@ -277,6 +277,13 @@ void UProtokitePlaytestSubsystem::HandleFlockLifecycleChanged()
 
 void UProtokitePlaytestSubsystem::HandleFlockSessionStarted(const FString& SessionId)
 {
+	// The sign-in a Flock session belongs to is the one current when it starts; its registration can answer after a switch.
+	const TSharedPtr<FFlockAuthSession> Auth = Flock.IsValid() ? Flock->AuthSession : nullptr;
+	if (Auth.IsValid())
+	{
+		SignInsFlockSessionsStartedUnder.Add(SessionId, { Auth, Auth->GetSignInNumber() });
+	}
+
 	// Only a failure to reach Protokite is worth asking again: a session starting is when playtest work would
 	// begin, and the game carries on whatever the answer is.
 	if (ConfigState == EProtokitePlaytestConfigState::Unavailable)
@@ -293,6 +300,18 @@ void UProtokitePlaytestSubsystem::HandleFlockSessionRegistered(const FString& Se
 	if (FirstFlockServerSessionId.IsEmpty())
 	{
 		FirstFlockServerSessionId = ServerSessionId;
+		if (const TPair<TWeakPtr<FFlockAuthSession>, int32>* StartedUnder = SignInsFlockSessionsStartedUnder.Find(SessionId))
+		{
+			FirstFlockSessionAuth = StartedUnder->Key;
+			FirstFlockSessionSignIn = StartedUnder->Value;
+		}
+		else
+		{
+			// Not seen starting (the playtest followed Flock after it had): the sign-in current now is the best known.
+			const TSharedPtr<FFlockAuthSession> Auth = Flock.IsValid() ? Flock->AuthSession : nullptr;
+			FirstFlockSessionAuth = Auth;
+			FirstFlockSessionSignIn = Auth.IsValid() ? Auth->GetSignInNumber() : 0;
+		}
 	}
 	StartPlaytestSessionWhenAllowed();
 }
@@ -310,6 +329,8 @@ void UProtokitePlaytestSubsystem::RefreshStatus()
 			ForgetPlaytestConfig();
 		}
 		FirstFlockServerSessionId.Empty();
+		FirstFlockSessionAuth.Reset();
+		SignInsFlockSessionsStartedUnder.Reset();
 	}
 
 	// Decided again after starting the fetch: a transport that answers straight away finishes the fetch, and
@@ -424,12 +445,12 @@ void UProtokitePlaytestSubsystem::ForgetPlaytestConfig()
 	ConfigFetchRequest = FFlockRequestHandle();
 }
 
-void UProtokitePlaytestSubsystem::StartPlaytestSessionWhenAllowed()
+bool UProtokitePlaytestSubsystem::IsReadyToStartPlaytestSession()
 {
 	// One start per launch, whatever became of it.
 	if (SessionState != EProtokitePlaytestSessionState::NotStarted || Status != EProtokitePlaytestStatus::Ready)
 	{
-		return;
+		return false;
 	}
 	if (FirstFlockServerSessionId.IsEmpty())
 	{
@@ -438,6 +459,17 @@ void UProtokitePlaytestSubsystem::StartPlaytestSessionWhenAllowed()
 			bLoggedWaitingForFlockSession = true;
 			UE_LOG(LogProtokitePlaytest, Log, TEXT("The Protokite session starts once a Flock session reaches the server. A Flock session starts when a player signs in, with Analytics Enabled and Analytics Auto Start Session on (or a Start Session call), and consent granted when Analytics Require Explicit Consent is on: Project Settings > Plugins > Flock SDK Settings."));
 		}
+		return false;
+	}
+	return true;
+}
+
+void UProtokitePlaytestSubsystem::StartPlaytestSessionWhenAllowed()
+{
+	// Asked again after the renewal: one answered at once has already run its answer, so the start may have gone, or what
+	// it needs may be gone (a refusal the game answers by shutting the Flock SDK down).
+	if (!IsReadyToStartPlaytestSession() || RenewPlayerTokenOrWait() || !IsReadyToStartPlaytestSession())
+	{
 		return;
 	}
 
@@ -480,7 +512,9 @@ void UProtokitePlaytestSubsystem::StartPlaytestSessionWhenAllowed()
 	const TMap<FString, FString> Headers = PlaytestSessionHeaders;
 	const bool bSentSteamId = !PlaytestIdentity.SteamId.IsEmpty();
 	const FString SentFlockSessionId = Request.FlockSessionId;
-	Client->StartPlaytestSession(ApiUrl, Headers, Request,
+	// The token goes on the start alone: the end, uploads and forms keep the session's headers, sent after the sign-in may
+	// be gone.
+	Client->StartPlaytestSession(ApiUrl, WithPlayerToken(Headers), Request,
 		[WeakThis, Client, ApiUrl, Headers, bSentSteamId, SentFlockSessionId](TFlockResult<FProtokitePlaytestSessionStartResult> Result)
 		{
 			UProtokitePlaytestSubsystem* Self = WeakThis.Get();
@@ -522,6 +556,71 @@ void UProtokitePlaytestSubsystem::StartPlaytestSessionWhenAllowed()
 			UE_LOG(LogProtokitePlaytest, Warning, TEXT("No Protokite session was started, and none is tried again this launch, because a start that reached Protokite may already have created one. %s"),
 				*Result.Error.ToDisplayText());
 		});
+}
+
+bool UProtokitePlaytestSubsystem::RenewPlayerTokenOrWait()
+{
+	// Protokite treats an expired token as none. A sign-in about to run out is renewed first, with a margin for a slow
+	// start or a device clock behind the server's, once per sign-in (a renewal keeps the sign-in number, so a sign-in
+	// whose renewal failed is not tried again on every event).
+	const TSharedPtr<FFlockAuthSession> Auth = Flock.IsValid() ? Flock->AuthSession : nullptr;
+	// A token the start will not carry is not worth waiting for.
+	if (!Auth.IsValid() || !IsTheFirstFlockSessionsSignIn(*Auth))
+	{
+		return false;
+	}
+	const bool bRenewedThisSignIn = PlayerTokenRenewedFor.HasSameObject(Auth.Get()) && PlayerTokenRenewedSignIn == Auth->GetSignInNumber();
+	const TOptional<FFlockJwtClaims>& Claims = Auth->GetClaims();
+	const bool bRunsOutSoon = Auth->IsAuthenticated() && Claims.IsSet() && Claims.GetValue().ExpirationTime.IsSet()
+		&& Claims.GetValue().ExpirationTime.GetValue()
+			<= FDateTime::UtcNow() + FTimespan::FromSeconds(ProtokitePlaytestSessionHeaders::PlayerTokenRenewalMarginSeconds);
+	if (bRunsOutSoon && !bRenewedThisSignIn)
+	{
+		PlayerTokenRenewedFor = Auth;
+		PlayerTokenRenewedSignIn = Auth->GetSignInNumber();
+		const TSharedRef<bool> Unfinished = MakeShared<bool>(true);
+		PlayerTokenRenewalUnfinished = Unfinished;
+		const TWeakObjectPtr<UProtokitePlaytestSubsystem> WeakThis(this);
+		// Answered on the game thread. Whatever the answer, the start goes: with the renewed token, or without one when
+		// the renewal failed or Flock refused it (which signs the player out; the start still names the Flock session it
+		// was ready under, kept in FirstFlockServerSessionId).
+		Auth->RefreshAccessToken(PlayerTokenRenewedSignIn, [WeakThis, Unfinished](bool /*bRenewed*/)
+		{
+			*Unfinished = false;
+			UProtokitePlaytestSubsystem* Self = WeakThis.Get();
+			if (Self != nullptr && Self->PlayerTokenRenewalUnfinished == Unfinished)
+			{
+				Self->StartPlaytestSessionWhenAllowed();
+			}
+		});
+	}
+	// A renewal sent for a sign-in that has since ended holds nothing up.
+	const bool bWaiting = PlayerTokenRenewedFor.HasSameObject(Auth.Get()) && PlayerTokenRenewedSignIn == Auth->GetSignInNumber()
+		&& PlayerTokenRenewalUnfinished.IsValid() && *PlayerTokenRenewalUnfinished;
+	if (bWaiting && !bLoggedWaitingForPlayerTokenRenewal)
+	{
+		bLoggedWaitingForPlayerTokenRenewal = true;
+		UE_LOG(LogProtokitePlaytest, Log, TEXT("The Protokite session starts once the player's Flock sign-in, a minute or less from running out, has been renewed, so Protokite can link the session to the player. It starts unlinked if the renewal fails."));
+	}
+	return bWaiting;
+}
+
+TMap<FString, FString> UProtokitePlaytestSubsystem::WithPlayerToken(const TMap<FString, FString>& Headers) const
+{
+	TMap<FString, FString> StartHeaders = Headers;
+	const TSharedPtr<FFlockAuthSession> Auth = Flock.IsValid() ? Flock->AuthSession : nullptr;
+	if (Auth.IsValid() && Auth->IsAuthenticated() && !Auth->IsTokenExpired() && IsTheFirstFlockSessionsSignIn(*Auth))
+	{
+		// Never logged.
+		StartHeaders.Add(ProtokitePlaytestSessionHeaders::PlayerToken, Auth->GetAccessToken());
+	}
+	return StartHeaders;
+}
+
+bool UProtokitePlaytestSubsystem::IsTheFirstFlockSessionsSignIn(const FFlockAuthSession& Auth) const
+{
+	// A renewal keeps the sign-in number; a sign-out, another player's sign-in or a new initialization moves on from it.
+	return FirstFlockSessionAuth.HasSameObject(&Auth) && FirstFlockSessionSignIn == Auth.GetSignInNumber();
 }
 
 FProtokitePlaytestIdentity UProtokitePlaytestSubsystem::ResolvePlaytestIdentity(FString& OutWhyNone) const

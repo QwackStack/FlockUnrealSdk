@@ -29,6 +29,7 @@ class FProtokiteClient;
 class IFlockFileUploader;
 class IProtokitePlaytestVideoFrameSource;
 class UFlockSubsystem;
+class FFlockAuthSession;
 enum class EProtokitePlaytestVideoStopReason : uint8;
 class UGameInstance;
 class UWorld;
@@ -579,6 +580,30 @@ private:
 	void StartPlaytestSessionWhenAllowed();
 
 	/**
+	 * True when nothing has been started this launch, the status is Ready and a Flock session has reached the server.
+	 * Logs the wait for a Flock session once. The one owner of the start's precondition.
+	 */
+	bool IsReadyToStartPlaytestSession();
+
+	/**
+	 * Renews the signed-in player's token when it has a minute or less left, once per sign-in, and returns true while the
+	 * start has to wait for that renewal. The renewal finishing tries the start again.
+	 */
+	bool RenewPlayerTokenOrWait();
+
+	/**
+	 * The start's headers: the session's, plus the player's raw access token while one is signed in and not expired, and
+	 * is the sign-in the named Flock session belongs to.
+	 */
+	TMap<FString, FString> WithPlayerToken(const TMap<FString, FString>& Headers) const;
+
+	/**
+	 * Whether Auth's current sign-in is the one the first Flock session registered under. Protokite links the session the
+	 * start names to the account whose token the start carries, so a player switch since then sends no token.
+	 */
+	bool IsTheFirstFlockSessionsSignIn(const FFlockAuthSession& Auth) const;
+
+	/**
 	 * The Steam id when a Steam subsystem is running, otherwise this install's device id. When neither can be had,
 	 * the identity is empty and OutWhyNone says why.
 	 */
@@ -612,16 +637,36 @@ private:
 	/** The server id of the current Flock initialization's first session to reach the server; empty until one has. */
 	FString FirstFlockServerSessionId;
 
+	/** The sign-in that first session started under, by its auth session and sign-in number. */
+	TWeakPtr<FFlockAuthSession> FirstFlockSessionAuth;
+	int32 FirstFlockSessionSignIn = 0;
+
+	/** The sign-in each of the current Flock initialization's sessions started under, by the session's local id. */
+	TMap<FString, TPair<TWeakPtr<FFlockAuthSession>, int32>> SignInsFlockSessionsStartedUnder;
+
 	EProtokitePlaytestSessionState SessionState = EProtokitePlaytestSessionState::NotStarted;
 	FString PlaytestSessionId;
 	FProtokitePlaytestIdentity PlaytestIdentity;
 
-	/** The Protokite API URL and headers the session start used. The end is sent with the same ones. */
+	/**
+	 * The Protokite API URL and headers the session start used, without the player's token. The end is sent with the
+	 * same ones.
+	 */
 	FString PlaytestSessionApiUrl;
 	TMap<FString, FString> PlaytestSessionHeaders;
 
+	/** The sign-in whose token the start renewed, by its auth session and sign-in number; renewed once each. */
+	TWeakPtr<FFlockAuthSession> PlayerTokenRenewedFor;
+	int32 PlayerTokenRenewedSignIn = 0;
+
+	/** True until the latest renewal answers. Each renewal has its own, so an earlier one answering late changes nothing. */
+	TSharedPtr<bool> PlayerTokenRenewalUnfinished;
+
 	/** Whether waiting for a Flock session has been logged this launch. */
 	bool bLoggedWaitingForFlockSession = false;
+
+	/** Whether waiting for the player's token to be renewed has been logged this launch. */
+	bool bLoggedWaitingForPlayerTokenRenewal = false;
 
 	/** Frames for the performance timeline. Its own ticker, which stops while the game is in the background. */
 	FFlockLifecyclePump PerformancePump;

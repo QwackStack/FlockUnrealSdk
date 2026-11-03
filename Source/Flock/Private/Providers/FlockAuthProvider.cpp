@@ -152,10 +152,12 @@ void FFlockAuthProvider::TryRestoreSession(TFunction<void(bool)> OnComplete)
 	const TSharedRef<bool> RestoringFlag = bRestoringSession;
 	// Restore runs outside Execute (it may never touch the network), so it tags its own logs.
 	const FString LoggedContext = DecorateContext(TEXT("Session restore"));
-	TFunction<void(bool)> Finish = [RestoringFlag, EventsWeak, OnComplete](bool bRestored)
+	TFunction<void(bool)> Finish = [RestoringFlag, EventsWeak, OnComplete, SessionRef](bool bRestored)
 	{
 		*RestoringFlag = false;
-		if (UFlockEvents* Hub = EventsWeak.Get())
+		// A restore still renewing when Flock shut down is the ended initialization's; the next one restores for itself.
+		UFlockEvents* Hub = SessionRef->IsShutDown() ? nullptr : EventsWeak.Get();
+		if (Hub != nullptr)
 		{
 			Hub->InvokeSessionRestored(bRestored);
 		}
@@ -515,7 +517,8 @@ FFlockRequestHandle FFlockAuthProvider::Unlink(EFlockCredentialProvider Provider
 			{
 				AdoptAccounts(Result.Value);
 				Log->LogInfo(FString::Printf(TEXT("%s from player: %s"), *LoggedContext, *SessionRef->GetPlayerId()));
-				if (UFlockEvents* Hub = EventsWeak.Get())
+				// Answered after Flock shut down: the next initialization's listeners did not ask.
+				if (UFlockEvents* Hub = SessionRef->IsShutDown() ? nullptr : EventsWeak.Get())
 				{
 					Hub->InvokeAccountUnlinked(Provider);
 				}

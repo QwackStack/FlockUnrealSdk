@@ -46,6 +46,10 @@ class FLOCK_API UFlockSubsystem : public UGameInstanceSubsystem
 {
 	GENERATED_BODY()
 
+	// The playtest plugin sends the signed-in player's access token on its session start, and renews one about to run
+	// out first, so it reads the auth session; no public call hands out the token.
+	friend class UProtokitePlaytestSubsystem;
+
 public:
 	/**
 	 * API version segment appended to the API URL for all SDK HTTP calls. Single source of truth —

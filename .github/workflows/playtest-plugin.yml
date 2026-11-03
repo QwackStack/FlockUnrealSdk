@@ -46,7 +46,12 @@ jobs:
 
           # The plugin's former name is searched for too, so a reference left behind by the 1.21.0 rename is
           # caught here rather than found by a studio whose project does not have the plugin.
-          HITS=$(grep -rniIE 'ProtokitePlaytest|FlockPlaytest' Source Config Flock.uplugin || true)
+          # One line is allowed (owner, 2026-11-03): UFlockSubsystem's friend grant, through which the playtest plugin
+          # reads the player's sign-in for its session start. A friend declaration names a class without needing it,
+          # so Flock still builds and loads alone. Only that exact line in that one header passes; every other
+          # mention, a second grant included, fails as before.
+          ALLOWED_GRANT='^Source/Flock/Public/FlockSubsystem\.h:[0-9]+:[[:space:]]*friend class UProtokitePlaytestSubsystem;[[:space:]]*$'
+          HITS=$(grep -rniIE 'ProtokitePlaytest|FlockPlaytest' Source Config Flock.uplugin | tr -d '\r' | grep -vE "$ALLOWED_GRANT" || true)
           if [ -n "$HITS" ]; then
             echo "::error::Flock names the optional playtest plugin, so a project that installed Flock alone would fail to build or load. This is a plain text scan and cannot tell an include from a comment, deliberately -- a comment that names it fails too, and the fix there is to reword it ('the optional playtest plugin'). Keep the code in OptionalPlugins/ProtokitePlaytest/, and if the playtest plugin needs something from Flock, add it to Flock without naming the plugin:"
             echo "$HITS"

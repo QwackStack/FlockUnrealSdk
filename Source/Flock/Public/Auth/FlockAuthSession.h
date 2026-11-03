@@ -53,7 +53,23 @@ public:
 	void ClearTokens();
 
 	/**
-	 * Which sign-in is current: a login, a restore and a sign-out each move it, a token refresh does not. A request or a
+	 * The Flock SDK shutting down: ends the sign-in in this initialization only, so a refresh answering later keeps, clears
+	 * and raises nothing here, and a sign-in answered later is not kept. The saved sign-in stays for the next
+	 * initialization to restore.
+	 */
+	void EndSignInForShutdown();
+
+	/** Whether Flock was shut down under this session: it then keeps no sign-in. */
+	bool IsShutDown() const { return bShutDown; }
+
+	/**
+	 * Called by the subsystem for the session of each initialization. A renewal answered after Flock shut down saves its
+	 * new pair through this session's store, the one that reads the saved file with the running Game Name.
+	 */
+	void BecomeTheRunningSession();
+
+	/**
+	 * Which sign-in is current: a login, a restore, a sign-out and a shut-down each move it, a token refresh does not. A request or a
 	 * repeating call remembers the number it went out under, so nothing it does lands on a later one.
 	 */
 	int32 GetSignInNumber() const { return SignInNumber; }
@@ -90,8 +106,12 @@ public:
 
 	/**
 	 * Refreshes the token of sign-in ForSignInNumber only: completes false without a request once that sign-in has ended,
-	 * and a reply landing after it ended changes nothing (no tokens kept or cleared, no event), so a refresh can never
-	 * sign a player back in after a sign-out or overwrite the next player.
+	 * and a reply landing after it ended changes nothing here (no tokens kept or cleared, no event), so a refresh can never
+	 * sign a player back in after a sign-out or overwrite the next player. The server forgets the refresh token it renewed,
+	 * so such a reply's new pair is saved where the saved sign-in still holds the token it replaced (a shut-down), and only
+	 * there. A refusal while the saved sign-in holds a newer pair for the same player (another initialization or another
+	 * run of the game renewed it) carries on with that pair instead of signing the player out. A refresh token an earlier
+	 * initialization sent and has not heard back on is not sent again: this waits for that answer.
 	 */
 	void RefreshAccessToken(int32 ForSignInNumber, TFunction<void(bool)> OnComplete);
 
@@ -100,11 +120,35 @@ private:
 	struct FRefreshInFlight
 	{
 		int32 SignInNumber = 0;
+		/** The player and refresh token sent; the server no longer takes that token once it answers with a new pair. */
+		FString PlayerId;
+		FString SentRefreshToken;
 		TArray<TFunction<void(bool)>> Callbacks;
+	};
+
+	/** A refresh token sent and not yet answered, in any initialization of this game, and who waits on its answer. */
+	struct FRefreshOnItsWay
+	{
+		TWeakPtr<FRefreshInFlight> Refresh;
+		TWeakPtr<FFlockAuthSession> SentBy;
+		TArray<TFunction<void()>> Waiters;
 	};
 
 	bool AdoptTokens(const FString& InAccessToken, const FString& InRefreshToken, FString& OutError);
 	void Persist();
+	/** Ends the sign-in in memory, for a sign-out and a shut-down alike. */
+	void ForgetTokensInMemory();
+	void SendRefresh(const TSharedRef<FRefreshInFlight>& Refresh);
+	void CarryOnAfterTheRefreshOnItsWay(const TSharedRef<FRefreshInFlight>& Refresh);
+	void SaveNewPairWhereTheSentOneIsStillSaved(const FRefreshInFlight& Refresh, const FString& NewAccessToken,
+		const FString& NewRefreshToken) const;
+	bool TakeANewerSavedSignIn(const TSharedRef<FRefreshInFlight>& Refresh);
+	/** The sign-in saved in From, when there is one and its access token is PlayerId's. */
+	static bool LoadSavedSignInOf(const TSharedPtr<IFlockTokenStore>& From, const FString& PlayerId, FFlockStoredTokens& OutSaved);
+	/** Game thread only, like everything here. Keyed by the refresh token itself, which is never logged. */
+	static TMap<FString, FRefreshOnItsWay>& RefreshesOnTheirWay();
+	static void LetTheWaitersCarryOn(const FString& SentRefreshToken);
+	static TWeakPtr<FFlockAuthSession>& RunningSession();
 	void FinishRefresh(const TSharedRef<FRefreshInFlight>& Refresh, bool bSuccess);
 	void FailRefreshAsExpired(const TSharedRef<FRefreshInFlight>& Refresh);
 
@@ -122,6 +166,7 @@ private:
 	TOptional<EFlockAuthMethod> AuthMethod;
 
 	int32 SignInNumber = 0;
+	bool bShutDown = false;
 	/** The refresh on its way for the current sign-in; one sent for an earlier sign-in is let go when the number moves. */
 	TSharedPtr<FRefreshInFlight> RefreshInFlight;
 };
