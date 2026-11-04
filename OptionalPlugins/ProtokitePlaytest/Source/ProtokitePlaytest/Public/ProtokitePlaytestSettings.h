@@ -7,13 +7,15 @@
 #include "Engine/DeveloperSettings.h"
 #include "ProtokitePlaytestSettings.generated.h"
 
+class UTexture2D;
+
 /**
  * Protokite Playtest settings for this project.
  *
  * Playtesting does nothing until Enable Playtesting is turned on and Protokite API URL is set. Values are
  * saved to the project's DefaultGame.ini and read at runtime.
  */
-UCLASS(Config = Game, DefaultConfig, meta = (DisplayName = "Protokite Playtest Settings"))
+UCLASS(Config = Game, DefaultConfig, BlueprintType, meta = (DisplayName = "Protokite Playtest Settings"))
 class PROTOKITEPLAYTEST_API UProtokitePlaytestSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
@@ -114,4 +116,42 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Feedback Form", meta = (DisplayName = "Pause The Game While The Form Is Open"))
 	bool bPauseWhileFeedbackFormIsOpen = false;
 
+	/** The height a feedback form logo is drawn at when the settings say nothing else, and the range it is kept to. */
+	static constexpr float DefaultFeedbackFormLogoHeight = 40.f;
+	static constexpr float ShortestFeedbackFormLogoHeight = 16.f;
+	static constexpr float TallestFeedbackFormLogoHeight = 96.f;
+
+	/** The height the footer logo is drawn at when the settings say nothing else, and the range it is kept to. */
+	static constexpr float DefaultFeedbackFormFooterLogoHeight = 22.f;
+	static constexpr float ShortestFeedbackFormFooterLogoHeight = 12.f;
+	static constexpr float TallestFeedbackFormFooterLogoHeight = 48.f;
+
+	/**
+	 * Empty by default. Your own images (a studio's, an event's or its sponsors'), drawn left to right in a row above the
+	 * feedback form's title, on one row: when they do not all fit, all are drawn smaller together, each in its own shape.
+	 * Import each with Padding and Resizing set to None, or it is stretched to a power of two and drawn soft, or padded
+	 * and drawn squeezed above a band of padding; and with mipmaps, so it stays smooth drawn smaller: Mip Gen Settings
+	 * anything but NoMipmaps, and not FromTextureGroup when the Texture Group is UI. Images with transparent backgrounds
+	 * suit the form's dark panel. The images listed here are packaged with the game.
+	 */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Feedback Form", meta = (DisplayName = "Feedback Form Logos"))
+	TArray<TSoftObjectPtr<UTexture2D>> FeedbackFormLogos;
+
+	/** How tall each logo on the form is drawn, at the same scale as the rest of the form; each keeps its image's shape. */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Feedback Form",
+		meta = (DisplayName = "Feedback Form Logo Height", ClampMin = "16", ClampMax = "96", UIMin = "16", UIMax = "96"))
+	float FeedbackFormLogoHeight = DefaultFeedbackFormLogoHeight;
+
+	/**
+	 * Empty by default, when the form shows Powered by Qwacks there. One small image of your own, drawn instead at the
+	 * feedback form's bottom left, on the row of Close and Send; on a narrow form it is drawn smaller, never the
+	 * buttons. There is no setting to hide the mark: your own image replaces it. Import it like the logos above.
+	 */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Feedback Form", meta = (DisplayName = "Feedback Form Footer Logo"))
+	TSoftObjectPtr<UTexture2D> FeedbackFormFooterLogo;
+
+	/** How tall the footer logo is drawn, at the same scale as the rest of the form; it keeps its image's shape. */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadWrite, Category = "Feedback Form",
+		meta = (DisplayName = "Feedback Form Footer Logo Height", ClampMin = "12", ClampMax = "48", UIMin = "12", UIMax = "48"))
+	float FeedbackFormFooterLogoHeight = DefaultFeedbackFormFooterLogoHeight;
 };

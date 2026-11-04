@@ -658,6 +658,22 @@ bool FProtokitePlaytestVideoRecordingAsksForNoFrameWhileEarlierOnesAreOnTheirWay
 	return true;
 }
 
+/**
+ * Waits, at most GiveUpAfterSeconds, until fewer than MaxFramesWaitingToEncode frames handed over are still waiting for
+ * the encoding thread (one may be encoding, so two short of the limit). The two tests below hand frames over at the pace a
+ * game does, and on a busy machine (every engine's suite in a row) a fixed pace once outran the encoder itself. An encoder
+ * that is held up never catches up, so the wait gives up and the frames that follow are dropped and counted.
+ */
+static void WaitForTheEncoderToTakeTheFramesHandedOver(const std::atomic<int32>& EncodesStarted, int32 FramesHandedOver, double GiveUpAfterSeconds)
+{
+	const double GiveUpSeconds = FPlatformTime::Seconds() + GiveUpAfterSeconds;
+	while (FramesHandedOver - EncodesStarted.load() > FProtokitePlaytestVideoRecording::MaxFramesWaitingToEncode - 2
+		&& FPlatformTime::Seconds() < GiveUpSeconds)
+	{
+		FPlatformProcess::Sleep(0.001f);
+	}
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestVideoRecordingAStalledWriteDoesNotHoldEncodingUpTest,
 	"Protokite.Playtest.Video.Recording.AStalledWriteDoesNotHoldEncodingUp",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
@@ -669,8 +685,18 @@ bool FProtokitePlaytestVideoRecordingAStalledWriteDoesNotHoldEncodingUpTest::Run
 	FString Error;
 	{
 		const TSharedRef<FTestVideoFrameSource> Source = MakeShared<FTestVideoFrameSource>(FIntPoint(64, 36));
+		const TSharedRef<std::atomic<int32>> EncodesStarted = MakeShared<std::atomic<int32>>(0);
+		// When the first write began: the test lets go of it no sooner than 200 ms after, however late a busy machine starts it.
+		const TSharedRef<std::atomic<double>> FirstWriteBeganSeconds = MakeShared<std::atomic<double>>(0.0);
 		const TSharedPtr<FProtokitePlaytestVideoRecording> Recording = FProtokitePlaytestVideoRecording::Start(Source, FProtokitePlaytestVideoSettings(),
-			FPaths::Combine(Folder, TEXT("stalled.webm")), Error, nullptr, [WriteGate]() { WriteGate->Wait(); return true; });
+			FPaths::Combine(Folder, TEXT("stalled.webm")), Error, [EncodesStarted]() { ++*EncodesStarted; },
+			[WriteGate, FirstWriteBeganSeconds]()
+			{
+				double NotYet = 0.0;
+				FirstWriteBeganSeconds->compare_exchange_strong(NotYet, FPlatformTime::Seconds());
+				WriteGate->Wait();
+				return true;
+			});
 		if (!TestTrue(TEXT("The recording starts"), Recording.IsValid()))
 		{
 			AddError(Error);
@@ -680,13 +706,21 @@ bool FProtokitePlaytestVideoRecordingAStalledWriteDoesNotHoldEncodingUpTest::Run
 		}
 
 		// The disk holds the first write for the whole run, the way a single write held it for 2.7 s in a live run. Frames
-		// come at the pace a game hands them over, not all at once.
+		// come at the pace a game hands them over, not all at once. An encoder free of the write takes a frame this small in
+		// well under half a second even on a busy machine; one held up by the write never does.
 		for (int32 Index = 0; Index < 30; ++Index)
 		{
+			WaitForTheEncoderToTakeTheFramesHandedOver(*EncodesStarted, Index, 0.5);
 			Recording->AddFrame(1.0 / 30.0);
 			FPlatformProcess::Sleep(0.005f);
 		}
 		const int32 DroppedWhileHeld = Recording->GetSummary().FramesDroppedBecauseEncodingFellBehind;
+		const double HoldUntilSeconds = FPlatformTime::Seconds() + 5.0;
+		while ((FirstWriteBeganSeconds->load() == 0.0 || FPlatformTime::Seconds() - FirstWriteBeganSeconds->load() < 0.2)
+			&& FPlatformTime::Seconds() < HoldUntilSeconds)
+		{
+			FPlatformProcess::Sleep(0.005f);
+		}
 		WriteGate->Trigger();
 		Recording->StopCapturing(EProtokitePlaytestVideoStopReason::StoppedByGame);
 		Recording->WaitUntilWritten();
@@ -712,8 +746,11 @@ bool FProtokitePlaytestVideoRecordingDropsFramesWhenWritingFallsBehindTest::RunT
 	FString Error;
 	{
 		const TSharedRef<FTestVideoFrameSource> Source = MakeShared<FTestVideoFrameSource>(FIntPoint(64, 36));
+		// This test is about the writing falling behind, so the frames come no faster than the encoder takes them.
+		const TSharedRef<std::atomic<int32>> EncodesStarted = MakeShared<std::atomic<int32>>(0);
 		const TSharedPtr<FProtokitePlaytestVideoRecording> Recording = FProtokitePlaytestVideoRecording::Start(Source, FProtokitePlaytestVideoSettings(),
-			FPaths::Combine(Folder, TEXT("behind.webm")), Error, nullptr, [WriteGate]() { WriteGate->Wait(); return true; });
+			FPaths::Combine(Folder, TEXT("behind.webm")), Error, [EncodesStarted]() { ++*EncodesStarted; },
+			[WriteGate]() { WriteGate->Wait(); return true; });
 		if (!TestTrue(TEXT("The recording starts"), Recording.IsValid()))
 		{
 			AddError(Error);
@@ -727,6 +764,7 @@ bool FProtokitePlaytestVideoRecordingDropsFramesWhenWritingFallsBehindTest::RunT
 		const int32 Frames = FProtokitePlaytestVideoRecording::MaxFramesWaitingToWrite + FramesPastTheLimit;
 		for (int32 Index = 0; Index < Frames; ++Index)
 		{
+			WaitForTheEncoderToTakeTheFramesHandedOver(*EncodesStarted, Index, 5.0);
 			Recording->AddFrame(1.0 / 30.0);
 			FPlatformProcess::Sleep(0.002f);
 		}

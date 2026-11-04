@@ -388,10 +388,16 @@ public:
 	/** Waits until the worker has finished what it was handed. The next video tick then applies a finished file. */
 	void WaitUntilVideoWrittenForTesting();
 
+	/** The form Open Feedback Form would show now, built from the settings as they are, without putting it on screen. */
+	TSharedRef<SProtokitePlaytestFormWidget> MakeFeedbackFormWidgetForTesting() { return MakeFeedbackFormWidget(); }
+
 	/** Whether the video recording's ticker is running. */
 	bool IsVideoTickerRunningForTesting() const { return VideoPump.IsRunning(); }
 
 private:
+	/** The feedback form over this playtest's published form, with the logos the settings name as it opens. */
+	TSharedRef<SProtokitePlaytestFormWidget> MakeFeedbackFormWidget();
+
 	/**
 	 * Starts following the Flock SDK's initialize, shut-down and session events, and decides the status straight
 	 * away, so a Flock SDK that initialized before this was called is seen without waiting for an event that has

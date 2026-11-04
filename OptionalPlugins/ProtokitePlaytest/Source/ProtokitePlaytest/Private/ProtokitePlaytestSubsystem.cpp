@@ -20,6 +20,7 @@
 #include "ProtokitePlaytestSampleAnswers.h"
 #include "ProtokitePlaytestFormSpool.h"
 #include "SProtokitePlaytestConsentWidget.h"
+#include "ProtokitePlaytestFormLogos.h"
 #include "SProtokitePlaytestFormWidget.h"
 #include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
@@ -1570,8 +1571,26 @@ bool UProtokitePlaytestSubsystem::OpenFeedbackForm()
 		return false;
 	}
 
-	const TSharedRef<SProtokitePlaytestFormWidget> Widget = SNew(SProtokitePlaytestFormWidget)
+	const TSharedRef<SProtokitePlaytestFormWidget> Widget = MakeFeedbackFormWidget();
+	FormWidget = Widget;
+	ShowPanelOverTheGame(Widget);
+
+	const UProtokitePlaytestSettings* Settings = GetDefault<UProtokitePlaytestSettings>();
+	if (Settings->bPauseWhileFeedbackFormIsOpen && !UGameplayStatics::IsGamePaused(this))
+	{
+		bPausedForTheForm = UGameplayStatics::SetGamePaused(this, true);
+	}
+
+	UE_LOG(LogProtokitePlaytest, Log, TEXT("The playtest feedback form is open."));
+	return true;
+}
+
+TSharedRef<SProtokitePlaytestFormWidget> UProtokitePlaytestSubsystem::MakeFeedbackFormWidget()
+{
+	return SNew(SProtokitePlaytestFormWidget)
 		.Form(PlaytestConfig.Form)
+		// Read as each form opens, so a game that changes them between two forms sees the second one follow.
+		.Logos(FProtokitePlaytestFormLogos::FromSettings(*GetDefault<UProtokitePlaytestSettings>()))
 		.OnSubmitted_Lambda([this](const FProtokitePlaytestFormAnswers& Answers)
 		{
 			SendFilledInForm(Answers);
@@ -1588,18 +1607,6 @@ bool UProtokitePlaytestSubsystem::OpenFeedbackForm()
 			UE_LOG(LogProtokitePlaytest, Log, TEXT("The player asked for their recording to be sent."));
 			return StopVideoRecordingAndUploadIt();
 		});
-
-	FormWidget = Widget;
-	ShowPanelOverTheGame(Widget);
-
-	const UProtokitePlaytestSettings* Settings = GetDefault<UProtokitePlaytestSettings>();
-	if (Settings->bPauseWhileFeedbackFormIsOpen && !UGameplayStatics::IsGamePaused(this))
-	{
-		bPausedForTheForm = UGameplayStatics::SetGamePaused(this, true);
-	}
-
-	UE_LOG(LogProtokitePlaytest, Log, TEXT("The playtest feedback form is open."));
-	return true;
 }
 
 bool UProtokitePlaytestSubsystem::CloseFeedbackForm()

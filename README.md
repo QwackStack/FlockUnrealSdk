@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.39.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.40.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -451,7 +451,7 @@ so you can read only the half you work in.
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, screen views, gameplay events, transactions, consent — what players did (Dashboards → Game Metrics) |
 | [Diagnostics](Documentation/diagnostics.md) | Log entries, automatic exception and Blueprint exception capture, crash reporting — what went wrong (Diagnostics → Errors / Events) |
-| [Playtesting with Protokite](Documentation/playtesting.md) | The optional Protokite Playtest plugin: setup, the session per launch, video, heavy analytics, exceptions, the feedback form and its Blueprint nodes, what to tell players |
+| [Playtesting with Protokite](Documentation/playtesting.md) | The optional Protokite Playtest plugin: setup, the session per launch, video, heavy analytics, exceptions, the feedback form, its logos and its Blueprint nodes, what to tell players |
 | [SDK events](Documentation/events.md) | The event hub — lifecycle, auth, and session events |
 | [Errors](Documentation/errors.md) | What an `FFlockError` carries, branching on codes, the hint that names the fix, field-error validation failures |
 | [Logging & debugging](Documentation/logging.md) | The SDK's own log output, the network call trace, the self-test |

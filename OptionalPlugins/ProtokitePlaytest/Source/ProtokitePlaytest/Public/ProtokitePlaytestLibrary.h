@@ -9,6 +9,7 @@
 #include "ProtokitePlaytestStatus.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Models/FlockCommandModels.h"
+#include "ProtokitePlaytestSettings.h"
 #include "ProtokitePlaytestLibrary.generated.h"
 
 /**
@@ -170,6 +171,15 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Protokite Is Feedback Form Open"))
 	static bool IsFeedbackFormOpen(const UObject* WorldContextObject);
+
+	/**
+	 * The project's Protokite Playtest settings, for a game that changes the feedback form's logos while it runs: Feedback
+	 * Form Logos, Feedback Form Logo Height, Feedback Form Footer Logo and Feedback Form Footer Logo Height are read each
+	 * time the form opens. Needs no playtest. A change is not saved and lasts until the game quits; in Play In Editor it
+	 * lasts until the editor closes, and saving Project Settings meanwhile keeps it.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (DisplayName = "Protokite Get Playtest Settings"))
+	static UProtokitePlaytestSettings* GetPlaytestSettings() { return GetMutableDefault<UProtokitePlaytestSettings>(); }
 
 	/**
 	 * The playtest's published feedback form, for a game that draws its own: its title, and each question's id, kind,

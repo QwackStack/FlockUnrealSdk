@@ -184,3 +184,41 @@ jobs:
           fi
 
           echo "Every file that calls TestEqualSensitive brings the UE 5.4 stand-in ($(printf '%s\n' "$FILES" | grep -c .) files)."
+
+      - name: Every asset that ships is saved by the floor engine
+        run: |
+          set -euo pipefail
+
+          # An asset loads in the engine that saved it and every newer one, never an older one. The multiplayer sample and
+          # the playtest form's Powered by Qwacks mark ship as assets, so each one saved by a newer engine than the floor
+          # would fail to load in every project on the floor. Each asset names the engine that saved it as ++UE5+Release-X.Y.
+          COMPAT_H="Source/Flock/Public/Misc/FlockEngineCompat.h"
+          MAJOR=$(grep -oE '#define[[:space:]]+FLOCK_ENGINE_FLOOR_MAJOR[[:space:]]+[0-9]+' "$COMPAT_H" | grep -oE '[0-9]+$')
+          MINOR=$(grep -oE '#define[[:space:]]+FLOCK_ENGINE_FLOOR_MINOR[[:space:]]+[0-9]+' "$COMPAT_H" | grep -oE '[0-9]+$')
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ]; then
+            echo "::error::Could not read the floor from $COMPAT_H -- the macros were renamed or removed."
+            exit 1
+          fi
+          FLOOR="${MAJOR}.${MINOR}"
+
+          ASSETS=$(git ls-files -- '*.uasset' '*.umap')
+          if [ -z "$ASSETS" ]; then
+            echo "::error::No assets found, but the multiplayer sample and the playtest plugin's mark ship as assets. If they moved, update this check."
+            exit 1
+          fi
+          WRONG=""
+          COUNT=0
+          while IFS= read -r ASSET; do
+            COUNT=$((COUNT + 1))
+            SAVED_BY=$(grep -aoE '\+\+UE[0-9]+\+Release-[0-9]+\.[0-9]+' "$ASSET" | sort -u | sed -E 's/.*Release-//' | tr '\n' ' ' | sed 's/ $//' || true)
+            if [ "$SAVED_BY" != "$FLOOR" ]; then
+              WRONG="${WRONG}${ASSET}: saved by UE ${SAVED_BY:-unknown}"$'\n'
+            fi
+          done <<< "$ASSETS"
+
+          if [ -n "$WRONG" ]; then
+            echo "::error::These assets were not saved by UE $FLOOR, the oldest engine the SDK supports, so that engine cannot load them. Open and save each in UE $FLOOR (for an imported image, import it again there):"
+            printf '%s' "$WRONG"
+            exit 1
+          fi
+          echo "All $COUNT assets are saved by UE $FLOOR."

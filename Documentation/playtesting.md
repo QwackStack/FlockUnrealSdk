@@ -201,6 +201,16 @@ shows and typing goes to it; closing or sending it puts both back as they were. 
 Open** is off by default, because pausing does nothing in a multiplayer game and loses what a single player was about to
 describe.
 
+**Your own logos on the form.** Set them under **Feedback Form** in *Project Settings > Plugins > Protokite Playtest
+Settings*, or from a Blueprint with **Protokite Get Playtest Settings**; every one is read each time the form opens.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| Feedback Form Logos | empty | Your own images, such as your studio's or an event's sponsors', drawn left to right in one row above the form's title, all drawn smaller together when they do not fit, each in its own shape, with a thin line under them. An empty slot is left out. Import each with **Padding and Resizing** set to **None**, or it is stretched to a power of two and drawn soft, or padded and drawn squeezed above a band of padding, and with mipmaps, so it stays smooth drawn smaller: **Mip Gen Settings** anything but **NoMipmaps**, and not **FromTextureGroup** when the Texture Group is **UI**. Images with transparent backgrounds suit the form's dark panel. The images listed here are packaged with your game |
+| Feedback Form Logo Height | 40 | How tall each logo is drawn, from 16 to 96, at the same scale as the rest of the form. A logo wider than the form is drawn smaller in its own shape |
+| Feedback Form Footer Logo | empty | Empty, the form shows Powered by Qwacks at its bottom left, on the row of Close and Send. One small image of your own drawn there instead, in its own shape; on a narrow form it is drawn smaller, never the buttons. There is no setting to hide the mark; your own image replaces it. Import it like the logos above |
+| Feedback Form Footer Logo Height | 22 | How tall the footer logo is drawn, from 12 to 48, at the same scale as the rest of the form |
+
 Every question comes from the playtest, so editing the form in Protokite changes what players see with no new build.
 Answers are checked before sending, with every problem shown against its question. A form that cannot be sent is kept
 and sent by a later launch, and sending again in the same session replaces the earlier answers.
@@ -218,8 +228,9 @@ it. Two rules that are easy to miss:
 
 ## Blueprint nodes
 
-All under *Flock | Playtest*. Each finds the playtest from the calling graph and is safe in every build: with no
-playtest running it answers false, empty or Turned Off and changes nothing.
+All under *Protokite | Playtest*. Each finds the playtest from the calling graph and is safe in every build: with no
+playtest running it answers false, empty or Turned Off and changes nothing. The exception is **Protokite Get Playtest
+Settings**, which needs no playtest and hands back the project's settings.
 
 | Node | Answers or does |
 |---|---|
@@ -232,6 +243,7 @@ playtest running it answers false, empty or Turned Off and changes nothing.
 | Protokite Is Recording Video, Protokite Stop Video Recording | The launch's recording |
 | Protokite Can Send Playtest Recording, Protokite Stop And Upload Playtest Recording | Sending the recording now |
 | Protokite Can Open Feedback Form, Protokite Open / Close Feedback Form, Protokite Is Feedback Form Open | The built-in form |
+| Protokite Get Playtest Settings | The project's playtest settings, to change the form's logos while the game runs. It needs no playtest. A change is not saved and lasts until the game quits; in Play In Editor it lasts until the editor closes, and saving Project Settings meanwhile keeps it |
 | Protokite Get Feedback Form, Set Feedback … Answer, Find Feedback Form Problems, Protokite Send Feedback Form Answers | A form of your own |
 
 ## Trying it in the editor

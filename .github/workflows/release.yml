@@ -101,6 +101,8 @@ jobs:
           require_entry playtest-entries.txt ProtokitePlaytest/LICENSE.md
           require_entry playtest-entries.txt ProtokitePlaytest/Source/ProtokitePlaytest/ProtokitePlaytest.Build.cs
           require_entry playtest-entries.txt ProtokitePlaytest/Source/ProtokitePlaytestEditor/ProtokitePlaytestEditor.Build.cs
+          # The feedback form draws Powered by Qwacks from the plugin's Content; without it every form loses the mark.
+          require_entry playtest-entries.txt ProtokitePlaytest/Content/ProtokitePlaytestPoweredByQwacks.uasset
           if grep -v '^ProtokitePlaytest/' playtest-entries.txt; then
             echo "::error::The playtest archive has entries outside ProtokitePlaytest/ (above)."
             FAILED=1
