@@ -81,12 +81,12 @@ namespace
 		{
 			// Dict keys are author-supplied data, NOT field names — kept verbatim, never case-transformed.
 			TSharedRef<FJsonObject> DictObject = MakeShared<FJsonObject>();
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Value->AsObject()->Values)
+			for (const auto& Pair : Value->AsObject()->Values)
 			{
 				const TSharedPtr<FJsonObject> EntryField = Pair.Value.IsValid() ? Pair.Value->AsObject() : nullptr;
 				if (EntryField.IsValid())
 				{
-					DictObject->SetField(Pair.Key, FlattenField(EntryField));
+					DictObject->SetField(FString(*Pair.Key), FlattenField(EntryField));
 				}
 			}
 			return MakeShared<FJsonValueObject>(DictObject);

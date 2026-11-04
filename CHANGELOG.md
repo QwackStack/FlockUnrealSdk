@@ -36,9 +36,20 @@ The playtest feedback form carries the game's own logos, and Powered by Qwacks a
 
 ### Fixed
 
+- **Flock compiles for Android on UE 5.8.** UE 5.8 changed the key type of a JSON object's members. Eight loops
+  over them named the pair with FString keys, which makes a converted copy. Android's compiler refuses that
+  (`-Wrange-loop-construct`), while the Windows compiler accepts it, so the Windows sweep never saw it. The loops now read each key as
+  `FString(*Pair.Key)`, which compiles on UE 5.4 to 5.8. Found by the first Android build on UE 5.8.
+- **An API URL that is a scheme alone stops initialization and says why.** An address written by hand in a config file
+  without quotes, `ApiUrl=http://127.0.0.1:8001`, reaches the game as `http:`: the engine reads everything from `//` on as
+  a comment. Flock used to initialize on it and fail every call as unable to reach the server, with no word about the
+  address. Initialization now fails with a message that names the address and the quotes it needs. An address without a
+  scheme works as before. Found by the first Android build on UE 5.8.
 - Tests: the two video recording tests that hold the disk (a stalled write, writing falling behind) hand frames over no
   faster than the encoder takes them and hold the write for a measured time, so a busy machine no longer fails them. A
   fixed pace failed one of them on UE 5.8 during a run of every engine's suite.
+- Tests: the direct path test of a player let in again through a new bridge waits for the host's new link, as its other
+  steps wait, rather than reading it the instant the earlier link stops.
 
 ## [1.39.0] - 2026-11-02
 

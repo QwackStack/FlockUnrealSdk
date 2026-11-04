@@ -16,6 +16,7 @@
 #include "Tests/Support/FlockTestSdk.h"
 #include "Config/FlockConfig.h"
 #include "Misc/ScopeExit.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Providers/FlockAnalyticsProvider.h"
 #include "Providers/FlockAuthProvider.h"
 #include "Http/FlockSnapshotStore.h"
@@ -642,6 +643,52 @@ bool FFlockSubsystemRefusesAnEmptyApiUrlTest::RunTest(const FString& Parameters)
 	Test->InitializeWithConfig(Config);
 	TestFalse(TEXT("The SDK does not initialize on a URL of nothing"), Test->IsInitialized());
 	TestTrue(TEXT("And says so"), Test->GetInitializationError().Contains(TEXT("API URL is empty"), ESearchCase::CaseSensitive));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSubsystemRefusesAnUnquotedConfigApiUrlTest,
+	"Flock.Runtime.Subsystem.RefusesAnApiUrlCutShortByAnUnquotedConfigLine",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSubsystemRefusesAnUnquotedConfigApiUrlTest::RunTest(const FString& Parameters)
+{
+	// The engine's own config reader, as it reads a game's DefaultGame.ini: unquoted, "//" starts a comment.
+	FConfigFile Unquoted;
+	Unquoted.CombineFromBuffer(TEXT("[/Script/Flock.FlockConfig]\nApiUrl=http://127.0.0.1:8001\n"), TEXT("FlockApiUrlTest"));
+	FString CutShort;
+	Unquoted.GetString(TEXT("/Script/Flock.FlockConfig"), TEXT("ApiUrl"), CutShort);
+	TestEqualSensitive(TEXT("The engine keeps only the scheme of an unquoted address"), CutShort, FString(TEXT("http:")));
+
+	FConfigFile Quoted;
+	Quoted.CombineFromBuffer(TEXT("[/Script/Flock.FlockConfig]\nApiUrl=\"http://127.0.0.1:8001\"\n"), TEXT("FlockApiUrlTest"));
+	FString Whole;
+	Quoted.GetString(TEXT("/Script/Flock.FlockConfig"), TEXT("ApiUrl"), Whole);
+	TestEqualSensitive(TEXT("A quoted address is kept whole"), Whole, FString(TEXT("http://127.0.0.1:8001")));
+
+	{
+		AddExpectedError(TEXT("Initialize failed"), EAutomationExpectedErrorFlags::Contains, 1);
+		FFlockTestSdk Test;
+		FFlockInitConfig Config = MakeValidConfig();
+		Config.ApiUrl = CutShort;
+		Test->InitializeWithConfig(Config);
+		TestFalse(TEXT("The SDK does not initialize on a scheme alone"), Test->IsInitialized());
+		const FString Error = Test->GetInitializationError();
+		TestTrue(TEXT("It says the address has no server"), Error.Contains(TEXT("has no server address"), ESearchCase::CaseSensitive));
+		TestTrue(TEXT("And that a config file needs quotes"), Error.Contains(TEXT("needs quotes"), ESearchCase::CaseSensitive));
+	}
+	{
+		FFlockTestSdk Test;
+		FFlockInitConfig Config = MakeValidConfig();
+		Config.ApiUrl = Whole;
+		Test->InitializeWithConfig(Config);
+		TestTrue(TEXT("The whole address initializes"), Test->IsInitialized());
+	}
+
+	TestTrue(TEXT("\"https://\" trims to a scheme alone"), FFlockInitConfig::IsSchemeAlone(FFlockInitConfig::TrimApiUrl(TEXT("https://"))));
+	TestTrue(TEXT("Letter case does not hide a scheme"), FFlockInitConfig::IsSchemeAlone(TEXT("HTTP:")));
+	TestFalse(TEXT("An address without a scheme is left to work as before"), FFlockInitConfig::IsSchemeAlone(TEXT("localhost:8001")));
+	TestFalse(TEXT("A full address is not a scheme alone"), FFlockInitConfig::IsSchemeAlone(TEXT("https://api.example.com")));
+	TestFalse(TEXT("A colon alone is no scheme"), FFlockInitConfig::IsSchemeAlone(TEXT(":")));
 	return true;
 }
 

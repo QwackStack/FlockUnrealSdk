@@ -53,6 +53,13 @@ struct FLOCK_API FFlockInitConfig
 	static FString TrimApiUrl(const FString& ApiUrl);
 
 	/**
+	 * Whether a trimmed API URL is a scheme and nothing after it ("http:", which is also what "http://" trims to). An
+	 * address written by hand in a config file without quotes arrives like this: the engine reads everything from "//" on
+	 * as a comment.
+	 */
+	static bool IsSchemeAlone(const FString& TrimmedApiUrl);
+
+	/**
 	 * Base HTTP headers every SDK request carries: X-Flock-API-Key and X-Game-Version-ID. The
 	 * Authorization: Bearer header is added by the auth
 	 * layer once it lands, not here.

@@ -99,13 +99,13 @@ bool FFlockPlayerBan::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlo
 	const TSharedPtr<FJsonObject>* DataObject = nullptr;
 	if (Object->TryGetObjectField(TEXT("data"), DataObject) && DataObject != nullptr)
 	{
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*DataObject)->Values)
+		for (const auto& Pair : (*DataObject)->Values)
 		{
 			// Feature keys are author data — kept verbatim (never case-transformed). Guard the type before
 			// AsObject(): a non-object would otherwise deserialize as a valid-but-empty entry.
 			if (Pair.Value.IsValid() && Pair.Value->Type == EJson::Object)
 			{
-				OutStruct.Data.Add(Pair.Key, FFlockFeatureBan::FromWire(Pair.Value->AsObject()));
+				OutStruct.Data.Add(FString(*Pair.Key), FFlockFeatureBan::FromWire(Pair.Value->AsObject()));
 			}
 		}
 	}

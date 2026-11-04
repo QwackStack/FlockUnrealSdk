@@ -64,11 +64,11 @@
  *
  * The `FJsonObject::Values` entry is why the SDK reaches for `HasField` / `TryGetField` / `SetField`
  * wherever it can: those have stable signatures across the range, and the container behind them does
- * not. Ten places do loop over `Values` directly, and eight of them name the pair
- * `TPair<FString, TSharedPtr<FJsonValue>>`. That compiles on 5.4 through 5.8, where the key really is
- * an FString, and it is what would break first if a later engine interns the key - so whoever moves
- * the ceiling should spell those `auto` and read the key as `FString(*Pair.Key)`, the way
- * `FlockTestSpelling::HasMemberSpelled` and `FFlockJsonUtils::GetFieldNames` already do.
+ * not. Where the SDK does loop over `Values` directly, it spells the pair `auto` and reads the key as
+ * `FString(*Pair.Key)`: UE 5.8 interns the key (`UE::TSharedString`), so a pair named
+ * `TPair<FString, TSharedPtr<FJsonValue>>` is a converted copy. MSVC accepts that silently; clang
+ * (Android, and Apple's platforms) refuses it under -Werror,-Wrange-loop-construct, which is how the
+ * Android build on 5.8 found it.
  *
  * ASCII only in this file. Tooling on both sides reads it - a PowerShell script and a shell script in
  * CI - and a BOM-less round trip through Windows PowerShell turns non-ASCII into mojibake.

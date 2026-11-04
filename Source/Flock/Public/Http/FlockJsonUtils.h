@@ -118,11 +118,11 @@ public:
 		if (bOmitEmptyStrings)
 		{
 			TArray<FString> EmptyKeys;
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : SnakeObj->Values)
+			for (const auto& Pair : SnakeObj->Values)
 			{
 				if (Pair.Value.IsValid() && Pair.Value->Type == EJson::String && Pair.Value->AsString().IsEmpty())
 				{
-					EmptyKeys.Add(Pair.Key);
+					EmptyKeys.Add(FString(*Pair.Key));
 				}
 			}
 			for (const FString& Key : EmptyKeys)

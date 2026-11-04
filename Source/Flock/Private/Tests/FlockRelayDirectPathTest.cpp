@@ -870,7 +870,13 @@ bool FFlockDirectNewBridgeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("no new link before the new connection is let in"), Pair.HostsLink() == First);
 	Pair.Host->LetIn(Pair.PlayersAddress());
 	TestTrue(TEXT("The link to the player's earlier bridge is let go"), F.Settle([&]() { return First->HasStopped(); }, 3.0));
-	TestTrue(TEXT("a link of its own"), Pair.HostsLink() != First);
+	// The earlier link can stop on its own, when the player's earlier bridge closes, before the new link's offer replaces it
+	// (ReplaceLink); the traffic stays on the relay meanwhile. Wait for the new link as for every other step here.
+	TestTrue(TEXT("a link of its own"), F.Settle([&]()
+		{
+			const FFlockDirectLink::FPtr Hosts = Pair.HostsLink();
+			return Hosts.IsValid() && Hosts != First;
+		}, 3.0));
 	F.BothDirect(*this, Pair);
 	F.OneEachWay(*this, Pair, TEXT("after-the-restart"));
 	return true;

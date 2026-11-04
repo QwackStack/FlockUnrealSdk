@@ -25,6 +25,24 @@ FString FFlockInitConfig::TrimApiUrl(const FString& ApiUrl)
 	return Trimmed;
 }
 
+bool FFlockInitConfig::IsSchemeAlone(const FString& TrimmedApiUrl)
+{
+	// A scheme is a letter, then letters, digits, "+", "-" or "." (RFC 3986), and here it is followed by ":" and nothing else.
+	if (TrimmedApiUrl.Len() < 2 || !TrimmedApiUrl.EndsWith(TEXT(":")) || !FChar::IsAlpha(TrimmedApiUrl[0]))
+	{
+		return false;
+	}
+	for (int32 Index = 1; Index < TrimmedApiUrl.Len() - 1; ++Index)
+	{
+		const TCHAR Letter = TrimmedApiUrl[Index];
+		if (!FChar::IsAlnum(Letter) && Letter != TEXT('+') && Letter != TEXT('-') && Letter != TEXT('.'))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 TMap<FString, FString> FFlockInitConfig::GetBaseHeaders() const
 {
 	TMap<FString, FString> Headers;

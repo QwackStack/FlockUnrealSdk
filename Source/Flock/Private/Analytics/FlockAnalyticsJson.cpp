@@ -49,11 +49,11 @@ namespace
 		{
 			return;
 		}
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*Nested)->Values)
+		for (const auto& Pair : (*Nested)->Values)
 		{
 			if (Pair.Value.IsValid())
 			{
-				OutMap.Add(Pair.Key, Pair.Value->AsString());
+				OutMap.Add(FString(*Pair.Key), Pair.Value->AsString());
 			}
 		}
 	}

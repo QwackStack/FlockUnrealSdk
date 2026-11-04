@@ -175,6 +175,16 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 			TEXT("to your Flock server's address, such as https://api.example.com.");
 		return false;
 	}
+	// "http:" sends every request to "http:/v1/..." and fails each one as unreachable, with no word about the address. It
+	// is what an unquoted address in a config file becomes, so the fix names the quotes.
+	if (FFlockInitConfig::IsSchemeAlone(ApiUrl))
+	{
+		OutError = FString::Printf(TEXT("API URL \"%s\" has no server address after its scheme. Set it in Project Settings > Flock SDK ")
+			TEXT("(or in the config handed to InitializeWithConfig) to your Flock server's address, such as https://api.example.com. ")
+			TEXT("Written by hand in a config file, the address needs quotes, ApiUrl=\"https://api.example.com\": without them the ")
+			TEXT("engine reads everything from // on as a comment."), *ApiUrl);
+		return false;
+	}
 
 	ActiveConfig = Config;
 	ActiveConfig.ApiUrl = ApiUrl;
