@@ -2,6 +2,7 @@
 
 #include "Config/FlockConfig.h"
 #include "Editor.h"
+#include "ProtokitePlaytestFormLogos.h"
 #include "ProtokitePlaytestSettings.h"
 #include "ProtokitePlaytestSetupStatus.h"
 #include "ISettingsModule.h"
@@ -79,13 +80,36 @@ namespace
 	}
 }
 
-/** The playtest plugin's editor half: it says what in the project's settings stands in a playtest's way. */
+namespace
+{
+	/**
+	 * Packages the feedback form's images with the game: Powered by Qwacks, which only this plugin's code names, and every
+	 * image the settings name. Each is recorded as the engine records a project setting's references, which the cook
+	 * packages as it starts.
+	 *
+	 * Never a list handed to the cook's modify-cook delegate: anything added there counts as the project asking for
+	 * particular content, and a project that names no maps then loses the engine's packaging of its whole Content folder.
+	 */
+	void RecordTheFeedbackFormsImagesForPackaging()
+	{
+		for (const FSoftObjectPath& Image : FProtokitePlaytestFormLogos::ImagesToPackage(*GetDefault<UProtokitePlaytestSettings>()))
+		{
+			Image.PostLoadPath(nullptr);
+		}
+	}
+}
+
+/**
+ * The playtest plugin's editor half: it says what in the project's settings stands in a playtest's way, and records the
+ * feedback form's images for packaging.
+ */
 class FProtokitePlaytestEditorModule : public IModuleInterface
 {
 public:
 	virtual void StartupModule() override
 	{
 		PlayStartedHandle = FEditorDelegates::PostPIEStarted.AddStatic(&SayWhatStandsInThePlaytestsWay);
+		RecordTheFeedbackFormsImagesForPackaging();
 	}
 
 	virtual void ShutdownModule() override

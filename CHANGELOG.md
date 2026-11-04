@@ -5,6 +5,41 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.40.0] - 2026-11-04
+
+The playtest feedback form carries the game's own logos, and Powered by Qwacks at its bottom left.
+
+### Added
+
+- **Protokite Playtest: Feedback Form Logos and Feedback Form Logo Height.** The game's own textures, empty by default,
+  drawn left to right and centred in one row above the form's title, with a thin line under them. Each is Feedback Form
+  Logo Height tall (40 by default, 16 to 96, at the same scale as the rest of the form) in its own shape, measured from
+  the size it was imported at. When they do not fit on the row, all are drawn smaller by the same factor, each in its
+  shape, so the row never passes the form's edges or pushes its questions down. An empty slot, an image that
+  cannot be loaded and one with no size are left out, with a warning naming the setting for the last two. With none,
+  there is no row and the form is unchanged.
+- **Protokite Playtest: Powered by Qwacks at the form's bottom left**, on the row of Close and Send, which it pushes to the
+  right. The plugin carries the image (`Content/ProtokitePlaytestPoweredByQwacks`, 512 by 80, no power-of-two
+  stretching, mipmaps on, the UI texture group); it is the plugin's first content, so the plugin now has a Content
+  folder. **Feedback Form Footer Logo** replaces it with one texture of the game's own, **Feedback Form Footer Logo
+  Height** tall (22 by default, 12 to 48); an image that cannot be loaded leaves the mark in its place. On a narrow form
+  the image is drawn smaller in its own shape, never Close or Send.
+- The four settings are read each time the form opens, and the form holds its images while it is open, so one the game
+  lets go of is not collected under it. They are typed texture references, reachable from C++ and from Blueprint
+  through **Protokite Get Playtest Settings**, which needs no playtest; a change made while the game runs is not saved and
+  lasts until it quits (in Play In Editor, until the editor closes, and saving Project Settings meanwhile keeps it).
+- Packaging carries the mark and every image the settings name: the playtest editor module records each as the engine
+  records a project setting's references, and the cook packages them as it starts. Nothing is handed to the cook as a
+  list of its own, so a project that names no maps is still packaged whole.
+- CI: every asset the SDK ships must be saved by the oldest supported engine (UE 5.4), and the playtest plugin's archive
+  must carry the mark.
+
+### Fixed
+
+- Tests: the two video recording tests that hold the disk (a stalled write, writing falling behind) hand frames over no
+  faster than the encoder takes them and hold the write for a measured time, so a busy machine no longer fails them. A
+  fixed pace failed one of them on UE 5.8 during a run of every engine's suite.
+
 ## [1.39.0] - 2026-11-02
 
 A playtest session started while a player is signed in carries their sign-in; a token renewal on its way at shut-down no

@@ -3,6 +3,7 @@
 #include "SProtokitePlaytestFormWidget.h"
 
 #include "Brushes/SlateDynamicImageBrush.h"
+#include "Engine/Texture2D.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
 #include "Styling/CoreStyle.h"
@@ -14,6 +15,7 @@
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SScaleBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Text/STextBlock.h"
@@ -25,6 +27,29 @@ namespace
 	const FLinearColor HelpColour(0.62f, 0.65f, 0.72f, 1.f);
 	const FLinearColor ProblemColour(1.f, 0.42f, 0.38f, 1.f);
 	const FLinearColor NeededColour(1.f, 0.72f, 0.28f, 1.f);
+	const FLinearColor LineColour(0.22f, 0.24f, 0.29f, 1.f);
+
+	constexpr float FormWidth = 620.f;
+	constexpr float FormPadding = 28.f;
+
+	/** The room on each side of a logo in the top row. */
+	constexpr float LogoSideMargin = 16.f;
+
+	/**
+	 * The line under the logos. Measured in a packaged game at 1280x720, where the form is drawn at 0.625 of its size:
+	 * 1 and 1.5 units tall (0.6 and 0.9 of a pixel) it was snapped away and never drawn. 2 is a pixel and a quarter there.
+	 */
+	constexpr float LogoLineThickness = 2.f;
+
+	/** A brush drawing an image at the size it is drawn on the form. */
+	TSharedRef<FSlateBrush> BrushFor(UTexture2D& Image, const FVector2D& Size)
+	{
+		const TSharedRef<FSlateBrush> Brush = MakeShared<FSlateBrush>();
+		Brush->SetResourceObject(&Image);
+		Brush->ImageSize = Size;
+		Brush->DrawAs = ESlateBrushDrawType::Image;
+		return Brush;
+	}
 
 	/** Drawn at half the file's 64 pixels, so it stays sharp on a high-density screen. */
 	constexpr float FormIconSize = 32.f;
@@ -46,6 +71,47 @@ FString SProtokitePlaytestFormWidget::GetIconPath()
 	return Plugin.IsValid() ? FPaths::Combine(Plugin->GetBaseDir(), TEXT("Resources"), TEXT("FeedbackFormIcon.png")) : FString();
 }
 
+float SProtokitePlaytestFormWidget::WidestLogo()
+{
+	return LogoRowWidth() - 2.f * LogoSideMargin;
+}
+
+float SProtokitePlaytestFormWidget::LogoRowWidth()
+{
+	return FormWidth - 2.f * FormPadding;
+}
+
+TArray<FVector2D> SProtokitePlaytestFormWidget::FitLogoRow(const TArray<FVector2D>& Sizes, float& OutSideMargin)
+{
+	const int32 Count = FMath::Max(Sizes.Num(), 1);
+	// The margins take at most half the row, so the logos always keep the other half.
+	OutSideMargin = FMath::Min(LogoSideMargin, LogoRowWidth() / (4.f * Count));
+	double Widths = 0.0;
+	for (const FVector2D& Size : Sizes)
+	{
+		Widths += Size.X;
+	}
+	const double Room = LogoRowWidth() - 2.0 * OutSideMargin * Count;
+	const double Factor = Widths > Room ? Room / Widths : 1.0;
+	TArray<FVector2D> Fitted;
+	Fitted.Reserve(Sizes.Num());
+	for (const FVector2D& Size : Sizes)
+	{
+		Fitted.Add(Size * Factor);
+	}
+	return Fitted;
+}
+
+TArray<const FSlateBrush*> SProtokitePlaytestFormWidget::GetLogoBrushesForTesting() const
+{
+	TArray<const FSlateBrush*> Brushes;
+	for (const TSharedRef<FSlateBrush>& Brush : LogoBrushes)
+	{
+		Brushes.Add(&Brush.Get());
+	}
+	return Brushes;
+}
+
 void SProtokitePlaytestFormWidget::Construct(const FArguments& InArgs)
 {
 	// A brush that loads its file when first drawn. A plain image brush is drawn only from textures a registered style
@@ -62,6 +128,7 @@ void SProtokitePlaytestFormWidget::Construct(const FArguments& InArgs)
 	OnClosed = InArgs._OnClosed;
 	CanSendRecording = InArgs._CanSendRecording;
 	OnSendRecording = InArgs._OnSendRecording;
+	Logos = InArgs._Logos;
 
 	const TSharedRef<SVerticalBox> Fields = SNew(SVerticalBox);
 	for (const FProtokitePlaytestFormField& Field : Form.Fields)
@@ -79,15 +146,15 @@ void SProtokitePlaytestFormWidget::Construct(const FArguments& InArgs)
 		.VAlign(VAlign_Center)
 		[
 			SNew(SBox)
-			.WidthOverride(620.f)
+			.WidthOverride(FormWidth)
 			.MaxDesiredHeight(720.f)
 			[
 				SNew(SBorder)
 				.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
 				.BorderBackgroundColor(PanelColour)
-				.Padding(28.f)
+				.Padding(FormPadding)
 				[
-					SNew(SVerticalBox)
+					SAssignNew(FormColumn, SVerticalBox)
 
 					+ SVerticalBox::Slot().AutoHeight()
 					[
@@ -154,39 +221,120 @@ void SProtokitePlaytestFormWidget::Construct(const FArguments& InArgs)
 
 					+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 16.f, 0.f, 0.f)
 					[
-						SNew(SHorizontalBox)
-
-						+ SHorizontalBox::Slot().FillWidth(1.f)
-						[
-							SNew(SSpacer)
-						]
-
-						+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 10.f, 0.f)
-						[
-							SNew(SButton)
-							.Text(FText::FromString(TEXT("Close")))
-							.OnClicked_Lambda([this]()
-							{
-								OnClosed.ExecuteIfBound();
-								return FReply::Handled();
-							})
-						]
-
-						+ SHorizontalBox::Slot().AutoWidth()
-						[
-							SNew(SButton)
-							.Text(FText::FromString(TEXT("Send")))
-							.OnClicked_Lambda([this]()
-							{
-								TrySubmit();
-								return FReply::Handled();
-							})
-						]
+						BuildButtonRow()
 					]
 				]
 			]
 		]
 	];
+
+	// Above the title, and only when there is a logo to draw: with none the form is as it always was.
+	const TSharedRef<SWidget> Row = BuildLogoRow();
+	if (LogoBrushes.Num() > 0)
+	{
+		LogoRow = Row;
+		FormColumn->InsertSlot(0).AutoHeight().Padding(0.f, 0.f, 0.f, 16.f)
+		[
+			Row
+		];
+	}
+}
+
+TSharedRef<SWidget> SProtokitePlaytestFormWidget::BuildLogoRow()
+{
+	// Left to right in their order, centred, on one row: when they do not fit, all are drawn smaller by the same factor,
+	// each in its own shape, so the row never passes the form's edges and never pushes the questions down.
+	// FProtokitePlaytestFormLogos::FromSettings holds only images that can be drawn, so each one here is drawn.
+	TArray<FVector2D> Sizes;
+	for (const TStrongObjectPtr<UTexture2D>& Image : Logos.Logos)
+	{
+		Sizes.Add(FProtokitePlaytestFormLogos::DrawnSize(*Image.Get(), Logos.LogoHeight));
+	}
+	float SideMargin = LogoSideMargin;
+	const TArray<FVector2D> Fitted = FitLogoRow(Sizes, SideMargin);
+	const TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
+	for (int32 Index = 0; Index < Logos.Logos.Num(); ++Index)
+	{
+		const TSharedRef<FSlateBrush> Brush = BrushFor(*Logos.Logos[Index].Get(), Fitted[Index]);
+		LogoBrushes.Add(Brush);
+		Row->AddSlot().AutoWidth().Padding(SideMargin, 4.f).VAlign(VAlign_Center)
+		[
+			SNew(SImage).Image(&Brush.Get())
+		];
+	}
+
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(0.f, 0.f, 0.f, 10.f)
+		[
+			Row
+		]
+		// A thin line between the logos and the form's own title.
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SBox).HeightOverride(LogoLineThickness)
+			[
+				SNew(SBorder)
+				.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+				.BorderBackgroundColor(LineColour)
+				.Padding(0.f)
+			]
+		];
+}
+
+TSharedRef<SWidget> SProtokitePlaytestFormWidget::BuildButtonRow()
+{
+	SAssignNew(ButtonRow, SHorizontalBox);
+
+	// Unset only when even the mark is missing from the plugin.
+	UTexture2D* Footer = Logos.FooterLogo.Get();
+	if (Footer != nullptr)
+	{
+		FooterLogoBrush = BrushFor(*Footer, FProtokitePlaytestFormLogos::DrawnSize(*Footer, Logos.FooterLogoHeight));
+		// Takes the row's free room on the left, so Close and Send stay at the right; when the room is short, the image
+		// is drawn smaller in its own shape, never the buttons.
+		ButtonRow->AddSlot().FillWidth(1.f).HAlign(HAlign_Left).VAlign(VAlign_Center).Padding(0.f, 0.f, 10.f, 0.f)
+		[
+			SAssignNew(FooterLogo, SScaleBox)
+			.Stretch(EStretch::ScaleToFit)
+			.StretchDirection(EStretchDirection::DownOnly)
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SImage).Image(FooterLogoBrush.Get())
+			]
+		];
+	}
+	else
+	{
+		ButtonRow->AddSlot().FillWidth(1.f)
+		[
+			SNew(SSpacer)
+		];
+	}
+
+	ButtonRow->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(0.f, 0.f, 10.f, 0.f)
+	[
+		SAssignNew(CloseButton, SButton)
+		.Text(FText::FromString(TEXT("Close")))
+		.OnClicked_Lambda([this]()
+		{
+			OnClosed.ExecuteIfBound();
+			return FReply::Handled();
+		})
+	];
+
+	ButtonRow->AddSlot().AutoWidth().VAlign(VAlign_Center)
+	[
+		SAssignNew(SendButton, SButton)
+		.Text(FText::FromString(TEXT("Send")))
+		.OnClicked_Lambda([this]()
+		{
+			TrySubmit();
+			return FReply::Handled();
+		})
+	];
+
+	return ButtonRow.ToSharedRef();
 }
 
 TSharedRef<SWidget> SProtokitePlaytestFormWidget::BuildField(const FProtokitePlaytestFormField& Field)
