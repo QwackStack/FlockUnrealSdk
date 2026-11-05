@@ -127,10 +127,20 @@ public:
 		GetPlayerInventory(FString(), Page, Limit, MoveTemp(OnComplete));
 	}
 
-	/** Drops every in-process cache and the shop snapshot category, so the next fetch hits the backend. */
+	/**
+	 * Drops every in-process cache and the shop snapshot category, so the next fetch hits the backend. A read already on
+	 * its way hands its answer to its caller but keeps nothing in memory: it may have been answered before what made the
+	 * clear. A purchase refused because its item is switched off (ShopItemNotForSale) calls this before its caller is told.
+	 */
 	void ClearCache();
 
 private:
+	/**
+	 * The one owner of "a catalog read keeps its answer only when no clear came while it was out": true when none
+	 * did; otherwise the read's snapshot entry, written before its completion runs, is deleted and nothing is kept.
+	 */
+	bool KeepsWhatItRead(int32 DropsWhenSent, const FString& SnapshotKey);
+
 	FString MakeUrl(const FString& Path) const { return FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, *Path); }
 	TMap<FString, FString> HeadersNow() const { return Session->GetAuthHeaders(); }
 
@@ -162,6 +172,9 @@ private:
 	TMap<FString, FFlockShopItem> ItemsById;
 	TMap<FString, FString> ShopIdByName;
 	TMap<FString, TArray<FString>> ItemIdsByShop;
+
+	/** Counts the clears; a read keeps its answer in memory only when no clear came between its sending and its answer. */
+	int32 CatalogDrops = 0;
 
 	static const TCHAR* const SnapshotCategory;
 };

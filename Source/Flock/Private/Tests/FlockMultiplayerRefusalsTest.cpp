@@ -13,6 +13,7 @@
 #include "Models/FlockGameModels.h"
 #include "FlockLogger.h"
 #include "Tests/Support/FlockFakeTransport.h"
+#include "Tests/Support/FlockTestRefusals.h"
 
 namespace
 {
@@ -103,25 +104,9 @@ bool FFlockMultiplayerRefusalsParseTest::RunTest(const FString& Parameters)
 
 	for (const FMultiplayerRefusal& Refusal : MultiplayerRefusals)
 	{
-		Fake->On(TEXT("refusal"), FFlockFakeTransport::Status(Refusal.Status, Refusal.Body));
-		bool bAnswered = false;
-		FFlockError Error;
-		Client->Get<FFlockGameVersionSchema>(TEXT("http://x/refusal"), {},
-			[&bAnswered, &Error](TFlockResult<FFlockGameVersionSchema> Result) { bAnswered = true; Error = Result.Error; });
-
-		if (!TestTrue(FString::Printf(TEXT("%s answered"), Refusal.Code), bAnswered))
-		{
-			continue;
-		}
-		TestEqualSensitive(FString::Printf(TEXT("%s: raw code kept"), Refusal.Code), Error.Code, FString(Refusal.Code));
-		TestEqual(FString::Printf(TEXT("%s: its own member"), Refusal.Code),
-			static_cast<int32>(Error.ErrorCode), static_cast<int32>(Refusal.Member));
-		TestEqual(FString::Printf(TEXT("%s: status kept"), Refusal.Code), Error.StatusCode, Refusal.Status);
-		TestEqual(FString::Printf(TEXT("%s: error type for its status"), Refusal.Code),
-			static_cast<int32>(Error.Type), static_cast<int32>(Refusal.Type));
-		TestFalse(FString::Printf(TEXT("%s: the server's reason survives"), Refusal.Code), Error.ServerMessage.IsEmpty());
-		TestFalse(FString::Printf(TEXT("%s: carries a hint"), Refusal.Code), Error.Hint.IsEmpty());
-		TestEqualSensitive(FString::Printf(TEXT("%s: the hint is its code's"), Refusal.Code), Error.Hint, FFlockErrorHints::For(Refusal.Member));
+		FlockTestRefusals::CheckRefusal(*this, *Fake, *Client, Refusal.Code, Refusal.Status, Refusal.Type, Refusal.Member, Refusal.Body);
+		TestTrue(FString::Printf(TEXT("%s: the row's code is its body's"), Refusal.Code),
+			FlockTestRefusals::CodeIn(Refusal.Body).Equals(Refusal.Code, ESearchCase::CaseSensitive));
 	}
 	return true;
 }

@@ -38,7 +38,14 @@ now owns), `Granted` (what the purchase handed over immediately), `Wallet` (the 
 `Status`. Purchase spends only game currencies from the player's wallet, so a purchase it makes is paid at
 once and *Is Purchase Paid* is true. An item priced in a currency the game's currency config lists as real money
 is refused with `ShopRealCurrencyNeedsCheckout` (the server reads that list for the Game Version the game sends):
-price it in a game currency, or leave it out of what the game sells this way. `Status` is still one of the
+price it in a game currency, or leave it out of what the game sells this way. An item switched off (Inactive) in the
+dashboard, or one in a switched-off shop, is refused with `ShopItemNotForSale` and nothing is bought; the shop provider
+then clears the shops it kept, so reading the shop again shows the item gone from its items (*Flock Get Shop Item*,
+which reads one item by its id, still returns it, its `Status` inactive). A purchase refused with
+`ShopInsufficientFunds` or `ShopCurrencyNotHeld` drops the cached player data, so the next wallet read asks the server.
+While a player is signed in, a
+`Player Id` naming anyone else is refused with `ShopPlayerMismatch` (the server buys only for the player signed in): leave it empty.
+`Status` is still one of the
 server's purchase statuses (`FlockPurchaseStatuses`): compare it against the *Flock Purchase Status* nodes, never a
 typed-out string. A purchase or consume that reports a wallet also writes it into the cached
 player data, so the next read of that template shows the new balance.

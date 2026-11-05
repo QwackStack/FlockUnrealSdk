@@ -39,6 +39,7 @@ void FFlockShopProvider::GetAll(int32 Page, int32 Limit, TFunction<void(TFlockRe
 	const FString Url = MakeUrl(FString::Printf(TEXT("%s?page=%d&limit=%d"), FlockEndpoints::Shop, Page, Limit));
 	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockShopProvider> WeakSelf = AsShared();
+	const int32 DropsWhenSent = CatalogDrops;
 
 	FetchWithSnapshot<FFlockShopPage>(SnapshotCategory, PageKey,
 		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockShopPage>)> OnAttempt)
@@ -61,11 +62,11 @@ void FFlockShopProvider::GetAll(int32 Page, int32 Limit, TFunction<void(TFlockRe
 				});
 		},
 		TEXT("Fetch shops"),
-		[WeakSelf, PageKey, OnComplete](TFlockResult<FFlockShopPage> Result)
+		[WeakSelf, PageKey, DropsWhenSent, OnComplete](TFlockResult<FFlockShopPage> Result)
 		{
 			if (const TSharedPtr<FFlockShopProvider> Self = WeakSelf.Pin())
 			{
-				if (Result.bSuccess)
+				if (Result.bSuccess && Self->KeepsWhatItRead(DropsWhenSent, PageKey))
 				{
 					Self->ShopPages.Add(PageKey, Result.Value);
 					for (const FFlockShop& Shop : Result.Value.Items)
@@ -100,6 +101,7 @@ void FFlockShopProvider::GetById(const FString& ShopId, TFunction<void(TFlockRes
 	const FString Url = MakeUrl(FlockEndpoints::ShopById(ShopId));
 	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockShopProvider> WeakSelf = AsShared();
+	const int32 DropsWhenSent = CatalogDrops;
 
 	FetchWithSnapshot<FFlockShop>(SnapshotCategory, FString::Printf(TEXT("shop_%s"), *ShopId),
 		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockShop>)> OnAttempt)
@@ -107,12 +109,12 @@ void FFlockShopProvider::GetById(const FString& ShopId, TFunction<void(TFlockRes
 			return ClientRef->GetRaw<FFlockShop>(Url, Headers, MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch shop"),
-		[WeakSelf, ShopId, OnComplete](TFlockResult<FFlockShop> Result)
+		[WeakSelf, ShopId, DropsWhenSent, OnComplete](TFlockResult<FFlockShop> Result)
 		{
 			// Keyed by the requested id (not shop.Id), so the next call with this id is a hit.
 			if (const TSharedPtr<FFlockShopProvider> Self = WeakSelf.Pin())
 			{
-				if (Result.bSuccess)
+				if (Result.bSuccess && Self->KeepsWhatItRead(DropsWhenSent, FString::Printf(TEXT("shop_%s"), *ShopId)))
 				{
 					Self->ShopsById.Add(ShopId, Result.Value);
 				}
@@ -146,6 +148,7 @@ void FFlockShopProvider::GetByName(const FString& Name, TFunction<void(TFlockRes
 	const FString Url = MakeUrl(FlockEndpoints::ShopByName(Name));
 	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockShopProvider> WeakSelf = AsShared();
+	const int32 DropsWhenSent = CatalogDrops;
 
 	FetchWithSnapshot<FFlockShop>(SnapshotCategory, FString::Printf(TEXT("shop_name_%s"), *Name),
 		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockShop>)> OnAttempt)
@@ -153,11 +156,11 @@ void FFlockShopProvider::GetByName(const FString& Name, TFunction<void(TFlockRes
 			return ClientRef->GetRaw<FFlockShop>(Url, Headers, MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch shop by name"),
-		[WeakSelf, Name, OnComplete](TFlockResult<FFlockShop> Result)
+		[WeakSelf, Name, DropsWhenSent, OnComplete](TFlockResult<FFlockShop> Result)
 		{
 			if (const TSharedPtr<FFlockShopProvider> Self = WeakSelf.Pin())
 			{
-				if (Result.bSuccess)
+				if (Result.bSuccess && Self->KeepsWhatItRead(DropsWhenSent, FString::Printf(TEXT("shop_name_%s"), *Name)))
 				{
 					Self->IndexShop(Result.Value);
 					if (!Result.Value.Id.IsEmpty())
@@ -192,6 +195,7 @@ void FFlockShopProvider::GetItem(const FString& ShopItemId, TFunction<void(TFloc
 	const FString Url = MakeUrl(FlockEndpoints::ShopItemById(ShopItemId));
 	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockShopProvider> WeakSelf = AsShared();
+	const int32 DropsWhenSent = CatalogDrops;
 
 	FetchWithSnapshot<FFlockShopItem>(SnapshotCategory, FString::Printf(TEXT("item_%s"), *ShopItemId),
 		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockShopItem>)> OnAttempt)
@@ -199,11 +203,11 @@ void FFlockShopProvider::GetItem(const FString& ShopItemId, TFunction<void(TFloc
 			return ClientRef->GetRaw<FFlockShopItem>(Url, Headers, MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch shop item"),
-		[WeakSelf, ShopItemId, OnComplete](TFlockResult<FFlockShopItem> Result)
+		[WeakSelf, ShopItemId, DropsWhenSent, OnComplete](TFlockResult<FFlockShopItem> Result)
 		{
 			if (const TSharedPtr<FFlockShopProvider> Self = WeakSelf.Pin())
 			{
-				if (Result.bSuccess)
+				if (Result.bSuccess && Self->KeepsWhatItRead(DropsWhenSent, FString::Printf(TEXT("item_%s"), *ShopItemId)))
 				{
 					Self->ItemsById.Add(ShopItemId, Result.Value);
 				}
@@ -243,6 +247,7 @@ void FFlockShopProvider::GetItemsByShop(const FString& ShopId, const FString& Pa
 	const FString Url = MakeUrl(Path);
 	const TMap<FString, FString> Headers = HeadersNow();
 	TWeakPtr<FFlockShopProvider> WeakSelf = AsShared();
+	const int32 DropsWhenSent = CatalogDrops;
 
 	// Enveloped list ({error,response,result:[...]}) — GetList unwraps `result` as a bare array.
 	FetchListWithSnapshot<FFlockShopItem>(SnapshotCategory, CacheKey,
@@ -251,11 +256,11 @@ void FFlockShopProvider::GetItemsByShop(const FString& ShopId, const FString& Pa
 			return ClientRef->GetList<FFlockShopItem>(Url, Headers, MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch shop items"),
-		[WeakSelf, CacheKey, OnComplete](TFlockResult<TArray<FFlockShopItem>> Result)
+		[WeakSelf, CacheKey, DropsWhenSent, OnComplete](TFlockResult<TArray<FFlockShopItem>> Result)
 		{
 			if (const TSharedPtr<FFlockShopProvider> Self = WeakSelf.Pin())
 			{
-				if (Result.bSuccess)
+				if (Result.bSuccess && Self->KeepsWhatItRead(DropsWhenSent, CacheKey))
 				{
 					TArray<FString> Ids;
 					Ids.Reserve(Result.Value.Num());
@@ -365,6 +370,23 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 						{
 							Self2->RecordPurchaseStatus(PurchaseResult.bSuccess ? TEXT("Purchased") : TEXT("Failed"), Item);
 						}
+						// Switched off in the dashboard since the shop was read: the read the fix asks for has to ask the server,
+						// which leaves the item out. Dropped before the caller is told, so a read it makes from its handler does;
+						// the copy on disk goes too, since a read that fails once would otherwise serve it and keep it again.
+						if (!PurchaseResult.bSuccess && PurchaseResult.Error.ErrorCode == EFlockErrorCode::ShopItemNotForSale)
+						{
+							Self2->ClearCache();
+						}
+						// The server's balance is not the cached one (another device spent from it, say), so the wallet read
+						// the fix asks for has to ask the server too.
+						if (!PurchaseResult.bSuccess && (PurchaseResult.Error.ErrorCode == EFlockErrorCode::ShopInsufficientFunds
+							|| PurchaseResult.Error.ErrorCode == EFlockErrorCode::ShopCurrencyNotHeld))
+						{
+							if (const TSharedPtr<FFlockPlayerProvider> Players = Self2->PlayerProvider.Pin())
+							{
+								Players->ClearPlayerDataCache();
+							}
+						}
 						if (PurchaseResult.bSuccess)
 						{
 							// Applied before the caller is told, so a handler that reads player data straight
@@ -462,6 +484,20 @@ void FFlockShopProvider::GetPlayerInventory(const FString& PlayerId, int32 Page,
 		MoveTemp(OnComplete), TEXT("Get player inventory"));
 }
 
+bool FFlockShopProvider::KeepsWhatItRead(int32 DropsWhenSent, const FString& SnapshotKey)
+{
+	if (CatalogDrops == DropsWhenSent)
+	{
+		return true;
+	}
+	// Answered across a clear: the snapshot written just before this completion may predate the clear, so it goes too.
+	if (const TSharedPtr<FFlockSnapshotStore>& Store = GetSnapshotStore())
+	{
+		Store->DeleteKey(GetSnapshotScope(SnapshotCategory), SnapshotKey);
+	}
+	return false;
+}
+
 void FFlockShopProvider::ClearCache()
 {
 	ShopPages.Reset();
@@ -469,6 +505,8 @@ void FFlockShopProvider::ClearCache()
 	ShopIdByName.Reset();
 	ItemsById.Reset();
 	ItemIdsByShop.Reset();
+	// A read already on its way may have been answered before what made this clear, and would put it back in memory.
+	++CatalogDrops;
 	DeleteSnapshotCategory(SnapshotCategory);
 }
 

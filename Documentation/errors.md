@@ -132,7 +132,9 @@ retries Auth, Validation, Serialization or Cancelled. What is left for you:
 - **`EFlockErrorType::Auth` after a refresh** — the session is gone. Send the player back to sign-in. Check
   `StatusCode` and `ErrorCode` first: the SDK refreshes only a 401, so a 403 reaches you as it came. A 403 carrying
   `MatchmakingNotPartyLeader`, `MatchmakingPlayerNotEligible`, `MultiplayerNotHost` or `PartyNotPartyLeader` means the
-  player is not allowed to do that, and signing in again changes nothing.
+  player is not allowed to do that, and signing in again changes nothing. A 403 carrying `ShopPlayerMismatch` (a
+  purchase naming another player than the one signed in) or `PaymentProviderReceiptBelongsToAnotherPlayer` (a store
+  purchase that is another player's) leaves the player signed in; the fix says which player the call has to act for.
 - **`EFlockErrorType::Cancelled`** — you cancelled the call, or it was made for a player who has since signed out
   or been replaced by another sign-in, so its retry was not sent. Nothing to retry: make the call again for the
   player now signed in, if it still applies. A cancelled call is never answered from the offline cache.

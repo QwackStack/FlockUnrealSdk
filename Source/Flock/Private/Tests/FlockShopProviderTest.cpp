@@ -597,6 +597,189 @@ bool FFlockShopRealMoneyItemTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── An item switched off in the dashboard is refused on its own code, and the shops kept are dropped so its fix works ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopItemNotForSaleTest, "Flock.Shop.Provider.AnItemSwitchedOffDropsTheShopsKeptSoReadingAgainAsksTheServer",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopItemNotForSaleTest::RunTest(const FString& Parameters)
+{
+	// Measured on the local stack on 2026-11-05: the wallet purchase of an item set Inactive in the dashboard.
+	const FString NotForSale = TEXT("{\"detail\":{\"code\":\"shop.item_not_for_sale\",\"message\":\"This item is not for sale right now.\"}}");
+
+	{
+		FFixture Fx;
+		Fx.SignIn();
+		Fx.Fake->On(TEXT("by-name"), FFlockFakeTransport::Ok(ShopBody(TEXT("shop-x"))));
+		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Status(409, NotForSale));
+
+		Fx.Provider->GetByName(TEXT("Starter"), [](TFlockResult<FFlockShop>) {});
+		Fx.Provider->GetByName(TEXT("Starter"), [](TFlockResult<FFlockShop>) {});
+		// The control: without a drop, reading the shop again is answered from what was kept.
+		TestEqual(TEXT("a shop read twice asks the server once"), Fx.Fake->CountTo(TEXT("by-name")), 1);
+
+		TOptional<TFlockResult<FFlockPurchaseResult>> Answer;
+		Fx.Provider->Purchase(TEXT("item-1"), FString(), [&Answer](TFlockResult<FFlockPurchaseResult> R) { Answer = R; });
+		if (!TestTrue(TEXT("answered"), Answer.IsSet()))
+		{
+			Cleanup(Fx.Dir);
+			return false;
+		}
+		TestFalse(TEXT("refused"), Answer->bSuccess);
+		TestEqual(TEXT("on its own code, not Unknown"), Answer->Error.ErrorCode, EFlockErrorCode::ShopItemNotForSale);
+		TestEqual(TEXT("as the 409 it is"), Answer->Error.StatusCode, 409);
+		TestEqualSensitive(TEXT("with its fix"), Answer->Error.Hint, FFlockErrorHints::For(EFlockErrorCode::ShopItemNotForSale));
+		TestEqual(TEXT("sent once: a refusal is certain, nothing was bought"), Fx.Fake->CountTo(TEXT("shop/transaction")), 1);
+
+		// The fix says to read the shop again: that read asks the server, which leaves the switched-off item out.
+		Fx.Provider->GetByName(TEXT("Starter"), [](TFlockResult<FFlockShop>) {});
+		TestEqual(TEXT("reading the shop again asks the server"), Fx.Fake->CountTo(TEXT("by-name")), 2);
+		Fx.Provider->GetItem(TEXT("item-1"), [](TFlockResult<FFlockShopItem>) {});
+		TestEqual(TEXT("and so does reading the item again"), Fx.Fake->CountTo(TEXT("shop_item/item-1")), 2);
+
+		// Any other refusal keeps the shops: only a switched-off item makes them wrong.
+		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Status(422,
+			TEXT("{\"detail\":{\"code\":\"shop.insufficient_funds\",\"message\":\"Insufficient funds\"}}")));
+		Fx.Provider->Purchase(TEXT("item-1"), FString(), [](TFlockResult<FFlockPurchaseResult>) {});
+		Fx.Provider->GetByName(TEXT("Starter"), [](TFlockResult<FFlockShop>) {});
+		TestEqual(TEXT("a purchase refused for another reason leaves the shops kept"), Fx.Fake->CountTo(TEXT("by-name")), 2);
+		// A 409 is not the cause: a reused key is refused with 409 too, and keeps them.
+		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Status(409,
+			TEXT("{\"detail\":{\"code\":\"shop.idempotency_key_reused\",\"message\":\"idempotency_key was already used for a different item\"}}")));
+		Fx.Provider->Purchase(TEXT("item-1"), FString(), [](TFlockResult<FFlockPurchaseResult>) {});
+		Fx.Provider->GetByName(TEXT("Starter"), [](TFlockResult<FFlockShop>) {});
+		TestEqual(TEXT("a 409 refusal for another reason leaves the shops kept"), Fx.Fake->CountTo(TEXT("by-name")), 2);
+		Cleanup(Fx.Dir);
+	}
+
+	{
+		// The shops are dropped before the caller is told: a read made from the refusal's own handler asks the server.
+		FFixture Fx;
+		Fx.SignIn();
+		Fx.Fake->On(TEXT("by-name"), FFlockFakeTransport::Ok(ShopBody(TEXT("shop-x"))));
+		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Status(409, NotForSale));
+		Fx.Provider->GetByName(TEXT("Starter"), [](TFlockResult<FFlockShop>) {});
+
+		int32 ReadsByTheHandler = -1;
+		const TSharedPtr<FFlockShopProvider> Provider = Fx.Provider;
+		const TSharedRef<FFlockFakeTransport> Fake = Fx.Fake;
+		Fx.Provider->Purchase(TEXT("item-1"), FString(), [Provider, Fake, &ReadsByTheHandler](TFlockResult<FFlockPurchaseResult>)
+		{
+			Provider->GetByName(TEXT("Starter"), [](TFlockResult<FFlockShop>) {});
+			ReadsByTheHandler = Fake->CountTo(TEXT("by-name"));
+		});
+		TestEqual(TEXT("a read from the refusal's handler asks the server"), ReadsByTheHandler, 2);
+		Cleanup(Fx.Dir);
+	}
+
+	{
+		// The copy on disk goes too: a read that cannot reach the server afterwards fails, rather than serving the shop
+		// with the switched-off item and keeping it again.
+		const FString Dir = TempRoot();
+		{
+			FFixture Fx(NoRetry(), Dir);
+			Fx.SignIn();
+			Fx.Fake->On(TEXT("by-name"), FFlockFakeTransport::Ok(ShopBody(TEXT("shop-x"))));
+			Fx.Provider->GetByName(TEXT("Starter"), [](TFlockResult<FFlockShop>) {});
+		}
+		{
+			// The control: a provider with nothing in memory and the server out of reach is answered from the copy on disk.
+			FFixture Fx(NoRetry(), Dir);
+			Fx.SignIn();
+			Fx.Fake->On(TEXT("by-name"), FFlockFakeTransport::Offline());
+			bool bServed = false;
+			Fx.Provider->GetByName(TEXT("Starter"), [&bServed](TFlockResult<FFlockShop> R) { bServed = R.bSuccess; });
+			TestTrue(TEXT("without a drop, the copy on disk answers a read that cannot reach the server"), bServed);
+		}
+		{
+			FFixture Fx(NoRetry(), Dir);
+			Fx.SignIn();
+			Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+			Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Status(409, NotForSale));
+			Fx.Provider->Purchase(TEXT("item-1"), FString(), [](TFlockResult<FFlockPurchaseResult>) {});
+			Fx.Fake->On(TEXT("by-name"), FFlockFakeTransport::Offline());
+			bool bServed = true;
+			Fx.Provider->GetByName(TEXT("Starter"), [&bServed](TFlockResult<FFlockShop> R) { bServed = R.bSuccess; });
+			TestFalse(TEXT("after the drop, a read that cannot reach the server is not answered from the old copy"), bServed);
+		}
+		Cleanup(Dir);
+	}
+
+	{
+		// ClearCache, which the drop uses, keeps nothing in memory from a read on its way when it runs.
+		FFixture Fx;
+		Fx.Fake->On(TEXT("by-name"), FFlockFakeTransport::Ok(ShopBody(TEXT("shop-x"))));
+		Fx.Fake->bDeferred = true;
+		Fx.Provider->GetByName(TEXT("Starter"), [](TFlockResult<FFlockShop>) {});
+		Fx.Provider->ClearCache();
+		Fx.Fake->FlushPending();
+		Fx.Fake->bDeferred = false;
+		{
+			// Nor on disk: a provider that cannot reach the server finds no copy of what that read answered.
+			FFixture Offline(NoRetry(), Fx.Dir);
+			Offline.Fake->On(TEXT("by-name"), FFlockFakeTransport::Offline());
+			bool bServed = true;
+			Offline.Provider->GetByName(TEXT("Starter"), [&bServed](TFlockResult<FFlockShop> R) { bServed = R.bSuccess; });
+			TestFalse(TEXT("a read on its way across ClearCache left no copy on disk"), bServed);
+		}
+		Fx.Provider->GetByName(TEXT("Starter"), [](TFlockResult<FFlockShop>) {});
+		TestEqual(TEXT("a read on its way across ClearCache kept nothing"), Fx.Fake->CountTo(TEXT("by-name")), 2);
+		Cleanup(Fx.Dir);
+	}
+
+	{
+		// Each of the five shop reads, on its way when the refusal lands, may have been answered before the item was switched
+		// off: its caller gets the answer, and nothing of it is kept. First matching route wins, so the narrow ones come first.
+		FFixture Fx;
+		Fx.SignIn();
+		Fx.Fake->On(TEXT("shop_item/shop/shop-2"), FFlockFakeTransport::Ok(ItemsEnvelopedBody()));
+		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+		Fx.Fake->On(TEXT("shop_item/item-2"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-2"), 100)));
+		Fx.Fake->On(TEXT("by-name"), FFlockFakeTransport::Ok(ShopBody(TEXT("shop-x"))));
+		Fx.Fake->On(TEXT("v1/shop/shop-2"), FFlockFakeTransport::Ok(ShopBody(TEXT("shop-2"))));
+		Fx.Fake->On(TEXT("shop?page"), FFlockFakeTransport::Ok(ShopPageBody()));
+		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Status(409, NotForSale));
+		Fx.Fake->bDeferred = true;
+
+		TOptional<TFlockResult<FFlockPurchaseResult>> Answer;
+		Fx.Provider->Purchase(TEXT("item-1"), FString(), [&Answer](TFlockResult<FFlockPurchaseResult> R) { Answer = R; });
+		Fx.Fake->FlushPending(); // the item lands, and the purchase goes out
+		int32 ReadsAnswered = 0;
+		Fx.Provider->GetByName(TEXT("Starter"), [&ReadsAnswered](TFlockResult<FFlockShop> R) { ReadsAnswered += R.bSuccess; });
+		Fx.Provider->GetById(TEXT("shop-2"), [&ReadsAnswered](TFlockResult<FFlockShop> R) { ReadsAnswered += R.bSuccess; });
+		Fx.Provider->GetAll(1, 100, [&ReadsAnswered](TFlockResult<FFlockShopPage> R) { ReadsAnswered += R.bSuccess; });
+		Fx.Provider->GetItem(TEXT("item-2"), [&ReadsAnswered](TFlockResult<FFlockShopItem> R) { ReadsAnswered += R.bSuccess; });
+		Fx.Provider->GetItemsByShop(TEXT("shop-2"), FString(),
+			[&ReadsAnswered](TFlockResult<TArray<FFlockShopItem>> R) { ReadsAnswered += R.bSuccess; });
+		Fx.Fake->FlushPending(); // the refusal lands first, then the five reads sent before it
+		Fx.Fake->bDeferred = false;
+
+		TestTrue(TEXT("the purchase was refused as not for sale"),
+			Answer.IsSet() && Answer->Error.ErrorCode == EFlockErrorCode::ShopItemNotForSale);
+		TestEqual(TEXT("each read in flight still answers its caller"), ReadsAnswered, 5);
+
+		// Asked twice more: the first asks the server, as the read in flight kept nothing; the second is answered from what
+		// the first kept, so a read sent after the drop is kept.
+		for (int32 Round = 0; Round < 2; ++Round)
+		{
+			Fx.Provider->GetByName(TEXT("Starter"), [](TFlockResult<FFlockShop>) {});
+			Fx.Provider->GetById(TEXT("shop-2"), [](TFlockResult<FFlockShop>) {});
+			Fx.Provider->GetAll(1, 100, [](TFlockResult<FFlockShopPage>) {});
+			Fx.Provider->GetItem(TEXT("item-2"), [](TFlockResult<FFlockShopItem>) {});
+			Fx.Provider->GetItemsByShop(TEXT("shop-2"), FString(), [](TFlockResult<TArray<FFlockShopItem>>) {});
+		}
+		TestEqual(TEXT("by name: the read in flight kept nothing, the next one is kept"), Fx.Fake->CountTo(TEXT("by-name")), 2);
+		TestEqual(TEXT("by id: the read in flight kept nothing, the next one is kept"), Fx.Fake->CountTo(TEXT("v1/shop/shop-2")), 2);
+		TestEqual(TEXT("the page: the read in flight kept nothing, the next one is kept"), Fx.Fake->CountTo(TEXT("shop?page")), 2);
+		TestEqual(TEXT("an item: the read in flight kept nothing, the next one is kept"), Fx.Fake->CountTo(TEXT("shop_item/item-2")), 2);
+		TestEqual(TEXT("a shop's items: the read in flight kept nothing, the next one is kept"),
+			Fx.Fake->CountTo(TEXT("shop_item/shop/shop-2")), 2);
+		Cleanup(Fx.Dir);
+	}
+	return true;
+}
+
 // ── A purchase or consume made with the server unreachable is sent once, fails, and is never queued for later ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopOfflineMoneyTest, "Flock.Shop.Provider.APurchaseOrConsumeMadeOfflineIsSentOnceAndNeverQueued",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
@@ -1100,6 +1283,45 @@ bool FFlockShopPurchaseWritesWalletThroughTest::RunTest(const FString& Parameter
 	TestEqual(TEXT("the cached row now holds the post-purchase balance"), Fx.CachedGold(), 500);
 
 	Cleanup(Fx.Dir);
+	return true;
+}
+
+// ── A purchase refused for the wallet drops the cached wallet, so the read its fix asks for asks the server ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopUnaffordableDropsCachedWalletTest, "Flock.Shop.Provider.APurchaseRefusedForTheWalletDropsTheCachedWallet",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopUnaffordableDropsCachedWalletTest::RunTest(const FString& Parameters)
+{
+	struct FRefusal
+	{
+		const TCHAR* What;
+		int32 Status;
+		const TCHAR* Body;
+		bool bDropsTheWallet;
+	};
+	// The backend's own messages (shop helpers/transaction.py); a refusal for another reason keeps the cached wallet.
+	const FRefusal Refusals[] = {
+		{ TEXT("not enough funds"), 422, TEXT("{\"detail\":{\"code\":\"shop.insufficient_funds\",\"message\":\"Insufficient funds: have 50 GOLD, need 100\"}}"), true },
+		{ TEXT("no balance in the currency"), 422, TEXT("{\"detail\":{\"code\":\"shop.currency_not_held\",\"message\":\"Currency 'GOLD' not found in player wallet\"}}"), true },
+		{ TEXT("an item switched off"), 409, TEXT("{\"detail\":{\"code\":\"shop.item_not_for_sale\",\"message\":\"This item is not for sale right now.\"}}"), false },
+	};
+	for (const FRefusal& Refusal : Refusals)
+	{
+		FFixture Fx;
+		Fx.SignIn();
+		Fx.WirePlayers();
+		TestTrue(FString::Printf(TEXT("%s: player cache primed"), Refusal.What), Fx.PrimePlayerCache(/*Gold*/ 100));
+		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Status(Refusal.Status, Refusal.Body));
+
+		bool bRefused = false;
+		Fx.Provider->Purchase(TEXT("item-1"), FString(), [&bRefused](TFlockResult<FFlockPurchaseResult> R) { bRefused = !R.bSuccess; });
+		TestTrue(FString::Printf(TEXT("%s: refused"), Refusal.What), bRefused);
+		TestEqual(FString::Printf(TEXT("%s: %s"), Refusal.What,
+			Refusal.bDropsTheWallet ? TEXT("the cached wallet is dropped") : TEXT("the cached wallet is kept")),
+			Fx.CachedGold(), Refusal.bDropsTheWallet ? -1 : 100);
+		Cleanup(Fx.Dir);
+	}
 	return true;
 }
 

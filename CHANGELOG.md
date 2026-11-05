@@ -5,6 +5,45 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.41.0] - 2026-11-05
+
+Every payment failure a game can meet has its own error code, a plain cause and a fix, ready for the purchase calls that
+follow.
+
+### Added
+
+- **19 error codes for payments**, each with its fix in the error's hint. Ten for the store and payment providers:
+  `PaymentProviderCheckoutFailed`, `PaymentProviderCredentialsUnreadable`, `PaymentProviderProviderNotFound`,
+  `PaymentProviderProviderNotSupportedHere`, `PaymentProviderReceiptBelongsToAnotherPlayer`,
+  `PaymentProviderReceiptInvalid`, `PaymentProviderReceiptPending`, `PaymentProviderReceiptProductMismatch`,
+  `PaymentProviderStoreCredentialsRejected`, `PaymentProviderStoreUnavailable`. Nine for the shop:
+  `ShopIdempotencyKeyReused`, `ShopInvalidPurchaseStatus`, `ShopItemNotForSale`, `ShopNotARealCurrencyItem`,
+  `ShopPlayerMismatch`, `ShopPlayerRequired`, `ShopPurchaseNotFound`, `ShopRealCurrencySettlementUnavailable`,
+  `ShopWebhookProviderUnknown`. Each read as `Unknown` before.
+- **A code with several causes names each in its hint**, by the words of the server's reason: a receipt the store does
+  not know, the studio's own store keys refused, a store that was busy or down, and a Google payment still waiting are
+  told apart, and a cause that is not final yet says to send the same receipt again later, never that the receipt is bad.
+  An older Flock server sends `PaymentProviderReceiptInvalid` for causes newer ones give codes of their own; its hint
+  still covers them.
+
+### Changed
+
+- **Purchase of an item switched off (Inactive) in the dashboard** is refused with `ShopItemNotForSale` (409), and the
+  shop provider clears its shops and items, in memory and on disk, before the caller is told, so reading the shop again
+  asks the server, which leaves the item out of the shop's items (an item read alone by its id still comes back, its
+  `Status` inactive). Offline, the shop is not shown from the old copy until a read reaches the server again.
+- **`ClearCache` on the shop provider**: a shop read still on its way when it runs answers its caller and keeps nothing,
+  in memory or on disk; it used to put back what it read, answered before the clear.
+- **Purchase refused with `ShopInsufficientFunds` or `ShopCurrencyNotHeld`** drops the cached player data, so the
+  wallet read the fix asks for asks the server instead of answering with the balance the game had cached. A player data
+  read already on its way when the purchase is refused can still put the old balance back.
+- **Purchase given a Player Id other than the signed-in player's** is refused by the server with `ShopPlayerMismatch`
+  (403), and nothing is bought; its hint says to leave Player Id empty. The error is a refusal, not a sign-in problem:
+  the player stays signed in.
+- Three hints cover more causes: `PlayerInventoryInventoryEntryNotFound` (an entry of another player, which the server
+  answers as not found while a player is signed in), and `ShopShopNotFound` and `ShopItemShopNotFound` (a shop switched
+  off in the dashboard, which players are not shown).
+
 ## [1.40.0] - 2026-11-04
 
 The playtest feedback form carries the game's own logos, and Powered by Qwacks at its bottom left.
