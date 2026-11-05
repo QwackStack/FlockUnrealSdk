@@ -380,7 +380,8 @@ after initializing again replaces it.
 |---|---|
 | `MatchmakingQueueNotFound` | no queue by that name in this game. The list of queues is read once a launch; a queue deleted and made again under the same name is found by its new id |
 | `MatchmakingAlreadyQueued` | a player in the search already searches: the party's search, or a member searching alone |
-| `MatchmakingPartyTooLarge` | the party has more players than the queue takes |
+| `MatchmakingPartyTooLarge` | the party has more players than the queue takes, or than one of its teams holds |
+| `MatchmakingSearchInputRequired` | the queue matches players by region or skill, and `FindMatch` sends neither: turn off "Same region only" and "Similar skill only" on the queue in the Flock dashboard |
 | `MatchmakingNotPartyLeader` | only the leader's game can queue the party; leadership moved before the search went out |
 | `MatchmakingPlayerNotEligible` | a player is outside the queue's allowed segments |
 | `MatchmakingVersionMismatch` | on a "Same game version only" queue, a member's game is on another Game Version, or has not read the party yet: each member's version comes from their game's last party read, so have every member's game call `GetMyParty` once it is running |

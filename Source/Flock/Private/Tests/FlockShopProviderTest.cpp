@@ -1454,4 +1454,355 @@ bool FFlockShopPurchaseKeepsItsSignInTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── Real-money items: the server's flag and each store's product id, on every catalog read ──
+// Bodies as the backend answered them for the payment probe's shop (main 644bf45 on 2026-10-26; the same bytes from
+// fix/tap-checkout e601aa97 on 2026-11-05): two items priced in USD, a real currency there, and two in Gold. shop/{id} and
+// shop/by-name answer the shop at the root, the shop list pages it, and shop_item/shop/{id} wraps the items in {"result":...}.
+namespace FlockShopRealMoneyFixtures
+{
+	const TCHAR* const ProbeShopId = TEXT("01M5EM6PVCVP955VDV3FJ8N3BH");
+	const TCHAR* const GemsPackId = TEXT("01M5EM6PVZN764Q4NWT3PRGM3T");
+
+	const TCHAR* const SwordItem = TEXT(R"JSON({"id":"01M5EM6PVZ7ZMR42VRKY3HPHYD","name":"pv00 sword","status":"active","type":"standard","shop_id":"01M5EM6PVCVP955VDV3FJ8N3BH","patch_id":null,"price":10,"currency":"Gold","is_real_money":false,"rewards":[],"store_skus":{"apple_app_store":"com.flock.pv00.sword"},"data":{},"created_at":"2026-10-21T07:00:57.855275Z","updated_at":"2026-10-21T07:00:57.855276Z"})JSON");
+	const TCHAR* const ShieldItem = TEXT(R"JSON({"id":"01M5EM6PVZPG7EWSZ49TXARBYV","name":"pv00 shield","status":"active","type":"standard","shop_id":"01M5EM6PVCVP955VDV3FJ8N3BH","patch_id":null,"price":10,"currency":"Gold","is_real_money":false,"rewards":[],"store_skus":{},"data":{},"created_at":"2026-10-21T07:00:57.855309Z","updated_at":"2026-10-21T07:00:57.855311Z"})JSON");
+	const TCHAR* const GemsPackItem = TEXT(R"JSON({"id":"01M5EM6PVZN764Q4NWT3PRGM3T","name":"pv00 gems pack","status":"active","type":"currency_pack","shop_id":"01M5EM6PVCVP955VDV3FJ8N3BH","patch_id":null,"price":199,"currency":"USD","is_real_money":true,"rewards":[{"type":"currency","code":"Gold","amount":100}],"store_skus":{"google_play":"com.flock.pv00.gems","apple_app_store":"com.flock.pv00.gems"},"data":{},"created_at":"2026-10-21T07:00:57.855168Z","updated_at":"2026-10-21T07:00:57.855173Z"})JSON");
+	const TCHAR* const GemsPackWithoutProductIdsItem = TEXT(R"JSON({"id":"01M5EM6PVZJT2C0K06M61RZFGB","name":"pv00 gems pack without product ids","status":"active","type":"currency_pack","shop_id":"01M5EM6PVCVP955VDV3FJ8N3BH","patch_id":null,"price":199,"currency":"USD","is_real_money":true,"rewards":[{"type":"currency","code":"Gold","amount":100}],"store_skus":{},"data":{},"created_at":"2026-10-21T07:00:57.855245Z","updated_at":"2026-10-21T07:00:57.855247Z"})JSON");
+
+	// The same item from a server without the real-money flag (main aa402fc, the payment probe of 2026-10-21).
+	const TCHAR* const GemsPackFromAServerWithoutTheFlag = TEXT(R"JSON({"id":"01M5EM6PVZN764Q4NWT3PRGM3T","name":"pv00 gems pack","status":"active","type":"currency_pack","shop_id":"01M5EM6PVCVP955VDV3FJ8N3BH","patch_id":null,"price":199,"currency":"USD","rewards":[{"type":"currency","code":"Gold","amount":100}],"store_skus":{"google_play":"com.flock.pv00.gems","apple_app_store":"com.flock.pv00.gems"},"data":{},"created_at":"2026-10-21T07:00:57.855168Z","updated_at":"2026-10-21T07:00:57.855173Z"})JSON");
+
+	FString ProbeShopItems()
+	{
+		return FString::Printf(TEXT("[%s,%s,%s,%s]"), SwordItem, ShieldItem, GemsPackItem, GemsPackWithoutProductIdsItem);
+	}
+
+	FString ProbeShop()
+	{
+		return FString::Printf(
+			TEXT(R"JSON({"id":"01M5EM6PVCVP955VDV3FJ8N3BH","name":"pv00-shop","status":"active","game_id":"01M5EM6PTHKSYB8ZFPSSRAJ7C2","game_version_id":"01M5EM6PTY4M5PA1A93GQXQYDP","data":{"stats":null,"web_shop_url":null,"pwa_shop_url":null},"shop_items":%s,"created_at":"2026-10-21T07:00:57.836159Z","updated_at":"2026-10-21T07:00:57.836163Z"})JSON"),
+			*ProbeShopItems());
+	}
+
+	/** The item named Name, or null; the caller gates on it, so a missing item fails the test rather than the process. */
+	const FFlockShopItem* Named(const TArray<FFlockShopItem>& Items, const TCHAR* Name)
+	{
+		return Items.FindByPredicate([Name](const FFlockShopItem& Item) { return Item.Name.Equals(Name, ESearchCase::CaseSensitive); });
+	}
+
+	/** Each store's product id, spelled exactly as the item holds it; empty when the item has none in Store. */
+	FString IdIn(const FFlockShopItem& Item, const TCHAR* Store)
+	{
+		FString ProductId;
+		Item.FindStoreProductId(Store, ProductId);
+		return ProductId;
+	}
+
+	/** Every store key the item holds, sorted, spelled as held: a map's own Find ignores case, so this checks spelling. */
+	FString StoreKeys(const FFlockShopItem& Item)
+	{
+		TArray<FString> Keys;
+		Item.StoreProductIds.GetKeys(Keys);
+		Keys.Sort([](const FString& A, const FString& B) { return A.Compare(B, ESearchCase::CaseSensitive) < 0; });
+		return FString::Join(Keys, TEXT(","));
+	}
+
+	void TestProbeShopItems(FAutomationTestBase& Test, const TArray<FFlockShopItem>& Items)
+	{
+		Test.TestEqual(TEXT("the probe shop's four items"), Items.Num(), 4);
+
+		if (const FFlockShopItem* Pack = Named(Items, TEXT("pv00 gems pack")); Test.TestNotNull(TEXT("the gems pack"), Pack))
+		{
+			Test.TestTrue(TEXT("priced in USD, which the game's currency config lists as real money"), Pack->IsRealMoney);
+			Test.TestEqual(TEXT("a real-money price is in the currency's smallest unit"), Pack->Price, 199);
+			FlockEngineCompat::CheckEqualSpelledExactly(Test, TEXT("its Google Play product id"), IdIn(*Pack, FlockPaymentProviders::GooglePlay), FString(TEXT("com.flock.pv00.gems")));
+			FlockEngineCompat::CheckEqualSpelledExactly(Test, TEXT("its App Store product id"), IdIn(*Pack, FlockPaymentProviders::AppleAppStore), FString(TEXT("com.flock.pv00.gems")));
+			FlockEngineCompat::CheckEqualSpelledExactly(Test, TEXT("each store's name as the server spells it"), StoreKeys(*Pack), FString(TEXT("apple_app_store,google_play")));
+		}
+		if (const FFlockShopItem* Bare = Named(Items, TEXT("pv00 gems pack without product ids")); Test.TestNotNull(TEXT("the pack without ids"), Bare))
+		{
+			Test.TestTrue(TEXT("a real-money item with no product id is still real money"), Bare->IsRealMoney);
+			Test.TestEqual(TEXT("no product id reads as an empty map"), Bare->StoreProductIds.Num(), 0);
+		}
+		if (const FFlockShopItem* Sword = Named(Items, TEXT("pv00 sword")); Test.TestNotNull(TEXT("the sword"), Sword))
+		{
+			Test.TestFalse(TEXT("priced in Gold, a game currency"), Sword->IsRealMoney);
+			FlockEngineCompat::CheckEqualSpelledExactly(Test, TEXT("the sword's one store"), StoreKeys(*Sword), FString(FlockPaymentProviders::AppleAppStore));
+		}
+		if (const FFlockShopItem* Shield = Named(Items, TEXT("pv00 shield")); Test.TestNotNull(TEXT("the shield"), Shield))
+		{
+			Test.TestFalse(TEXT("the shield is not real money"), Shield->IsRealMoney);
+			Test.TestEqual(TEXT("the shield has no product id"), Shield->StoreProductIds.Num(), 0);
+		}
+	}
+
+	/** One item read by id through the provider, from Body. False when the read failed. */
+	bool ReadItem(FAutomationTestBase& Test, const FString& Body, FFlockShopItem& OutItem)
+	{
+		FFixture Fx;
+		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(Body));
+		bool bRead = false;
+		Fx.Provider->GetItem(TEXT("item-1"), [&](TFlockResult<FFlockShopItem> R) { bRead = R.bSuccess; OutItem = R.Value; });
+		Cleanup(Fx.Dir);
+		return Test.TestTrue(TEXT("the item read succeeds"), bRead);
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopRealMoneyEveryReadTest, "Flock.Shop.RealMoney.EveryCatalogReadCarriesEachItemsFlagAndStoreProductIds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopRealMoneyEveryReadTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockShopRealMoneyFixtures;
+	{
+		FFixture Fx;
+		Fx.Fake->On(TEXT("shop/by-name/pv00-shop"), FFlockFakeTransport::Ok(ProbeShop()));
+		FFlockShop Shop;
+		bool bRead = false;
+		Fx.Provider->GetByName(TEXT("pv00-shop"), [&](TFlockResult<FFlockShop> R) { bRead = R.bSuccess; Shop = R.Value; });
+		AddInfo(TEXT("By name:"));
+		if (TestTrue(TEXT("by name"), bRead)) { TestProbeShopItems(*this, Shop.ShopItems); }
+		Cleanup(Fx.Dir);
+	}
+	{
+		FFixture Fx;
+		Fx.Fake->On(FString::Printf(TEXT("shop/%s"), ProbeShopId), FFlockFakeTransport::Ok(ProbeShop()));
+		FFlockShop Shop;
+		bool bRead = false;
+		Fx.Provider->GetById(ProbeShopId, [&](TFlockResult<FFlockShop> R) { bRead = R.bSuccess; Shop = R.Value; });
+		AddInfo(TEXT("By id:"));
+		if (TestTrue(TEXT("by id"), bRead)) { TestProbeShopItems(*this, Shop.ShopItems); }
+		Cleanup(Fx.Dir);
+	}
+	{
+		FFixture Fx;
+		Fx.Fake->On(TEXT("shop?page=1"), FFlockFakeTransport::Ok(
+			FString::Printf(TEXT("{\"items\":[%s],\"total\":1,\"page\":1,\"limit\":100}"), *ProbeShop())));
+		FFlockShopPage Page;
+		bool bRead = false;
+		Fx.Provider->GetAll(1, 100, [&](TFlockResult<FFlockShopPage> R) { bRead = R.bSuccess; Page = R.Value; });
+		AddInfo(TEXT("The shop list:"));
+		if (TestTrue(TEXT("the list"), bRead) && TestEqual(TEXT("one shop"), Page.Items.Num(), 1))
+		{
+			TestProbeShopItems(*this, Page.Items[0].ShopItems);
+		}
+		Cleanup(Fx.Dir);
+	}
+	{
+		FFixture Fx;
+		Fx.Fake->On(FString::Printf(TEXT("shop_item/shop/%s"), ProbeShopId), FFlockFakeTransport::Ok(FString::Printf(
+			TEXT("{\"error\":{\"code\":null},\"response\":{\"message\":null,\"code\":null},\"result\":%s}"), *ProbeShopItems())));
+		TArray<FFlockShopItem> Items;
+		bool bRead = false;
+		Fx.Provider->GetItemsByShop(ProbeShopId, FString(), [&](TFlockResult<TArray<FFlockShopItem>> R) { bRead = R.bSuccess; Items = R.Value; });
+		AddInfo(TEXT("The items of a shop:"));
+		if (TestTrue(TEXT("the items of a shop"), bRead)) { TestProbeShopItems(*this, Items); }
+		Cleanup(Fx.Dir);
+	}
+	{
+		FFixture Fx;
+		Fx.Fake->On(FString::Printf(TEXT("shop_item/%s"), GemsPackId), FFlockFakeTransport::Ok(GemsPackItem));
+		FFlockShopItem Item;
+		bool bRead = false;
+		Fx.Provider->GetItem(GemsPackId, [&](TFlockResult<FFlockShopItem> R) { bRead = R.bSuccess; Item = R.Value; });
+		if (TestTrue(TEXT("one item by id"), bRead))
+		{
+			TestTrue(TEXT("the item read by id is real money"), Item.IsRealMoney);
+			TestEqualSensitive(TEXT("its kind"), Item.Type, FString(FlockShopItemTypes::CurrencyPack));
+			TestEqual(TEXT("two stores"), Item.StoreProductIds.Num(), 2);
+			TestEqualSensitive(TEXT("its Google Play product id"), IdIn(Item, FlockPaymentProviders::GooglePlay), FString(TEXT("com.flock.pv00.gems")));
+		}
+		Cleanup(Fx.Dir);
+	}
+	return true;
+}
+
+// The flag is the server's word: an older server leaves it out, and the SDK never guesses it from the currency.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopRealMoneyServersWordTest, "Flock.Shop.RealMoney.TheFlagIsTheServersWordAndNeverFailsTheRead",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopRealMoneyServersWordTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockShopRealMoneyFixtures;
+	FFlockShopItem Item;
+	if (ReadItem(*this, GemsPackFromAServerWithoutTheFlag, Item))
+	{
+		TestFalse(TEXT("no flag reads false, even for an item priced in USD"), Item.IsRealMoney);
+		TestEqualSensitive(TEXT("and its product ids are still read"), IdIn(Item, FlockPaymentProviders::AppleAppStore), FString(TEXT("com.flock.pv00.gems")));
+	}
+	if (ReadItem(*this, TEXT(R"JSON({"id":"item-1","price":10,"currency":"Gold","is_real_money":null,"store_skus":{}})JSON"), Item))
+	{
+		TestEqualSensitive(TEXT("a null flag does not fail the read"), Item.Id, FString(TEXT("item-1")));
+		TestFalse(TEXT("a null flag reads false"), Item.IsRealMoney);
+	}
+	if (ReadItem(*this, TEXT(R"JSON({"id":"item-1","price":199,"currency":"USD","is_real_money":"true","store_skus":{}})JSON"), Item))
+	{
+		TestFalse(TEXT("a flag that is not a JSON true reads false"), Item.IsRealMoney);
+	}
+	// Control: the same body with a JSON true reads true, so the case above is the value's type and not the read.
+	if (ReadItem(*this, TEXT(R"JSON({"id":"item-1","price":199,"currency":"USD","is_real_money":true,"store_skus":{}})JSON"), Item))
+	{
+		TestTrue(TEXT("control: a JSON true reads true"), Item.IsRealMoney);
+	}
+	return true;
+}
+
+// Each store's product id is kept exactly as the dashboard saved it, a store this SDK does not know included.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopStoreProductIdsVerbatimTest, "Flock.Shop.RealMoney.StoreProductIdsAreKeptVerbatim",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopStoreProductIdsVerbatimTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockShopRealMoneyFixtures;
+	FFlockShopItem Item;
+	if (ReadItem(*this, TEXT(R"JSON({"id":"item-1","price":10,"currency":"Gold","is_real_money":false,"store_skus":null})JSON"), Item))
+	{
+		TestEqual(TEXT("a null map reads empty"), Item.StoreProductIds.Num(), 0);
+	}
+	if (ReadItem(*this, TEXT(R"JSON({"id":"item-1","price":10,"currency":"Gold"})JSON"), Item))
+	{
+		TestEqual(TEXT("an absent map reads empty"), Item.StoreProductIds.Num(), 0);
+	}
+	if (ReadItem(*this, TEXT(R"JSON({"id":"item-1","price":199,"currency":"USD","is_real_money":true,"store_skus":{"google_play":"com.flock.gems","steam":"480"}})JSON"), Item))
+	{
+		TestEqualSensitive(TEXT("a store this SDK does not know is kept"), IdIn(Item, TEXT("steam")), FString(TEXT("480")));
+		TestEqualSensitive(TEXT("beside the ones it knows"), IdIn(Item, FlockPaymentProviders::GooglePlay), FString(TEXT("com.flock.gems")));
+	}
+	// A store's name is kept as the server spells it, capitals included: every name above is lower case, which a read
+	// that lower-cased names would pass.
+	if (ReadItem(*this, TEXT(R"JSON({"id":"item-1","price":199,"currency":"USD","is_real_money":true,"store_skus":{"Steam":"480"}})JSON"), Item))
+	{
+		TestEqualSensitive(TEXT("a name with capitals keeps them"), StoreKeys(Item), FString(TEXT("Steam")));
+	}
+	if (ReadItem(*this, TEXT(R"JSON({"id":"item-1","price":199,"currency":"USD","is_real_money":true,"store_skus":{"apple_app_store":"com.Flock.Gems_Pack.V2"}})JSON"), Item))
+	{
+		TestEqualSensitive(TEXT("a store compares ids exactly, so each is kept as saved"), IdIn(Item, FlockPaymentProviders::AppleAppStore), FString(TEXT("com.Flock.Gems_Pack.V2")));
+	}
+	if (ReadItem(*this, TEXT(R"JSON({"id":"item-1","price":199,"currency":"USD","is_real_money":true,"store_skus":{"google_play":42,"apple_app_store":"com.flock.gems"}})JSON"), Item))
+	{
+		TestEqual(TEXT("an id that is not a string is left out"), Item.StoreProductIds.Num(), 1);
+		TestEqualSensitive(TEXT("and the item keeps the others"), IdIn(Item, FlockPaymentProviders::AppleAppStore), FString(TEXT("com.flock.gems")));
+	}
+	return true;
+}
+
+// The lookup matches a store's name with its letter case; a map's own Find, and TestEqual on strings, ignore it.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopFindStoreProductIdTest, "Flock.Shop.RealMoney.FindStoreProductIdMatchesTheStoreNameExactly",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopFindStoreProductIdTest::RunTest(const FString& Parameters)
+{
+	FFlockShopItem Item;
+	Item.StoreProductIds.Add(FlockPaymentProviders::GooglePlay, TEXT("com.flock.gems"));
+
+	FString ProductId = TEXT("left over");
+	TestTrue(TEXT("the store's own name finds it"), Item.FindStoreProductId(FlockPaymentProviders::GooglePlay, ProductId));
+	TestEqualSensitive(TEXT("its id"), ProductId, FString(TEXT("com.flock.gems")));
+	TestFalse(TEXT("another spelling of the name does not"), Item.FindStoreProductId(TEXT("Google_Play"), ProductId));
+	TestTrue(TEXT("and leaves no id behind"), ProductId.IsEmpty());
+	TestFalse(TEXT("a store the item is not in"), Item.FindStoreProductId(FlockPaymentProviders::AppleAppStore, ProductId));
+
+	FString FromTheNode;
+	TestEqual(TEXT("the Blueprint node answers as C++ does"),
+		UFlockShopLibrary::FindStoreProductId(Item, FlockPaymentProviders::GooglePlay, FromTheNode), true);
+	TestEqualSensitive(TEXT("with the same id"), FromTheNode, FString(TEXT("com.flock.gems")));
+	TestFalse(TEXT("and refuses another spelling as C++ does"), UFlockShopLibrary::FindStoreProductId(Item, TEXT("GOOGLE_PLAY"), FromTheNode));
+
+	// The reward kind is compared with its letter case too.
+	FFlockShopItemReward Reward;
+	Reward.Type = TEXT("Currency");
+	TestFalse(TEXT("a reward kind spelled otherwise is not currency"), Reward.IsCurrency());
+	return true;
+}
+
+// A relaunch with no network serves the catalog from the snapshot the last online read wrote, flag and ids included.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopRealMoneySnapshotTest, "Flock.Shop.RealMoney.AnOfflineRelaunchKeepsTheFlagAndStoreProductIds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopRealMoneySnapshotTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockShopRealMoneyFixtures;
+	const FString Dir = TempRoot();
+	const FString Route = FString::Printf(TEXT("shop_item/%s"), GemsPackId);
+	const FString ListRoute = FString::Printf(TEXT("shop_item/shop/%s"), ProbeShopId);
+	const TCHAR* const CapitalsRoute = TEXT("shop_item/item-capitals");
+	{
+		FFixture Online(NoRetry(), Dir);
+		Online.Fake->On(Route, FFlockFakeTransport::Ok(GemsPackItem));
+		Online.Fake->On(ListRoute, FFlockFakeTransport::Ok(FString::Printf(
+			TEXT("{\"error\":{\"code\":null},\"response\":{\"message\":null,\"code\":null},\"result\":%s}"), *ProbeShopItems())));
+		Online.Fake->On(CapitalsRoute, FFlockFakeTransport::Ok(TEXT(R"JSON({"id":"item-capitals","price":199,"currency":"USD","is_real_money":true,"store_skus":{"Steam":"480"}})JSON")));
+		bool bRead = false;
+		Online.Provider->GetItem(GemsPackId, [&](TFlockResult<FFlockShopItem> R) { bRead = R.bSuccess; });
+		TestTrue(TEXT("the online read succeeds"), bRead);
+		bool bListRead = false;
+		Online.Provider->GetItemsByShop(ProbeShopId, FString(), [&](TFlockResult<TArray<FFlockShopItem>> R) { bListRead = R.bSuccess; });
+		TestTrue(TEXT("the online list read succeeds"), bListRead);
+		bool bCapitalsRead = false;
+		Online.Provider->GetItem(TEXT("item-capitals"), [&](TFlockResult<FFlockShopItem> R) { bCapitalsRead = R.bSuccess; });
+		TestTrue(TEXT("the online read of a store named with capitals succeeds"), bCapitalsRead);
+	}
+	{
+		// The list of a shop's items takes the snapshot's list path, not the one-item path.
+		FFixture Offline(NoRetry(), Dir);
+		Offline.Provider->SetReachabilityProbe([]() { return false; });
+		Offline.Fake->On(ListRoute, FFlockFakeTransport::Offline());
+		Offline.Fake->On(CapitalsRoute, FFlockFakeTransport::Offline());
+		TArray<FFlockShopItem> Items;
+		bool bServed = false;
+		Offline.Provider->GetItemsByShop(ProbeShopId, FString(), [&](TFlockResult<TArray<FFlockShopItem>> R) { bServed = R.bSuccess; Items = R.Value; });
+		AddInfo(TEXT("The items of a shop, offline:"));
+		if (TestTrue(TEXT("the list is served offline"), bServed)) { TestProbeShopItems(*this, Items); }
+		TestEqual(TEXT("the list from the snapshot, not the network"), Offline.Fake->CountTo(ListRoute), 0);
+
+		FFlockShopItem Capitals;
+		bool bCapitalsServed = false;
+		Offline.Provider->GetItem(TEXT("item-capitals"), [&](TFlockResult<FFlockShopItem> R) { bCapitalsServed = R.bSuccess; Capitals = R.Value; });
+		TestTrue(TEXT("the item named with capitals is served offline"), bCapitalsServed);
+		TestEqualSensitive(TEXT("a store's name keeps its capitals through the snapshot"), StoreKeys(Capitals), FString(TEXT("Steam")));
+	}
+	{
+		FFixture Offline(NoRetry(), Dir);
+		Offline.Provider->SetReachabilityProbe([]() { return false; });
+		Offline.Fake->On(Route, FFlockFakeTransport::Offline());
+		FFlockShopItem Item;
+		bool bServed = false;
+		Offline.Provider->GetItem(GemsPackId, [&](TFlockResult<FFlockShopItem> R) { bServed = R.bSuccess; Item = R.Value; });
+		TestTrue(TEXT("served offline"), bServed);
+		TestEqual(TEXT("from the snapshot, not the network"), Offline.Fake->CountTo(Route), 0);
+		TestTrue(TEXT("the flag survives the snapshot"), Item.IsRealMoney);
+		TestEqualSensitive(TEXT("each store's name survives spelled as sent"), StoreKeys(Item), FString(TEXT("apple_app_store,google_play")));
+		TestEqualSensitive(TEXT("the Google Play id survives"), IdIn(Item, FlockPaymentProviders::GooglePlay), FString(TEXT("com.flock.pv00.gems")));
+		TestEqualSensitive(TEXT("the App Store id survives"), IdIn(Item, FlockPaymentProviders::AppleAppStore), FString(TEXT("com.flock.pv00.gems")));
+	}
+	Cleanup(Dir);
+	return true;
+}
+
+// The names the backend's ShopItemType and PaymentProvider use (read 2026-11-05); the body-read tests above prove the two
+// stores and two kinds a live answer carried. The Blueprint nodes hand over the same constants.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopItemKindsAndStoresTest, "Flock.Shop.RealMoney.ItemKindsAndStoreNamesAreTheServersSpelling",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopItemKindsAndStoresTest::RunTest(const FString& Parameters)
+{
+	TestEqualSensitive(TEXT("standard"), FString(FlockShopItemTypes::Standard), FString(TEXT("standard")));
+	TestEqualSensitive(TEXT("currency_pack"), FString(FlockShopItemTypes::CurrencyPack), FString(TEXT("currency_pack")));
+	TestEqualSensitive(TEXT("consumable"), FString(FlockShopItemTypes::Consumable), FString(TEXT("consumable")));
+	TestEqualSensitive(TEXT("apple_app_store"), FString(FlockPaymentProviders::AppleAppStore), FString(TEXT("apple_app_store")));
+	TestEqualSensitive(TEXT("google_play"), FString(FlockPaymentProviders::GooglePlay), FString(TEXT("google_play")));
+	TestEqualSensitive(TEXT("stripe"), FString(FlockPaymentProviders::Stripe), FString(TEXT("stripe")));
+	TestEqualSensitive(TEXT("tap"), FString(FlockPaymentProviders::Tap), FString(TEXT("tap")));
+	TestEqualSensitive(TEXT("moyasar"), FString(FlockPaymentProviders::Moyasar), FString(TEXT("moyasar")));
+
+	TestEqualSensitive(TEXT("node: standard"), UFlockShopLibrary::ShopItemTypeStandard(), FString(FlockShopItemTypes::Standard));
+	TestEqualSensitive(TEXT("node: currency pack"), UFlockShopLibrary::ShopItemTypeCurrencyPack(), FString(FlockShopItemTypes::CurrencyPack));
+	TestEqualSensitive(TEXT("node: consumable"), UFlockShopLibrary::ShopItemTypeConsumable(), FString(FlockShopItemTypes::Consumable));
+	TestEqualSensitive(TEXT("node: App Store"), UFlockShopLibrary::PaymentProviderAppleAppStore(), FString(FlockPaymentProviders::AppleAppStore));
+	TestEqualSensitive(TEXT("node: Google Play"), UFlockShopLibrary::PaymentProviderGooglePlay(), FString(FlockPaymentProviders::GooglePlay));
+	TestEqualSensitive(TEXT("node: Stripe"), UFlockShopLibrary::PaymentProviderStripe(), FString(FlockPaymentProviders::Stripe));
+	TestEqualSensitive(TEXT("node: Tap"), UFlockShopLibrary::PaymentProviderTap(), FString(FlockPaymentProviders::Tap));
+	TestEqualSensitive(TEXT("node: Moyasar"), UFlockShopLibrary::PaymentProviderMoyasar(), FString(FlockPaymentProviders::Moyasar));
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

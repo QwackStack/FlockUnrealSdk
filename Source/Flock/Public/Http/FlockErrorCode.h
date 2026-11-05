@@ -76,6 +76,7 @@ enum class EFlockErrorCode : uint8
 	MatchmakingPartyTooLarge,
 	MatchmakingPlayerNotEligible,
 	MatchmakingQueueNotFound,
+	MatchmakingSearchInputRequired,
 	MatchmakingTicketNotCancelable,
 	MatchmakingTicketNotFound,
 	MatchmakingVersionMismatch,

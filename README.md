@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.41.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.42.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -60,7 +60,8 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   with typed accessors by dotted path, or bind them to your `USTRUCT` in C++. Plus the game record and
   version info.
 - **Shop** — browse shops and items (all shops, by id or name, a single item, a shop's items), buy an
-  item for a player, and read a player's inventory. Catalog reads are cached and snapshot-backed; a
+  item for a player, and read a player's inventory. Each item says whether it costs real money and
+  gives its product id in each store. Catalog reads are cached and snapshot-backed; a
   purchase is money-safe (never retried on an ambiguous failure, never queued) and reports the
   transaction for revenue metrics; inventory is always fetched fresh.
 - **Player data & templates** — read a player's saved data (by row id, a page of rows, or the signed-in
@@ -442,7 +443,7 @@ so you can read only the half you work in.
 | [Game config & metadata](Documentation/game-config.md) | Resolving effective values, configs and patches, feature flags, game/version records |
 | [Player data & templates](Documentation/player-data.md) | Reads by id/template/tag, templates, pagination, bans |
 | [Game commands](Documentation/game-commands.md) | Updating a row, achievements, funds, the offline queue and its money-safety rules |
-| [Shop](Documentation/shop.md) | Shops and items, purchase and its money-safety contract, player inventory |
+| [Shop](Documentation/shop.md) | Shops and items, real-money items and their store product ids, purchase and its money-safety contract, player inventory |
 | [Assets](Documentation/assets.md) | Listing and resolving assets, the four download flavours, preloading, the binary cache |
 | [Leaderboards](Documentation/leaderboards.md) | Boards by name, standings, a player's own rank, windows and score formatting, why there is no submit call |
 | [Notifications](Documentation/notifications.md) | The inbox, scheduled reminders, the template catalog, push device tokens and what push delivery needs |

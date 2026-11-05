@@ -80,4 +80,40 @@ public:
 	/** The consume counterpart: true when consuming the entry moved currency and reported the new balances. */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Has Wallet (Consume)"), Category = "Flock|Shop")
 	static bool ConsumeHasWallet(const FFlockConsumeResult& ConsumeResult) { return ConsumeResult.HasWallet(); }
+
+	/**
+	 * The item's product id in Store (one of the Flock Payment Provider nodes), exactly as set in the Flock dashboard. Matches the
+	 * store's name with its letter case, which a map's own Find does not. False when the item has none there.
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Find Store Product Id"), Category = "Flock|Shop")
+	static bool FindStoreProductId(const FFlockShopItem& Item, const FString& Store, FString& ProductId)
+	{
+		return Item.FindStoreProductId(Store, ProductId);
+	}
+
+	/** Store and payment gateway names as the server spells them. Apple App Store and Google Play are the keys of an item's Store Product Ids; a web checkout needs no product id. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Payment Provider Apple App Store"), Category = "Flock|Shop")
+	static FString PaymentProviderAppleAppStore() { return FlockPaymentProviders::AppleAppStore; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Payment Provider Google Play"), Category = "Flock|Shop")
+	static FString PaymentProviderGooglePlay() { return FlockPaymentProviders::GooglePlay; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Payment Provider Stripe"), Category = "Flock|Shop")
+	static FString PaymentProviderStripe() { return FlockPaymentProviders::Stripe; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Payment Provider Tap"), Category = "Flock|Shop")
+	static FString PaymentProviderTap() { return FlockPaymentProviders::Tap; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Payment Provider Moyasar"), Category = "Flock|Shop")
+	static FString PaymentProviderMoyasar() { return FlockPaymentProviders::Moyasar; }
+
+	/** Item kinds as the server spells them, to compare an item's Type against rather than typing them. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Shop Item Type Standard"), Category = "Flock|Shop")
+	static FString ShopItemTypeStandard() { return FlockShopItemTypes::Standard; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Shop Item Type Currency Pack"), Category = "Flock|Shop")
+	static FString ShopItemTypeCurrencyPack() { return FlockShopItemTypes::CurrencyPack; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Shop Item Type Consumable"), Category = "Flock|Shop")
+	static FString ShopItemTypeConsumable() { return FlockShopItemTypes::Consumable; }
 };

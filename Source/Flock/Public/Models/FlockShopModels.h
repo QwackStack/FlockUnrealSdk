@@ -24,6 +24,34 @@ namespace FlockShopItemRewardTypes
 }
 
 /**
+ * What kind of item a shop item is (FFlockShopItem::Type). An open set the server can widen, so compare against these,
+ * never a literal; a kind added later still reads, through Type.
+ */
+namespace FlockShopItemTypes
+{
+	/** Lands in the player's inventory. In a store, set it up as a one-time (non-consumable) product. */
+	inline constexpr const TCHAR* Standard = TEXT("standard");
+	/** Pays its rewards straight into the wallet. In a store, set it up as a consumable product. */
+	inline constexpr const TCHAR* CurrencyPack = TEXT("currency_pack");
+	/** Lands in the inventory and grants its rewards when consumed. In a store, set it up as a consumable product. */
+	inline constexpr const TCHAR* Consumable = TEXT("consumable");
+}
+
+/**
+ * The stores and web payment gateways Flock takes real money through, as the server names them. Only the stores
+ * (AppleAppStore, GooglePlay) are keys of FFlockShopItem::StoreProductIds: a web checkout needs no product id. An open set
+ * the server can widen, so a store added later is kept, never dropped.
+ */
+namespace FlockPaymentProviders
+{
+	inline constexpr const TCHAR* AppleAppStore = TEXT("apple_app_store");
+	inline constexpr const TCHAR* GooglePlay = TEXT("google_play");
+	inline constexpr const TCHAR* Stripe = TEXT("stripe");
+	inline constexpr const TCHAR* Tap = TEXT("tap");
+	inline constexpr const TCHAR* Moyasar = TEXT("moyasar");
+}
+
+/**
  * Where a purchase has got to. A wallet purchase is born paid; the others belong to real-money checkouts, whose result comes
  * later. An open set the server can widen, so compare against these, never a literal.
  */
@@ -58,8 +86,8 @@ struct FLOCK_API FFlockShopItemReward
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	int32 Amount = 0;
 
-	/** True for a currency grant — the only kind that exists today, and the reason Type is not an enum. */
-	bool IsCurrency() const { return Type == FlockShopItemRewardTypes::Currency; }
+	/** True for a currency grant — the only kind that exists today, and the reason Type is not an enum. Letter case counts. */
+	bool IsCurrency() const { return Type.Equals(FlockShopItemRewardTypes::Currency, ESearchCase::CaseSensitive); }
 };
 
 /**
@@ -114,19 +142,38 @@ struct FLOCK_API FFlockShopItem
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString PatchId;
 
+	/** The price in Currency; for a real-money item, in the currency's smallest unit (199 is USD 1.99). */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	int32 Price = 0;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString Currency;
 
-	/** What kind of item this is — it drives whether buying grants rewards or lands in inventory. */
+	/**
+	 * True when Currency is one the game's currency config lists as real money: the item is paid for through a store or a
+	 * web checkout, never from the wallet, and Purchase refuses it with ShopRealCurrencyNeedsCheckout. The server's own
+	 * answer, sent with the catalog by every shop read: false when the server does not send it (an older server), and never
+	 * guessed from the currency's code.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool IsRealMoney = false;
+
+	/** What kind of item this is, one of FlockShopItemTypes: it drives whether buying grants rewards or lands in inventory. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString Type;
 
 	/** What this item grants when bought or consumed. Empty for a plain inventory item, never null. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	TArray<FFlockShopItemReward> Rewards;
+
+	/**
+	 * This item's product id in each store, keyed by FlockPaymentProviders name, exactly as set in the Flock dashboard; empty
+	 * when none is set. A store the SDK does not know yet is kept. A phone shows the player the store's own price for the
+	 * product, in their currency and with their taxes, not Price. Look an id up with FindStoreProductId, which matches the
+	 * store's name with its letter case (a map's own Find ignores case).
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TMap<FString, FString> StoreProductIds;
 
 	/** The free-form `data` object (empty when absent). Read with TryGet* / UFlockJsonDataLibrary. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
@@ -138,7 +185,13 @@ struct FLOCK_API FFlockShopItem
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString UpdatedAt;
 
-	/** Builds the item from a wire object, capturing `data` verbatim. */
+	/**
+	 * This item's product id in Store (one of FlockPaymentProviders), matching the store's name with its letter case. False,
+	 * with OutProductId emptied, when the item has none there.
+	 */
+	bool FindStoreProductId(const FString& Store, FString& OutProductId) const;
+
+	/** Builds the item from a wire object, capturing `data` and each store's product id verbatim. */
 	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockShopItem& OutStruct, FString& OutError);
 };
 

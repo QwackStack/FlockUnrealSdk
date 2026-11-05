@@ -39,6 +39,28 @@ namespace
 		}
 	}
 
+	/**
+	 * Reads `store_skus`, each store's product id. Kept verbatim, keys and values: a store compares product ids exactly, and a
+	 * store the SDK does not know yet is kept. An absent or null map reads empty, and a member whose id is not a string is
+	 * left out rather than failing the item.
+	 */
+	void ReadStoreProductIds(const TSharedRef<FJsonObject>& Object, TMap<FString, FString>& OutProductIds)
+	{
+		const TSharedPtr<FJsonObject>* Ids = nullptr;
+		if (!Object->TryGetObjectField(TEXT("store_skus"), Ids) || Ids == nullptr || !Ids->IsValid())
+		{
+			return;
+		}
+		// `auto` and FString(*Entry.Key): UE 5.8 interns the key (see Misc/FlockEngineCompat.h).
+		for (const auto& Entry : (*Ids)->Values)
+		{
+			if (Entry.Value.IsValid() && Entry.Value->Type == EJson::String)
+			{
+				OutProductIds.Add(FString(*Entry.Key), Entry.Value->AsString());
+			}
+		}
+	}
+
 	/** Reads a nullable nested model. An absent or null field leaves OutStruct default-constructed. */
 	template <typename T>
 	void ReadOptional(const TSharedRef<FJsonObject>& Object, const TCHAR* Field, T& OutStruct)
@@ -82,11 +104,31 @@ bool FFlockShopItem::FromWireObject(const TSharedRef<FJsonObject>& Object, FFloc
 	Object->TryGetStringField(TEXT("created_at"), OutStruct.CreatedAt);
 	Object->TryGetStringField(TEXT("updated_at"), OutStruct.UpdatedAt);
 
+	// The server's word only: a JSON true. Absent (an older server), null or any other value reads false and never fails
+	// the read; TryGetBoolField would also take the string "true", which the server never sends for this member.
+	const TSharedPtr<FJsonValue> RealMoney = Object->TryGetField(TEXT("is_real_money"));
+	OutStruct.IsRealMoney = RealMoney.IsValid() && RealMoney->Type == EJson::Boolean && RealMoney->AsBool();
+
 	ReadRewards(Object, TEXT("rewards"), OutStruct.Rewards);
+	ReadStoreProductIds(Object, OutStruct.StoreProductIds);
 
 	// `data` is an open dict — kept verbatim inside the handle rather than routed through the wire transform.
 	OutStruct.Data = FFlockJsonData::FromJson(Object->TryGetField(TEXT("data")));
 	return true;
+}
+
+bool FFlockShopItem::FindStoreProductId(const FString& Store, FString& OutProductId) const
+{
+	OutProductId.Reset();
+	for (const TPair<FString, FString>& Entry : StoreProductIds)
+	{
+		if (Entry.Key.Equals(Store, ESearchCase::CaseSensitive))
+		{
+			OutProductId = Entry.Value;
+			return true;
+		}
+	}
+	return false;
 }
 
 bool FFlockPurchaseResult::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockPurchaseResult& OutStruct, FString& OutError)

@@ -35,8 +35,10 @@
 # and store_credentials_rejected on 2026-10-26 (Libraries/Backend/payment-route-probes/runs_payment_hardening.txt);
 # receipt_belongs_to_another_player on a phone (2026-11-05); checkout_failed with Stripe's test mode (2026-10-31); read
 # only: receipt_pending and idempotency_key_reused. The same spec has
-# codes this file leaves for their own tickets: multiplayer.* kick, close and backfill, live_updates.disabled and
-# matchmaking.search_input_required (each waiting for the calls that will receive it), and tracking_plan.* (dashboard).
+# codes this file leaves for their own tickets: multiplayer.* kick, close and backfill and live_updates.disabled (each
+# waiting for the calls that will receive it), and tracking_plan.* (dashboard). matchmaking.search_input_required joined
+# on 2026-11-05: FindMatch sends neither a region nor a skill, so a queue given region or skill rules refuses every search
+# it makes (read in backend fix/tap-checkout e601aa97, packages/matchmaking/services/create_matchmaking_ticket.py).
 # Before that, on 2026-10-15, for the API key, sign-in and request.* codes, measured against the local backend.
 # Before that, on 2026-10-13, for the matchmaking, party and multiplayer codes, from the backend's enums.py files
 # (feat/cloudflare-relay, where multiplayer.seat_mint_limit is defined) and the spec as exported on 2026-10-05.
@@ -77,6 +79,7 @@ matchmaking.not_party_leader
 matchmaking.party_too_large
 matchmaking.player_not_eligible
 matchmaking.queue_not_found
+matchmaking.search_input_required
 matchmaking.ticket_not_cancelable
 matchmaking.ticket_not_found
 matchmaking.version_mismatch

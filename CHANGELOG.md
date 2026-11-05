@@ -5,6 +5,36 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.42.0] - 2026-11-05
+
+Real-money shop items. A game can tell which shop items cost real money and read each one's product id in each store.
+
+### Added
+
+- **`FFlockShopItem::IsRealMoney`** (*Is Real Money* in Blueprint): true when the item's currency is one the game's
+  currency config lists as real money, so the item is paid for through a store or a web checkout, never from the wallet
+  (`Purchase` refuses it with `ShopRealCurrencyNeedsCheckout`). It is the server's own answer, sent with the catalog by
+  every shop read; a server that does not send it reads false, and the SDK never guesses it from the currency's code.
+- **`FFlockShopItem::StoreProductIds`**: the item's product id in each store, keyed by store name, exactly as set in the
+  Flock dashboard. An item with none reads an empty map, and a store the SDK does not know yet is kept. Look one up with
+  **`FindStoreProductId`** (C++, and the *Find Store Product Id* node), which matches the store's name with its letter
+  case, as a map's own Find does not.
+- **`FlockPaymentProviders`** and **`FlockShopItemTypes`**: the server's names for its stores and payment gateways
+  (`apple_app_store`, `google_play`, `stripe`, `tap`, `moyasar`) and for its item kinds (`standard`, `currency_pack`,
+  `consumable`), as string constants, since the server can add to either; the *Flock Payment Provider* and *Flock Shop
+  Item Type* nodes hand the same values to a graph.
+- **`EFlockErrorCode::MatchmakingSearchInputRequired`** with its fix. Flock's matchmaking can match players by region or
+  skill, and a queue given those rules refuses every search that sends neither, as `FindMatch` does; it read as `Unknown`
+  until now.
+
+### Changed
+
+- **`FFlockShopItem::Price` says its unit**: for a real-money item it is the currency's smallest unit (199 is USD 1.99). A
+  phone shows the player the store's own price for the product.
+- **`MatchmakingPartyTooLarge`'s fix covers a queue's team size**, which Flock's matchmaking also checks a party against.
+- **`FFlockShopItemReward::IsCurrency` (*Is Currency Reward*) reads the kind with its letter case**: a kind spelled
+  `Currency` is not the server's `currency`. The server sends it in lower case, so no reward it sends changes answer.
+
 ## [1.41.0] - 2026-11-05
 
 Every payment failure a game can meet has its own error code, a plain cause and a fix, ready for the purchase calls that

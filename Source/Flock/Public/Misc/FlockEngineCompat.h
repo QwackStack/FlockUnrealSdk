@@ -136,7 +136,7 @@ static_assert(!UE_VERSION_OLDER_THAN(FLOCK_ENGINE_FLOOR_MAJOR, FLOCK_ENGINE_FLOO
 // the SDK supplies its own, so the same test source reads the same on every engine in the range.
 #define FLOCK_ENGINE_HAS_TEST_EQUAL_SENSITIVE (!UE_VERSION_OLDER_THAN(5, 5, 0))
 
-#if WITH_AUTOMATION_TESTS && !FLOCK_ENGINE_HAS_TEST_EQUAL_SENSITIVE
+#if WITH_AUTOMATION_TESTS
 
 #include "Misc/AutomationTest.h"
 
@@ -145,7 +145,8 @@ namespace FlockEngineCompat
 	/**
 	 * What TestEqualSensitive does on the engines that have it: fails the check unless the two strings are the same
 	 * letter for letter. It lives here, rather than beside the other spelling checks in the Flock module's private
-	 * test support, because FlockEditor and the playtest plugin call it too and neither can reach that folder.
+	 * test support, because FlockEditor and the playtest plugin call it too and neither can reach that folder. Built on
+	 * every engine, so a test helper outside a RunTest (where the stand-in macro below cannot reach `this`) calls it too.
 	 */
 	inline bool CheckEqualSpelledExactly(FAutomationTestBase& Test, const FString& What, const FString& Actual,
 		const FString& Expected)
@@ -158,6 +159,10 @@ namespace FlockEngineCompat
 		return false;
 	}
 }
+
+#endif // WITH_AUTOMATION_TESTS
+
+#if WITH_AUTOMATION_TESTS && !FLOCK_ENGINE_HAS_TEST_EQUAL_SENSITIVE
 
 // A macro, because the call sites name it the way the engine's own is named: unqualified, inside a test's RunTest,
 // where `this` is the test. On UE 5.5 and newer this is not defined at all and the engine's member is what runs.

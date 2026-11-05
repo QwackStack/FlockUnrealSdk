@@ -115,6 +115,43 @@ Sdk->GetShopProvider()->Consume(InventoryId,
 Sdk->GetShopProvider()->GetPlayerInventory(FString(), /*Page*/ 1, /*Limit*/ 100, OnInventory);
 ```
 
+## Real-money items
+
+Each item says whether it costs real money and what it is called in each store. The server sends both with the catalog,
+from the game's currency config and the product ids set in the Flock dashboard. Like the rest of the catalog, they are
+kept for the session, and in the offline snapshot when **Enable Offline Cache** is on, so a change made in the dashboard
+shows after the shop provider's `ClearCache()` (C++ only) or on the next launch with a connection. A snapshot written by
+an SDK older than 1.42.0 holds neither: read offline, its items say `IsRealMoney` false and have no product ids until one
+read reaches the server.
+
+```cpp
+Sdk->GetShopProvider()->GetItem(ShopItemId,
+    [](TFlockResult<FFlockShopItem> Read)
+    {
+        if (!Read.bSuccess || !Read.Value.IsRealMoney) { return; }
+
+        // Paid through a store or a web checkout, never from the wallet: Purchase refuses it.
+        FString ProductId;
+        if (Read.Value.FindStoreProductId(FlockPaymentProviders::GooglePlay, ProductId))
+        {
+            UE_LOG(LogTemp, Display, TEXT("Sold on Google Play as %s"), *ProductId);
+        }
+    });
+```
+
+In Blueprint, break the item for *Is Real Money* and *Store Product Ids*, and look an id up with *Find Store Product Id*,
+giving it the *Flock Payment Provider Apple App Store* or *Flock Payment Provider Google Play* node as the store.
+
+`IsRealMoney` is true when the item's currency is one the currency config lists as real money; a server that does not
+send it reads false. For such an item `Price` is in the currency's smallest unit (199 is USD 1.99), but a phone shows the
+player the store's own price for the product, in their currency and with their taxes, so show that one there.
+`StoreProductIds` is keyed by store name (`FlockPaymentProviders::AppleAppStore`, `FlockPaymentProviders::GooglePlay`),
+holds each id exactly as set in the dashboard, and is empty for an item with no product id. Use `FindStoreProductId`
+rather than the map's own `Find`: a map of strings ignores letter case, and a store does not. `Type` is one of
+`FlockShopItemTypes` (the *Flock Shop Item Type* nodes): in a store, set up a `FlockShopItemTypes::CurrencyPack` or
+`FlockShopItemTypes::Consumable` item as a consumable product and a `FlockShopItemTypes::Standard` item as a one-time product. Store names and item kinds are strings rather than enums, for the same
+reason as a reward's `Type`.
+
 ## Caching and money-safety
 
 - **A purchase is never retried.** It posts non-idempotently, so an ambiguous failure — a timeout, a
