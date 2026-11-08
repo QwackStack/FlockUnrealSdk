@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.42.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.43.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -61,9 +61,10 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   version info.
 - **Shop** — browse shops and items (all shops, by id or name, a single item, a shop's items), buy an
   item for a player, and read a player's inventory. Each item says whether it costs real money and
-  gives its product id in each store. Catalog reads are cached and snapshot-backed; a
+  gives its product id in each store, and a purchase the player made in the App Store or Google Play is
+  redeemed for the item it bought. Catalog reads are cached and snapshot-backed; a
   purchase is money-safe (never retried on an ambiguous failure, never queued) and reports the
-  transaction for revenue metrics; inventory is always fetched fresh.
+  transaction for revenue metrics (a store purchase's revenue is recorded by the server); inventory is always fetched fresh.
 - **Player data & templates** — read a player's saved data (by row id, a page of rows, or the signed-in
   player's row for a template by the template's id or tag), browse the player templates that define those
   records, and check a player's ban status. A player's rows are paginated once and cached; templates are
@@ -443,7 +444,7 @@ so you can read only the half you work in.
 | [Game config & metadata](Documentation/game-config.md) | Resolving effective values, configs and patches, feature flags, game/version records |
 | [Player data & templates](Documentation/player-data.md) | Reads by id/template/tag, templates, pagination, bans |
 | [Game commands](Documentation/game-commands.md) | Updating a row, achievements, funds, the offline queue and its money-safety rules |
-| [Shop](Documentation/shop.md) | Shops and items, real-money items and their store product ids, purchase and its money-safety contract, player inventory |
+| [Shop](Documentation/shop.md) | Shops and items, real-money items and their store product ids, redeeming a store purchase, purchase and its money-safety contract, player inventory |
 | [Assets](Documentation/assets.md) | Listing and resolving assets, the four download flavours, preloading, the binary cache |
 | [Leaderboards](Documentation/leaderboards.md) | Boards by name, standings, a player's own rank, windows and score formatting, why there is no submit call |
 | [Notifications](Documentation/notifications.md) | The inbox, scheduled reminders, the template catalog, push device tokens and what push delivery needs |
@@ -584,7 +585,7 @@ Deliberate omissions and known gaps:
   `Flock Download Asset File` is the documented path for audio.
 - **A few surfaces are C++-only.** Config *patch* reads (all patches, by id, by config) and configs by
   version tag — in Blueprint, `Flock Resolve Config Data` already returns the patched-or-base values,
-  which is what most graphs want. Provider cache clearing is also C++-only.
+  which is what most graphs want. Provider cache clearing and redeeming a store purchase (`RedeemStoreReceipt`) are also C++-only.
 - **Asset uploads are not included.** The SDK reads and downloads assets; publishing them is a dashboard
   operation.
 - **Leave `framegrabber.framelatency` at 0 while Protokite Playtest records video.** Changing that engine console

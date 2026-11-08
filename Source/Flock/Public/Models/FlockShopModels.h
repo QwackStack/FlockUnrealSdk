@@ -151,7 +151,8 @@ struct FLOCK_API FFlockShopItem
 
 	/**
 	 * True when Currency is one the game's currency config lists as real money: the item is paid for through a store or a
-	 * web checkout, never from the wallet, and Purchase refuses it with ShopRealCurrencyNeedsCheckout. The server's own
+	 * web checkout, never from the wallet: Purchase refuses it with ShopRealCurrencyNeedsCheckout, and a store's purchase of
+	 * it is redeemed with FFlockShopProvider::RedeemStoreReceipt. The server's own
 	 * answer, sent with the catalog by every shop read: false when the server does not send it (an older server), and never
 	 * guessed from the currency's code.
 	 */
@@ -413,4 +414,50 @@ struct FLOCK_API FFlockShopTransactionRequest
 
 	UPROPERTY() FString ShopItemId;
 	UPROPERTY() FString PlayerId;
+};
+
+/**
+ * A purchase a store made, as Flock redeems it: the App Store's transaction id, or Google Play's product id and purchase
+ * token. Make one with FromAppleAppStore or FromGooglePlay, and hand it to FFlockShopProvider::RedeemStoreReceipt.
+ * Each id is kept exactly as given: one with spaces around it is refused when redeemed, never trimmed.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockStoreReceipt
+{
+	GENERATED_BODY()
+
+	/** The store that made the purchase: FlockPaymentProviders::AppleAppStore or FlockPaymentProviders::GooglePlay. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Store;
+
+	/** The App Store's transaction id (StoreKit's transaction id); empty for Google Play. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString TransactionId;
+
+	/** The Google Play product id the player bought; empty for the App Store. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ProductId;
+
+	/** The Google Play purchase token; empty for the App Store. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PurchaseToken;
+
+	/** An App Store purchase, by its transaction id, exactly as StoreKit gave it. */
+	static FFlockStoreReceipt FromAppleAppStore(const FString& InTransactionId)
+	{
+		FFlockStoreReceipt Receipt;
+		Receipt.Store = FlockPaymentProviders::AppleAppStore;
+		Receipt.TransactionId = InTransactionId;
+		return Receipt;
+	}
+
+	/** A Google Play purchase, by its product id and purchase token, exactly as Google Play gave them. */
+	static FFlockStoreReceipt FromGooglePlay(const FString& InProductId, const FString& InPurchaseToken)
+	{
+		FFlockStoreReceipt Receipt;
+		Receipt.Store = FlockPaymentProviders::GooglePlay;
+		Receipt.ProductId = InProductId;
+		Receipt.PurchaseToken = InPurchaseToken;
+		return Receipt;
+	}
 };

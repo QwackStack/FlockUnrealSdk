@@ -140,7 +140,12 @@ retries Auth, Validation, Serialization or Cancelled. What is left for you:
   player now signed in, if it still applies. A cancelled call is never answered from the offline cache.
 - **Money mutations** (a purchase, a consume, a funds grant) — an ambiguous failure is surfaced rather
   than re-sent, because a timed-out request may already have committed. Re-send only on a deliberate
-  player action, never automatically.
+  player action, never automatically. Redeeming a store purchase (`RedeemStoreReceipt`) is the exception: the
+  server makes one purchase per store transaction, so the SDK re-sends it itself, and you send the same receipt
+  again later when it still fails.
+- **A 5xx naming a setting someone has to fix** is never retried: the game's payment keys the server cannot read
+  (`PaymentProviderCredentialsUnreadable`), or a Flock server with no address for a payment provider to confirm a payment
+  (`ShopRealCurrencySettlementUnavailable`). It stays the same until the setting is fixed.
 
 ## Where failures show up in the log
 

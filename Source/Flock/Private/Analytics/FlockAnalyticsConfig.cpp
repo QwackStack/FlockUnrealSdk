@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Analytics/FlockAnalyticsConfig.h"
+#include "Misc/FlockWhiteSpace.h"
 
 #include "Config/FlockConfig.h"
 
@@ -31,8 +32,7 @@ FFlockAnalyticsConfig FFlockAnalyticsConfig::FromSettings(const UFlockConfig& Se
 bool FFlockAnalyticsConfig::HasUsableSessionPlatform() const
 {
 	// Refused rather than trimmed, so the stray space is fixed in the setting where it was typed.
-	return !SessionPlatform.IsEmpty() && !FChar::IsWhitespace(SessionPlatform[0])
-		&& !FChar::IsWhitespace(SessionPlatform[SessionPlatform.Len() - 1]);
+	return !SessionPlatform.IsEmpty() && !FlockWhiteSpace::IsAtEitherEnd(SessionPlatform);
 }
 
 FString FFlockAnalyticsConfig::GetSessionPlatform(const FString& EnginePlatformName) const

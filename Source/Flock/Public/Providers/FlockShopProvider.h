@@ -10,6 +10,7 @@
 
 class FFlockAnalyticsProvider;
 class FFlockPlayerProvider;
+class FJsonObject;
 
 /**
  * Shop catalog + purchase + player inventory.
@@ -20,7 +21,8 @@ class FFlockPlayerProvider;
  * enough, because catalog reads are not the ones several widgets race for on the same frame.
  *
  * A purchase is money-moving and non-idempotent: an ambiguous failure may mean the charge already
- * cleared, so it is never retried on such a failure and never queued. Player inventory changes on every
+ * cleared, so it is never retried on such a failure and never queued. Redeeming a store's purchase is the exception:
+ * the server makes one purchase per store transaction, so it is re-sent. Player inventory changes on every
  * purchase and is therefore never cached — always a fresh fetch, so offline it fails rather than serving
  * stale ownership.
  *
@@ -79,6 +81,8 @@ public:
 	 * (non-idempotent — no retry on an ambiguous failure) and fires Started (before the post) and
 	 * Purchased/Failed (after) analytics transactions fire-and-forget: they are dispatched alongside the
 	 * purchase, never awaited, so a slow, failed, or absent analytics endpoint never delays or fails it.
+	 * A 2xx that names no purchase fails the call and records neither outcome, since whether the money moved
+	 * is unknown; it drops the cached player data, so the wallet read its fix asks for goes to the server.
 	 *
 	 * Completes with the whole purchase result — the inventory row **under `.Inventory`**, plus anything
 	 * the purchase granted on the spot (`.Granted`) and the wallet afterwards (`.Wallet`). The row can be
@@ -98,6 +102,23 @@ public:
 	{
 		Purchase(ShopItemId, FString(), MoveTemp(OnComplete));
 	}
+
+	/**
+	 * Redeems a purchase a store made for a shop item, as the signed-in player: Flock asks the store and hands the item
+	 * over. Completes with the purchase, as Purchase does, and writes the wallet it reports into the cached player data.
+	 *
+	 * **Safe to send again**, unlike a wallet purchase: one store purchase makes one Flock purchase, and a repeat answers
+	 * with what the first delivered. So a dropped connection, a timeout or a 5xx is re-sent under the retry policy, the
+	 * store being unavailable included, except a 5xx naming a setting someone has to fix (the game's payment keys
+	 * unreadable). Every 4xx is final but 408 and 429, which say the request was not processed. An expired token is
+	 * renewed once and the redemption sent again. Leave the store's purchase unfinished until this succeeds.
+	 *
+	 * Needs a signed-in player (the body names none: the server redeems for the player the sign-in names), and a retry is
+	 * never sent once that player signs out or another signs in. The ids are sent exactly as given; an empty one, or one
+	 * with spaces around it, is refused before anything is sent. A 2xx that names no purchase fails the call.
+	 */
+	void RedeemStoreReceipt(const FString& ShopItemId, const FFlockStoreReceipt& Receipt,
+		TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnComplete);
 
 	/**
 	 * Consumes an owned inventory entry, granting whatever it carries. Completes with the updated row,
@@ -143,6 +164,25 @@ private:
 
 	FString MakeUrl(const FString& Path) const { return FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, *Path); }
 	TMap<FString, FString> HeadersNow() const { return Session->GetAuthHeaders(); }
+
+	/**
+	 * Gives a money call's own fix to a 2xx that said nothing about a purchase: one naming none (FFlockPurchaseResult's
+	 * decode refuses it, since its default status would read `{}` as paid) or one whose body could not be read at all
+	 * (empty, or a captive portal's page). Both fail as Serialization with the 2xx status, never retried; set inside the
+	 * attempt, so the logged failure carries the fix.
+	 */
+	static FFlockRetryHandler::FOperation<FFlockPurchaseResult> NamingAPurchase(
+		FFlockRetryHandler::FOperation<FFlockPurchaseResult> Operation, const FString& Fix);
+
+	/** True for a 2xx that said nothing about whether the money moved (see NamingAPurchase). */
+	static bool AnsweredWithoutAPurchase(const TFlockResult<FFlockPurchaseResult>& Result);
+
+	/** Drops the cached player data, so the next wallet read asks the server. No-op without a player provider. */
+	void ForgetCachedPlayerData() const;
+
+	/** The receipt's ids as the route takes them, each exactly as the store issued it; false (and OnComplete told) when one is not. */
+	static bool ReceiptIds(const FFlockStoreReceipt& Receipt, TSharedRef<FJsonObject>& OutIds,
+		const TFunction<void(TFlockResult<FFlockPurchaseResult>)>& OnComplete);
 
 	void IndexShop(const FFlockShop& Shop);
 	TArray<FFlockShopItem> ResolveItems(const TArray<FString>& Ids) const;

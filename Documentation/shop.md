@@ -38,7 +38,8 @@ now owns), `Granted` (what the purchase handed over immediately), `Wallet` (the 
 `Status`. Purchase spends only game currencies from the player's wallet, so a purchase it makes is paid at
 once and *Is Purchase Paid* is true. An item priced in a currency the game's currency config lists as real money
 is refused with `ShopRealCurrencyNeedsCheckout` (the server reads that list for the Game Version the game sends):
-price it in a game currency, or leave it out of what the game sells this way. An item switched off (Inactive) in the
+price it in a game currency, or sell it through the App Store or Google Play and redeem the store's purchase with
+`RedeemStoreReceipt` (see [Redeeming a store purchase](#redeeming-a-store-purchase)). An item switched off (Inactive) in the
 dashboard, or one in a switched-off shop, is refused with `ShopItemNotForSale` and nothing is bought; the shop provider
 then clears the shops it kept, so reading the shop again shows the item gone from its items (*Flock Get Shop Item*,
 which reads one item by its id, still returns it, its `Status` inactive). A purchase refused with
@@ -130,7 +131,8 @@ Sdk->GetShopProvider()->GetItem(ShopItemId,
     {
         if (!Read.bSuccess || !Read.Value.IsRealMoney) { return; }
 
-        // Paid through a store or a web checkout, never from the wallet: Purchase refuses it.
+        // Paid through a store or a web checkout, never from the wallet: Purchase refuses it, and a store's
+        // purchase of it is redeemed with RedeemStoreReceipt.
         FString ProductId;
         if (Read.Value.FindStoreProductId(FlockPaymentProviders::GooglePlay, ProductId))
         {
@@ -152,11 +154,59 @@ rather than the map's own `Find`: a map of strings ignores letter case, and a st
 `FlockShopItemTypes::Consumable` item as a consumable product and a `FlockShopItemTypes::Standard` item as a one-time product. Store names and item kinds are strings rather than enums, for the same
 reason as a reward's `Type`.
 
+### Redeeming a store purchase
+
+When the player has paid the App Store or Google Play for an item, hand the store's purchase to `RedeemStoreReceipt`
+(C++). Flock asks the store about it and hands the item over, completing with the purchase as `Purchase` does, and the
+wallet it reports goes into the cached player data. Make the receipt with `FFlockStoreReceipt::FromAppleAppStore` (the
+App Store's transaction id) or `FFlockStoreReceipt::FromGooglePlay` (Google Play's product id and purchase token), each id
+exactly as the store gave it.
+
+```cpp
+// The store's purchase is left unfinished until Flock has handed the item over.
+Sdk->GetShopProvider()->RedeemStoreReceipt(ShopItemId,
+    FFlockStoreReceipt::FromGooglePlay(ProductId, PurchaseToken),
+    [](TFlockResult<FFlockPurchaseResult> Redeemed)
+    {
+        if (Redeemed.bSuccess)
+        {
+            // Finish the purchase in the store now. Redeemed.Value.Granted, .Inventory and .Wallet say what it handed over.
+            return;
+        }
+        // Leave the store's purchase unfinished, and send the same receipt again later.
+        UE_LOG(LogTemp, Warning, TEXT("%s"), *Redeemed.Error.ToDisplayText());
+    });
+```
+
+- **It needs a signed-in player.** The server redeems for the player the sign-in names, so with nobody signed in the call
+  fails with an `Auth` error before anything is sent, and a retry is never sent once that player signs out or another
+  signs in.
+- **It is safe to send again.** One store purchase makes one Flock purchase, and a repeat answers with what the first
+  delivered, so the call itself re-sends after a timeout, a dropped connection or a 5xx, the store being unavailable
+  (`PaymentProviderStoreUnavailable`) included, under the retry policy. A 5xx naming a setting someone has to fix
+  (`PaymentProviderCredentialsUnreadable`) is not re-sent: it stays the same until the setting is fixed. An expired
+  token is renewed once and the redemption sent again. Every refusal
+  says why in its own code and fix: `PaymentProviderReceiptProductMismatch` (the receipt is for another product, or the
+  item has no product id in that store), `PaymentProviderReceiptPending` (Google is still waiting for the payment),
+  `PaymentProviderReceiptBelongsToAnotherPlayer`, `PaymentProviderProviderNotFound` (the store is not connected under
+  Monetization > Payments in the Flock dashboard), `PaymentProviderStoreCredentialsRejected` (the store refused the
+  game's own keys), and the rest in [Errors](errors.md).
+- **Keep the store's purchase until it succeeds.** A failure, a setup fault in the dashboard included, keeps nothing on the
+  server, so the same receipt redeems once the cause is fixed. A 2xx that names no purchase, or whose body cannot be
+  read, is a failure too, and drops the cached player data.
+- **Ids are sent exactly as given.** An empty id, or one with spaces around it, is refused (`Validation`) rather than
+  trimmed: the spaces came from wherever it was copied. The SDK does not compare the receipt's product with the item's
+  `StoreProductIds`; the server does.
+- **No analytics transaction is recorded**: the server records the revenue of each store purchase it confirms.
+
 ## Caching and money-safety
 
 - **A purchase is never retried.** It posts non-idempotently, so an ambiguous failure — a timeout, a
   dropped connection — is reported rather than re-sent. A timeout may mean the charge already landed, and
-  the SDK will not risk charging twice. Show the failure and let the player decide.
+  the SDK will not risk charging twice. Show the failure and let the player decide. A success that names no
+  purchase fails too: read the inventory and wallet (the cached player data is dropped, so that read asks the server)
+  before offering the item again. Redeeming a store purchase is the exception: the store already took the money,
+  and the server makes one purchase per store transaction, so it is re-sent.
 - **Consuming follows the same rule, in the other direction.** It credits currency, so a re-send after an
   ambiguous failure would grant twice. Only a failure that proves the server never processed the request
   is retried; everything else is reported.

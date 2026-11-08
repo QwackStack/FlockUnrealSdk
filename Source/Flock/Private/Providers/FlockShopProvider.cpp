@@ -5,6 +5,7 @@
 
 #include "Http/FlockEndpoints.h"
 #include "Http/FlockJsonUtils.h"
+#include "Misc/FlockWhiteSpace.h"
 #include "Providers/FlockAnalyticsProvider.h"
 #include "Providers/FlockPlayerProvider.h"
 
@@ -18,6 +19,8 @@ FFlockShopProvider::FFlockShopProvider(const TSharedRef<FFlockHttpClient>& InCli
 	, Session(InSession)
 	, VersionedApiUrl(InVersionedApiUrl)
 {
+	// A call whose token has expired renews it once and is sent again, as on every provider that acts for the player.
+	SetAuthSession(InSession);
 	SetSnapshotStore(InSnapshotStore, InGameVersionId);
 }
 
@@ -351,24 +354,31 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 			const TSharedRef<FFlockAuthSession> SessionRef = Self->Session;
 			const FString Url = Self->MakeUrl(FlockEndpoints::ShopTransaction);
 			FFlockRetryHandler::FOperation<FFlockPurchaseResult> SendPurchase = ForSignInOnly<FFlockPurchaseResult>(SessionRef, PurchaseSignIn,
-				[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnAttempt)
+				NamingAPurchase([ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnAttempt)
 				{
 					return ClientRef->PostJsonRaw<FFlockPurchaseResult>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
-				});
+				}, TEXT("Read the player's inventory and wallet to see whether it went through before offering it again; the SDK never sends a wallet purchase twice.")));
 
 			// Non-idempotent (money): an ambiguous failure may mean the charge cleared, so it surfaces
 			// rather than being re-sent. Bare response — PostJsonRaw reads the model at the root.
 			Self->Execute<FFlockPurchaseResult>(MoveTemp(SendPurchase),
 				[WeakSelf, Item, PurchaseSignIn, OnComplete](TFlockResult<FFlockPurchaseResult> PurchaseResult)
 				{
+					// A 2xx naming no purchase says nothing about whether the money moved: no outcome is recorded for it,
+					// and the wallet the fix asks the game to read has to come from the server.
+					const bool bNamedNoPurchase = AnsweredWithoutAPurchase(PurchaseResult);
 					// Fire the outcome record (best-effort) and deliver the result immediately — neither
 					// waits on the other. If the provider is gone, or the purchase's sign-in has ended, the record
 					// is skipped: it would otherwise go to whoever is signed in now.
 					if (const TSharedPtr<FFlockShopProvider> Self2 = WeakSelf.Pin())
 					{
-						if (Self2->Session->GetSignInNumber() == PurchaseSignIn)
+						if (Self2->Session->GetSignInNumber() == PurchaseSignIn && !bNamedNoPurchase)
 						{
 							Self2->RecordPurchaseStatus(PurchaseResult.bSuccess ? TEXT("Purchased") : TEXT("Failed"), Item);
+						}
+						if (bNamedNoPurchase)
+						{
+							Self2->ForgetCachedPlayerData();
 						}
 						// Switched off in the dashboard since the shop was read: the read the fix asks for has to ask the server,
 						// which leaves the item out. Dropped before the caller is told, so a read it makes from its handler does;
@@ -382,10 +392,7 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 						if (!PurchaseResult.bSuccess && (PurchaseResult.Error.ErrorCode == EFlockErrorCode::ShopInsufficientFunds
 							|| PurchaseResult.Error.ErrorCode == EFlockErrorCode::ShopCurrencyNotHeld))
 						{
-							if (const TSharedPtr<FFlockPlayerProvider> Players = Self2->PlayerProvider.Pin())
-							{
-								Players->ClearPlayerDataCache();
-							}
+							Self2->ForgetCachedPlayerData();
 						}
 						if (PurchaseResult.bSuccess)
 						{
@@ -402,6 +409,164 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 				},
 				TEXT("Purchase shop item"), /*bIdempotent*/ false);
 		});
+}
+
+void FFlockShopProvider::RedeemStoreReceipt(const FString& ShopItemId, const FFlockStoreReceipt& Receipt,
+	TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnComplete)
+{
+	if (!RequireNotEmpty(ShopItemId, TEXT("Shop Item ID"), OnComplete))
+	{
+		return;
+	}
+	TSharedRef<FJsonObject> Ids = MakeShared<FJsonObject>();
+	if (!ReceiptIds(Receipt, Ids, OnComplete))
+	{
+		return;
+	}
+	// The server redeems for the player the sign-in names, so with nobody signed in there is no one to redeem for.
+	if (!Session->IsAuthenticated())
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockPurchaseResult>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Auth,
+				TEXT("RedeemStoreReceipt needs a signed-in player, and none is"), FFlockErrorHints::SignInFirst())));
+		}
+		return;
+	}
+
+	// No player_id: the server redeems for the player the sign-in names, and refuses a body naming another one.
+	const TSharedRef<FJsonObject> Request = MakeShared<FJsonObject>();
+	Request->SetStringField(TEXT("shop_item_id"), ShopItemId);
+	Request->SetStringField(TEXT("provider"), Receipt.Store);
+	Request->SetObjectField(TEXT("receipt"), Ids);
+	FString Body;
+	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Body);
+	if (!FJsonSerializer::Serialize(Request, Writer))
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockPurchaseResult>::Fail(FFlockError::Make(EFlockErrorType::Serialization,
+				TEXT("The SDK could not write the redemption's body"))));
+		}
+		return;
+	}
+
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
+	const FString Url = MakeUrl(FlockEndpoints::ShopValidateReceipt);
+	// Sent only while the sign-in current now lasts: another player's sign-in never redeems this player's receipt. The
+	// token is read on each attempt, so a refreshed one is used.
+	FFlockRetryHandler::FOperation<FFlockPurchaseResult> SendRedemption = ForSignInOnly<FFlockPurchaseResult>(
+		SessionRef, Session->GetSignInNumber(),
+		NamingAPurchase([ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnAttempt)
+		{
+			return ClientRef->PostJsonRaw<FFlockPurchaseResult>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
+		}, TEXT("Leave the store's purchase unfinished and send the same receipt again: it cannot be paid for twice.")));
+
+	TWeakPtr<FFlockShopProvider> WeakSelf = AsShared();
+	// A store purchase makes one Flock purchase, so this one may be sent again, unlike a wallet purchase. Bare
+	// response — PostJsonRaw reads the model at the root.
+	Execute<FFlockPurchaseResult>(MoveTemp(SendRedemption),
+		[WeakSelf, OnComplete](TFlockResult<FFlockPurchaseResult> Result)
+		{
+			if (const TSharedPtr<FFlockShopProvider> Self = WeakSelf.Pin())
+			{
+				if (Result.bSuccess)
+				{
+					// A reply that lands after a sign-out still carries the buyer's wallet, which goes to the buyer's own
+					// cache entry (keyed by the wallet's player), never to whoever is signed in now.
+					Self->ApplyWalletToPlayerCache(Result.Value.Wallet);
+				}
+				else if (AnsweredWithoutAPurchase(Result))
+				{
+					// Whether the item was handed over is unknown, so a wallet read asks the server.
+					Self->ForgetCachedPlayerData();
+				}
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		},
+		TEXT("Redeem store receipt"), /*bIdempotent*/ true);
+}
+
+FFlockRetryHandler::FOperation<FFlockPurchaseResult> FFlockShopProvider::NamingAPurchase(
+	FFlockRetryHandler::FOperation<FFlockPurchaseResult> Operation, const FString& Fix)
+{
+	return [Operation = MoveTemp(Operation), Fix](TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnAttempt) -> FFlockRequestHandle
+	{
+		return Operation([OnAttempt = MoveTemp(OnAttempt), Fix](TFlockResult<FFlockPurchaseResult> Result)
+		{
+			// A 2xx naming no purchase (FFlockPurchaseResult's decode refuses one), or whose body could not be read at all
+			// (empty, or a page that is not Flock's): what to do next depends on the call.
+			if (AnsweredWithoutAPurchase(Result))
+			{
+				Result.Error.Hint = Fix;
+			}
+			OnAttempt(Result);
+		});
+	};
+}
+
+void FFlockShopProvider::ForgetCachedPlayerData() const
+{
+	if (const TSharedPtr<FFlockPlayerProvider> Players = PlayerProvider.Pin())
+	{
+		Players->ClearPlayerDataCache();
+	}
+}
+
+bool FFlockShopProvider::AnsweredWithoutAPurchase(const TFlockResult<FFlockPurchaseResult>& Result)
+{
+	return !Result.bSuccess && Result.Error.Type == EFlockErrorType::Serialization
+		&& Result.Error.StatusCode >= 200 && Result.Error.StatusCode < 300;
+}
+
+bool FFlockShopProvider::ReceiptIds(const FFlockStoreReceipt& Receipt, TSharedRef<FJsonObject>& OutIds,
+	const TFunction<void(TFlockResult<FFlockPurchaseResult>)>& OnComplete)
+{
+	auto Refuse = [&OnComplete](const FString& Message, const FString& Fix)
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockPurchaseResult>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, Message, Fix)));
+		}
+		return false;
+	};
+	// A store id with spaces around it is a bug where it was copied; trimming it here would hide that bug.
+	auto AsTheStoreIssuedIt = [&Refuse, &OutIds](const FString& Id, const TCHAR* Key, const TCHAR* Name)
+	{
+		if (Id.IsEmpty())
+		{
+			return Refuse(FString::Printf(TEXT("The %s is empty"), Name),
+				FString::Printf(TEXT("Pass the %s the store gave for this purchase."), Name));
+		}
+		if (FlockWhiteSpace::IsAtEitherEnd(Id))
+		{
+			return Refuse(FString::Printf(TEXT("The %s starts or ends with a space"), Name),
+				FString::Printf(TEXT("Pass the %s exactly as the store gave it; spaces around it come from wherever it was copied or stored."), Name));
+		}
+		OutIds->SetStringField(Key, Id);
+		return true;
+	};
+
+	// Matched with its letter case: the route takes the store's name exactly, and a member written by hand is refused
+	// here rather than read as the other store.
+	if (Receipt.Store.Equals(FlockPaymentProviders::AppleAppStore, ESearchCase::CaseSensitive))
+	{
+		return AsTheStoreIssuedIt(Receipt.TransactionId, TEXT("transaction_id"), TEXT("App Store transaction id"));
+	}
+	if (Receipt.Store.Equals(FlockPaymentProviders::GooglePlay, ESearchCase::CaseSensitive))
+	{
+		return AsTheStoreIssuedIt(Receipt.ProductId, TEXT("product_id"), TEXT("Google Play product id"))
+			&& AsTheStoreIssuedIt(Receipt.PurchaseToken, TEXT("purchase_token"), TEXT("Google Play purchase token"));
+	}
+	return Refuse(Receipt.Store.IsEmpty()
+			? FString(TEXT("No store receipt was given"))
+			: FString::Printf(TEXT("'%s' is not a store this call redeems"), *Receipt.Store),
+		TEXT("Pass the store's purchase as FFlockStoreReceipt::FromAppleAppStore or FFlockStoreReceipt::FromGooglePlay."));
 }
 
 void FFlockShopProvider::Consume(const FString& InventoryId, TFunction<void(TFlockResult<FFlockConsumeResult>)> OnComplete)

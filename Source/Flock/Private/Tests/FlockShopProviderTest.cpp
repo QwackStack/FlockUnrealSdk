@@ -1805,4 +1805,504 @@ bool FFlockShopItemKindsAndStoresTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── Redeeming a store's purchase (shop/validate-receipt) ──
+// The answer is the purchase at the root, as the wallet purchase's is; a delivered store purchase reads paid. Refusals as the
+// backend sent them to the payment probe on 2026-10-26 (main 644bf45); the last three are the backend's own messages for causes
+// no probe can reach without a real store purchase.
+namespace FlockStoreRedemptionFixtures
+{
+	const TCHAR* const RedeemedPack =
+		TEXT("{\"purchase_id\":\"pur-9\",\"item_type\":\"currency_pack\",\"status\":\"paid\",\"inventory\":null,")
+		TEXT("\"granted\":[{\"type\":\"currency\",\"code\":\"gold\",\"amount\":100}],\"wallet\":");
+
+	/** The wallet in the shape the player cache keeps (the write-through tests' row), with an explicit Gold balance. */
+	FString WalletJson(int32 Gold)
+	{
+		return FString::Printf(
+			TEXT("{\"id\":\"pd-1\",\"player_template_id\":\"tmpl-1\",\"game_id\":\"g\",\"player_id\":\"player-a\",")
+			TEXT("\"data\":[{\"type\":\"int\",\"field_name\":\"gold\",\"value\":%d}],\"created_at\":\"\",\"updated_at\":\"\"}"), Gold);
+	}
+
+	struct FReceiptRefusal
+	{
+		int32 Status;
+		const TCHAR* Body;
+		EFlockErrorCode Expected;
+	};
+
+	const FReceiptRefusal ReceiptRefusals[] = {
+		{ 422, TEXT("{\"detail\":{\"code\":\"payment_provider.store_credentials_rejected\",\"message\":\"Apple rejected this game's store credentials (HTTP 401); the studio's payment settings need fixing before receipts can be verified\"}}"), EFlockErrorCode::PaymentProviderStoreCredentialsRejected },
+		{ 422, TEXT("{\"detail\":{\"code\":\"payment_provider.receipt_invalid\",\"message\":\"Receipt rejected: no transaction_id supplied\"}}"), EFlockErrorCode::PaymentProviderReceiptInvalid },
+		{ 422, TEXT("{\"detail\":{\"code\":\"payment_provider.receipt_product_mismatch\",\"message\":\"This item has no apple_app_store product id configured\"}}"), EFlockErrorCode::PaymentProviderReceiptProductMismatch },
+		{ 404, TEXT("{\"detail\":{\"code\":\"payment_provider.provider_not_found\",\"message\":\"Provider 'apple_app_store' is not configured for this game\"}}"), EFlockErrorCode::PaymentProviderProviderNotFound },
+		{ 404, TEXT("{\"detail\":{\"code\":\"shop.item_not_found\",\"message\":\"Shop item not found\"}}"), EFlockErrorCode::ShopItemNotFound },
+		{ 422, TEXT("{\"detail\":{\"code\":\"payment_provider.receipt_pending\",\"message\":\"Google reports this payment as still in progress; ask again later\"}}"), EFlockErrorCode::PaymentProviderReceiptPending },
+		{ 403, TEXT("{\"detail\":{\"code\":\"payment_provider.receipt_belongs_to_another_player\",\"message\":\"Receipt refused: this store transaction was redeemed by another player\"}}"), EFlockErrorCode::PaymentProviderReceiptBelongsToAnotherPlayer },
+		{ 422, TEXT("{\"detail\":{\"code\":\"payment_provider.receipt_product_mismatch\",\"message\":\"Receipt is for 'com.flock.gems.small', but this item sells 'com.flock.gems'\"}}"), EFlockErrorCode::PaymentProviderReceiptProductMismatch },
+	};
+
+	const TCHAR* const StoreUnavailable =
+		TEXT("{\"detail\":{\"code\":\"payment_provider.store_unavailable\",\"message\":\"apple_app_store could not be asked about this receipt ([Errno 111] Connection refused); try again later\"}}");
+	const TCHAR* const UnreadableKeys =
+		TEXT("{\"detail\":{\"code\":\"payment_provider.credentials_unreadable\",\"message\":\"Apple credentials could not be used to sign a request\"}}");
+	/** The backend's own message when the server has no address for a payment provider to confirm a payment (a checkout's). */
+	const TCHAR* const NoWebhookAddress =
+		TEXT("{\"detail\":{\"code\":\"shop.real_currency_settlement_unavailable\",\"message\":\"PAYMENT_WEBHOOK_BASE_URL is not configured\"}}");
+
+	const TCHAR* const Route = TEXT("shop/validate-receipt");
+	const TCHAR* const AppleTransactionId = TEXT("2000000999999999");
+
+	/** Redeems and hands back what the call completed with; false when it never completed. */
+	bool Redeem(FlockShopProviderTestHelpers::FFixture& Fx, const FFlockStoreReceipt& Receipt,
+		TFlockResult<FFlockPurchaseResult>& OutResult, const FString& ShopItemId = TEXT("item-1"))
+	{
+		bool bDone = false;
+		Fx.Provider->RedeemStoreReceipt(ShopItemId, Receipt, [&](TFlockResult<FFlockPurchaseResult> R)
+		{
+			bDone = true;
+			OutResult = R;
+		});
+		FlockTestRetries::Pump();
+		return bDone;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRedeemRequestShapeTest, "Flock.Shop.Redeem.EachStoresIdsAreSentAsTheSignedInPlayerWithNoPlayerId",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRedeemRequestShapeTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockStoreRedemptionFixtures;
+	{
+		FFixture Fx;
+		Fx.SignIn(TEXT("player-a"));
+		Fx.Fake->On(Route, FFlockFakeTransport::Ok(FString(RedeemedPack) + TEXT("null}")));
+		TFlockResult<FFlockPurchaseResult> Result;
+		TestTrue(TEXT("App Store: the call completed"), Redeem(Fx, FFlockStoreReceipt::FromAppleAppStore(AppleTransactionId), Result));
+		TestTrue(TEXT("App Store: redeemed"), Result.bSuccess);
+		if (TestEqual(TEXT("App Store: one request"), Fx.Fake->CountTo(Route), 1))
+		{
+			const FFlockHttpRequest& Sent = Fx.Fake->Requests.Last();
+			TestEqualSensitive(TEXT("App Store: a POST"), Sent.Method, FString(TEXT("POST")));
+			TestEqualSensitive(TEXT("App Store: no player_id, the server redeems for the player the sign-in names"), Sent.JsonBody,
+				FString(TEXT("{\"shop_item_id\":\"item-1\",\"provider\":\"apple_app_store\",\"receipt\":{\"transaction_id\":\"2000000999999999\"}}")));
+			TestTrue(TEXT("App Store: sent with the player's sign-in"), Sent.Headers.Contains(TEXT("Authorization")));
+		}
+		Cleanup(Fx.Dir);
+	}
+	{
+		FFixture Fx;
+		Fx.SignIn(TEXT("player-a"));
+		Fx.Fake->On(Route, FFlockFakeTransport::Ok(FString(RedeemedPack) + TEXT("null}")));
+		TFlockResult<FFlockPurchaseResult> Result;
+		TestTrue(TEXT("Google Play: the call completed"),
+			Redeem(Fx, FFlockStoreReceipt::FromGooglePlay(TEXT("com.flock.gems"), TEXT("token-abc.AO-J1Oz")), Result));
+		if (TestEqual(TEXT("Google Play: one request"), Fx.Fake->CountTo(Route), 1))
+		{
+			TestEqualSensitive(TEXT("Google Play: its product id and purchase token, exactly as given"), Fx.Fake->Requests.Last().JsonBody,
+				FString(TEXT("{\"shop_item_id\":\"item-1\",\"provider\":\"google_play\",\"receipt\":{\"product_id\":\"com.flock.gems\",\"purchase_token\":\"token-abc.AO-J1Oz\"}}")));
+		}
+		Cleanup(Fx.Dir);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRedeemDeliveredTest, "Flock.Shop.Redeem.ADeliveredPurchaseReturnsWhatItGrantedAndWritesTheWallet",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRedeemDeliveredTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockStoreRedemptionFixtures;
+	FFixture Fx;
+	Fx.SignIn(TEXT("player-a"));
+	Fx.WirePlayers();
+	if (!TestTrue(TEXT("the player cache is primed"), Fx.PrimePlayerCache(500)))
+	{
+		Cleanup(Fx.Dir);
+		return true;
+	}
+	Fx.Fake->On(Route, FFlockFakeTransport::Ok(FString(RedeemedPack) + WalletJson(600) + TEXT("}")));
+
+	TFlockResult<FFlockPurchaseResult> Result;
+	TestTrue(TEXT("the call completed"), Redeem(Fx, FFlockStoreReceipt::FromAppleAppStore(AppleTransactionId), Result));
+	TestTrue(TEXT("redeemed"), Result.bSuccess);
+	TestEqualSensitive(TEXT("the purchase the server made"), Result.Value.PurchaseId, FString(TEXT("pur-9")));
+	TestTrue(TEXT("a delivered store purchase reads paid"), Result.Value.IsPaid());
+	if (TestEqual(TEXT("one grant"), Result.Value.Granted.Num(), 1))
+	{
+		TestEqual(TEXT("what it granted"), Result.Value.Granted[0].Amount, 100);
+	}
+	TestEqual(TEXT("the cached wallet reads the balance the redemption reported"), Fx.CachedGold(), 600);
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+// The server answers a repeat with what the first delivered, so the SDK keeps no answer of its own to hand back.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRedeemSentAgainTest, "Flock.Shop.Redeem.SentAgainItAsksTheServerAgain",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRedeemSentAgainTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockStoreRedemptionFixtures;
+	FFixture Fx;
+	Fx.SignIn(TEXT("player-a"));
+	Fx.Fake->OnSequence(Route, {
+		FFlockFakeTransport::Ok(FString(RedeemedPack) + TEXT("null}")),
+		FFlockFakeTransport::Ok(TEXT("{\"purchase_id\":\"pur-9\",\"item_type\":\"currency_pack\",\"status\":\"refunded\",\"granted\":[{\"type\":\"currency\",\"code\":\"gold\",\"amount\":100}]}")) });
+	const FFlockStoreReceipt Receipt = FFlockStoreReceipt::FromAppleAppStore(AppleTransactionId);
+
+	TFlockResult<FFlockPurchaseResult> First;
+	TFlockResult<FFlockPurchaseResult> Again;
+	Redeem(Fx, Receipt, First);
+	Redeem(Fx, Receipt, Again);
+
+	TestEqual(TEXT("asked twice"), Fx.Fake->CountTo(Route), 2);
+	TestTrue(TEXT("the repeat succeeded"), Again.bSuccess);
+	TestEqualSensitive(TEXT("the repeat reads the purchase as it is now"), Again.Value.Status, FString(FlockPurchaseStatuses::Refunded));
+	if (TestEqual(TEXT("the repeat carries a grant"), Again.Value.Granted.Num(), 1))
+	{
+		TestEqual(TEXT("a repeat carries what the first redemption granted"), Again.Value.Granted[0].Amount, 100);
+	}
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRedeemNotSignedInTest, "Flock.Shop.Redeem.WithNobodySignedInItFailsBeforeSending",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRedeemNotSignedInTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockStoreRedemptionFixtures;
+	FFixture Fx;
+	Fx.Fake->On(Route, FFlockFakeTransport::Ok(FString(RedeemedPack) + TEXT("null}")));
+
+	TFlockResult<FFlockPurchaseResult> Result;
+	TestTrue(TEXT("the call completed"), Redeem(Fx, FFlockStoreReceipt::FromAppleAppStore(AppleTransactionId), Result));
+	TestFalse(TEXT("refused"), Result.bSuccess);
+	TestEqual(TEXT("as a sign-in failure"), static_cast<int32>(Result.Error.Type), static_cast<int32>(EFlockErrorType::Auth));
+	TestEqualSensitive(TEXT("whose fix is to sign in first"), Result.Error.Hint, FFlockErrorHints::SignInFirst());
+	TestEqual(TEXT("nothing sent"), Fx.Fake->CountTo(Route), 0);
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRedeemIdsAsGivenTest, "Flock.Shop.Redeem.AReceiptMissingAnIdOrWithSpacesAroundOneIsRefusedNotTrimmed",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRedeemIdsAsGivenTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockStoreRedemptionFixtures;
+	// Every id filled in, so only the store's name can refuse these two.
+	FFlockStoreReceipt AppleInGoogleCase = FFlockStoreReceipt::FromGooglePlay(TEXT("com.flock.gems"), TEXT("token-abc"));
+	AppleInGoogleCase.TransactionId = AppleTransactionId;
+	AppleInGoogleCase.Store = TEXT("Apple_App_Store");
+	FFlockStoreReceipt WebGateway = AppleInGoogleCase;
+	WebGateway.Store = FlockPaymentProviders::Stripe;
+
+	struct FCase
+	{
+		const TCHAR* Name;
+		FFlockStoreReceipt Receipt;
+	};
+	const FCase Cases[] = {
+		// Missing an id, a default-constructed receipt standing for none at all.
+		{ TEXT("no receipt"), FFlockStoreReceipt() },
+		{ TEXT("an empty App Store transaction id"), FFlockStoreReceipt::FromAppleAppStore(TEXT("")) },
+		{ TEXT("an empty Google Play product id"), FFlockStoreReceipt::FromGooglePlay(TEXT(""), TEXT("token-abc")) },
+		{ TEXT("an empty Google Play purchase token"), FFlockStoreReceipt::FromGooglePlay(TEXT("com.flock.gems"), TEXT("")) },
+		// Spaces around an id were put there where it was copied; trimming would hide that, so it is refused.
+		{ TEXT("a transaction id with a space before it"), FFlockStoreReceipt::FromAppleAppStore(TEXT(" 2000000999999999")) },
+		{ TEXT("a transaction id with a line end after it"), FFlockStoreReceipt::FromAppleAppStore(TEXT("2000000999999999\n")) },
+		{ TEXT("a purchase token with a space after it"), FFlockStoreReceipt::FromGooglePlay(TEXT("com.flock.gems"), TEXT("token-abc ")) },
+		// The same on every platform, whatever its C runtime calls white space.
+		{ TEXT("a transaction id with a no-break space after it"), FFlockStoreReceipt::FromAppleAppStore(TEXT("2000000999999999 ")) },
+		{ TEXT("a product id with an ideographic space before it"), FFlockStoreReceipt::FromGooglePlay(TEXT("　com.flock.gems"), TEXT("token-abc")) },
+		// A receipt's members can be written by hand here: a store name this call does not redeem is refused, never read as Google.
+		{ TEXT("a store name in another letter case"), AppleInGoogleCase },
+		{ TEXT("a web gateway"), WebGateway },
+	};
+
+	for (const FCase& Case : Cases)
+	{
+		FFixture Fx;
+		Fx.SignIn(TEXT("player-a"));
+		Fx.Fake->On(Route, FFlockFakeTransport::Ok(FString(RedeemedPack) + TEXT("null}")));
+		TFlockResult<FFlockPurchaseResult> Result;
+		TestTrue(FString::Printf(TEXT("%s: the call completed"), Case.Name), Redeem(Fx, Case.Receipt, Result));
+		TestFalse(FString::Printf(TEXT("%s: refused"), Case.Name), Result.bSuccess);
+		TestEqual(FString::Printf(TEXT("%s: as the caller's mistake"), Case.Name),
+			static_cast<int32>(Result.Error.Type), static_cast<int32>(EFlockErrorType::Validation));
+		TestFalse(FString::Printf(TEXT("%s: with its fix"), Case.Name), Result.Error.Hint.IsEmpty());
+		TestEqual(FString::Printf(TEXT("%s: nothing sent"), Case.Name), Fx.Fake->CountTo(Route), 0);
+		Cleanup(Fx.Dir);
+	}
+
+	// Control: the same fixture with each id as the store gave it is sent, so the refusals above are the ids' doing.
+	FFixture Fx;
+	Fx.SignIn(TEXT("player-a"));
+	Fx.Fake->On(Route, FFlockFakeTransport::Ok(FString(RedeemedPack) + TEXT("null}")));
+	TFlockResult<FFlockPurchaseResult> Result;
+	Redeem(Fx, FFlockStoreReceipt::FromGooglePlay(TEXT("com.flock.gems"), TEXT("token-abc")), Result);
+	TestTrue(TEXT("control: a well-formed receipt is redeemed"), Result.bSuccess);
+	TestEqual(TEXT("control: and sent"), Fx.Fake->CountTo(Route), 1);
+	Cleanup(Fx.Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRedeemRefusalsTest, "Flock.Shop.Redeem.EachRefusalReadsAsItsOwnCodeAndIsNotSentAgain",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRedeemRefusalsTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockStoreRedemptionFixtures;
+	TestEqual(TEXT("every refusal kept"), static_cast<int32>(UE_ARRAY_COUNT(ReceiptRefusals)), 8);
+	for (const FReceiptRefusal& Refusal : ReceiptRefusals)
+	{
+		FFixture Fx(Retrying());
+		Fx.SignIn(TEXT("player-a"));
+		Fx.Fake->On(Route, FFlockFakeTransport::Status(Refusal.Status, Refusal.Body));
+		const FString Name = FString(Refusal.Body).Mid(23, 60);
+
+		TFlockResult<FFlockPurchaseResult> Result;
+		TestTrue(FString::Printf(TEXT("%s: the call completed"), *Name), Redeem(Fx, FFlockStoreReceipt::FromAppleAppStore(AppleTransactionId), Result));
+		TestFalse(FString::Printf(TEXT("%s: refused"), *Name), Result.bSuccess);
+		TestEqual(FString::Printf(TEXT("%s: on its own code"), *Name),
+			static_cast<int32>(Result.Error.ErrorCode), static_cast<int32>(Refusal.Expected));
+		TestFalse(FString::Printf(TEXT("%s: with its fix"), *Name), Result.Error.Hint.IsEmpty());
+		TestEqual(FString::Printf(TEXT("%s: the server's final word on this receipt for now"), *Name), Fx.Fake->CountTo(Route), 1);
+		Cleanup(Fx.Dir);
+	}
+	return true;
+}
+
+// Unlike a wallet purchase, a redemption may be sent again after an answer that never arrived (payment plan D-P3), the store
+// being unavailable included; never after a 5xx naming one of the game's own settings, which stays the same until it is fixed.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRedeemRetriesTest, "Flock.Shop.Redeem.SentAgainAfterAnAnswerInDoubtButNeverAfterAGameSetting",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRedeemRetriesTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockStoreRedemptionFixtures;
+	struct FCase
+	{
+		const TCHAR* Name;
+		FFlockHttpResponse Response;
+		int32 ExpectedSends;
+		EFlockErrorCode ExpectedCode;
+	};
+	const FCase Cases[] = {
+		{ TEXT("the store unavailable"), FFlockFakeTransport::Status(503, StoreUnavailable), 4, EFlockErrorCode::PaymentProviderStoreUnavailable },
+		{ TEXT("a dropped connection"), FFlockFakeTransport::Offline(), 4, EFlockErrorCode::Unknown },
+		{ TEXT("a timeout"), FFlockFakeTransport::Timeout(), 4, EFlockErrorCode::Unknown },
+		{ TEXT("keys the server cannot read"), FFlockFakeTransport::Status(503, UnreadableKeys), 1, EFlockErrorCode::PaymentProviderCredentialsUnreadable },
+		{ TEXT("no address to confirm a payment"), FFlockFakeTransport::Status(503, NoWebhookAddress), 1, EFlockErrorCode::ShopRealCurrencySettlementUnavailable },
+	};
+	for (const FCase& Case : Cases)
+	{
+		FFixture Fx(Retrying());
+		Fx.SignIn(TEXT("player-a"));
+		Fx.Fake->On(Route, Case.Response);
+		TFlockResult<FFlockPurchaseResult> Result;
+		TestTrue(FString::Printf(TEXT("%s: the call completed"), Case.Name), Redeem(Fx, FFlockStoreReceipt::FromAppleAppStore(AppleTransactionId), Result));
+		TestFalse(FString::Printf(TEXT("%s: failed"), Case.Name), Result.bSuccess);
+		TestEqual(FString::Printf(TEXT("%s: sends (the first try and three retries, or the first alone)"), Case.Name),
+			Fx.Fake->CountTo(Route), Case.ExpectedSends);
+		if (Case.ExpectedCode != EFlockErrorCode::Unknown)
+		{
+			TestEqual(FString::Printf(TEXT("%s: on its own code"), Case.Name),
+				static_cast<int32>(Result.Error.ErrorCode), static_cast<int32>(Case.ExpectedCode));
+		}
+		Cleanup(Fx.Dir);
+	}
+
+	// The rule lives in the retry handler, so it holds for a call that is not a redemption too.
+	const FFlockError Unreadable = FFlockError::Make(EFlockErrorType::Network, TEXT("Service Unavailable"), 503, UnreadableKeys,
+		TEXT("payment_provider.credentials_unreadable"));
+	TestEqual(TEXT("the code is read off the body"), static_cast<int32>(Unreadable.ErrorCode),
+		static_cast<int32>(EFlockErrorCode::PaymentProviderCredentialsUnreadable));
+	TestFalse(TEXT("the handler never re-sends unreadable keys"), FFlockRetryHandler::ShouldRetry(Unreadable, /*bIdempotent*/ true));
+	const FFlockError Busy = FFlockError::Make(EFlockErrorType::Network, TEXT("Service Unavailable"), 503, StoreUnavailable,
+		TEXT("payment_provider.store_unavailable"));
+	TestTrue(TEXT("control: the handler re-sends a coded 503 that names no setting"), FFlockRetryHandler::ShouldRetry(Busy, /*bIdempotent*/ true));
+	return true;
+}
+
+// A retry goes out as the player who redeemed or not at all: another player's sign-in never redeems the first player's receipt.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRedeemKeepsItsSignInTest, "Flock.Shop.Redeem.ARetryIsNeverSentAsTheNextPlayer",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRedeemKeepsItsSignInTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockStoreRedemptionFixtures;
+	auto RunRedeem = [this](int32 Change, int32& OutSends, EFlockErrorType& OutType)
+	{
+		FFixture Fx(Retrying());
+		Fx.SignIn(TEXT("player-a"));
+		Fx.Fake->On(Route, FFlockFakeTransport::Status(503, StoreUnavailable));
+		bool bDone = false;
+		Fx.Provider->RedeemStoreReceipt(TEXT("item-1"), FFlockStoreReceipt::FromAppleAppStore(AppleTransactionId),
+			[&](TFlockResult<FFlockPurchaseResult> R)
+			{
+				bDone = true;
+				OutType = R.bSuccess ? EFlockErrorType::None : R.Error.Type;
+			});
+		// The first try has been answered; its retry waits on the ticker.
+		TestFalse(TEXT("the retry waits on the ticker"), bDone);
+		if (Change == 1)
+		{
+			Fx.SignIn(TEXT("player-b"));
+		}
+		else if (Change == 2)
+		{
+			Fx.Session->ClearTokens();
+		}
+		FlockTestRetries::Pump();
+		TestTrue(TEXT("the call completed"), bDone);
+		OutSends = Fx.Fake->CountTo(Route);
+		Cleanup(Fx.Dir);
+	};
+
+	int32 Sends = -1;
+	EFlockErrorType Type = EFlockErrorType::None;
+	RunRedeem(0, Sends, Type);
+	TestEqual(TEXT("control: the same player all along gets every retry"), Sends, 4);
+
+	RunRedeem(1, Sends, Type);
+	TestEqual(TEXT("after the switch: the retry would have gone out as player-b"), Sends, 1);
+	TestEqual(TEXT("after the switch: cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
+
+	RunRedeem(2, Sends, Type);
+	TestEqual(TEXT("after a sign-out: no retry goes out"), Sends, 1);
+	TestEqual(TEXT("after a sign-out: cancelled"), static_cast<int32>(Type), static_cast<int32>(EFlockErrorType::Cancelled));
+	return true;
+}
+
+// A 2xx that names no purchase says nothing about one; the purchase result's default status would read it as paid.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRedeemNamesNoPurchaseTest, "Flock.Shop.Redeem.AnAnswerNamingNoPurchaseFailsTheCall",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRedeemNamesNoPurchaseTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockStoreRedemptionFixtures;
+	const TCHAR* const Bodies[] = {
+		TEXT("{}"),
+		TEXT("{\"item_type\":\"currency_pack\",\"granted\":[]}"),
+		// A 2xx with nothing in it, or a page that is not Flock's (a captive portal), says no more.
+		TEXT(""),
+		TEXT("<html><body>Sign in to the network</body></html>"),
+		// It carries a wallet, which must not reach the cache: the answer is not about a purchase.
+		TEXT("{\"item_type\":\"currency_pack\",\"granted\":[],\"wallet\":{\"id\":\"pd-1\",\"player_template_id\":\"tmpl-1\",\"game_id\":\"g\",\"player_id\":\"player-a\",\"data\":[{\"type\":\"int\",\"field_name\":\"gold\",\"value\":999}],\"created_at\":\"\",\"updated_at\":\"\"}}"),
+	};
+	for (const TCHAR* Body : Bodies)
+	{
+		FFixture Fx(Retrying());
+		Fx.SignIn(TEXT("player-a"));
+		Fx.WirePlayers();
+		if (!TestTrue(TEXT("the player cache is primed"), Fx.PrimePlayerCache(500)))
+		{
+			Cleanup(Fx.Dir);
+			continue;
+		}
+		Fx.Fake->On(Route, FFlockFakeTransport::Ok(Body));
+		TFlockResult<FFlockPurchaseResult> Result;
+		TestTrue(FString::Printf(TEXT("%s: the call completed"), Body), Redeem(Fx, FFlockStoreReceipt::FromAppleAppStore(AppleTransactionId), Result));
+		TestFalse(FString::Printf(TEXT("%s: failed"), Body), Result.bSuccess);
+		TestEqual(FString::Printf(TEXT("%s: as an answer that could not be read"), Body),
+			static_cast<int32>(Result.Error.Type), static_cast<int32>(EFlockErrorType::Serialization));
+		TestTrue(FString::Printf(TEXT("%s: whose fix is to send the same receipt again"), Body),
+			Result.Error.Hint.Contains(TEXT("send the same receipt again"), ESearchCase::CaseSensitive));
+		TestEqual(FString::Printf(TEXT("%s: not sent again by itself"), Body), Fx.Fake->CountTo(Route), 1);
+		TestFalse(FString::Printf(TEXT("%s: its wallet never reaches the cache"), Body), Fx.CachedGold() == 999);
+		TestEqual(FString::Printf(TEXT("%s: the cached player data is dropped, so a wallet read asks the server"), Body), Fx.CachedGold(), -1);
+		TestEqualSensitive(FString::Printf(TEXT("%s: the failure names the call"), Body), Result.Error.Operation, FString(TEXT("Redeem store receipt")));
+		Cleanup(Fx.Dir);
+	}
+	return true;
+}
+
+// The same check guards the wallet purchase, where a 2xx naming no purchase may still have moved money: nothing is recorded as
+// its outcome, and the wallet the fix asks the game to read comes from the server.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPurchaseNamesNoPurchaseTest, "Flock.Shop.Provider.APurchaseAnswerNamingNoPurchaseFailsTheCall",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPurchaseNamesNoPurchaseTest::RunTest(const FString& Parameters)
+{
+	auto RunPurchase = [this](const FString& Answer, bool& bOutSucceeded, FString& OutHint, int32& OutRecords, bool& bOutCacheKept)
+	{
+		FFixture Fx;
+		Fx.SignIn(TEXT("player-a"));
+		Fx.WireAnalytics();
+		Fx.WirePlayers();
+		TestTrue(TEXT("the player cache is primed"), Fx.PrimePlayerCache(500));
+		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(Answer));
+		Fx.Fake->On(TEXT("analytics/transactions"), FFlockFakeTransport::Ok(TEXT("{}")));
+		bool bDone = false;
+		Fx.Provider->Purchase(TEXT("item-1"), [&](TFlockResult<FFlockPurchaseResult> R)
+		{
+			bDone = true;
+			bOutSucceeded = R.bSuccess;
+			OutHint = R.Error.Hint;
+		});
+		TestTrue(TEXT("the purchase answered"), bDone);
+		OutRecords = Fx.Fake->CountTo(TEXT("analytics/transactions"));
+		FFlockPlayerData Row;
+		bOutCacheKept = Fx.Players->TryGetCachedRow(TEXT("pd-1"), Row);
+		Cleanup(Fx.Dir);
+	};
+
+	bool bSucceeded = false;
+	FString Hint;
+	int32 Records = -1;
+	bool bCacheKept = false;
+
+	// Control: an answer naming its purchase succeeds, records Started and Purchased, and keeps the cache.
+	RunPurchase(PurchaseResultBodyWithWalletGold(600), bSucceeded, Hint, Records, bCacheKept);
+	TestTrue(TEXT("control: succeeded"), bSucceeded);
+	TestEqual(TEXT("control: Started and Purchased recorded"), Records, 2);
+	TestTrue(TEXT("control: the cache is kept"), bCacheKept);
+
+	for (const TCHAR* Answer : { TEXT("{}"), TEXT("") })
+	{
+		RunPurchase(Answer, bSucceeded, Hint, Records, bCacheKept);
+		TestFalse(FString::Printf(TEXT("'%s': an answer naming no purchase fails"), Answer), bSucceeded);
+		TestTrue(FString::Printf(TEXT("'%s': whose fix is to read the inventory and wallet"), Answer),
+			Hint.Contains(TEXT("inventory and wallet"), ESearchCase::CaseSensitive));
+		TestEqual(FString::Printf(TEXT("'%s': only Started is recorded: neither Purchased nor Failed is known"), Answer), Records, 1);
+		TestFalse(FString::Printf(TEXT("'%s': the cached player data is dropped, so reading it asks the server"), Answer), bCacheKept);
+	}
+	return true;
+}
+
+// An expired token is renewed once and the redemption sent again with the new one, read on that attempt.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockRedeemRenewsAnExpiredTokenTest, "Flock.Shop.Redeem.AnExpiredTokenIsRenewedAndTheRedemptionSentAgain",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockRedeemRenewsAnExpiredTokenTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockStoreRedemptionFixtures;
+	FFixture Fx;
+	Fx.SignIn(TEXT("player-a"));
+	const FString Renewed = MakeTestJwt(TEXT("player-a")) + TEXT("x");
+	Fx.Fake->On(TEXT("token/refresh"), FFlockFakeTransport::Ok(FString::Printf(
+		TEXT("{\"player_id\":\"player-a\",\"access_token\":\"%s\",\"refresh_token\":\"r-2\"}"), *Renewed)));
+	Fx.Fake->OnSequence(Route, {
+		FFlockFakeTransport::Status(401, TEXT("{\"detail\":{\"code\":\"player.expired_token\",\"message\":\"Expired token.\"}}")),
+		FFlockFakeTransport::Ok(FString(RedeemedPack) + TEXT("null}")) });
+
+	TFlockResult<FFlockPurchaseResult> Result;
+	TestTrue(TEXT("the call completed"), Redeem(Fx, FFlockStoreReceipt::FromAppleAppStore(AppleTransactionId), Result));
+	TestTrue(TEXT("redeemed once the token was renewed"), Result.bSuccess);
+	TestEqual(TEXT("the token was renewed once"), Fx.Fake->CountTo(TEXT("token/refresh")), 1);
+	if (TestEqual(TEXT("sent twice: the expired try and the one after renewing"), Fx.Fake->CountTo(Route), 2))
+	{
+		const FFlockHttpRequest& Last = Fx.Fake->Requests.Last();
+		const FString* Authorization = Last.Headers.Find(TEXT("Authorization"));
+		TestTrue(TEXT("the second carries the renewed token"),
+			Authorization != nullptr && Authorization->EndsWith(Renewed, ESearchCase::CaseSensitive));
+	}
+	Cleanup(Fx.Dir);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

@@ -5,6 +5,52 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.43.0] - 2026-11-05
+
+Store purchases. A game redeems a purchase the player made in the App Store or Google Play, and Flock hands the item over.
+
+### Added
+
+- **`FFlockShopProvider::RedeemStoreReceipt(ShopItemId, Receipt, OnComplete)`** on `POST /v1/shop/validate-receipt`:
+  Flock asks the store about the purchase and hands the item over, completing with the purchase as `Purchase` does and
+  writing the wallet it reports into the cached player data. It acts as the signed-in player: the body names no player,
+  the call fails before sending with nobody signed in, and a retry is never sent once that player signs out or another
+  signs in. Leave the store's purchase unfinished until it succeeds.
+- **`FFlockStoreReceipt`**, made with **`FromAppleAppStore(TransactionId)`** or **`FromGooglePlay(ProductId,
+  PurchaseToken)`**. Each id is sent exactly as given: an empty one, or one with spaces around it, is refused before
+  sending rather than trimmed (white space is Unicode's, the same on every platform), and a receipt whose store is
+  neither is refused rather than read as the other store.
+
+### Changed
+
+- **A redemption is sent again after an answer that never came**, a timeout or a 5xx, the store being unavailable
+  included, under the retry policy: the server makes one purchase per store transaction and answers a repeat with what
+  the first delivered. A wallet purchase still never is.
+- **No call is sent again after a 5xx naming a setting someone has to fix**: the game's payment keys the server
+  cannot read (`PaymentProviderCredentialsUnreadable`), or a Flock server with no address for a payment provider to
+  confirm a payment (`ShopRealCurrencySettlementUnavailable`). It stays the same until the setting is fixed.
+- **An expired token is renewed by the shop, player data, config and game calls**, as by every other call; these four
+  failed with it and left it expired. `Purchase` and `RedeemStoreReceipt` are then sent again with the new token, the
+  server refusing an expired one before it does anything; their other calls send the token they started with, so the
+  renewed token is used from the next call on.
+- **A 2xx with an empty or unreadable body fails `Purchase` and `RedeemStoreReceipt` with the call's own fix**, as an
+  answer naming no purchase does: whether the money moved is unknown.
+- **A 2xx that names no purchase fails `Purchase`**, where it read as a paid purchase, with a fix to read the inventory
+  and wallet before offering the item again; it records no outcome and drops the cached player data, so that read asks
+  the server.
+- **Fixes name the redeem call**: "send the same receipt again later with `RedeemStoreReceipt`", the shop item id
+  sentence, `ShopRealCurrencyNeedsCheckout` (sell the item through a store and redeem it), and the five setup faults a
+  player who paid a store can meet (`ShopCurrencyTemplateNotFound`, `ShopMalformedReward`, `ShopPackGrantsNothing`,
+  `ShopWalletNotFound`, `ShopRewardCurrencyNotHeld`), and the store setup faults (`PaymentProviderCredentialsUnreadable`,
+  `PaymentProviderProviderNotFound`, `PaymentProviderReceiptProductMismatch`): the player has already paid, and the same
+  receipt redeems once the setup is fixed.
+
+### Fixed
+
+- **The analytics Session Platform setting refuses white space at either end the same way on every platform**: a no-break
+  or ideographic space was taken for white space only where the C runtime said so, so the same setting was refused on
+  Windows and sent from another platform.
+
 ## [1.42.0] - 2026-11-05
 
 Real-money shop items. A game can tell which shop items cost real money and read each one's product id in each store.

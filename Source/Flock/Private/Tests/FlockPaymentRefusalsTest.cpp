@@ -154,6 +154,20 @@ namespace
 		{ EFlockErrorCode::PlayerInventoryInventoryEntryNotFound, TEXT("another player's"), false },
 		// Switched off in the dashboard: the shops a player reads leave a switched-off shop out.
 		{ EFlockErrorCode::ShopShopNotFound, TEXT("switched off (Inactive)"), false },
+		// The setup faults a player who paid a store can meet while redeeming: nothing was kept, so the receipt redeems once fixed.
+		{ EFlockErrorCode::ShopCurrencyTemplateNotFound, TEXT("the player has already paid the store"), false },
+		{ EFlockErrorCode::ShopMalformedReward, TEXT("the player has already paid the store"), false },
+		{ EFlockErrorCode::ShopPackGrantsNothing, TEXT("the player has already paid the store"), false },
+		{ EFlockErrorCode::ShopWalletNotFound, TEXT("the player has already paid the store"), false },
+		{ EFlockErrorCode::ShopRewardCurrencyNotHeld, TEXT("the player has already paid the store"), false },
+		{ EFlockErrorCode::PaymentProviderCredentialsUnreadable, TEXT("the player has already paid the store"), false },
+		{ EFlockErrorCode::PaymentProviderProviderNotFound, TEXT("the player has already paid the store"), false },
+		{ EFlockErrorCode::PaymentProviderReceiptProductMismatch, TEXT("the player has already paid the store"), false },
+		{ EFlockErrorCode::ShopPlayerNotFound, TEXT("RedeemStoreReceipt takes no player id"), false },
+		// Each "send it again" names the call that sends it, and the real-money refusal names the call that sells it.
+		{ EFlockErrorCode::PaymentProviderStoreUnavailable, TEXT("again later with RedeemStoreReceipt"), false },
+		{ EFlockErrorCode::ShopRealCurrencyNeedsCheckout, TEXT("RedeemStoreReceipt"), false },
+		{ EFlockErrorCode::ShopItemNotFound, TEXT("RedeemStoreReceipt"), false },
 		{ EFlockErrorCode::ShopItemShopNotFound, TEXT("switched off (Inactive)"), false },
 	};
 
@@ -171,7 +185,7 @@ namespace
 	};
 
 	/** Words of calls that do not exist in this SDK yet: a hint naming one sends the developer looking for nothing. */
-	const TCHAR* const CallsThisSdkDoesNotHave[] = { TEXT("Async"), TEXT("RedeemStoreReceipt"), TEXT("StartCheckout"),
+	const TCHAR* const CallsThisSdkDoesNotHave[] = { TEXT("Async"), TEXT("StartCheckout"),
 		TEXT("FlockStore"), TEXT("GetPurchases"), TEXT("PurchaseResultStatuses"), TEXT("PaymentProviders.") };
 
 	FString NameOf(EFlockErrorCode Code)

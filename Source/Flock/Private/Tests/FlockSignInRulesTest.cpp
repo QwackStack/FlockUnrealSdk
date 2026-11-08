@@ -463,7 +463,7 @@ bool FFlockSignInOptedInCallsTest::RunTest(const FString& Parameters)
 			{ TEXT("SendEmailVerification"), TEXT("RevokeToken"), TEXT("GetLinkedAccounts"), TEXT("Unlink"), TEXT("VerifyEmail") },
 			{ TEXT("IsNameAvailable"), TEXT("ForgotPassword"), TEXT("ResetPassword") } },
 		{ TEXT("../Public/Providers/FlockAuthProvider.h"), TEXT("FFlockAuthProvider"), { TEXT("Link") }, {} },
-		{ TEXT("Providers/FlockShopProvider.cpp"), TEXT("FFlockShopProvider"), { TEXT("Purchase") }, { TEXT("GetAll") } },
+		{ TEXT("Providers/FlockShopProvider.cpp"), TEXT("FFlockShopProvider"), { TEXT("Purchase"), TEXT("RedeemStoreReceipt") }, { TEXT("GetAll") } },
 		// Every party route but "my party" goes through SendAs (pinned by Flock.Multiplayer.Parties.EveryRouteIsSentAsItsSignIn).
 		{ TEXT("Multiplayer/FlockPartyRequests.cpp"), TEXT("FFlockPartyRequests"), { TEXT("SendAs"), TEXT("ReadMine") }, {} },
 		// Every session route goes through SendAs (pinned by Flock.Multiplayer.Sessions.EveryRouteIsSentAsItsSignIn).
@@ -516,7 +516,7 @@ bool FFlockSignInOptedInCallsTest::RunTest(const FString& Parameters)
 			}
 		}
 	}
-	TestEqual(TEXT("every call that acts for the player was checked"), Checked, 23);
+	TestEqual(TEXT("every call that acts for the player was checked"), Checked, 24);
 	return true;
 }
 
@@ -737,6 +737,48 @@ bool FFlockSignInSavedPairWithoutRefreshTokenTest::RunTest(const FString& Parame
 
 	TestFalse(TEXT("signed out"), F.Session->IsAuthenticated());
 	TestEqual(TEXT("the game hears it"), F.Listener->AuthExpiredCount, 1);
+	return true;
+}
+
+// Every provider that sends the player's token hands its session to the base, which renews an expired token once and sends
+// the call again with the new one. Four providers once sent the token without it, so an expired token failed their calls.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSignInRenewsOnEveryProviderTest, "Flock.Auth.SignIn.EveryProviderThatSendsTheTokenRenewsIt",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSignInRenewsOnEveryProviderTest::RunTest(const FString& Parameters)
+{
+	auto SendsTheToken = [](const FString& Text)
+	{
+		return Text.Contains(TEXT("GetAuthHeaders()"), ESearchCase::CaseSensitive) || Text.Contains(TEXT("HeadersNow()"), ESearchCase::CaseSensitive);
+	};
+	auto RenewsIt = [](const FString& Text) { return Text.Contains(TEXT("SetAuthSession(InSession)"), ESearchCase::CaseSensitive); };
+
+	// The check has to catch a provider without it, or every "renews" below proves nothing.
+	TestTrue(TEXT("control: a provider sending the token is seen"), SendsTheToken(TEXT("Client->Get(Url, HeadersNow(), Done);")));
+	TestFalse(TEXT("control: and one without the session is caught"), RenewsIt(TEXT("Client->Get(Url, HeadersNow(), Done);")));
+
+	const FString TestsFolder = FPaths::GetPath(FString(ANSI_TO_TCHAR(__FILE__)));
+	int32 Senders = 0;
+	for (const TCHAR* Folder : { TEXT("Providers"), TEXT("Multiplayer") })
+	{
+		TArray<FString> Files;
+		IFileManager::Get().FindFiles(Files, *FPaths::Combine(TestsFolder, TEXT(".."), Folder, TEXT("*.cpp")), true, false);
+		for (const FString& File : Files)
+		{
+			FString Text;
+			if (!TestTrue(FString::Printf(TEXT("%s can be read"), *File), LoadSdkSource(FPaths::Combine(Folder, File), Text)))
+			{
+				continue;
+			}
+			if (SendsTheToken(Text))
+			{
+				++Senders;
+				TestTrue(FString::Printf(TEXT("%s sends the player's token and renews it when it has expired"), *File), RenewsIt(Text));
+			}
+		}
+	}
+	// Ten providers and three multiplayer request owners send it today; fewer means the scan stopped finding them.
+	TestTrue(FString::Printf(TEXT("the scan found the files that send the token (%d)"), Senders), Senders >= 13);
 	return true;
 }
 

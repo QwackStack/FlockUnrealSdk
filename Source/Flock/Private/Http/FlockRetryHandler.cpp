@@ -50,6 +50,15 @@ bool FFlockRetryHandler::ShouldRetry(const FFlockError& Error, bool bIdempotent)
 		return false;
 	}
 
+	// A 5xx that names a setting stays the same until someone fixes it: the game's payment keys the server cannot read
+	// (503, fixed by the studio), and no address for a payment provider to confirm a payment (503, fixed by whoever runs
+	// the Flock server).
+	if (Error.ErrorCode == EFlockErrorCode::PaymentProviderCredentialsUnreadable
+		|| Error.ErrorCode == EFlockErrorCode::ShopRealCurrencySettlementUnavailable)
+	{
+		return false;
+	}
+
 	// Non-idempotent callers only retry failures the server provably didn't process (408/429);
 	// ambiguous ones (client timeout, dropped connection, 5xx) might have committed, so surface them.
 	if (!bIdempotent && !FFlockError::IsNotProcessed(Error.StatusCode))

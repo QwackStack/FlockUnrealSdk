@@ -134,6 +134,13 @@ bool FFlockShopItem::FindStoreProductId(const FString& Store, FString& OutProduc
 bool FFlockPurchaseResult::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockPurchaseResult& OutStruct, FString& OutError)
 {
 	Object->TryGetStringField(TEXT("purchase_id"), OutStruct.PurchaseId);
+	// The member the answer exists for: without it the status below defaults to paid, and `{}` would read as a paid
+	// purchase. Failing the decode makes every call that answers a purchase fail as an unreadable 2xx.
+	if (OutStruct.PurchaseId.IsEmpty())
+	{
+		OutError = TEXT("The server's answer named no purchase, so whether it went through is unknown");
+		return false;
+	}
 	Object->TryGetStringField(TEXT("item_type"), OutStruct.ItemType);
 	// Absent keeps the member's default, paid, which is the schema's own default.
 	Object->TryGetStringField(TEXT("status"), OutStruct.Status);

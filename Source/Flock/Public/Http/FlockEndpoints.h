@@ -108,6 +108,7 @@ namespace FlockEndpoints
 	inline FString ShopById(const FString& ShopId) { return FString::Printf(TEXT("shop/%s"), *ShopId); }
 	inline FString ShopByName(const FString& Name) { return FString::Printf(TEXT("shop/by-name/%s"), *Encode(Name)); }
 	inline constexpr const TCHAR* ShopTransaction = TEXT("shop/transaction");
+	inline constexpr const TCHAR* ShopValidateReceipt = TEXT("shop/validate-receipt");
 	inline FString ShopItemById(const FString& ShopItemId) { return FString::Printf(TEXT("shop_item/%s"), *ShopItemId); }
 	inline FString ShopItemsByShop(const FString& ShopId) { return FString::Printf(TEXT("shop_item/shop/%s"), *ShopId); }
 	inline FString PlayerInventoryByPlayer(const FString& PlayerId) { return FString::Printf(TEXT("player_inventory/player/%s"), *PlayerId); }

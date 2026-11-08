@@ -16,7 +16,8 @@
  *
  * Classification: never retry Cancelled/Auth/Validation/Serialization; never retry
  * permanent 4xx (except 408/429); non-idempotent callers retry only provably-not-processed failures
- * (408/429); delay = Retry-After hint (bounded by MaxDelay) else jittered backoff; after MaxRetries the
+ * (408/429); never retry a failure that stays until someone fixes a setting (the game's payment keys unreadable, the
+ * Flock server unable to confirm payments); delay = Retry-After hint (bounded by MaxDelay) else jittered backoff; after MaxRetries the
  * last failure propagates.
  */
 class FLOCK_API FFlockRetryHandler

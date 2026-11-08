@@ -15,6 +15,8 @@ FFlockPlayerProvider::FFlockPlayerProvider(const TSharedRef<FFlockHttpClient>& I
 	, Session(InSession)
 	, VersionedApiUrl(InVersionedApiUrl)
 {
+	// A call whose token has expired renews it once and is sent again, as on every provider that acts for the player.
+	SetAuthSession(InSession);
 	SetSnapshotStore(InSnapshotStore, InGameVersionId);
 }
 

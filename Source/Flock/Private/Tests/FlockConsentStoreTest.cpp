@@ -400,13 +400,50 @@ bool FFlockAnalyticsConfigSessionPlatformTest::RunTest(const FString& Parameters
 
 	// Refused, never trimmed: a trimmed value would hide the mistake, and a verbatim one files sessions under a
 	// platform nobody meant.
-	for (const TCHAR* Unusable : { TEXT(" steam"), TEXT("steam "), TEXT("steam\n"), TEXT("\tsteam") })
+	// A no-break or ideographic space too, on every platform, whatever its C runtime calls white space.
+	for (const TCHAR* Unusable : { TEXT(" steam"), TEXT("steam "), TEXT("steam\n"), TEXT("\tsteam"), TEXT("steam\u00A0"), TEXT("\u3000steam") })
 	{
 		Config.SessionPlatform = Unusable;
 		TestFalse(FString::Printf(TEXT("'%s' is not usable"), Unusable), Config.HasUsableSessionPlatform());
 		TestEqual(FString::Printf(TEXT("'%s' sends the engine's platform name"), Unusable),
 			Config.GetSessionPlatform(TEXT("Windows")), FString(TEXT("Windows")));
 	}
+	return true;
+}
+
+// White space is one fixed set (FlockWhiteSpace) on every platform. FChar::IsWhitespace asks the C runtime, which on Windows
+// counts a no-break space and on other platforms may not, so a test running here cannot tell the two apart: the rule is held
+// on the source. Every SDK file outside the tests is read.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockWhiteSpaceIsOneSetTest, "Flock.Analytics.Config.NoSdkCodeAsksTheRuntimeWhatWhiteSpaceIs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockWhiteSpaceIsOneSetTest::RunTest(const FString& Parameters)
+{
+	const FString Call = FString(TEXT("FChar::IsWhitespace")) + TEXT("(");
+	TestTrue(TEXT("control: the check sees a call"), FString(TEXT("if (FChar::IsWhitespace(Id[0]))")).Contains(Call, ESearchCase::CaseSensitive));
+
+	// This file sits in Source/Flock/Private/Tests.
+	const FString FlockFolder = FPaths::ConvertRelativePathToFull(
+		FPaths::Combine(FPaths::GetPath(FString(ANSI_TO_TCHAR(__FILE__))), TEXT(".."), TEXT("..")));
+	TArray<FString> Files;
+	IFileManager::Get().FindFilesRecursive(Files, *FlockFolder, TEXT("*.*"), true, false);
+	int32 Read = 0;
+	for (const FString& File : Files)
+	{
+		if (!(File.EndsWith(TEXT(".cpp")) || File.EndsWith(TEXT(".h"))) || File.Contains(TEXT("/Tests/")) || File.Contains(TEXT("\\Tests\\")))
+		{
+			continue;
+		}
+		FString Text;
+		if (!FFileHelper::LoadFileToString(Text, *File))
+		{
+			continue;
+		}
+		++Read;
+		TestFalse(FString::Printf(TEXT("%s asks the C runtime what white space is; use FlockWhiteSpace"), *FPaths::GetCleanFilename(File)),
+			Text.Contains(Call, ESearchCase::CaseSensitive));
+	}
+	TestTrue(FString::Printf(TEXT("the SDK's source was read (%d files)"), Read), Read > 100);
 	return true;
 }
 
