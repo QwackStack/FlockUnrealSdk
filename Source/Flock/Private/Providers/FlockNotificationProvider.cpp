@@ -557,15 +557,15 @@ void FFlockNotificationProvider::GetTemplates(TFunction<void(TFlockResult<TArray
 	// it would refuse a perfectly valid call — a title screen may want the catalog before anyone signs in.
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::NotificationTemplates);
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 
 	// Keyed by game version rather than player, unlike every other key in this provider — the catalog
 	// belongs to the game, so it must survive a sign-out and must not be player-suffixed.
 	FetchListWithSnapshot<FFlockNotificationTemplate>(TemplateSnapshotCategory, TEXT("templates"),
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<TArray<FFlockNotificationTemplate>>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<TArray<FFlockNotificationTemplate>>)> OnAttempt)
 		{
 			// Enveloped **list**: `result` is a bare array, not the {items,total,page,limit} page shape.
-			return ClientRef->GetList<FFlockNotificationTemplate>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->GetList<FFlockNotificationTemplate>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch notification templates"),
 		[OnComplete](TFlockResult<TArray<FFlockNotificationTemplate>> Result)
@@ -601,14 +601,14 @@ void FFlockNotificationProvider::GetTemplateByName(const FString& TemplateName, 
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::NotificationTemplateByName(TemplateName, Locale));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockNotificationProvider> WeakSelf = AsShared();
 
 	FetchWithSnapshot<FFlockNotificationTemplate>(TemplateSnapshotCategory,
 		FString::Printf(TEXT("template_%s%s"), *TemplateName, *(Locale.IsEmpty() ? FString() : TEXT("_") + Locale)),
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockNotificationTemplate>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockNotificationTemplate>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockNotificationTemplate>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->Get<FFlockNotificationTemplate>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch notification template"),
 		[WeakSelf, TemplateName, Locale, OnComplete](TFlockResult<FFlockNotificationTemplate> Result)

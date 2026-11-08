@@ -92,6 +92,16 @@ struct FLOCK_API FFlockError
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	float RetryAfterSeconds = 0.f;
 
+	/**
+	 * True when a call that moves money or items (a purchase, a store redemption, a consume, a fund grant) failed after an
+	 * attempt that got no answer saying whether it was done: it may have been. Read the player's wallet and inventory before
+	 * doing it again; Hint says what to read. Always false on a call that moves nothing. A money call cancelled with no attempt
+	 * in doubt (the SDK shutting down, the player signing out) fails Cancelled instead: its request may have gone out, so its
+	 * cached player data is dropped too.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool bOutcomeUnknown = false;
+
 	/** Builds an error, parses ErrorCode from the coded string, and stamps the fix for it (FFlockErrorHints::ForFailure). */
 	static FFlockError Make(EFlockErrorType InType, const FString& InMessage, int32 InStatusCode = 0,
 		const FString& InBody = FString(), const FString& InCode = FString(),
@@ -127,6 +137,13 @@ struct FLOCK_API FFlockError
 
 	/** 408/429 mean the server rejected the request before processing it (safe to retry non-idempotents). */
 	static bool IsNotProcessed(int32 InStatusCode);
+
+	/**
+	 * True when this failure says nothing about whether the request was carried out: no answer (a timeout, no connection, no
+	 * status), a server failure whose code has no fix of its own, or an answer that could not be read (a 2xx naming nothing
+	 * included). A coded 5xx naming a setting to fix is certain: the server refused before doing anything.
+	 */
+	static bool LeavesTheOutcomeUnknown(const FFlockError& Error);
 
 	/**
 	 * True when a queued write should be dropped because the server refused it — sending it again would only be

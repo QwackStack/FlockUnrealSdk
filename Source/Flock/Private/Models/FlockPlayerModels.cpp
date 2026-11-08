@@ -47,7 +47,8 @@ bool FFlockPlayerData::FromWireObject(const TSharedRef<FJsonObject>& Object, FFl
 	Object->TryGetStringField(TEXT("created_at"), OutStruct.CreatedAt);
 	Object->TryGetStringField(TEXT("updated_at"), OutStruct.UpdatedAt);
 
-	OutStruct.Data = FFlockStructuredData::FromWireData(Object->TryGetField(TEXT("data")));
+	// The server's own node too: the wallet's currency codes are the server's names, which the flattening recases.
+	OutStruct.Data = FFlockStructuredData::FromWireData(Object->TryGetField(TEXT("data")), /*bKeepWireNode*/ true);
 
 	OutStruct.LeaderboardRefusals.Reset();
 	const TArray<TSharedPtr<FJsonValue>>* Refusals = nullptr;

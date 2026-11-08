@@ -135,7 +135,6 @@ public:
 
 private:
 	FString MakeUrl(const FString& Path) const { return FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, *Path); }
-	TMap<FString, FString> HeadersNow() const { return Session->GetAuthHeaders(); }
 
 	void IndexAssets(const TArray<FFlockAsset>& Assets);
 

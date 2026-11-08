@@ -463,7 +463,12 @@ bool FFlockSignInOptedInCallsTest::RunTest(const FString& Parameters)
 			{ TEXT("SendEmailVerification"), TEXT("RevokeToken"), TEXT("GetLinkedAccounts"), TEXT("Unlink"), TEXT("VerifyEmail") },
 			{ TEXT("IsNameAvailable"), TEXT("ForgotPassword"), TEXT("ResetPassword") } },
 		{ TEXT("../Public/Providers/FlockAuthProvider.h"), TEXT("FFlockAuthProvider"), { TEXT("Link") }, {} },
-		{ TEXT("Providers/FlockShopProvider.cpp"), TEXT("FFlockShopProvider"), { TEXT("Purchase"), TEXT("RedeemStoreReceipt") }, { TEXT("GetAll") } },
+		{ TEXT("Providers/FlockShopProvider.cpp"), TEXT("FFlockShopProvider"),
+			{ TEXT("Purchase"), TEXT("RedeemStoreReceipt"), TEXT("ConsumeEntry"), TEXT("ReadInventoryPage") },
+			{ TEXT("GetAll"), TEXT("GetById"), TEXT("GetByName"), TEXT("GetItem"), TEXT("GetItemsByShop") } },
+		{ TEXT("Providers/FlockPlayerProvider.cpp"), TEXT("FFlockPlayerProvider"),
+			{ TEXT("GetDataById"), TEXT("ReadDataPage"), TEXT("GetBan") },
+			{ TEXT("GetTemplates"), TEXT("GetTemplateById"), TEXT("GetTemplateByName"), TEXT("GetTemplatePlayerData") } },
 		// Every party route but "my party" goes through SendAs (pinned by Flock.Multiplayer.Parties.EveryRouteIsSentAsItsSignIn).
 		{ TEXT("Multiplayer/FlockPartyRequests.cpp"), TEXT("FFlockPartyRequests"), { TEXT("SendAs"), TEXT("ReadMine") }, {} },
 		// Every session route goes through SendAs (pinned by Flock.Multiplayer.Sessions.EveryRouteIsSentAsItsSignIn).
@@ -491,7 +496,8 @@ bool FFlockSignInOptedInCallsTest::RunTest(const FString& Parameters)
 			const TArray<FString> Bodies = DefinitionBodies(Text, Calls.Owner, Function);
 			const FString* Sending = Bodies.FindByPredicate([](const FString& Body)
 			{
-				return Body.Contains(TEXT("Execute<"), ESearchCase::CaseSensitive) || Body.Contains(TEXT("FetchAtScope<"), ESearchCase::CaseSensitive)
+				return Body.Contains(TEXT("Execute<"), ESearchCase::CaseSensitive) || Body.Contains(TEXT("ExecuteMoneyCall<"), ESearchCase::CaseSensitive)
+					|| Body.Contains(TEXT("FetchAtScope<"), ESearchCase::CaseSensitive)
 					|| Body.Contains(TEXT("FetchWithSnapshot<"), ESearchCase::CaseSensitive) || Body.Contains(TEXT("PostAccount<"), ESearchCase::CaseSensitive);
 			});
 			if (!TestNotNull(FString::Printf(TEXT("%s::%s sends a request"), Calls.Owner, Function), Sending))
@@ -516,7 +522,7 @@ bool FFlockSignInOptedInCallsTest::RunTest(const FString& Parameters)
 			}
 		}
 	}
-	TestEqual(TEXT("every call that acts for the player was checked"), Checked, 24);
+	TestEqual(TEXT("every call that acts for the player was checked"), Checked, 29);
 	return true;
 }
 

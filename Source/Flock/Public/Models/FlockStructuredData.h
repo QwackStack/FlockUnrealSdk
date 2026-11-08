@@ -37,8 +37,19 @@ struct FLOCK_API FFlockStructuredData
 	UPROPERTY()
 	FString FlatJson;
 
-	/** Builds the handle from a wire `data` node (the list[DataField] tree, a legacy flat dict, or null). */
-	static FFlockStructuredData FromWireData(const TSharedPtr<FJsonValue>& DataValue);
+	/**
+	 * The `data` node exactly as the server sent it, names unchanged, for a reader that needs the server's own names (the wallet's
+	 * currency codes, which the flattening would recase). Kept only when asked for (a player's data row); empty once fields are
+	 * overlaid on the flattened data.
+	 */
+	UPROPERTY()
+	FString WireJson;
+
+	/**
+	 * Builds the handle from a wire `data` node (the list[DataField] tree, a legacy flat dict, or null). bKeepWireNode keeps the
+	 * node as sent in WireJson too, for a row whose names the server owns (a player's data, the wallet among it).
+	 */
+	static FFlockStructuredData FromWireData(const TSharedPtr<FJsonValue>& DataValue, bool bKeepWireNode = false);
 
 	/** True when there is a parsed, non-empty data object. */
 	bool IsValid() const;

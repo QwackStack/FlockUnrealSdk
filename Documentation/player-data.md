@@ -20,6 +20,7 @@ The nodes live under *Flock | Player*:
 | `Flock Get Player Template By Id / By Name / By Tag` | one template |
 | `Flock Get Template Player Data` | every player's rows for one template |
 | `Flock Get Player Ban` | a player's ban record |
+| `Flock Get Wallet` | the signed-in player's balances by currency code (see [The wallet](#the-wallet)) |
 
 Each is an async node with `On Success` and `On Failure` execution pins. Read values off the returned
 row's **Data** pin with the *Get Data Int / Float / String / Bool / String Array* nodes, which take a
@@ -39,17 +40,43 @@ Everything lives on the player provider:
 ```cpp
 UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
 
-// The signed-in player's wallet, found by the template's tag:
-Sdk->GetPlayerProvider()->GetMyDataByTag(TEXT("currency"),
+// The signed-in player's achievements, found by the template's tag:
+Sdk->GetPlayerProvider()->GetMyDataByTag(TEXT("achievement"),
     [](TFlockResult<FFlockPlayerData> Result)
     {
         if (Result.bSuccess)
         {
-            int32 Coins = 0;
-            Result.Value.Data.TryGetInt(TEXT("coins"), Coins);
+            int32 Wins = 0;
+            Result.Value.Data.TryGetInt(TEXT("wins"), Wins);
         }
     });
 ```
+
+## The wallet
+
+The player's wallet is the row of the template tagged `currency`. `GetWallet` reads it into an `FFlockWallet`: the
+balances of the game's own currencies (`GameCurrencies`) and of real currencies (`RealCurrencies`), each code exactly
+as the game's currency config spells it.
+
+```cpp
+Sdk->GetPlayerProvider()->GetWallet([](TFlockResult<FFlockWallet> Wallet)
+{
+    if (!Wallet.bSuccess) { return; }
+    const int64 Gold = Wallet.Value.BalanceOf(TEXT("Gold"));   // 0 when the wallet holds no Gold
+    const bool bHasGems = Wallet.Value.Holds(TEXT("Gems"));     // a zero balance is still held
+    // Wallet.Value.CanAfford(Item): a game-currency item whose price the balance covers; false for a real-money item
+    // or one with no currency.
+});
+```
+
+- **Codes match with their letter case**, as the server matches them: `Holds("gold")` is false for a wallet of `Gold`.
+- **It reads through the player-data cache**, which every purchase, store redemption, consume and fund grant keeps
+  current with the wallet it answers; `ClearCache()` reads it afresh. A money call whose outcome is unknown drops the
+  cached rows, so the next read asks the server.
+- **No wallet is a failure** (`Validation`): the server makes a player's wallet when the player registers, from the Game
+  Version's currency template, so a player who registered before that template existed, or under another Game Version,
+  has none.
+- In Blueprint, ask the wallet with *Wallet Balance Of*, *Wallet Holds* and *Can Afford* (under *Flock | Shop*).
 
 ## Things worth knowing
 
@@ -63,6 +90,14 @@ Sdk->GetPlayerProvider()->GetMyDataByTag(TEXT("currency"),
   Per-feature bans are keyed by feature name in the record's `Data` map.
 - **Signing out drops the cached rows** so the next player never reads the previous one's data. Templates
   and their offline snapshot survive — they belong to the game version, not the player.
+- **A read already on its way keeps nothing it might have missed.** When the cached rows are dropped, or a purchase,
+  consume, fund grant or game command answers with a newer row, a read sent before that still answers its caller but
+  is not kept, and the next read asks the server. Two such answers arriving in the opposite order to the one the server
+  wrote them in never put the older row over the newer: the row's `UpdatedAt` decides.
+- **A player's own data and ban act for the player signed in when they were called.** Each attempt goes out only while
+  that sign-in lasts, so a retry after a sign-out or another player's sign-in is never sent as the next player (the call
+  fails `Cancelled`); template reads are game-wide and keep retrying. Every call reads the token on each attempt, so the
+  attempt after an expired token is renewed carries the new one.
 - **Reading structured data** — a row's and a template's `data` both come back as an `FFlockStructuredData`
   handle, the same type game config uses. Read it by dotted path (`TryGetInt("stats.level")`, exact match
   first, then the flattened PascalCase name), or bind the whole thing to your own `USTRUCT` with

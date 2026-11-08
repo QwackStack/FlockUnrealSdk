@@ -26,6 +26,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockShopItemListPin, const TArray
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPurchaseResultPin, const FFlockPurchaseResult&, PurchaseResult, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockConsumeResultPin, const FFlockConsumeResult&, ConsumeResult, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPlayerInventoryPagePin, const FFlockPlayerInventoryPage&, Page, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockOwnedItemCountsPin, const FFlockOwnedItemCounts&, Counts, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockOwnsShopItemPin, bool, bOwns, const FFlockError&, Error);
 
 /** Fetches a page of shops. */
 UCLASS()
@@ -244,4 +246,93 @@ private:
 	FString PlayerId;
 	int32 Page = 1;
 	int32 Limit = 100;
+};
+
+/**
+ * Uses up one unused entry of a shop item the signed-in player holds, granting what it holds. Reads the inventory to find
+ * one; an entry used meanwhile on another device is passed over for the next. The failure pin fires when the player holds
+ * none, when nobody is signed in, or with Outcome Unknown set when no answer said whether it was used.
+ */
+UCLASS()
+class FLOCK_API UFlockConsumeOneAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockConsumeResultPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockConsumeResultPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Consume One"), Category = "Flock|Shop")
+	static UFlockConsumeOneAction* ConsumeOne(UObject* WorldContextObject, const FString& ShopItemId);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockConsumeResult>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+
+	FString ShopItemId;
+};
+
+/**
+ * How many unused entries of each shop item the signed-in player holds, from every page of the inventory. Read it once for
+ * a screen of items and ask Owned Count Of per item.
+ */
+UCLASS()
+class FLOCK_API UFlockGetOwnedItemCountsAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockOwnedItemCountsPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockOwnedItemCountsPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Get Owned Item Counts"), Category = "Flock|Shop")
+	static UFlockGetOwnedItemCountsAction* GetOwnedItemCounts(UObject* WorldContextObject);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockOwnedItemCounts>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+};
+
+/** Whether the signed-in player holds an unused entry of a shop item. Reads the whole inventory. */
+UCLASS()
+class FLOCK_API UFlockOwnsShopItemAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockOwnsShopItemPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockOwnsShopItemPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Owns Shop Item"), Category = "Flock|Shop")
+	static UFlockOwnsShopItemAction* OwnsShopItem(UObject* WorldContextObject, const FString& ShopItemId);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<bool>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
+
+	FString ShopItemId;
 };

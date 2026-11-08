@@ -79,6 +79,19 @@ public:
 	/** When true, SendAsync queues completions instead of firing them. Flush with FlushPending(). */
 	bool bDeferred = false;
 
+	/** Delivers the oldest queued completion only (deferred mode); false when none is queued. */
+	bool DeliverNext()
+	{
+		if (Pending.Num() == 0)
+		{
+			return false;
+		}
+		const TFunction<void()> Run = Pending[0];
+		Pending.RemoveAt(0);
+		Run();
+		return true;
+	}
+
 	/** Delivers every queued completion (deferred mode) in order, then clears the queue. */
 	void FlushPending()
 	{

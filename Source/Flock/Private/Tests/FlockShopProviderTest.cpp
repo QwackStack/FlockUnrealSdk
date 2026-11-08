@@ -544,22 +544,28 @@ bool FFlockShopValidationTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// ── SHOP-03: an ambiguous purchase failure (5xx) is money-safe — NOT retried ──
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopPurchaseNotRetriedTest, "Flock.Shop.Provider.PurchaseNotRetriedOnServerError",
+// ── SHOP-03: an ambiguous consume failure (5xx) is money-safe — NOT retried; a purchase is, under its one key ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopPurchaseNotRetriedTest, "Flock.Shop.Provider.ConsumeNotRetriedOnServerErrorAPurchaseIsUnderItsKey",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockShopPurchaseNotRetriedTest::RunTest(const FString& Parameters)
 {
-	// A retrying policy would re-send an idempotent 5xx — proving the purchase does not is the point.
+	// A retrying policy re-sends an idempotent 5xx: the consume must not be; the purchase is, its key making it one purchase.
 	FFixture Fx(Retrying());
 	Fx.SignIn();
 	Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
 	Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Status(500, TEXT("{}")));
+	Fx.Fake->On(TEXT("player_inventory/inv-1/consume"), FFlockFakeTransport::Status(500, TEXT("{}")));
 
 	bool bFailed = false;
 	Fx.Provider->Purchase(TEXT("item-1"), FString(), [&](TFlockResult<FFlockPurchaseResult> R) { bFailed = !R.bSuccess; });
+	bool bConsumeFailed = false;
+	Fx.Provider->Consume(TEXT("inv-1"), [&](TFlockResult<FFlockConsumeResult> R) { bConsumeFailed = !R.bSuccess; });
+	FlockTestRetries::Pump();
 	TestTrue(TEXT("ambiguous purchase failure surfaces"), bFailed);
-	TestEqual(TEXT("money mutation not retried on a 5xx"), Fx.Fake->CountTo(TEXT("shop/transaction")), 1);
+	TestEqual(TEXT("the purchase is sent on every attempt, under one key"), Fx.Fake->CountTo(TEXT("shop/transaction")), 4);
+	TestTrue(TEXT("ambiguous consume failure surfaces"), bConsumeFailed);
+	TestEqual(TEXT("the consume is not retried on a 5xx"), Fx.Fake->CountTo(TEXT("player_inventory/inv-1/consume")), 1);
 
 	Cleanup(Fx.Dir);
 	return true;
@@ -780,8 +786,8 @@ bool FFlockShopItemNotForSaleTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// ── A purchase or consume made with the server unreachable is sent once, fails, and is never queued for later ──
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopOfflineMoneyTest, "Flock.Shop.Provider.APurchaseOrConsumeMadeOfflineIsSentOnceAndNeverQueued",
+// ── Made with the server unreachable: a consume is sent once, a purchase on each attempt under its key; neither is queued ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopOfflineMoneyTest, "Flock.Shop.Provider.APurchaseOrConsumeMadeOfflineIsNeverQueued",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockShopOfflineMoneyTest::RunTest(const FString& Parameters)
@@ -804,7 +810,7 @@ bool FFlockShopOfflineMoneyTest::RunTest(const FString& Parameters)
 	Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(PurchaseResultBody()));
 	Fx.Fake->On(TEXT("player_inventory/inv-1/consume"), FFlockFakeTransport::Ok(ConsumeResultBody()));
 	FlockTestRetries::Pump();
-	TestEqual(TEXT("the purchase was sent once"), Fx.Fake->CountTo(TEXT("shop/transaction")), 1);
+	TestEqual(TEXT("the purchase was sent on each attempt of its policy, under its key, and no more"), Fx.Fake->CountTo(TEXT("shop/transaction")), 4);
 	TestEqual(TEXT("the consume was sent once"), Fx.Fake->CountTo(TEXT("player_inventory/inv-1/consume")), 1);
 
 	// Contrast: a read made with the server unreachable is tried again under the same policy.
@@ -2302,6 +2308,39 @@ bool FFlockRedeemRenewsAnExpiredTokenTest::RunTest(const FString& Parameters)
 			Authorization != nullptr && Authorization->EndsWith(Renewed, ESearchCase::CaseSensitive));
 	}
 	Cleanup(Fx.Dir);
+	return true;
+}
+
+// A purchase the engine cancelled while it was out (the HTTP module shutting down) may have gone out: neither Purchased nor
+// Failed is known, so only Started is recorded. A refusal is a known failure and records Failed.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockPurchaseCancelledRecordsNoOutcomeTest, "Flock.Shop.Provider.APurchaseCancelledWhileOutRecordsNoOutcome",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockPurchaseCancelledRecordsNoOutcomeTest::RunTest(const FString& Parameters)
+{
+	for (const bool bCancelled : { true, false })
+	{
+		FFixture Fx;
+		Fx.SignIn(TEXT("player-a"));
+		Fx.WireAnalytics();
+		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(ItemBody(TEXT("item-1"), 100)));
+		FFlockHttpResponse Aborted;
+		Aborted.Result = EFlockHttpResult::Cancelled;
+		Fx.Fake->On(TEXT("shop/transaction"), bCancelled ? Aborted : FFlockFakeTransport::Coded(400, TEXT("shop.insufficient_funds")));
+		Fx.Fake->On(TEXT("analytics/transactions"), FFlockFakeTransport::Ok(TEXT("{}")));
+		EFlockErrorType Failure = EFlockErrorType::None;
+		Fx.Provider->Purchase(TEXT("item-1"), [&Failure](TFlockResult<FFlockPurchaseResult> R) { Failure = R.Error.Type; });
+		if (bCancelled)
+		{
+			TestEqual(TEXT("cancelled while out: a cancel"), Failure, EFlockErrorType::Cancelled);
+			TestEqual(TEXT("cancelled while out: only Started is recorded"), Fx.Fake->CountTo(TEXT("analytics/transactions")), 1);
+		}
+		else
+		{
+			TestEqual(TEXT("control, refused: Started and Failed are recorded"), Fx.Fake->CountTo(TEXT("analytics/transactions")), 2);
+		}
+		Cleanup(Fx.Dir);
+	}
 	return true;
 }
 

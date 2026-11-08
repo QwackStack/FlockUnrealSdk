@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.43.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.44.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -60,11 +60,12 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   with typed accessors by dotted path, or bind them to your `USTRUCT` in C++. Plus the game record and
   version info.
 - **Shop** — browse shops and items (all shops, by id or name, a single item, a shop's items), buy an
-  item for a player, and read a player's inventory. Each item says whether it costs real money and
-  gives its product id in each store, and a purchase the player made in the App Store or Google Play is
-  redeemed for the item it bought. Catalog reads are cached and snapshot-backed; a
-  purchase is money-safe (never retried on an ambiguous failure, never queued) and reports the
-  transaction for revenue metrics (a store purchase's revenue is recorded by the server); inventory is always fetched fresh.
+  item for a player, read a player's inventory, count what they own, check one item, and use one up. Each item says
+  whether it costs real money and gives its product id in each store, and a purchase the player made in the App Store or
+  Google Play is redeemed for the item it bought. Catalog reads are cached and snapshot-backed; a purchase is money-safe
+  (sent again only under its one key, so never bought twice; never queued; an answer that never came reads as "may have
+  been bought") and reports the transaction for revenue metrics (a store purchase's revenue is recorded by the server);
+  inventory is always fetched fresh.
 - **Player data & templates** — read a player's saved data (by row id, a page of rows, or the signed-in
   player's row for a template by the template's id or tag), browse the player templates that define those
   records, and check a player's ban status. A player's rows are paginated once and cached; templates are
@@ -442,9 +443,9 @@ so you can read only the half you work in.
 |-------|--------|
 | [Authentication](Documentation/authentication.md) | Login/register for every provider, logout, token refresh and revocation, password reset, email verification, account linking |
 | [Game config & metadata](Documentation/game-config.md) | Resolving effective values, configs and patches, feature flags, game/version records |
-| [Player data & templates](Documentation/player-data.md) | Reads by id/template/tag, templates, pagination, bans |
+| [Player data & templates](Documentation/player-data.md) | Reads by id/template/tag, the wallet by currency code, templates, pagination, bans |
 | [Game commands](Documentation/game-commands.md) | Updating a row, achievements, funds, the offline queue and its money-safety rules |
-| [Shop](Documentation/shop.md) | Shops and items, real-money items and their store product ids, redeeming a store purchase, purchase and its money-safety contract, player inventory |
+| [Shop](Documentation/shop.md) | Shops and items, real-money items and their store product ids, redeeming a store purchase, purchase and its money-safety contract, player inventory, owned counts and consume one |
 | [Assets](Documentation/assets.md) | Listing and resolving assets, the four download flavours, preloading, the binary cache |
 | [Leaderboards](Documentation/leaderboards.md) | Boards by name, standings, a player's own rank, windows and score formatting, why there is no submit call |
 | [Notifications](Documentation/notifications.md) | The inbox, scheduled reminders, the template catalog, push device tokens and what push delivery needs |

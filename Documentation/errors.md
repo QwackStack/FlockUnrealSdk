@@ -40,6 +40,7 @@ an error-tracker group every failure into its own bucket. Read `Error.Body` when
 | `StatusCode` | HTTP status when the failure came from a response; `0` for transport and client-side failures |
 | `Body` | The raw response body |
 | `bHasRetryAfter` / `RetryAfterSeconds` | The server's Retry-After hint, when it sent one |
+| `bOutcomeUnknown` | On a call that moves money or items (a purchase, a store redemption, a consume, a fund grant): no answer said whether it was done, so it may have been. Read the wallet and inventory before doing it again; `Hint` says what to read. Always false on a call that moves nothing |
 
 ## Branch on the code, never on the text
 
@@ -137,12 +138,16 @@ retries Auth, Validation, Serialization or Cancelled. What is left for you:
   purchase that is another player's) leaves the player signed in; the fix says which player the call has to act for.
 - **`EFlockErrorType::Cancelled`** — you cancelled the call, or it was made for a player who has since signed out
   or been replaced by another sign-in, so its retry was not sent. Nothing to retry: make the call again for the
-  player now signed in, if it still applies. A cancelled call is never answered from the offline cache.
-- **Money mutations** (a purchase, a consume, a funds grant) — an ambiguous failure is surfaced rather
-  than re-sent, because a timed-out request may already have committed. Re-send only on a deliberate
-  player action, never automatically. Redeeming a store purchase (`RedeemStoreReceipt`) is the exception: the
-  server makes one purchase per store transaction, so the SDK re-sends it itself, and you send the same receipt
-  again later when it still fails.
+  player now signed in, if it still applies. A cancelled call is never answered from the offline cache. Except on a
+  purchase, store redemption, consume or fund grant: one cancelled may have been sent before the cancel, so its cached
+  player data is dropped; read the wallet and inventory before making the call again.
+- **Money mutations** (a consume, a funds grant) — an ambiguous failure is surfaced rather than re-sent, because a
+  timed-out request may already have committed. A wallet purchase is the first exception: every attempt of one
+  `Purchase` call carries the same key and the server makes one purchase of them, so the SDK re-sends it itself.
+  Redeeming a store purchase (`RedeemStoreReceipt`) is the second: the server makes one purchase per store transaction,
+  so the SDK re-sends it, and you send the same receipt again later when it still fails. Whichever it is, check
+  `bOutcomeUnknown` first: when it is set, read the wallet and inventory before doing it again, since a new purchase,
+  consume or grant is a second one; your game re-sends only on a deliberate player action, never automatically.
 - **A 5xx naming a setting someone has to fix** is never retried: the game's payment keys the server cannot read
   (`PaymentProviderCredentialsUnreadable`), or a Flock server with no address for a payment provider to confirm a payment
   (`ShopRealCurrencySettlementUnavailable`). It stays the same until the setting is fixed.

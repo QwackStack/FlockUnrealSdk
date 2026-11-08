@@ -119,13 +119,13 @@ void FFlockAssetProvider::GetAll(TFunction<void(TFlockResult<TArray<FFlockAsset>
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::Asset);
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockAssetProvider> WeakSelf = AsShared();
 
 	FetchListWithSnapshot<FFlockAsset>(SnapshotCategory, IndexKey,
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<TArray<FFlockAsset>>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<TArray<FFlockAsset>>)> OnAttempt)
 		{
-			return ClientRef->GetList<FFlockAsset>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->GetList<FFlockAsset>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch assets"),
 		[WeakSelf](TFlockResult<TArray<FFlockAsset>> Result)
@@ -288,15 +288,15 @@ void FFlockAssetProvider::RefetchRecord(const FString& AssetId, TFunction<void(T
 {
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::AssetById(AssetId));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockAssetProvider> WeakSelf = AsShared();
 
 	// Straight to the network on purpose: this is both the "not in the index" fallback and the
 	// expired-presigned-URL refresh, and a cached record would defeat the second one entirely.
 	Execute<FFlockAsset>(
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockAsset>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockAsset>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockAsset>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->Get<FFlockAsset>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		[WeakSelf, OnComplete](TFlockResult<FFlockAsset> Result)
 		{

@@ -32,13 +32,13 @@ void FFlockGameProvider::GetGame(TFunction<void(TFlockResult<FFlockGameSchema>)>
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::Game);
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockGameProvider> WeakSelf = AsShared();
 
 	FetchWithSnapshot<FFlockGameSchema>(SnapshotCategory, TEXT("game"),
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockGameSchema>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockGameSchema>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockGameSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->Get<FFlockGameSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch game"),
 		[WeakSelf, OnComplete](TFlockResult<FFlockGameSchema> Result)
@@ -71,13 +71,13 @@ void FFlockGameProvider::GetGameVersion(TFunction<void(TFlockResult<FFlockGameVe
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::GameVersion);
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockGameProvider> WeakSelf = AsShared();
 
 	FetchWithSnapshot<FFlockGameVersionSchema>(SnapshotCategory, TEXT("game_version"),
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockGameVersionSchema>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockGameVersionSchema>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockGameVersionSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->Get<FFlockGameVersionSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch game version"),
 		[WeakSelf, OnComplete](TFlockResult<FFlockGameVersionSchema> Result)
@@ -114,16 +114,16 @@ void FFlockGameProvider::GetGameVersionByName(const FString& Name, TFunction<voi
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::GameVersionByName(Name));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockGameProvider> WeakSelf = AsShared();
 
 	// BootstrapScope, keyed by API URL + name: this runs before the version id is known, so it can't be
 	// scoped under it, and the API URL keeps dev and prod backends from sharing an entry.
 	const FString Key = FString::Printf(TEXT("%s|%s"), *VersionedApiUrl, *Name);
 	FetchAtScope<FFlockGameVersionSchema>(FFlockSnapshotStore::BootstrapScope, Key,
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockGameVersionSchema>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockGameVersionSchema>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockGameVersionSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->Get<FFlockGameVersionSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch game version by name"),
 		[WeakSelf, Name, OnComplete](TFlockResult<FFlockGameVersionSchema> Result)

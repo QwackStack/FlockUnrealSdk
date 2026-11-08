@@ -55,15 +55,15 @@ void FFlockLeaderboardProvider::GetByName(const FString& LeaderboardName,
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::LeaderboardByName(LeaderboardName));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockLeaderboardProvider> WeakSelf = AsShared();
 
 	FetchWithSnapshot<FFlockLeaderboard>(SnapshotCategory,
 		FString::Printf(TEXT("board_name_%s"), *LeaderboardName),
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockLeaderboard>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockLeaderboard>)> OnAttempt)
 		{
 			// Enveloped ({error,response,result}) — the enveloped verb unwraps `result`.
-			return ClientRef->Get<FFlockLeaderboard>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->Get<FFlockLeaderboard>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch leaderboard"),
 		[WeakSelf, LeaderboardName, OnComplete](TFlockResult<FFlockLeaderboard> Result)
@@ -120,16 +120,16 @@ void FFlockLeaderboardProvider::GetStandings(const FString& LeaderboardName, con
 	Query += FString::Printf(TEXT("page=%d&limit=%d"), Page, Limit);
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(FlockEndpoints::LeaderboardStandings(LeaderboardName) + Query);
 
 	FetchWithSnapshot<FFlockStandings>(SnapshotCategory,
 		FString::Printf(TEXT("standings_%s_%s_%s_p%d_l%d"), *LeaderboardName, *WindowKey, *Country, Page, Limit),
 		TranslatingUnknownBoard<FFlockStandings>(
-			[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockStandings>)> OnAttempt)
+			[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockStandings>)> OnAttempt)
 			{
 				// Enveloped ({error,response,result}) — the enveloped verb unwraps `result`.
-				return ClientRef->Get<FFlockStandings>(Url, Headers, MoveTemp(OnAttempt));
+				return ClientRef->Get<FFlockStandings>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 			},
 			LeaderboardName),
 		TEXT("Fetch leaderboard standings"), MoveTemp(OnComplete));

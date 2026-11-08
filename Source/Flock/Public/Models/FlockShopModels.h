@@ -65,6 +65,17 @@ namespace FlockPurchaseStatuses
 }
 
 /**
+ * Where an inventory entry has got to: unused (the player holds it), used (consumed), or revoked (taken back with a refund).
+ * An open set the server can widen, so compare against these, never a literal.
+ */
+namespace FlockPlayerInventoryStatuses
+{
+	inline constexpr const TCHAR* Unused = TEXT("unused");
+	inline constexpr const TCHAR* Used = TEXT("used");
+	inline constexpr const TCHAR* Revoked = TEXT("revoked");
+}
+
+/**
  * One thing a reward-bearing shop item grants (OpenAPI ShopItemRewardSchema).
  *
  * Code is a currency code from the game version's currency config — the same namespace an item's
@@ -414,6 +425,8 @@ struct FLOCK_API FFlockShopTransactionRequest
 
 	UPROPERTY() FString ShopItemId;
 	UPROPERTY() FString PlayerId;
+	/** One per purchase call, the same on every attempt: the server answers a purchase sent again with the first one. */
+	UPROPERTY() FString IdempotencyKey;
 };
 
 /**
@@ -460,4 +473,79 @@ struct FLOCK_API FFlockStoreReceipt
 		Receipt.PurchaseToken = InPurchaseToken;
 		return Receipt;
 	}
+};
+
+/** One currency's balance in a wallet. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockCurrencyBalance
+{
+	GENERATED_BODY()
+
+	/** The currency's code, exactly as the game's currency config spells it. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Code;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int64 Amount = 0;
+};
+
+/**
+ * A player's balances by currency code, read from their wallet (the player data of the template tagged "currency"). Game
+ * currencies are spent through FFlockShopProvider::Purchase; real currencies are never spent from the wallet. Codes are
+ * matched with their letter case, as the server matches them.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockWallet
+{
+	GENERATED_BODY()
+
+	/** Balances of the game's own currencies. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockCurrencyBalance> GameCurrencies;
+
+	/** Balances of real currencies. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockCurrencyBalance> RealCurrencies;
+
+	/** The balance of a currency, or 0 when the wallet does not hold it (Holds tells the two apart). */
+	int64 BalanceOf(const FString& CurrencyCode) const;
+
+	/** Whether the wallet holds a balance in this currency at all. */
+	bool Holds(const FString& CurrencyCode) const;
+
+	/**
+	 * Whether Purchase can pay for this item from the wallet: a game-currency item whose price the wallet covers. A real-money
+	 * item is never bought from the wallet, so it reads false; it is bought through a store.
+	 */
+	bool CanAfford(const FFlockShopItem& Item) const;
+
+	/** Reads a wallet row (a purchase's Wallet, or the player's currency data): a currency object per category, as the server answers. */
+	static FFlockWallet From(const FFlockPlayerData& Wallet);
+};
+
+/** How many unused entries of one shop item the player holds. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockOwnedItemCount
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ShopItemId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int32 Count = 0;
+};
+
+/** What the signed-in player holds unused, by shop item, from every page of their inventory. Used and refunded entries do not count. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockOwnedItemCounts
+{
+	GENERATED_BODY()
+
+	/** One row per shop item held, in the order the inventory first names each. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockOwnedItemCount> Items;
+
+	/** How many unused entries of this shop item are held; 0 when none. The id is matched with its letter case. */
+	int32 CountOf(const FString& ShopItemId) const;
 };

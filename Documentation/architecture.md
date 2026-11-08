@@ -94,11 +94,12 @@ unwrap, `GetRaw`/`PostJsonRaw` do not — and the choice is read off the endpoin
 guessed. An enveloped test fixture passes against either, so this is invisible until it reaches a
 backend. Test fixtures therefore mirror the real wire shape.
 
-**Money is never retried and never queued.** A shop purchase and a funds grant post non-idempotently, so
-an ambiguous failure surfaces rather than risking a double charge, and both fail outright when the server
-is unreachable rather than replaying later. Everything else in the commands surface does queue offline. Redeeming a
-store purchase is the one money call that is re-sent after an ambiguous failure: the server makes one purchase per
-store transaction, so a repeat answers with what the first delivered. It is never queued offline either.
+**Money is never queued, and is re-sent only where the server makes it safe.** A wallet purchase carries one key per
+`Purchase` call and is sent again under the retry policy, the server answering a repeat with the first purchase; redeeming
+a store purchase is sent again too, since the server makes one purchase per store transaction. A funds grant and a
+consume post non-idempotently, so an ambiguous failure surfaces rather than risking a double credit. A money call that
+failed with no answer saying whether it was done has `bOutcomeUnknown` set. All of them fail outright when the server is
+unreachable rather than replaying later; everything else in the commands surface does queue offline.
 
 **Cache and state are different things, and they live in different places.** Read caches are disposable —
 clearing one costs a refetch. State is not: the notification seen-watermark and the pending-schedule list
@@ -143,8 +144,8 @@ another engine.
 
 - The two response shapes and the per-endpoint choice between them
 - Condensed snake_case request bodies with optional members omitted rather than sent empty
-- The money rules: non-idempotent purchase and funds grant, a store redemption re-sent (one purchase per store
-  transaction), none of them queued offline
+- The money rules: a wallet purchase re-sent under its one key, a store redemption re-sent (one purchase per store
+  transaction), a consume and a funds grant never re-sent, none of them queued offline
 - The offline snapshot policy: unreachable with a cache serves the cache without a call; a cache with a
   transient failure serves the cache after one attempt; a permanent 4xx propagates regardless
 - Name-first addressing for leaderboards and notification templates, with the resolved id memoized

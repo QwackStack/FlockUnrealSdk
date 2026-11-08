@@ -5,6 +5,58 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.44.0] - 2026-11-08
+
+The wallet and shop-screen calls. A wallet purchase is sent again under its one key and never bought twice; a money call
+that got no answer says it may have been done; a shop screen reads the wallet by currency code and what the player owns;
+and the attempt after an expired token is renewed carries the new token on every call.
+
+### Added
+
+- **`FFlockError::bOutcomeUnknown`** (Blueprint too): set on a purchase, store redemption, consume or fund grant that
+  failed with no answer saying whether it was done, even when a later attempt was refused or the player signed out before
+  it, with a fix saying what to read before doing it again (and, after it, the fix of a refusal that named its cause). A cancel after such an attempt ends with that attempt's
+  failure, marked; a cancel with none stays `Cancelled`. Either drops the cached player data, so the next wallet read asks
+  the server. A coded 5xx that names a setting to fix is certain.
+- **`FFlockPlayerProvider::GetWallet`** and **`FFlockWallet`** (`GameCurrencies`, `RealCurrencies`, `BalanceOf`, `Holds`,
+  `CanAfford`; Blueprint: *Flock Get Wallet*, *Wallet Balance Of*, *Wallet Holds*, *Can Afford*): the signed-in player's
+  balances by currency code, read through the player-data cache from the template tagged `currency`. Codes are the
+  server's own and match with their letter case; a real-money item is never affordable from the wallet. *Purchase
+  Balances* and *Consume Balances* read a result's wallet the same way.
+- **`FFlockShopProvider::GetOwnedItemCounts`** and **`Owns(ShopItemId)`** (*Flock Get Owned Item Counts*, *Flock Owns
+  Shop Item*, *Owned Count Of*): the unused entries the signed-in player holds, by shop item, from every page of the
+  inventory; used and refunded entries do not count, and an entry handed back on two pages (a purchase landing between
+  the page reads) counts once.
+- **`FFlockShopProvider::ConsumeOne(ShopItemId)`** (*Flock Consume One*): uses the first unused entry of a shop item the
+  player holds, passing over one used meanwhile on another device and stopping on any other failure, so one call never
+  uses two. The sign-in is taken before the inventory is read.
+- **`FlockPlayerInventoryStatuses`** (`Unused`, `Used`, `Revoked`) and their *Flock Inventory Status* nodes.
+
+### Changed
+
+- **A wallet purchase carries an `idempotency_key`**, one per `Purchase` call and the same on every attempt, so an answer
+  that never came (a timeout, a dropped connection, a 5xx) is sent again under the retry policy and the server answers it
+  with the first purchase. Needs a Flock server from 2026-10-28 on: an older one ignores the key, and a purchase sent
+  again there is charged twice. A refusal for funds or sale after an attempt in doubt is certain (the server checks the
+  key first). `ShopIdempotencyKeyReused`'s fix now says each call makes its own key.
+- **Every call reads the player's token on each attempt**: config, game, player data, shop, leaderboard, notification and
+  asset calls took it once before sending, so the attempt after an expired token was renewed went out with the expired
+  one and failed again.
+- **A player's own data, ban, inventory and consume act for the sign-in they were called under**: a retry after a
+  sign-out or another player's sign-in is never sent as the next player. Template and catalog reads are game-wide and
+  keep retrying.
+- **`Consume` refuses a 2xx that names no entry**, where it read as a use, and records it as unknown.
+- **A player-data read already on its way keeps nothing** once the cached data is dropped or a newer row is applied (a
+  purchase's wallet, a game command's row): it answers its callers, and the next read asks the server. A read that ends
+  late never removes a newer read's place, and one sent under a sign-in that has ended (the same player signing in
+  again) is not joined by a read made after.
+- **A purchase whose outcome is unknown, or one cancelled while it was out, records no Purchased or Failed analytics
+  transaction**, as one naming no purchase already did.
+- **A server row older than the cached one is not kept**: two money answers arriving in the opposite order to the one the
+  server wrote them in left the older wallet cached (their `UpdatedAt` decides now).
+- **A player-data read out when the player provider is torn down still answers its callers**, as a cancel; they were
+  never answered.
+
 ## [1.43.0] - 2026-11-05
 
 Store purchases. A game redeems a purchase the player made in the App Store or Google Play, and Flock hands the item over.

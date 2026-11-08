@@ -41,13 +41,13 @@ void FFlockConfigProvider::GetAllPatches(TFunction<void(TFlockResult<TArray<FFlo
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::GamePatch);
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
 
 	FetchListWithSnapshot<FFlockGamePatchSchema>(SnapshotCategory, Key,
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<TArray<FFlockGamePatchSchema>>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<TArray<FFlockGamePatchSchema>>)> OnAttempt)
 		{
-			return ClientRef->GetList<FFlockGamePatchSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->GetList<FFlockGamePatchSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch all patches"),
 		[WeakSelf, Key](TFlockResult<TArray<FFlockGamePatchSchema>> Result)
@@ -97,13 +97,13 @@ void FFlockConfigProvider::GetPatchById(const FString& PatchId, TFunction<void(T
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::GamePatchById(PatchId));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
 
 	FetchWithSnapshot<FFlockGamePatchSchema>(SnapshotCategory, Key,
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockGamePatchSchema>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockGamePatchSchema>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockGamePatchSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->Get<FFlockGamePatchSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch patch"),
 		[WeakSelf, Key](TFlockResult<FFlockGamePatchSchema> Result)
@@ -144,13 +144,13 @@ void FFlockConfigProvider::GetPatchesByConfig(const FString& ConfigId, TFunction
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::GamePatchByConfig(ConfigId));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
 
 	FetchListWithSnapshot<FFlockGamePatchSchema>(SnapshotCategory, Key,
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<TArray<FFlockGamePatchSchema>>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<TArray<FFlockGamePatchSchema>>)> OnAttempt)
 		{
-			return ClientRef->GetList<FFlockGamePatchSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->GetList<FFlockGamePatchSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch patches for config"),
 		[WeakSelf, Key, ConfigId](TFlockResult<TArray<FFlockGamePatchSchema>> Result)
@@ -202,13 +202,13 @@ void FFlockConfigProvider::GetConfigById(const FString& ConfigId, TFunction<void
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::GameConfigById(ConfigId));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
 
 	FetchWithSnapshot<FFlockGameConfigSchema>(SnapshotCategory, Key,
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockGameConfigSchema>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockGameConfigSchema>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockGameConfigSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->Get<FFlockGameConfigSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch config"),
 		[WeakSelf, Key, ConfigId](TFlockResult<FFlockGameConfigSchema> Result)
@@ -253,13 +253,13 @@ void FFlockConfigProvider::GetConfigByName(const FString& Name, TFunction<void(T
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::GameConfigByName(Name));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
 
 	FetchWithSnapshot<FFlockGameConfigSchema>(SnapshotCategory, Key,
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockGameConfigSchema>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockGameConfigSchema>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockGameConfigSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->Get<FFlockGameConfigSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch config by name"),
 		[WeakSelf, Key, Name](TFlockResult<FFlockGameConfigSchema> Result)
@@ -307,13 +307,13 @@ void FFlockConfigProvider::GetConfigsByTag(EFlockConfigTag Tag, TFunction<void(T
 	}
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(Path);
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
 
 	FetchListWithSnapshot<FFlockGameConfigSchema>(SnapshotCategory, Key,
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<TArray<FFlockGameConfigSchema>>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<TArray<FFlockGameConfigSchema>>)> OnAttempt)
 		{
-			return ClientRef->GetList<FFlockGameConfigSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->GetList<FFlockGameConfigSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch configs by tag"),
 		[WeakSelf, Key, TagKey](TFlockResult<TArray<FFlockGameConfigSchema>> Result)
@@ -366,13 +366,13 @@ void FFlockConfigProvider::GetConfigsByVersionTag(EFlockConfigTag Tag, TFunction
 	}
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(Path);
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
 
 	FetchListWithSnapshot<FFlockGameConfigSchema>(SnapshotCategory, Key,
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<TArray<FFlockGameConfigSchema>>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<TArray<FFlockGameConfigSchema>>)> OnAttempt)
 		{
-			return ClientRef->GetList<FFlockGameConfigSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->GetList<FFlockGameConfigSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch configs by version tag"),
 		[WeakSelf, Key, TagKey](TFlockResult<TArray<FFlockGameConfigSchema>> Result)
@@ -424,14 +424,14 @@ void FFlockConfigProvider::GetPlayerFeatures(const FString& PlayerId, TFunction<
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::GameConfigPlayerFeatures(ResolvedPlayerId));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
 
 	// No snapshot on disk: a player's features are kept in memory for the run only (PlayerFeaturesByPlayer).
 	Execute<FFlockGameConfigSchema>(
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockGameConfigSchema>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockGameConfigSchema>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockGameConfigSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->Get<FFlockGameConfigSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		[WeakSelf, Key, ResolvedPlayerId](TFlockResult<FFlockGameConfigSchema> Result)
 		{

@@ -20,7 +20,15 @@ The nodes live under *Flock | Shop*:
 | `Flock Get Shop Items` | every item in a shop (optional `Patch Id`) |
 | `Flock Purchase` | the purchase result: what was bought, what it granted, and the wallet after |
 | `Flock Consume Inventory Item` | the consumed entry, what it granted, and the wallet after |
+| `Flock Consume One` | uses one unused entry of a shop item the player holds: the consumed entry, what it granted, the wallet after |
 | `Flock Get Player Inventory` | a page of what a player owns |
+| `Flock Get Owned Item Counts` | how many unused entries of each shop item the player holds, from every page |
+| `Flock Owns Shop Item` | whether the player holds an unused entry of a shop item |
+
+For a shop screen, read the wallet once (*Flock Get Wallet*, under *Flock | Player*, see [Player data](player-data.md#the-wallet))
+and the owned counts once, then ask per item: *Can Afford* (wallet, item), *Owned Count Of* (counts, item id), *Wallet
+Balance Of* and *Wallet Holds* (wallet, currency code). *Purchase Balances* and *Consume Balances* read a result's wallet the
+same way.
 
 ![A graph showing Flock Get Shop By Name feeding Flock Get Shop Items, with the item list driving a ForEach loop](images/shop-browse.png)
 
@@ -112,9 +120,41 @@ Sdk->GetShopProvider()->Purchase(ItemId, FString(),
 Sdk->GetShopProvider()->Consume(InventoryId,
     [](TFlockResult<FFlockConsumeResult> Consumed) { /* Consumed.Value.Granted, .Wallet */ });
 
-// What they own.
+// What they own, a page at a time.
 Sdk->GetShopProvider()->GetPlayerInventory(FString(), /*Page*/ 1, /*Limit*/ 100, OnInventory);
 ```
+
+### A shop screen
+
+Read the wallet and what the player holds once, then decide per item. The wallet comes from the player-data cache,
+which purchases keep current; the inventory is read from the server on every call.
+
+```cpp
+// Items: the TArray<FFlockShopItem> the screen shows, read from a shop as above.
+Sdk->GetPlayerProvider()->GetWallet([Sdk, Items](TFlockResult<FFlockWallet> Wallet)
+{
+    if (!Wallet.bSuccess) { return; }
+    Sdk->GetShopProvider()->GetOwnedItemCounts([Wallet = Wallet.Value, Items](TFlockResult<FFlockOwnedItemCounts> Owned)
+    {
+        if (!Owned.bSuccess) { return; }
+        for (const FFlockShopItem& Item : Items)
+        {
+            const int32 Held = Owned.Value.CountOf(Item.Id);   // unused entries; ids match with their case
+            const bool bCanBuy = Wallet.CanAfford(Item);         // false for a real-money item or one with no currency
+            // A standard item the wallet sells is sold again on every purchase: offer it only while Held is 0.
+        }
+    });
+});
+
+// Use one potion the player holds, without reading the inventory yourself.
+Sdk->GetShopProvider()->ConsumeOne(PotionItemId,
+    [](TFlockResult<FFlockConsumeResult> Used) { /* Used.Value.Granted */ });
+```
+
+`ConsumeOne` reads the inventory, uses the first unused entry of that item, and passes over one used meanwhile on another
+device; any other failure stops it, so one call never uses two. It fails (`Validation`) when the player holds none, and
+(`Auth`) with nobody signed in. `Owns(ShopItemId, ...)` answers whether the player holds one, reading the whole inventory;
+it and `GetOwnedItemCounts` fail before sending with nobody signed in.
 
 ## Real-money items
 
@@ -193,7 +233,8 @@ Sdk->GetShopProvider()->RedeemStoreReceipt(ShopItemId,
   game's own keys), and the rest in [Errors](errors.md).
 - **Keep the store's purchase until it succeeds.** A failure, a setup fault in the dashboard included, keeps nothing on the
   server, so the same receipt redeems once the cause is fixed. A 2xx that names no purchase, or whose body cannot be
-  read, is a failure too, and drops the cached player data.
+  read, is a failure too, and drops the cached player data. A failure after an attempt that got no answer has
+  `bOutcomeUnknown` set: the item may have been handed over, and sending the same receipt again is the way to find out.
 - **Ids are sent exactly as given.** An empty id, or one with spaces around it, is refused (`Validation`) rather than
   trimmed: the spaces came from wherever it was copied. The SDK does not compare the receipt's product with the item's
   `StoreProductIds`; the server does.
@@ -201,18 +242,31 @@ Sdk->GetShopProvider()->RedeemStoreReceipt(ShopItemId,
 
 ## Caching and money-safety
 
-- **A purchase is never retried.** It posts non-idempotently, so an ambiguous failure — a timeout, a
-  dropped connection — is reported rather than re-sent. A timeout may mean the charge already landed, and
-  the SDK will not risk charging twice. Show the failure and let the player decide. A success that names no
-  purchase fails too: read the inventory and wallet (the cached player data is dropped, so that read asks the server)
-  before offering the item again. Redeeming a store purchase is the exception: the store already took the money,
-  and the server makes one purchase per store transaction, so it is re-sent.
-- **Consuming follows the same rule, in the other direction.** It credits currency, so a re-send after an
-  ambiguous failure would grant twice. Only a failure that proves the server never processed the request
-  is retried; everything else is reported.
-- **A purchase is never queued offline**, and neither is a consume. Unlike a player-data write, each is sent at
-  most once with the server unreachable (a purchase of an item not read yet first reads it, and fails there),
-  fails with a `Connection` error, and is not sent again when the network comes back. There is no offline shopping.
+- **A purchase is sent again under its key, never bought twice.** Every attempt of one `Purchase` call carries the same
+  `idempotency_key`, and the server answers a repeat with the first purchase, so an answer that never came (a timeout, a
+  dropped connection, a 5xx) is sent again under the retry policy. Two `Purchase` calls are two purchases. This needs a
+  Flock server from 2026-10-28 on: an older one ignores the key, and a purchase sent again there is charged twice.
+- **"Maybe bought" is its own answer.** When any attempt got no answer saying whether it went through, the failure the call
+  ends with has `bOutcomeUnknown` set, even if a later attempt was refused or the player signed out before the next one,
+  and its fix says to read the inventory and wallet before offering the item again: a new `Purchase` call is a new
+  purchase. A later refusal for funds (`ShopInsufficientFunds`, `ShopCurrencyNotHeld`) or sale (`ShopItemNotForSale`) is
+  certain: the server checks the key first, so nothing was bought (a refusal for funds drops the cached wallet, which was
+  out of date). An unknown outcome drops the cached player data, so the wallet read asks the server; it records no
+  Purchased or Failed analytics transaction, and neither does a purchase cancelled while it was out. A success that names no
+  purchase is unknown too. The same flag is set on `RedeemStoreReceipt`, `Consume`, `ConsumeOne` and the game commands'
+  `AddGameFunds`.
+- **Consuming is never sent again after an ambiguous failure.** It credits currency and carries no key, so a re-send
+  would grant twice. Only a failure that proves the server never processed the request is retried; everything else is
+  reported, with `bOutcomeUnknown` when no answer said whether it was used. A 2xx that names no entry fails the same way.
+- **A purchase is never queued offline**, and neither is a consume. With the server unreachable a purchase is sent on each
+  attempt its retry policy allows, under its key (a purchase of an item not read yet first reads it, and fails there), a
+  consume once; both fail with a `Connection` error, and neither is sent again when the network comes back. There is no
+  offline shopping.
+- **A purchase, a consume and an inventory read act for the player signed in when they were called.** Each attempt goes
+  out only while that sign-in lasts, so a retry after a sign-out or another player's sign-in is never sent as the next
+  player; the call fails `Cancelled` (or, after an attempt in doubt, with that attempt's failure, marked unknown). A
+  cancelled purchase or consume may have gone out before the cancel, so the cached wallet is dropped then too. Every
+  call reads the token on each attempt, so the attempt after an expired token is renewed carries the new one.
 - **Rewards are advertised before they are bought.** An item's `Rewards` says what buying it will grant,
   so a shop tile can show "500 gold" without a transaction. It is empty for a plain item.
 - **Inventory is always fetched fresh.** It is never cached and never snapshotted, because it is what a
@@ -226,6 +280,8 @@ Sdk->GetShopProvider()->RedeemStoreReceipt(ShopItemId,
   purchase, and analytics being disabled simply skips them.
 - **`ClearCache()`** drops the in-process caches and the shop snapshot category, so the next read hits the
   backend. C++ only.
+- **The wallet sells a standard item again on every purchase.** Only a store sells it once, so check ownership
+  (`Owns`, or `GetOwnedItemCounts` for a screen) before offering a standard item the wallet pays for.
 
 ## Things worth knowing
 

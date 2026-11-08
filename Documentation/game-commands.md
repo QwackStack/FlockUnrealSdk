@@ -55,7 +55,8 @@ Sdk->GetCommandProvider()->AddGameFunds(TEXT("coins"), 250, OnComplete);
   player who made the writes and survives quitting the game.
 - **Money does not.** `AddGameFunds` fails with a Connection error when the server is unreachable rather
   than queueing, and is never re-sent after an ambiguous failure (a timeout may mean the credit already
-  landed). No offline grants, no double credits.
+  landed). No offline grants, no double credits. A grant that got no answer fails with `bOutcomeUnknown` set and
+  drops the cached player data: read the wallet before granting again.
 - **A queued write is only discarded when the backend rejects it** — which is a question of *who* said no,
   not which number came back. A permanent 4xx from the server is an answer, so that write is dropped and
   its optimistic value rolled back rather than blocking everything behind it. Everything else keeps the

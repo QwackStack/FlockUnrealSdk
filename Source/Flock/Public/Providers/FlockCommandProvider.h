@@ -147,11 +147,13 @@ public:
 
 private:
 	FString MakeUrl(const FString& Path) const { return FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, *Path); }
-	TMap<FString, FString> HeadersNow() const { return Session->GetAuthHeaders(); }
 
-	/** Posts a command body and writes the returned row through the player cache. */
+	/**
+	 * Posts a command body and writes the returned row through the player cache. bMovesMoney (the fund grant) ends a call
+	 * with no answer saying whether it was done as bOutcomeUnknown, and drops the cached player data then.
+	 */
 	void PostCommand(const FString& Path, const FString& PayloadJson, const FString& Context, bool bIdempotent,
-		TFunction<void(TFlockResult<FFlockPlayerData>)> OnComplete);
+		TFunction<void(TFlockResult<FFlockPlayerData>)> OnComplete, bool bMovesMoney = false);
 
 	/**
 	 * The shared offline/online fork for a queueable command: offline, or while older writes of this player are still

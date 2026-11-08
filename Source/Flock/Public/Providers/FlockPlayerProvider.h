@@ -7,6 +7,7 @@
 #include "Http/FlockInFlight.h"
 #include "Http/FlockProviderBase.h"
 #include "Models/FlockPlayerModels.h"
+#include "Models/FlockShopModels.h"
 
 /**
  * Player data, player templates, and player bans.
@@ -15,7 +16,12 @@
  * snapshot and coalesces concurrent asks (several widgets opening at once). By-id / by-name template reads
  * memoize but are not snapshotted. A player's own data (GetMyDataByTemplate /
  * GetMyDataByTag) is paginated once per player, cached in memory (never snapshotted) and coalesced per
- * player.
+ * player. A read already on its way when the cached data is dropped or a server row is applied (a purchase's wallet, a
+ * game command's row) answers its callers but keeps nothing: it may be older than either.
+ *
+ * Every call that reads a player's data or ban acts for the signed-in player through their token, so it is sent only
+ * while the sign-in current at the call lasts; template reads are game-wide. Every call reads the token on each attempt,
+ * so the attempt after a token renewal carries the new one.
  *
  * Bans and the by-id / list / paged data reads are never cached: a ban is security state that can change
  * server-side at any moment (same rule as inventory), and a direct data read is always fresh.
@@ -65,6 +71,13 @@ public:
 
 	/** The signed-in player's data row for the single template carrying the given tag (e.g. "currency"). */
 	void GetMyDataByTag(const FString& Tag, TFunction<void(TFlockResult<FFlockPlayerData>)> OnComplete);
+
+	/**
+	 * The signed-in player's wallet: balances by currency code, from the player template tagged "currency". Read through
+	 * the same cache as GetMyDataByTemplate, which purchases, store redemptions, consumes and fund grants keep current;
+	 * ClearCache reads it afresh. Refused (Validation) when the player has no wallet row in this Game Version.
+	 */
+	void GetWallet(TFunction<void(TFlockResult<FFlockWallet>)> OnComplete);
 
 	// ── Templates ──
 
@@ -116,13 +129,46 @@ public:
 
 	/**
 	 * Drops only the per-player data cache (the signed-in player's rows), leaving templates and their
-	 * snapshot — which are game-version-scoped, not player-scoped — intact. Called by the subsystem on logout.
+	 * snapshot — which are game-version-scoped, not player-scoped — intact. A read already on its way keeps nothing.
+	 * Called by the subsystem on logout, and when a money call's outcome is unsure.
 	 */
 	void ClearPlayerDataCache();
 
+	/** ClearPlayerDataCache on the given provider while it lives: what a money call forgets when its outcome is unsure. */
+	static TFunction<void()> ClearsPlayerDataCacheOf(const TWeakPtr<FFlockPlayerProvider>& Players)
+	{
+		return [Players]()
+		{
+			if (const TSharedPtr<FFlockPlayerProvider> Pinned = Players.Pin())
+			{
+				Pinned->ClearPlayerDataCache();
+			}
+		};
+	}
+
 private:
 	FString MakeUrl(const FString& Path) const { return FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, *Path); }
-	TMap<FString, FString> HeadersNow() const { return Session->GetAuthHeaders(); }
+
+	/** One page of player data rows, sent only while SignInNumber lasts. */
+	void ReadDataPage(const FString& PlayerId, int32 SignInNumber, int32 Page, int32 Limit,
+		TFunction<void(TFlockResult<FFlockPlayerDataPage>)> OnComplete);
+
+	/** A paged read of one player's rows on its way: its callers, and what it was sent under. */
+	struct FPlayerDataRead
+	{
+		TArray<TFunction<void(TFlockResult<TMap<FString, FFlockPlayerData>>)>> Waiters;
+		/** PlayerDataDrops when it was sent: it keeps its answer only when nothing was dropped or applied since. */
+		int32 DropsWhenSent = 0;
+		/** Every page goes out only while this sign-in lasts. */
+		int32 SignInNumber = 0;
+	};
+
+	/** Counts a drop or a server row (PlayerId empty: every player), and forgets the reads on their way so the next is sent afresh. */
+	void DropReadsOnTheirWay(const FString& PlayerId);
+
+	/** Ends a read: gives up its own place only, keeps its answer only when nothing was dropped since, and answers its callers. */
+	void FinishPlayerDataRead(const FString& PlayerId, const TSharedRef<FPlayerDataRead>& Read,
+		const TFlockResult<TMap<FString, FFlockPlayerData>>& Result);
 
 	void IndexTemplate(const FFlockPlayerTemplateSchema& Template);
 	TArray<FFlockPlayerTemplateSchema> ResolveTemplates(const TArray<FString>& Ids) const;
@@ -130,7 +176,8 @@ private:
 	/** Returns the cached per-player row map, or (coalesced) paginates and caches it. */
 	void GetOrFetchPlayerData(const FString& PlayerId, TFunction<void(TFlockResult<TMap<FString, FFlockPlayerData>>)> OnComplete);
 	/** Fetches one page of a player's data and either recurses to the next page or finishes the coalesced fetch. */
-	void FetchPlayerDataPage(const FString& PlayerId, int32 Page, const TSharedRef<TMap<FString, FFlockPlayerData>>& Accumulated);
+	void FetchPlayerDataPage(const FString& PlayerId, int32 Page, const TSharedRef<TMap<FString, FFlockPlayerData>>& Accumulated,
+		const TSharedRef<FPlayerDataRead>& Read);
 
 	TSharedRef<FFlockAuthSession> Session;
 	FString VersionedApiUrl;
@@ -145,7 +192,9 @@ private:
 	TMap<FString, TMap<FString, FFlockPlayerData>> PlayerDataByPlayer;
 
 	TFlockInFlight<TArray<FFlockPlayerTemplateSchema>> TemplateListInFlight;
-	TFlockInFlight<TMap<FString, FFlockPlayerData>> PlayerDataInFlight;
+	/** The read of each player's rows on its way, by player id; one per player. */
+	TMap<FString, TSharedRef<FPlayerDataRead>> PlayerDataReads;
+	int32 PlayerDataDrops = 0;
 
 	static const TCHAR* const SnapshotCategory;
 };
