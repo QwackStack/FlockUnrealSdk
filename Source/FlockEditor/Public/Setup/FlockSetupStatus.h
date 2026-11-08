@@ -114,7 +114,7 @@ struct FLOCKEDITOR_API FFlockSetupInput
 	FString LastSeenSdkVersion;
 
 	// ── Store ──
-	/** A store library is registered (Flock's store plugin is enabled), so the game pays real money through UFlockStore. */
+	/** A store library is registered (Flock's store module is loaded, as it is in every build with Flock), so the game pays real money through UFlockStore. */
 	bool bStoreLibraryRegistered = false;
 
 	/** The game's Blueprints that use the engine's own in-app purchase nodes, by path. */

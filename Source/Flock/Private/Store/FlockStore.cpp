@@ -155,8 +155,8 @@ void UFlockStore::Connect(UFlockSubsystem* InFlock, const FFlockStoreOptions& Op
 	if (!Connection.IsValid())
 	{
 		Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
-			FString::Printf(TEXT("'%s' is reached through Flock's store plugin, which is not enabled in this build, so nothing was connected"), *Provider),
-			TEXT("Enable the Flock Platform Store plugin (Edit > Plugins), then build again. A phone store's rules forbid paying for digital goods elsewhere, so Flock never opens a web page instead. A game with its own store code redeems its purchases with FFlockShopProvider::RedeemStoreReceipt.")));
+			FString::Printf(TEXT("'%s' is reached through Flock's store module, which is not loaded in this build, so nothing was connected"), *Provider),
+			TEXT("Keep the engine's Online Subsystem plugin enabled (Edit > Plugins) and install the Flock plugin whole, then build again. A phone store's rules forbid paying for digital goods elsewhere, so Flock never opens a web page instead. A game with its own store code redeems its purchases with FFlockShopProvider::RedeemStoreReceipt.")));
 		return;
 	}
 	if (Connection->GetPaymentProvider().IsEmpty())

@@ -24,11 +24,20 @@
 			"Name": "FlockEditor",
 			"Type": "Editor",
 			"LoadingPhase": "PostEngineInit"
+		},
+		{
+			"Name": "FlockPlatformStore",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [
 		{
 			"Name": "DataValidation",
+			"Enabled": true
+		},
+		{
+			"Name": "OnlineSubsystem",
 			"Enabled": true
 		}
 	]

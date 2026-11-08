@@ -409,7 +409,7 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 				if (ConnectedNow == nullptr)
 				{
 					Refusal = TEXT("This shop item costs real money, and no way to pay real money is connected, so nothing was bought");
-					Fix = TEXT("Connect the platform's store once at start with UFlockStore::Connect (on a phone, with Flock's store plugin enabled); real-money items are then bought through this same call.");
+					Fix = TEXT("Connect the platform's store once at start with UFlockStore::Connect; real-money items are then bought through this same call.");
 				}
 				else if (!bForTheSignedInPlayer)
 				{

@@ -1384,7 +1384,7 @@ FLOCK_STORE_TEST(FFlockStoreConnectRefusalsTest, "AConnectToNoStoreOrWithoutASto
 bool FFlockStoreConnectRefusalsTest::RunTest(const FString& Parameters)
 {
 	FFixture F;
-	// The store plugin's library, when it is loaded, is put back whatever happens below.
+	// Flock's store module's library, is put back whatever happens below.
 	const TFunction<TSharedPtr<IFlockStoreConnection>()> Registered = UFlockStore::GetStoreLibrary();
 	ON_SCOPE_EXIT { UFlockStore::SetStoreLibrary(Registered); };
 	auto ConnectWith = [&F](const FString& Provider)
@@ -1397,7 +1397,7 @@ bool FFlockStoreConnectRefusalsTest::RunTest(const FString& Parameters)
 	};
 	UFlockStore::ClearStoreLibrary();
 	const TOptional<FFlockError> NoLibrary = ConnectWith(FlockPaymentProviders::GooglePlay);
-	TestTrue(TEXT("Without a store library: refused, naming the plugin to enable"), NoLibrary.IsSet() && NoLibrary->Hint.Contains(TEXT("Flock Platform Store plugin")));
+	TestTrue(TEXT("Without a store library: refused, naming the plugin to keep enabled"), NoLibrary.IsSet() && NoLibrary->Hint.Contains(TEXT("Online Subsystem plugin")));
 	const TOptional<FFlockError> NotAStore = ConnectWith(TEXT("stripe"));
 	TestTrue(TEXT("Not a store: refused"), NotAStore.IsSet() && NotAStore->Type == EFlockErrorType::Validation && NotAStore->Message.Contains(TEXT("not a store")));
 	if (UFlockStore::PaymentProviderOfThisPlatform().IsEmpty())

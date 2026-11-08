@@ -137,7 +137,7 @@ static_assert(!UE_VERSION_OLDER_THAN(FLOCK_ENGINE_FLOOR_MAJOR, FLOCK_ENGINE_FLOO
 #define FLOCK_ENGINE_HAS_TEST_EQUAL_SENSITIVE (!UE_VERSION_OLDER_THAN(5, 5, 0))
 
 // Google Play takes new builds only from a Billing Library still supported (Billing 7 ended 2026-11-01). UE 5.4 to 5.7 ship
-// Billing 6 or 7 with their Google Play subsystem; UE 5.8 ships Billing 8.1.0, so Flock's store plugin buys on Android from 5.8.
+// Billing 6 or 7 with their Google Play subsystem; UE 5.8 ships Billing 8.1.0, so Flock's store module buys on Android from 5.8.
 #define FLOCK_ENGINE_GOOGLE_PLAY_BILLING_IS_CURRENT (!UE_VERSION_OLDER_THAN(5, 8, 0))
 
 #if WITH_AUTOMATION_TESTS

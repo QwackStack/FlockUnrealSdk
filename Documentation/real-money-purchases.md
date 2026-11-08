@@ -7,11 +7,9 @@ purchase finished. Items priced in a game currency are still bought from the wal
 
 ## Setting it up
 
-1. **Install the Flock Platform Store plugin.** Releases carry `FlockPlatformStore-<version>.zip`. Extract it next to the Flock
-   SDK, so that `Plugins/FlockPlatformStore/` sits beside `Plugins/FlockUnrealSdk/`, then enable it under **Edit → Plugins**. If
-   you cloned the repository, copy or link `Plugins/FlockUnrealSdk/OptionalPlugins/FlockPlatformStore/` to
-   `Plugins/FlockPlatformStore/`: Unreal does not load it where it sits. It reaches the store through the engine's online
-   subsystem, which is on by default on Android and iOS.
+1. **Nothing to install.** The store is reached by Flock's own `FlockPlatformStore` module, through the engine's online
+   subsystem: Flock turns the engine's Online Subsystem plugin on with it, and the platform's store subsystem (Google Play,
+   iOS) is on by default on its platform.
 2. **Set up the store in the project.**
    - **Android (UE 5.8 or later):** in *Project Settings > Android*, turn on **Enable Google Play Support**, enter the game's
      Google Play license key, and add the `com.android.vending.BILLING` permission. Keep `bSupportsInAppPurchasing=true`
@@ -57,8 +55,8 @@ every purchase the store hands over whenever a player is signed in. Leave `FFloc
 this platform's own store. It is refused:
 
 - on a platform with no store of its own (Windows, Mac, Linux): sell only items priced in a game currency there;
-- when the Flock Platform Store plugin is not enabled (no store library): a phone store's rules forbid paying for digital
-  goods elsewhere, so Flock never opens a web page instead;
+- when Flock's store module is not loaded (no store library, for example with the engine's Online Subsystem plugin turned
+  off): a phone store's rules forbid paying for digital goods elsewhere, so Flock never opens a web page instead;
 - on Android with an engine older than UE 5.8, or with `bDisableLocalAcknowledgeAndConsume=true` under
   `[OnlineSubsystemGooglePlay.Store]` (the engine would then finish nothing Flock delivers);
 - while another connection is connected: use the connected one, or `Disconnect` it first.
@@ -151,7 +149,7 @@ and `Disconnect` ends the one under way.
 
 - **Use one way to buy.** The engine's own in-app purchase Blueprint nodes finish a purchase as it is made, before Flock has
   delivered it, so a purchase Flock then refuses is lost. The editor's Flock setup panel warns
-  (`Flock.Store.EnginePurchaseNodes`) when a Blueprint uses them while the Flock Platform Store plugin is enabled. Keep them
+  (`Flock.Store.EnginePurchaseNodes`) when a Blueprint uses them. Keep them
   only for products no Flock shop item sells.
 - **Steam, Epic and consoles** have no store provider in Flock. A Steam build may take payments only through Steam's own
   wallet.

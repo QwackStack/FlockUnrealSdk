@@ -49,7 +49,7 @@ Two consequences worth stating because they are easy to violate:
 |---|---|---|---|
 | `Flock` | Runtime | Core, CoreUObject, Engine, HTTP, Json, JsonUtilities, Projects, DeveloperSettings | The entire client surface |
 | `FlockEditor` | Editor (`PostEngineInit`) | `Flock`, UnrealEd, Slate, ToolMenus, AssetRegistry, DataValidation | Setup panel, validators, version bake, codegen |
-| `FlockPlatformStore` (the optional store plugin) | Runtime | `Flock`, OnlineSubsystem, Json | The platform's store reached through the engine's online subsystem; registers itself with `UFlockStore::SetStoreLibrary`, so `Flock` never depends on it |
+| `FlockPlatformStore` | Runtime | `Flock`, OnlineSubsystem, Json | The platform's store reached through the engine's online subsystem; registers itself with `UFlockStore::SetStoreLibrary`, so the `Flock` module never depends on the online subsystem |
 
 The split is one-directional and enforced by the build rules: `FlockEditor` depends on `Flock`, never the
 reverse. Nothing in the runtime module includes an editor header, so a packaged game contains no editor
@@ -70,7 +70,7 @@ area names on both sides:
 | `Http/` | Transport seam, client, retry, errors, JSON helpers, snapshot store, provider base |
 | `Auth/` | Token store seam and its file implementation, JWT parsing, the auth session |
 | `Providers/` | One file per feature: auth, config, game, shop, player, command, leaderboard, notification, asset, analytics, multiplayer |
-| `Store/` | `UFlockStore`, the one way to pay real money, and `IFlockStoreConnection`, which the optional store plugin implements |
+| `Store/` | `UFlockStore`, the one way to pay real money, and `IFlockStoreConnection`, which Flock's store module implements |
 | `Multiplayer/` | The multiplayer parts: the party object and its owner, the calls the SDK repeats, queue lookup by name |
 | `Models/` | Wire structs, one file per feature |
 | `Analytics/` | The independently-testable analytics parts: consent, spool, session, lifecycle pump, termination tracker |

@@ -13,9 +13,6 @@ name: Playtest plugin
 #   - It carries Flock's version. Both zips come from one tag, and a plugin dependency cannot state a
 #     minimum version, so the matching number is what says the two belong together.
 #
-# The store plugin (OptionalPlugins/FlockPlatformStore/, its own zip too) keeps the same rules but the setting:
-# Flock never names it, it is off until a project turns it on, it depends on Flock and carries Flock's version.
-#
 # Called from consistency.yml and from release.yml, for the same reason as engine-claim.yml: a tag can be
 # pushed at a commit no pull request ever checked. Needs no engine; every step reads text files.
 
@@ -74,36 +71,6 @@ jobs:
 
           echo "Nothing in Source/, Config/, Content/ or Flock.uplugin refers to the playtest plugin, under either name."
 
-      - name: Flock never refers to the store plugin
-        run: |
-          set -euo pipefail
-
-          # The same rule as the playtest plugin's, with no line allowed: Flock reaches the store plugin only through
-          # UFlockStore::SetStoreLibrary, which the plugin calls. A fix that tells a developer to enable it names it
-          # by its display name, with spaces, which no include or module name can be.
-          HITS=$(grep -rniIE 'FlockPlatformStore' Source Config Flock.uplugin | tr -d '\r' || true)
-          if [ -n "$HITS" ]; then
-            echo "::error::Flock names the optional store plugin, so a project that installed Flock alone would fail to build or load. Reword a comment ('the optional store plugin'), and keep the code in OptionalPlugins/FlockPlatformStore/:"
-            echo "$HITS"
-            exit 1
-          fi
-          if [ -d Content ] && grep -rliaE 'FlockPlatformStore' Content; then
-            echo "::error::Flock content refers to the optional store plugin, so it would fail to load in a project that installed Flock alone."
-            exit 1
-          fi
-          echo "Nothing in Source/, Config/, Content/ or Flock.uplugin refers to the store plugin."
-
-      - name: The store plugin stays off until a project turns it on
-        run: |
-          set -euo pipefail
-
-          MANIFEST=OptionalPlugins/FlockPlatformStore/FlockPlatformStore.uplugin
-          if ! grep -qE '"EnabledByDefault": *false' "$MANIFEST"; then
-            echo "::error file=$MANIFEST::Set EnabledByDefault to false: a project chooses to pay through the platform's store."
-            exit 1
-          fi
-          echo "$MANIFEST: off by default."
-
       - name: Every optional plugin is one these checks and the release know about
         run: |
           set -euo pipefail
@@ -113,7 +80,7 @@ jobs:
           # then be missing from every release, so an unknown folder fails until both cover it.
           for DIR in OptionalPlugins/*/; do
             NAME=$(basename "$DIR")
-            if [ "$NAME" != "ProtokitePlaytest" ] && [ "$NAME" != "FlockPlatformStore" ]; then
+            if [ "$NAME" != "ProtokitePlaytest" ]; then
               echo "::error::OptionalPlugins/$NAME is not covered by playtest-plugin.yml or release.yml. Give it the same rules and an archive of its own before adding it."
               exit 1
             fi
@@ -121,14 +88,14 @@ jobs:
 
           # Each known plugin must be there too: a rename or a removal that left these checks naming a folder that is
           # gone would pass them all against nothing.
-          for NAME in ProtokitePlaytest FlockPlatformStore; do
+          for NAME in ProtokitePlaytest; do
             if [ ! -f "OptionalPlugins/$NAME/$NAME.uplugin" ]; then
               echo "::error::OptionalPlugins/$NAME/$NAME.uplugin is missing. This workflow and release.yml name it; update both if it moved."
               exit 1
             fi
           done
 
-          echo "OptionalPlugins/ holds ProtokitePlaytest and FlockPlatformStore, both covered."
+          echo "OptionalPlugins/ holds ProtokitePlaytest, covered."
 
       - name: The playtest plugin stays off until a project turns it on
         run: |
@@ -181,7 +148,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          for MANIFEST in OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin OptionalPlugins/FlockPlatformStore/FlockPlatformStore.uplugin; do
+          for MANIFEST in OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin; do
           if [ ! -f "$MANIFEST" ]; then
             echo "::error::$MANIFEST is missing. This check reads it; if it moved, update this workflow with it."
             exit 1
@@ -210,7 +177,7 @@ jobs:
           set -euo pipefail
 
           FLOCK=Flock.uplugin
-          for PLAYTEST in OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin OptionalPlugins/FlockPlatformStore/FlockPlatformStore.uplugin; do
+          for PLAYTEST in OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin; do
 
           for f in "$FLOCK" "$PLAYTEST"; do
             if [ ! -f "$f" ]; then

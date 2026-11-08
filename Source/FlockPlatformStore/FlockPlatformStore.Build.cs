@@ -12,8 +12,9 @@ public class FlockPlatformStore : ModuleRules
 		// `using namespace`. Remove this only together with the other modules'.
 		bUseUnity = false;
 
-		// Flock never names this module, because a project can install Flock without it: the dependency only points this way,
-		// and the module hands Flock its store through UFlockStore::SetStoreLibrary.
+		// Flock's own module never names this one: the dependency only points this way, so the core needs none of the online
+		// subsystem's headers, and the module hands Flock its store through UFlockStore::SetStoreLibrary (which a game with its
+		// own store code may call instead).
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{

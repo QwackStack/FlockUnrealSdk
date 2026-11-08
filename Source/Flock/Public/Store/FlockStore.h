@@ -176,7 +176,7 @@ struct FFlockStoreFailure
 };
 
 /**
- * What UFlockStore needs of a platform's store. Flock's optional store plugin supplies one through the engine's online
+ * What UFlockStore needs of a platform's store. Flock's store module supplies one through the engine's online
  * subsystem and registers it with UFlockStore::SetStoreLibrary; a game with its own store code can supply its own. Every call
  * is made on the game thread, and each callback must be raised on it.
  */
@@ -238,8 +238,8 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FFlockOnStorePurchaseNotDelivered, const FFl
  * The game's way to pay real money: connect it once, and FFlockShopProvider::Purchase buys real-money items through it. The
  * store charges the player, Flock checks the purchase with the store and delivers the item, and only then is the store's
  * purchase finished; a purchase Flock did not deliver stays unfinished, so the store hands it back at the next launch, where it
- * is sent again once a player is signed in. The platform's store is reached through a store library, which Flock's optional
- * store plugin registers; without one a store is refused, never replaced by a web page, as a phone store's rules forbid paying
+ * is sent again once a player is signed in. The platform's store is reached through a store library, which Flock's store
+ * module registers; without one a store is refused, never replaced by a web page, as a phone store's rules forbid paying
  * for digital goods elsewhere.
  *
  * One connection at a time: the subsystem holds it (UFlockSubsystem::GetStore) until Disconnect or the SDK shuts down. Game
@@ -255,19 +255,19 @@ public:
 	 * Connects the game's way to pay real money: Options.PaymentProvider, or this platform's own store when it is empty. Reads
 	 * the game's shops, registers each item that has a product id for the store (a currency pack or consumable as a consumable
 	 * product, a standard item as a one-time product), and from then on sends Flock the store's unfinished purchases whenever a
-	 * player is signed in. Refused when no store library is registered (enable Flock's store plugin), on a platform with no
+	 * player is signed in. Refused when no store library is registered (Flock's store module not loaded), on a platform with no
 	 * store of its own, and while another connection is connected (Disconnect it first). Completes with the connection, which
 	 * the subsystem also holds.
 	 */
 	static void Connect(UFlockSubsystem* Flock, const FFlockStoreOptions& Options, TFunction<void(TFlockResult<UFlockStore*>)> OnComplete);
 
 	/**
-	 * Makes Factory the way UFlockStore reaches the platform's store. Flock's store plugin calls this as its module starts; a
+	 * Makes Factory the way UFlockStore reaches the platform's store. Flock's store module calls this as it starts; a
 	 * game with its own store code may call it instead. Only connections made afterwards use it.
 	 */
 	static void SetStoreLibrary(TFunction<TSharedPtr<IFlockStoreConnection>()> Factory);
 
-	/** Forgets the store library (the store plugin's module shutting down). A connection already made keeps its own. */
+	/** Forgets the store library (Flock's store module shutting down). A connection already made keeps its own. */
 	static void ClearStoreLibrary();
 
 	/** True when a store library is registered, so a store can be connected. */
