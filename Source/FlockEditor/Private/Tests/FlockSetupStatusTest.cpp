@@ -6,6 +6,14 @@
 
 #include "Setup/FlockSetupStatus.h"
 #include "Setup/FlockConfigDetails.h"
+#include "Setup/FlockEnginePurchaseNodes.h"
+#include "EdGraph/EdGraph.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "K2Node_AsyncAction.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Modules/ModuleManager.h"
+#include "UObject/Package.h"
 
 namespace
 {
@@ -351,6 +359,72 @@ bool FFlockSetupBannerHeadlineTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("An error says Flock is not ready"),
 		FFlockConfigDetails::MakeHeadline({ Error, Warning }).ToString().Contains(TEXT("not ready — 1 error"), ESearchCase::CaseSensitive));
 	TestTrue(TEXT("No findings, no headline"), FFlockConfigDetails::MakeHeadline({}).IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSetupStatusEnginePurchaseNodesTest, "Flock.Editor.Setup.Status.WarnsOfTheEnginesPurchaseNodesOnlyWithFlocksStore",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSetupStatusEnginePurchaseNodesTest::RunTest(const FString& Parameters)
+{
+	FFlockSetupInput Input = Healthy();
+	Input.BlueprintsUsingEnginePurchaseNodes = { TEXT("/Game/Shop/BP_Shop.BP_Shop") };
+	TestFalse(TEXT("Without Flock's store, the engine's purchase nodes are the game's own business"),
+		Has(FFlockSetupStatus::Evaluate(Input), TEXT("Flock.Store.EnginePurchaseNodes")));
+
+	Input.bStoreLibraryRegistered = true;
+	const TArray<FFlockSetupFinding> Findings = FFlockSetupStatus::Evaluate(Input);
+	const FFlockSetupFinding* Finding = Find(Findings, TEXT("Flock.Store.EnginePurchaseNodes"));
+	if (!TestNotNull(TEXT("With Flock's store, a warning"), Finding))
+	{
+		return false;
+	}
+	TestTrue(TEXT("A warning, not an error: the game still runs"), Finding->Severity == EFlockSetupSeverity::Warning);
+	TestTrue(TEXT("Naming the Blueprint"), Finding->Detail.ToString().Contains(TEXT("BP_Shop")));
+	TestFalse(TEXT("Never blocks the game"), FFlockSetupStatus::HasErrors(Findings));
+
+	Input.BlueprintsUsingEnginePurchaseNodes.Reset();
+	TestFalse(TEXT("No such Blueprint: silent"), Has(FFlockSetupStatus::Evaluate(Input), TEXT("Flock.Store.EnginePurchaseNodes")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockEnginePurchaseNodesFoundTest, "Flock.Editor.Setup.EnginePurchaseNodes.AnAsyncNodeOverTheEnginesPurchaseProxyIsFound",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockEnginePurchaseNodesFoundTest::RunTest(const FString& Parameters)
+{
+	FModuleManager::Get().LoadModule(TEXT("OnlineSubsystemUtils"));
+	UClass* EngineProxy = FindObject<UClass>(nullptr, TEXT("/Script/OnlineSubsystemUtils.InAppPurchaseCallbackProxy2"));
+	if (!TestNotNull(TEXT("The engine's purchase node class"), EngineProxy))
+	{
+		return false;
+	}
+	UPackage* Outer = CreatePackage(*FString::Printf(TEXT("/Temp/FlockEnginePurchaseNodesTest_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(UObject::StaticClass(), Outer, TEXT("BP_FlockEnginePurchaseProbe"),
+		BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+	if (!TestTrue(TEXT("Blueprint with an event graph"), Blueprint != nullptr && Blueprint->UbergraphPages.Num() > 0))
+	{
+		return false;
+	}
+	UEdGraph* Graph = Blueprint->UbergraphPages[0];
+	auto AddAsyncNode = [Graph](UClass* Factory)
+	{
+		// Added as a saved graph holds it; its pins are never built, since that needs the factory's function as well.
+		UK2Node_AsyncAction* Node = NewObject<UK2Node_AsyncAction>(Graph);
+		FObjectPropertyBase* Property = FindFProperty<FObjectPropertyBase>(Node->GetClass(), TEXT("ProxyFactoryClass"));
+		if (Property != nullptr)
+		{
+			Property->SetObjectPropertyValue_InContainer(Node, Factory);
+		}
+		Graph->AddNode(Node, /*bFromUI*/ false, /*bSelectNewNode*/ false);
+		return Property != nullptr;
+	};
+	// The control: an async node over another class is not one of the engine's purchase nodes.
+	TestTrue(TEXT("An async node over another class"), AddAsyncNode(UObject::StaticClass()));
+	TestFalse(TEXT("is not counted"), FFlockEnginePurchaseNodes::UsesThem(*Blueprint));
+	TestTrue(TEXT("An async node over the engine's purchase proxy"), AddAsyncNode(EngineProxy));
+	TestTrue(TEXT("is found"), FFlockEnginePurchaseNodes::UsesThem(*Blueprint));
+	TestFalse(TEXT("Flock's own classes are never the engine's"), FFlockEnginePurchaseNodes::IsAnEnginePurchaseClass(UBlueprint::StaticClass()));
 	return true;
 }
 

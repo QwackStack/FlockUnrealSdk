@@ -43,11 +43,11 @@ no JSON parsing node needed.
 
 **Break the Purchase Result to see what actually happened.** It carries `Inventory` (the row the player
 now owns), `Granted` (what the purchase handed over immediately), `Wallet` (the balances afterwards) and
-`Status`. Purchase spends only game currencies from the player's wallet, so a purchase it makes is paid at
-once and *Is Purchase Paid* is true. An item priced in a currency the game's currency config lists as real money
-is refused with `ShopRealCurrencyNeedsCheckout` (the server reads that list for the Game Version the game sends):
-price it in a game currency, or sell it through the App Store or Google Play and redeem the store's purchase with
-`RedeemStoreReceipt` (see [Redeeming a store purchase](#redeeming-a-store-purchase)). An item switched off (Inactive) in the
+`Status`. An item priced in a game currency is bought from the player's wallet, so the purchase is paid at once and
+*Is Purchase Paid* is true. An item priced in real money (`IsRealMoney`) is bought through the platform's store once
+`UFlockStore` is connected (see [Real-money purchases](real-money-purchases.md)): it can then also answer pending, while the
+store waits for the payment. With no store connected, or bought for another player named by id, it is refused before anything is sent; a server too old to say which
+items cost real money refuses one with `ShopRealCurrencyNeedsCheckout` instead. An item switched off (Inactive) in the
 dashboard, or one in a switched-off shop, is refused with `ShopItemNotForSale` and nothing is bought; the shop provider
 then clears the shops it kept, so reading the shop again shows the item gone from its items (*Flock Get Shop Item*,
 which reads one item by its id, still returns it, its `Status` inactive). A purchase refused with
@@ -171,8 +171,8 @@ Sdk->GetShopProvider()->GetItem(ShopItemId,
     {
         if (!Read.bSuccess || !Read.Value.IsRealMoney) { return; }
 
-        // Paid through a store or a web checkout, never from the wallet: Purchase refuses it, and a store's
-        // purchase of it is redeemed with RedeemStoreReceipt.
+        // Paid through the platform's store, never from the wallet: Purchase buys it through the connected
+        // UFlockStore (see real-money-purchases.md).
         FString ProductId;
         if (Read.Value.FindStoreProductId(FlockPaymentProviders::GooglePlay, ProductId))
         {
@@ -196,8 +196,8 @@ reason as a reward's `Type`.
 
 ### Redeeming a store purchase
 
-When the player has paid the App Store or Google Play for an item, hand the store's purchase to `RedeemStoreReceipt`
-(C++). Flock asks the store about it and hands the item over, completing with the purchase as `Purchase` does, and the
+`UFlockStore` does this for every purchase it makes (see [Real-money purchases](real-money-purchases.md)). A game whose own
+store code made the purchase hands it to `RedeemStoreReceipt` (C++). Flock asks the store about it and hands the item over, completing with the purchase as `Purchase` does, and the
 wallet it reports goes into the cached player data. Make the receipt with `FFlockStoreReceipt::FromAppleAppStore` (the
 App Store's transaction id) or `FFlockStoreReceipt::FromGooglePlay` (Google Play's product id and purchase token), each id
 exactly as the store gave it.

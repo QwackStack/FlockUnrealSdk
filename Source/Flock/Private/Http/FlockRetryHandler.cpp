@@ -39,6 +39,7 @@ bool FFlockRetryHandler::ShouldRetry(const FFlockError& Error, bool bIdempotent)
 	case EFlockErrorType::Auth:
 	case EFlockErrorType::Validation:
 	case EFlockErrorType::Serialization:
+	case EFlockErrorType::Store:
 		return false;
 	default:
 		break; // Network / Timeout / Connection — potentially retryable

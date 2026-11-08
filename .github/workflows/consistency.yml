@@ -460,7 +460,7 @@ jobs:
           echo "this branch: $VERSION   main: $BASE_VERSION"
 
           if [ "$VERSION" = "$BASE_VERSION" ]; then
-            echo "::error file=$MANIFEST::This pull request changes code (under Source/ or OptionalPlugins/*/Source/) but leaves VersionName at $BASE_VERSION, the version main already shipped. Bump it, bump UFlockSubsystem::SdkVersion and CHANGELOG.md with it, and give OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin the same VersionName and Version."
+            echo "::error file=$MANIFEST::This pull request changes code (under Source/ or OptionalPlugins/*/Source/) but leaves VersionName at $BASE_VERSION, the version main already shipped. Bump it, bump UFlockSubsystem::SdkVersion and CHANGELOG.md with it, and give OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin and OptionalPlugins/FlockPlatformStore/FlockPlatformStore.uplugin the same VersionName and Version."
             exit 1
           fi
 
@@ -475,7 +475,7 @@ jobs:
           echo "VersionName $VERSION is ahead of main's $BASE_VERSION."
 
           # Version, the integer the engine compares to tell an update from an older build, moves forward with it.
-          # The playtest plugin's must equal Flock's (playtest-plugin.yml), so checking Flock's covers both.
+          # Each optional plugin's must equal Flock's (playtest-plugin.yml), so checking Flock's covers them all.
           NUMBER=$(grep -oE '"Version": *[0-9]+' "$MANIFEST" | grep -oE '[0-9]+$' || true)
           BASE_NUMBER=$(git show "${BASE_SHA}:${MANIFEST}" | grep -oE '"Version": *[0-9]+' | grep -oE '[0-9]+$' || true)
           if [ -z "$NUMBER" ] || [ -z "$BASE_NUMBER" ] || [ "$NUMBER" -le "$BASE_NUMBER" ]; then

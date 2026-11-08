@@ -5,6 +5,59 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.45.0] - 2026-11-08
+
+Buying with real money through the platform's store. Connect `UFlockStore` once, and `FFlockShopProvider::Purchase` buys a
+real-money item through Google Play or the App Store: the store charges the player, Flock checks the purchase with the store
+and delivers the item, and only then is the store's purchase finished. The store is reached through a new optional plugin,
+Flock Platform Store, released as its own zip.
+
+### Added
+
+- **`UFlockStore`** (`Store/FlockStore.h`): `Connect(Flock, FFlockStoreOptions)` connects this platform's store (Google
+  Play on Android, the App Store on iOS), or the one `PaymentProvider` names. It reads the game's shops, registers each
+  item with a product id for the store (a standard item as a one-time product, a currency pack or consumable as a
+  consumable one), and from then on sends Flock every purchase the store hands over while a player is signed in. Also
+  `GetPrice` (the store's own price, in the player's currency and with their taxes), `Restore` (the one-time purchases this
+  store account owns, delivered to the signed-in player; `FFlockStoreRestore`), `CheckSetup` (products the store did not
+  find, items with no product id for this store, and whether Flock's server can ask the store with the game's keys;
+  `FFlockStoreSetupCheck`), `Disconnect`, and the events `OnPurchaseCompleted` and `OnPurchaseNotDelivered`
+  (`FFlockUndeliveredPurchase`). One connection at a time; the subsystem holds it (`UFlockSubsystem::GetStore`).
+- **The purchase rules:** the store's purchase is finished only once Flock delivered it; a purchase Flock refused stays
+  unfinished, so the store hands it back at the next launch, where it is sent again once a player is signed in; each one
+  is sent once a launch; each sign-in asks the store for unfinished purchases; an item switched off since the store
+  connected is refused before the store's dialog opens; a purchase is bought for the sign-in it started under, and its wait
+  ends when that sign-in ends or Flock shuts down; a product two items sell is matched only by the purchase that names the
+  item; a product no Flock item sells is left to the game; the products a store sold are kept between launches (per game
+  and store, whether or not the offline cache is on), so a paid purchase of an item the shops no longer list is still
+  delivered. One store purchase runs at a time, and only the store dialog's own answer completes it; a dialog paid after its
+  call ended waits for the player who opened it to sign in again; a purchase is sent once per run of the game, even across
+  connections. The events are raised before the call is answered.
+- **`EFlockErrorType::Store`** and **`FFlockError::StoreFailureReason`**: a store that did not take the payment fails
+  with one of `FlockStoreFailureReasons` (`Cancelled`, `PaymentDeclined`, `AlreadyOwned`, `AlreadyPending`,
+  `ProductUnavailable`, `StoreUnavailable`, `NotSignedInToTheStore`, `Unknown`), each with its fix. A payment the store
+  waits for (a pending payment, a parent's approval) completes with `Status` pending, and `OnPurchaseCompleted` follows once
+  paid.
+- **`IFlockStoreConnection`** and **`UFlockStore::SetStoreLibrary`**: how a store is reached. The plugin registers one; a
+  game with its own store code can register its own.
+- **The Flock Platform Store plugin** (`OptionalPlugins/FlockPlatformStore`, released as
+  `FlockPlatformStore-<version>.zip`, off until a project turns it on): buys through the engine's online subsystem
+  (`IOnlinePurchase`, `IOnlineStoreV2`). On Google Play a one-time item is acknowledged, not consumed, and a consumable is
+  consumed; a payment completed outside a checkout (pending, then paid), which the engine reports with no receipt, is read
+  from the store again and sent; a one-time item acknowledged at an earlier launch is not sent again. Google Play needs UE
+  5.8 or later (Billing Library 8; Google no longer takes new builds with the Billing Library of UE 5.4 to 5.7), and a
+  game that turned the engine's own finishing off (`bDisableLocalAcknowledgeAndConsume`) is refused at connect. Receipts
+  go unbound: no account id is sent, as the engine hashes it before Google sees it and never hands it to Apple.
+- **The editor's setup check** warns (`Flock.Store.EnginePurchaseNodes`) when a Blueprint uses the engine's own in-app
+  purchase nodes while Flock's store plugin is enabled: those nodes finish a purchase before Flock delivers it.
+
+### Changed
+
+- **`FFlockShopProvider::Purchase`** buys a real-money item (`IsRealMoney`) through the connected `UFlockStore`, for the
+  signed-in player; with no store connected, or with another player named, it is refused before anything is sent. Every
+  other item is bought from the wallet as before.
+- The version bump touches six places: the store plugin's manifest carries Flock's version too.
+
 ## [1.44.0] - 2026-11-08
 
 The wallet and shop-screen calls. A wallet purchase is sent again under its one key and never bought twice; a money call

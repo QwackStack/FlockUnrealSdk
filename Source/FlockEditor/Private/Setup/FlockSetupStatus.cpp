@@ -171,6 +171,20 @@ TArray<FFlockSetupFinding> FFlockSetupStatus::Evaluate(const FFlockSetupInput& I
 			EFlockSetupFix::SyncSchemas));
 	}
 
+	// ── Store ──
+	// The engine's in-app purchase nodes finish a purchase as it is made (the deprecated v2 ones always do), before Flock
+	// has delivered it: a purchase Flock then refuses is gone from the store, and the player is never handed it again.
+
+	if (Input.bStoreLibraryRegistered && Input.BlueprintsUsingEnginePurchaseNodes.Num() > 0)
+	{
+		Findings.Add(MakeFinding(TEXT("Flock.Store.EnginePurchaseNodes"), EFlockSetupSeverity::Warning,
+			LOCTEXT("EnginePurchaseNodesTitle", "Blueprints use the engine's own in-app purchase nodes"),
+			FText::Format(LOCTEXT("EnginePurchaseNodesDetail",
+				"{0} use the engine's in-app purchase nodes, which finish purchases before Flock delivers them, so a purchase Flock refuses is lost. Buy real-money items with Flock's Purchase and UFlockStore instead, or keep the engine's nodes for products no Flock shop item sells."),
+				FText::FromString(FString::Join(Input.BlueprintsUsingEnginePurchaseNodes, TEXT(", ")))),
+			EFlockSetupFix::None));
+	}
+
 	// ── SDK version ──
 	// A first add (no last-seen record) is not an upgrade, and must not read as one.
 

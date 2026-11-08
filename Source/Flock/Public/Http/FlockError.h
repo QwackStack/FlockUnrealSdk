@@ -30,6 +30,8 @@ enum class EFlockErrorType : uint8
 	Connection,
 	/** The caller cancelled the request via its FFlockRequestHandle. Never retried. */
 	Cancelled,
+	/** A store (Google Play, the App Store) did not take the payment; StoreFailureReason says why. Nothing was charged. */
+	Store,
 };
 
 /**
@@ -101,6 +103,13 @@ struct FLOCK_API FFlockError
 	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	bool bOutcomeUnknown = false;
+
+	/**
+	 * On an error of type Store, why the store did not take the payment: one of FlockStoreFailureReasons (Cancelled when the
+	 * player closed the store's dialog). Empty on every other error.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString StoreFailureReason;
 
 	/** Builds an error, parses ErrorCode from the coded string, and stamps the fix for it (FFlockErrorHints::ForFailure). */
 	static FFlockError Make(EFlockErrorType InType, const FString& InMessage, int32 InStatusCode = 0,

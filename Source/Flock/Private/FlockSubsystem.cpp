@@ -14,9 +14,10 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Http/FlockHttpShutdown.h"
+#include "Store/FlockStore.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.44.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.45.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -523,6 +524,12 @@ void UFlockSubsystem::ShutdownSdkFor(bool bGameEnding)
 	if (bGameEnding && MultiplayerProvider.IsValid())
 	{
 		MultiplayerProvider->LeaveForQuit();
+	}
+
+	// The store is disconnected first: a purchase it waits for ends Cancelled while the providers it calls still exist.
+	if (ConnectedStore != nullptr)
+	{
+		ConnectedStore->Disconnect();
 	}
 
 	// Shut the provider down while it is still alive — its destructor deliberately will not end a

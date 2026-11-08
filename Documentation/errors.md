@@ -31,7 +31,7 @@ an error-tracker group every failure into its own bucket. Read `Error.Body` when
 
 | Field | What it holds |
 |-------|---------------|
-| `Type` | `EFlockErrorType` — Auth, Validation, Network, Connection, Timeout, Serialization, Cancelled |
+| `Type` | `EFlockErrorType` — Auth, Validation, Network, Connection, Timeout, Serialization, Cancelled, Store |
 | `Message` | What is wrong, in one sentence: the server's own reason when it gave one, otherwise the SDK's (`The server found nothing at this address`). Never the fix and never the status |
 | `ServerMessage` | The server's own wording of the failure, when the body carried one |
 | `Code` / `ErrorCode` | The backend's `detail.code` string, raw and as a typed `EFlockErrorCode` |
@@ -40,6 +40,7 @@ an error-tracker group every failure into its own bucket. Read `Error.Body` when
 | `StatusCode` | HTTP status when the failure came from a response; `0` for transport and client-side failures |
 | `Body` | The raw response body |
 | `bHasRetryAfter` / `RetryAfterSeconds` | The server's Retry-After hint, when it sent one |
+| `StoreFailureReason` | On an error of type Store: why the store did not take the payment, one of `FlockStoreFailureReasons` (`Cancelled` when the player closed the store's dialog). Empty otherwise |
 | `bOutcomeUnknown` | On a call that moves money or items (a purchase, a store redemption, a consume, a fund grant): no answer said whether it was done, so it may have been. Read the wallet and inventory before doing it again; `Hint` says what to read. Always false on a call that moves nothing |
 
 ## Branch on the code, never on the text
@@ -126,7 +127,7 @@ cannot flood a log line.
 ## Which failures are worth retrying yourself
 
 Mostly none — the SDK already retries transient failures with backoff, honours `Retry-After`, and never
-retries Auth, Validation, Serialization or Cancelled. What is left for you:
+retries Auth, Validation, Serialization, Cancelled or Store. What is left for you:
 
 - **`EFlockErrorType::Connection`** — the request never reached the server. Reads backed by the offline
   cache serve their last good copy instead; a write that cannot be queued fails here.
@@ -136,6 +137,9 @@ retries Auth, Validation, Serialization or Cancelled. What is left for you:
   player is not allowed to do that, and signing in again changes nothing. A 403 carrying `ShopPlayerMismatch` (a
   purchase naming another player than the one signed in) or `PaymentProviderReceiptBelongsToAnotherPlayer` (a store
   purchase that is another player's) leaves the player signed in; the fix says which player the call has to act for.
+- **`EFlockErrorType::Store`** — the platform's store (Google Play, the App Store) did not take a real-money payment, so
+  nothing was charged; `StoreFailureReason` says why and `Hint` what to do. Offer the item again if the player wants it:
+  see [Real-money purchases](real-money-purchases.md).
 - **`EFlockErrorType::Cancelled`** — you cancelled the call, or it was made for a player who has since signed out
   or been replaced by another sign-in, so its retry was not sent. Nothing to retry: make the call again for the
   player now signed in, if it still applies. A cancelled call is never answered from the offline cache. Except on a

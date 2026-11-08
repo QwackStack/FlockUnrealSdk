@@ -112,6 +112,13 @@ struct FLOCKEDITOR_API FFlockSetupInput
 
 	/** Empty on a first add. Per-user state, so it never rides in DefaultGame.ini. */
 	FString LastSeenSdkVersion;
+
+	// ── Store ──
+	/** A store library is registered (Flock's store plugin is enabled), so the game pays real money through UFlockStore. */
+	bool bStoreLibraryRegistered = false;
+
+	/** The game's Blueprints that use the engine's own in-app purchase nodes, by path. */
+	TArray<FString> BlueprintsUsingEnginePurchaseNodes;
 };
 
 /**

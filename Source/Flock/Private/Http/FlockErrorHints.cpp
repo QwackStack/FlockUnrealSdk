@@ -195,7 +195,7 @@ namespace
 			// Shop — runtime state the caller can act on, not misconfiguration.
 			{ EFlockErrorCode::ShopCurrencyNotHeld, FString(TEXT("The player's wallet has no balance in the item's currency. ")) + WalletHoldsTemplateCurrencies + TEXT(" Price the item in one of those, or add the currency to the currency template in the Flock dashboard.") },
 			{ EFlockErrorCode::ShopCurrencyTemplateNotFound, FString(TEXT("This Game Version has no currency template (a player-data template tagged currency), so no player has a wallet to pay from. Create one in the Flock dashboard under the version this build runs (Game Version under Project Settings > Flock SDK).")) + PaidInTheStoreAlready },
-			{ EFlockErrorCode::ShopRealCurrencyNeedsCheckout, TEXT("This item is priced in a currency the game's currency config lists as real money, and Purchase only spends game currencies from the player's wallet. Price the item in a game currency in the Flock dashboard, or sell it through the App Store or Google Play and redeem the store's purchase with RedeemStoreReceipt (FFlockShopItem::IsRealMoney says which items these are).") },
+			{ EFlockErrorCode::ShopRealCurrencyNeedsCheckout, TEXT("This item is priced in a currency the game's currency config lists as real money, and Purchase only spends game currencies from the player's wallet. Price the item in a game currency in the Flock dashboard, or sell it through the App Store or Google Play: connect UFlockStore (with Flock's store plugin) and Purchase buys it through the store, or redeem a purchase of the game's own store code with RedeemStoreReceipt (FFlockShopItem::IsRealMoney says which items these are).") },
 			{ EFlockErrorCode::ShopIdempotencyKeyReused, TEXT("Nothing was bought: this purchase's key was already used for another shop item. Every Purchase call makes a key of its own, so call Purchase again; if it keeps happening, two purchases are sharing a key, which is a fault to report.") },
 			{ EFlockErrorCode::ShopInsufficientFunds, TEXT("The player cannot afford this item. Read the wallet balance before offering the purchase.") },
 			{ EFlockErrorCode::ShopInvalidPurchaseStatus, TEXT("Purchases were listed by a status the server does not have, so nothing was read. A purchase's status is one of pending, paid, failed, expired and refunded, spelled as the Flock Purchase Status nodes give them.") },
@@ -256,6 +256,8 @@ FString FFlockErrorHints::ForFailure(const FFlockError& Error)
 	{
 	case EFlockErrorType::Cancelled:
 		return TEXT("Nothing needs fixing if the game cancelled this call, the player signed out or Flock shut down; otherwise make the call again.");
+	case EFlockErrorType::Store:
+		return TEXT("The store did not take the payment, so nothing was charged; StoreFailureReason says why. Offer the item again if the player wants it.");
 	case EFlockErrorType::Timeout:
 		return TEXT("Check the device's network connection, then try again; the SDK retries a read by itself. A purchase or other change that timed out may still have been made, so read the result before sending it again.");
 	case EFlockErrorType::Connection:

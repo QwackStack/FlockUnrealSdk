@@ -8,6 +8,7 @@
 #include "Misc/FlockWhiteSpace.h"
 #include "Providers/FlockAnalyticsProvider.h"
 #include "Providers/FlockPlayerProvider.h"
+#include "Store/FlockStore.h"
 
 const TCHAR* const FFlockShopProvider::SnapshotCategory = TEXT("shop");
 
@@ -127,6 +128,64 @@ void FFlockShopProvider::GetById(const FString& ShopId, TFunction<void(TFlockRes
 				OnComplete(Result);
 			}
 		});
+}
+
+void FFlockShopProvider::SetConnectedStore(UFlockStore* Store)
+{
+	ConnectedStore = Store;
+}
+
+UFlockStore* FFlockShopProvider::GetConnectedStore() const
+{
+	return ConnectedStore.Get();
+}
+
+void FFlockShopProvider::IsForSale(const FString& ShopId, const FString& ShopItemId, TFunction<void(TFlockResult<bool>)> OnComplete)
+{
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const FString Url = MakeUrl(FlockEndpoints::ShopById(ShopId));
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
+	TWeakPtr<FFlockShopProvider> WeakSelf = AsShared();
+	// Never the kept shop and never the offline copy: what the server sells now is the question.
+	Execute<FFlockShop>(
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockShop>)> OnAttempt)
+		{
+			return ClientRef->GetRaw<FFlockShop>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
+		},
+		[WeakSelf, ShopItemId, OnComplete](TFlockResult<FFlockShop> Result)
+		{
+			// A shop switched off reads as not found: nothing in it is for sale.
+			const bool bShopGone = !Result.bSuccess && Result.Error.ErrorCode == EFlockErrorCode::ShopShopNotFound;
+			if (!Result.bSuccess && !bShopGone)
+			{
+				if (OnComplete)
+				{
+					OnComplete(TFlockResult<bool>::Fail(Result.Error));
+				}
+				return;
+			}
+			bool bForSale = false;
+			if (!bShopGone)
+			{
+				for (const FFlockShopItem& Item : Result.Value.ShopItems)
+				{
+					bForSale |= Item.Id.Equals(ShopItemId, ESearchCase::CaseSensitive);
+				}
+			}
+			if (!bForSale)
+			{
+				if (const TSharedPtr<FFlockShopProvider> Self = WeakSelf.Pin())
+				{
+					Self->ClearCache();
+				}
+			}
+			if (OnComplete)
+			{
+				OnComplete(TFlockResult<bool>::Ok(bForSale));
+			}
+		},
+		TEXT("Check the item is for sale"), /*bIdempotent*/ true, /*MaxRetriesOverride*/ -1, /*bAllowAuthRetry*/ true,
+		[](const FFlockError& Error) { return Error.ErrorCode == EFlockErrorCode::ShopShopNotFound; });
 }
 
 void FFlockShopProvider::GetByName(const FString& Name, TFunction<void(TFlockResult<FFlockShop>)> OnComplete)
@@ -294,6 +353,16 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 	{
 		return;
 	}
+	// A real-money item the connected store read when it connected goes through it, without reading the item again.
+	FFlockShopItem StoreItem;
+	UFlockStore* const Store = ConnectedStore.Get();
+	if (PlayerId.IsEmpty() && Store != nullptr && Store->FindItem(ShopItemId, StoreItem) && StoreItem.IsRealMoney)
+	{
+		Store->Purchase(ShopItemId, MoveTemp(OnComplete));
+		return;
+	}
+	// Naming the signed-in player's own id is buying for them too.
+	const bool bForTheSignedInPlayer = PlayerId.IsEmpty() || PlayerId.Equals(Session->GetPlayerId(), ESearchCase::CaseSensitive);
 	// Default to the signed-in player; callers no longer need to pass it explicitly.
 	const FString ResolvedPlayerId = PlayerId.IsEmpty() ? Session->GetPlayerId() : PlayerId;
 	if (!RequireNotEmpty(ResolvedPlayerId, TEXT("Player ID"), OnComplete, FFlockErrorHints::SignInFirst()))
@@ -308,7 +377,7 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 	// The item is fetched first — the transaction record needs its price/currency, and a failed fetch
 	// fails the purchase: without the item there is nothing to charge for and nothing to record.
 	GetItem(ShopItemId,
-		[WeakSelf, ShopItemId, ResolvedPlayerId, PurchaseSignIn, OnComplete](TFlockResult<FFlockShopItem> ItemResult)
+		[WeakSelf, ShopItemId, ResolvedPlayerId, PurchaseSignIn, bForTheSignedInPlayer, OnComplete](TFlockResult<FFlockShopItem> ItemResult)
 		{
 			const TSharedPtr<FFlockShopProvider> Self = WeakSelf.Pin();
 			if (!Self.IsValid())
@@ -330,6 +399,46 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 			}
 
 			const FFlockShopItem Item = ItemResult.Value;
+
+			// Real money is never taken from the wallet: it goes through the connected store, for the signed-in player alone.
+			if (Item.IsRealMoney)
+			{
+				UFlockStore* const ConnectedNow = Self->ConnectedStore.Get();
+				FString Refusal;
+				FString Fix;
+				if (ConnectedNow == nullptr)
+				{
+					Refusal = TEXT("This shop item costs real money, and no way to pay real money is connected, so nothing was bought");
+					Fix = TEXT("Connect the platform's store once at start with UFlockStore::Connect (on a phone, with Flock's store plugin enabled); real-money items are then bought through this same call.");
+				}
+				else if (!bForTheSignedInPlayer)
+				{
+					Refusal = TEXT("A real-money item is bought for the signed-in player only, and this call names a player, so nothing was bought");
+					Fix = TEXT("Call Purchase without a player id (the signed-in player's overload).");
+				}
+				else if (Self->Session->GetSignInNumber() != PurchaseSignIn)
+				{
+					if (OnComplete)
+					{
+						OnComplete(TFlockResult<FFlockPurchaseResult>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Cancelled,
+							TEXT("The player signed out or changed while the item was read, so nothing was bought"),
+							TEXT("Nothing needs fixing: buy it again as the player now signed in, if they want it."))));
+					}
+					return;
+				}
+				else
+				{
+					ConnectedNow->Purchase(ShopItemId, OnComplete);
+					return;
+				}
+				if (OnComplete)
+				{
+					FFlockError Refused = FFlockError::MakeWithFix(EFlockErrorType::Validation, Refusal, Fix);
+					Refused.Operation = TEXT("Purchase shop item");
+					OnComplete(TFlockResult<FFlockPurchaseResult>::Fail(Refused));
+				}
+				return;
+			}
 
 			FFlockShopTransactionRequest Request;
 			Request.ShopItemId = ShopItemId;

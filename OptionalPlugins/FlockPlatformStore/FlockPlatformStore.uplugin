@@ -1,0 +1,35 @@
+{
+	"FileVersion": 3,
+	"Version": 68,
+	"VersionName": "1.45.0",
+	"FriendlyName": "Flock Platform Store",
+	"Description": "Real-money purchases for the Flock SDK through the platform's own store (Google Play on Android with UE 5.8 or later, the App Store on iOS), reached through the engine's online subsystem. Installed separately, and off until you turn it on.",
+	"Category": "Online Platform",
+	"CreatedBy": "Qwacks",
+	"CreatedByURL": "https://flock.qwacks.com",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "mailto:support@qwacks.com",
+	"EnabledByDefault": false,
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "FlockPlatformStore",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "Flock",
+			"Enabled": true
+		},
+		{
+			"Name": "OnlineSubsystem",
+			"Enabled": true
+		}
+	]
+}

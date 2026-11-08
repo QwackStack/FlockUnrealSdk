@@ -11,6 +11,7 @@
 class FFlockAnalyticsProvider;
 class FFlockPlayerProvider;
 class FJsonObject;
+class UFlockStore;
 
 /**
  * Shop catalog + purchase + player inventory.
@@ -63,6 +64,21 @@ public:
 	 */
 	void SetPlayerProvider(const TWeakPtr<FFlockPlayerProvider>& InPlayerProvider) { PlayerProvider = InPlayerProvider; }
 
+	/**
+	 * The store a real-money purchase goes through (UFlockStore sets itself once connected, and clears itself when it
+	 * disconnects); null when none is connected, and a real-money item is then refused before anything is sent.
+	 */
+	void SetConnectedStore(UFlockStore* Store);
+
+	/** The store set by SetConnectedStore, or null. */
+	UFlockStore* GetConnectedStore() const;
+
+	/**
+	 * Whether ShopItemId is still sold in shop ShopId, read from the server now rather than from what the provider kept: the
+	 * store asks this just before its purchase dialog. An item or shop switched off reads false, and drops the shops kept.
+	 */
+	void IsForSale(const FString& ShopId, const FString& ShopItemId, TFunction<void(TFlockResult<bool>)> OnComplete);
+
 	// ── Catalog ──
 
 	/** A page of shops. Page metadata is not part of the Shop entity, so pages cache separately from ShopsById. */
@@ -78,7 +94,10 @@ public:
 	// ── Purchase + inventory ──
 
 	/**
-	 * Buys an item from the wallet for a player (empty PlayerId = the signed-in player). Every attempt of one call carries
+	 * Buys an item for a player (empty PlayerId = the signed-in player). An item priced in real money (IsRealMoney) is bought
+	 * for the signed-in player through the connected UFlockStore (see UFlockStore::Purchase), and refused before anything is
+	 * sent when no store is connected or another player is named. Every other item is bought from the wallet, as follows.
+	 * Every attempt of one call carries
 	 * the same `idempotency_key`, so an answer that never came (a timeout, a dropped connection, a 5xx) is sent again under
 	 * the retry policy and the server answers it with the first purchase: never bought twice. Needs a backend that reads the
 	 * key (from 2026-10-28 on); an older one ignores it, and a purchase sent again there is charged twice.
@@ -268,6 +287,7 @@ private:
 	TSharedRef<FFlockAuthSession> Session;
 	TWeakPtr<FFlockAnalyticsProvider> Analytics;
 	TWeakPtr<FFlockPlayerProvider> PlayerProvider;
+	TWeakObjectPtr<UFlockStore> ConnectedStore;
 	FString VersionedApiUrl;
 
 	// Full paginated pages cache separately (page metadata isn't part of a Shop). Every shop/item lives

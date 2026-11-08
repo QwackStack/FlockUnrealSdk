@@ -27,6 +27,7 @@
 #include "FlockSubsystem.generated.h"
 
 class UFlockEvents;
+class UFlockStore;
 
 /**
  * The global Flock SDK accessor.
@@ -49,6 +50,8 @@ class FLOCK_API UFlockSubsystem : public UGameInstanceSubsystem
 	// The playtest plugin sends the signed-in player's access token on its session start, and renews one about to run
 	// out first, so it reads the auth session; no public call hands out the token.
 	friend class UProtokitePlaytestSubsystem;
+	// The store reads the sign-in, the saved state and the game key, and is held here while connected.
+	friend class UFlockStore;
 
 public:
 	/**
@@ -296,6 +299,13 @@ public:
 	 */
 	FFlockShopProvider* GetShopProvider() const { return ShopProvider.Get(); }
 
+	/**
+	 * The way to pay real money UFlockStore::Connect connected (from the moment it starts connecting), or null. Held here until
+	 * it is disconnected or the SDK shuts down, which disconnects it.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock|Store")
+	UFlockStore* GetStore() const { return ConnectedStore; }
+
 	// ── Assets ──
 
 	/**
@@ -426,6 +436,10 @@ private:
 	/** Backing store for GetEvents(); created on first use so events can be bound before init. */
 	UPROPERTY(Transient)
 	TObjectPtr<UFlockEvents> Events;
+
+	/** The connected way to pay real money (GetStore); kept from garbage collection while connected. */
+	UPROPERTY(Transient)
+	TObjectPtr<UFlockStore> ConnectedStore;
 
 	// Auth stack, built per-initialization and dropped on shutdown. Everything is shared-ptr
 	// backed; in-flight callbacks hold what they need, so teardown mid-request stays safe.
