@@ -117,6 +117,9 @@ struct FLOCKEDITOR_API FFlockSetupInput
 	/** A store library is registered (Flock's store module is loaded, as it is in every build with Flock), so the game pays real money through UFlockStore. */
 	bool bStoreLibraryRegistered = false;
 
+	/** The last connection check found a shop item sold for real money. False before any check, or when it could not read the shops. */
+	bool bGameSellsRealMoney = false;
+
 	/** The game's Blueprints that use the engine's own in-app purchase nodes, by path. */
 	TArray<FString> BlueprintsUsingEnginePurchaseNodes;
 };

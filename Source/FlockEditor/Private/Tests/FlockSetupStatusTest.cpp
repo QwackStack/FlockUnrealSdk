@@ -362,7 +362,7 @@ bool FFlockSetupBannerHeadlineTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSetupStatusEnginePurchaseNodesTest, "Flock.Editor.Setup.Status.WarnsOfTheEnginesPurchaseNodesOnlyWithFlocksStore",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSetupStatusEnginePurchaseNodesTest, "Flock.Editor.Setup.Status.WarnsOfTheEnginesPurchaseNodesOnlyInAGameSellingRealMoney",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FFlockSetupStatusEnginePurchaseNodesTest::RunTest(const FString& Parameters)
@@ -373,9 +373,13 @@ bool FFlockSetupStatusEnginePurchaseNodesTest::RunTest(const FString& Parameters
 		Has(FFlockSetupStatus::Evaluate(Input), TEXT("Flock.Store.EnginePurchaseNodes")));
 
 	Input.bStoreLibraryRegistered = true;
+	TestFalse(TEXT("A game selling nothing for real money (or not checked yet): silent"),
+		Has(FFlockSetupStatus::Evaluate(Input), TEXT("Flock.Store.EnginePurchaseNodes")));
+
+	Input.bGameSellsRealMoney = true;
 	const TArray<FFlockSetupFinding> Findings = FFlockSetupStatus::Evaluate(Input);
 	const FFlockSetupFinding* Finding = Find(Findings, TEXT("Flock.Store.EnginePurchaseNodes"));
-	if (!TestNotNull(TEXT("With Flock's store, a warning"), Finding))
+	if (!TestNotNull(TEXT("With Flock's store and real-money items, a warning"), Finding))
 	{
 		return false;
 	}

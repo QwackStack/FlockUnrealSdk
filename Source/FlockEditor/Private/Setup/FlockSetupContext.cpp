@@ -55,7 +55,8 @@ FFlockSetupInput FFlockSetupContext::BuildInput()
 	}
 
 	Input.bStoreLibraryRegistered = UFlockStore::HasStoreLibrary();
-	if (Input.bStoreLibraryRegistered)
+	Input.bGameSellsRealMoney = GLastProbe.SellsRealMoney.Get(false);
+	if (Input.bStoreLibraryRegistered && Input.bGameSellsRealMoney)
 	{
 		Input.BlueprintsUsingEnginePurchaseNodes = FFlockEnginePurchaseNodes::FindBlueprintsUsingThem();
 	}

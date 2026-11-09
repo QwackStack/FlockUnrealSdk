@@ -149,7 +149,8 @@ and `Disconnect` ends the one under way.
 
 - **Use one way to buy.** The engine's own in-app purchase Blueprint nodes finish a purchase as it is made, before Flock has
   delivered it, so a purchase Flock then refuses is lost. The editor's Flock setup panel warns
-  (`Flock.Store.EnginePurchaseNodes`) when a Blueprint uses them. Keep them
+  (`Flock.Store.EnginePurchaseNodes`) when a Blueprint uses them in a game whose shops sell real-money items. The panel's
+  **Test Connection** reads the shops to find out, so the warning appears after a connection check. Keep the engine's nodes
   only for products no Flock shop item sells.
 - **Steam, Epic and consoles** have no store provider in Flock. A Steam build may take payments only through Steam's own
   wallet.

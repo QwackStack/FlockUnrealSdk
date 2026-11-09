@@ -49,7 +49,8 @@ and delivers the item, and only then is the store's purchase finished. The store
   game that turned the engine's own finishing off (`bDisableLocalAcknowledgeAndConsume`) is refused at connect. Receipts
   go unbound: no account id is sent, as the engine hashes it before Google sees it and never hands it to Apple.
 - **The editor's setup check** warns (`Flock.Store.EnginePurchaseNodes`) when a Blueprint uses the engine's own in-app
-  purchase nodes: those nodes finish a purchase before Flock delivers it.
+  purchase nodes in a game whose shops sell real-money items: those nodes finish a purchase before Flock delivers it.
+  **Test Connection** now also reads the game's shops to learn whether any item is sold for real money.
 
 ### Changed
 

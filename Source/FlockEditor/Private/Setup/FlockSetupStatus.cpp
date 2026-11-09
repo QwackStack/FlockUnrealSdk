@@ -174,8 +174,10 @@ TArray<FFlockSetupFinding> FFlockSetupStatus::Evaluate(const FFlockSetupInput& I
 	// ── Store ──
 	// The engine's in-app purchase nodes finish a purchase as it is made (the deprecated v2 ones always do), before Flock
 	// has delivered it: a purchase Flock then refuses is gone from the store, and the player is never handed it again.
+	// Only a game whose shops sell real money is told (owner, 2026-11-09): a game that sells nothing through Flock's store
+	// may use the engine's nodes freely. The shops are read by the connection check, never automatically.
 
-	if (Input.bStoreLibraryRegistered && Input.BlueprintsUsingEnginePurchaseNodes.Num() > 0)
+	if (Input.bStoreLibraryRegistered && Input.bGameSellsRealMoney && Input.BlueprintsUsingEnginePurchaseNodes.Num() > 0)
 	{
 		Findings.Add(MakeFinding(TEXT("Flock.Store.EnginePurchaseNodes"), EFlockSetupSeverity::Warning,
 			LOCTEXT("EnginePurchaseNodesTitle", "Blueprints use the engine's own in-app purchase nodes"),
