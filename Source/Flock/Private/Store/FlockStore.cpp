@@ -11,7 +11,9 @@
 #include "FlockSubsystem.h"
 #include "Http/FlockErrorHints.h"
 #include "Http/FlockSnapshotStore.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Providers/FlockShopProvider.h"
+#include "Store/FlockWebCheckout.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -110,6 +112,18 @@ FString UFlockStore::PaymentProviderOfThisPlatform()
 #endif
 }
 
+bool UFlockStore::IsADesktop()
+{
+	return PLATFORM_DESKTOP != 0;
+}
+
+bool UFlockStore::IsSteamTheDefaultService()
+{
+	FString Service;
+	return GConfig != nullptr && GConfig->GetString(TEXT("OnlineSubsystem"), TEXT("DefaultPlatformService"), Service, GEngineIni)
+		&& Service.Equals(TEXT("Steam"), ESearchCase::IgnoreCase);
+}
+
 bool UFlockStore::IsAStore(const FString& PaymentProvider)
 {
 	return PaymentProvider.Equals(FlockPaymentProviders::GooglePlay, ESearchCase::CaseSensitive)
@@ -135,20 +149,36 @@ void UFlockStore::Connect(UFlockSubsystem* InFlock, const FFlockStoreOptions& Op
 			OnComplete(TFlockResult<UFlockStore*>::Fail(Error));
 		}
 	};
-	// Empty is a setting left blank: the platform's own, as nothing named is.
-	const FString Provider = Options.PaymentProvider.IsEmpty() ? PaymentProviderOfThisPlatform() : Options.PaymentProvider;
-	if (Provider.IsEmpty())
+	// Empty is a setting left blank: the platform's own, as nothing named is. A platform with no store of its own pays
+	// through a web checkout with the game's one active gateway.
+	const FString PlatformsOwn = PaymentProviderOfThisPlatform();
+	const FString Provider = Options.PaymentProvider.IsEmpty() ? PlatformsOwn : Options.PaymentProvider;
+	if (Provider.IsEmpty() || FFlockWebCheckout::IsWebGateway(Provider))
 	{
-		Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
-			TEXT("This platform has no store of its own, so no way to pay real money was connected"),
-			TEXT("Connect on Android (Google Play) or iOS (the App Store), where the platform's store takes the payment. On another platform, sell only items priced in a game currency there.")));
+		// A phone's store rules forbid paying for digital goods elsewhere, so a phone never opens a payment page.
+		if (!PlatformsOwn.IsEmpty())
+		{
+			Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				FString::Printf(TEXT("A web checkout ('%s') is not opened on a phone, so nothing was connected"), *Provider),
+				TEXT("Leave FFlockStoreOptions::PaymentProvider empty to connect this phone's own store: its rules forbid paying for digital goods on a web page. Web checkout is for Windows, Mac and Linux.")));
+			return;
+		}
+		// Nor a console, whose rules forbid it the same way: web checkout is for Windows, Mac and Linux.
+		if (!IsADesktop())
+		{
+			Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("This platform has no store Flock pays through, and a web checkout is opened only on Windows, Mac and Linux, so nothing was connected"),
+				TEXT("Sell only items priced in a game currency on this platform: its rules forbid paying for digital goods on a web page.")));
+			return;
+		}
+		ConnectWebCheckout(InFlock, Provider, Options, MoveTemp(OnComplete));
 		return;
 	}
 	if (!IsAStore(Provider))
 	{
 		Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
-			FString::Printf(TEXT("'%s' is not a store Flock pays through, so nothing was connected"), *Provider),
-			TEXT("Leave FFlockStoreOptions::PaymentProvider empty for this platform's own store, or name FlockPaymentProviders::GooglePlay or FlockPaymentProviders::AppleAppStore.")));
+			FString::Printf(TEXT("'%s' is not a store or a payment gateway Flock pays through, so nothing was connected"), *Provider),
+			TEXT("Leave FFlockStoreOptions::PaymentProvider empty for this platform's own way to pay, or name one of FlockPaymentProviders: GooglePlay or AppleAppStore (a store), Stripe, Tap or Moyasar (a web checkout).")));
 		return;
 	}
 	const TSharedPtr<IFlockStoreConnection> Connection = HasStoreLibrary() ? StoreLibrary()() : nullptr;
@@ -179,24 +209,8 @@ void UFlockStore::Connect(UFlockSubsystem* InFlock, const FFlockStoreOptions& Op
 void UFlockStore::ConnectThrough(UFlockSubsystem* InFlock, const TSharedRef<IFlockStoreConnection>& InConnection,
 	TFunction<void(TFlockResult<UFlockStore*>)> OnComplete)
 {
-	auto Fail = [&OnComplete](const FFlockError& Error)
+	if (!MayConnect(InFlock, OnComplete))
 	{
-		if (OnComplete)
-		{
-			OnComplete(TFlockResult<UFlockStore*>::Fail(Error));
-		}
-	};
-	if (InFlock == nullptr || !InFlock->IsInitialized() || InFlock->GetShopProvider() == nullptr)
-	{
-		Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("Flock is not initialized, so no way to pay real money was connected"),
-			TEXT("Connect once Flock has initialized (UFlockEvents::OnInitialized), with the shop provider built.")));
-		return;
-	}
-	// One connection a client: two would each send every purchase and raise every event.
-	if (InFlock->ConnectedStore != nullptr)
-	{
-		Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("A way to pay real money is already connected"),
-			TEXT("Use the connected one (UFlockSubsystem::GetStore), or Disconnect it before connecting again.")));
 		return;
 	}
 	UFlockStore* Store = NewObject<UFlockStore>(InFlock);
@@ -208,6 +222,108 @@ void UFlockStore::ConnectThrough(UFlockSubsystem* InFlock, const TSharedRef<IFlo
 		+ TEXT("|") + Store->PaymentProvider;
 	InFlock->ConnectedStore = Store;
 	Store->StartConnecting(MoveTemp(OnComplete));
+}
+
+bool UFlockStore::MayConnect(UFlockSubsystem* InFlock, TFunction<void(TFlockResult<UFlockStore*>)>& OnComplete)
+{
+	auto Fail = [&OnComplete](const FFlockError& Error)
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<UFlockStore*>::Fail(Error));
+		}
+	};
+	if (InFlock == nullptr || !InFlock->IsInitialized() || InFlock->GetShopProvider() == nullptr)
+	{
+		Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("Flock is not initialized, so no way to pay real money was connected"),
+			TEXT("Connect once Flock has initialized (UFlockEvents::OnInitialized), with the shop provider built.")));
+		return false;
+	}
+	// One connection a client: two would each send every purchase and raise every event.
+	if (InFlock->ConnectedStore != nullptr)
+	{
+		Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("A way to pay real money is already connected"),
+			TEXT("Use the connected one (UFlockSubsystem::GetStore), or Disconnect it before connecting again.")));
+		return false;
+	}
+	return true;
+}
+
+void UFlockStore::ConnectWebCheckout(UFlockSubsystem* InFlock, const FString& Gateway, const FFlockStoreOptions& Options,
+	TFunction<void(TFlockResult<UFlockStore*>)> OnComplete)
+{
+	if (!MayConnect(InFlock, OnComplete))
+	{
+		return;
+	}
+	if (IsSteamTheDefaultService())
+	{
+		InFlock->GetLogger().LogWarning(TEXT("A web checkout was connected in a build whose engine online service is Steam. Steam allows in-game purchases only through the Steam wallet, so a game sold on Steam must not take payments through a web checkout. Ship this checkout in builds for other storefronts (the Epic Games Store, your own launcher or site)."));
+	}
+	UFlockStore* Store = NewObject<UFlockStore>(InFlock);
+	Store->Flock = InFlock;
+	Store->PaymentProvider = Gateway;
+	// Copied as connected, so a game changing its options later changes nothing here.
+	FFlockWebCheckout::FSettings Settings;
+	Settings.Gateway = Gateway;
+	Settings.ReturnUrl = Options.ReturnUrl;
+	Settings.CancelUrl = Options.CancelUrl;
+	Settings.CheckEverySeconds = Options.CheckEverySeconds;
+	Settings.OpenPaymentPage = Options.OpenPaymentPage;
+	TWeakObjectPtr<UFlockStore> WeakStore(Store);
+	Store->Web = MakeShared<FFlockWebCheckout>(InFlock, MoveTemp(Settings), [WeakStore](const FFlockShopItem& Item, const FFlockPurchaseResult& Result)
+	{
+		if (UFlockStore* Self = WeakStore.Get())
+		{
+			if (!Self->bDisconnected)
+			{
+				Self->OnPurchaseCompleted.Broadcast(Item, Result);
+			}
+		}
+	}, [WeakStore](const FString& ShopItemId, FFlockShopItem& OutItem)
+	{
+		const UFlockStore* Self = WeakStore.Get();
+		return Self != nullptr && Self->FindItem(ShopItemId, OutItem);
+	});
+	InFlock->ConnectedStore = Store;
+	Store->ReadCatalog(1, MakeShared<TArray<FFlockShop>>(), [WeakStore, OnComplete](TFlockResult<TArray<FFlockShop>> Catalog)
+	{
+		UFlockStore* Self = WeakStore.Get();
+		if (Self == nullptr || Self->bDisconnected)
+		{
+			if (OnComplete)
+			{
+				OnComplete(TFlockResult<UFlockStore*>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Cancelled,
+					TEXT("The store connection was disconnected while it connected"), TEXT("Connect again if the game still wants to sell real-money items."))));
+			}
+			return;
+		}
+		if (!Catalog.IsSuccess())
+		{
+			Self->Disconnect();
+			if (OnComplete)
+			{
+				OnComplete(TFlockResult<UFlockStore*>::Fail(Catalog.Error));
+			}
+			return;
+		}
+		for (const FFlockShop& Shop : Catalog.Value)
+		{
+			for (const FFlockShopItem& Item : Shop.ShopItems)
+			{
+				if (!Item.Id.IsEmpty())
+				{
+					Self->ItemsById.Add(Item.Id, Item);
+					Self->ShopOfItem.Add(Item.Id, Shop.Id);
+				}
+			}
+		}
+		Self->BeReady();
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<UFlockStore*>::Ok(Self));
+		}
+	});
 }
 
 void UFlockStore::StartConnecting(TFunction<void(TFlockResult<UFlockStore*>)> OnComplete)
@@ -456,6 +572,10 @@ void UFlockStore::Disconnect()
 	{
 		Connection->StopListening();
 	}
+	if (Web.IsValid())
+	{
+		Web->Dispose();
+	}
 	Waiting.Empty();
 	WaitingForBuyer.Empty();
 	if (CurrentRestore.IsValid())
@@ -493,6 +613,65 @@ void UFlockStore::Purchase(const FString& ShopItemId, TFunction<void(TFlockResul
 	FFlockError Refused;
 	FFlockShopItem Item;
 	FString ProductId;
+	if (Web.IsValid())
+	{
+		if (!IsUsable(Refused))
+		{
+			Fail(Refused);
+			return;
+		}
+		if (ShopItemId.IsEmpty())
+		{
+			Fail(Refusal(EFlockErrorType::Validation, TEXT("Shop Item ID is empty"), TEXT("Pass the shop item's Id (FFlockShopItem::Id).")));
+			return;
+		}
+		if (!IsSignedIn())
+		{
+			Fail(Refusal(EFlockErrorType::Auth, NotSignedInMessage(), FFlockErrorHints::SignInFirst()));
+			return;
+		}
+		// Read now rather than at connect, so an item added or repriced in the dashboard since then is sold as it is now.
+		const int32 SignIn = CurrentSignIn();
+		TWeakObjectPtr<UFlockStore> WeakThis(this);
+		Flock->GetShopProvider()->GetItem(ShopItemId, [WeakThis, SignIn, OnComplete](TFlockResult<FFlockShopItem> Read)
+		{
+			auto Answer = [&OnComplete](const FFlockError& Error)
+			{
+				if (OnComplete)
+				{
+					OnComplete(TFlockResult<FFlockPurchaseResult>::Fail(Error));
+				}
+			};
+			UFlockStore* Self = WeakThis.Get();
+			FFlockError Refused;
+			if (Self == nullptr || !Self->IsUsable(Refused))
+			{
+				Answer(Self == nullptr ? Refusal(EFlockErrorType::Cancelled, TEXT("The store connection went away while the item was read"),
+					TEXT("Connect again with UFlockStore::Connect.")) : Refused);
+				return;
+			}
+			if (!Read.IsSuccess())
+			{
+				Answer(Read.Error);
+				return;
+			}
+			if (!Read.Value.IsRealMoney)
+			{
+				Answer(Refusal(EFlockErrorType::Validation, FString::Printf(TEXT("'%s' is priced in a game currency, so no web checkout was opened"), *Read.Value.Name),
+					TEXT("Buy it with FFlockShopProvider::Purchase, which takes a game-currency item from the wallet.")));
+				return;
+			}
+			// Bought for the player who asked, never for one who signed in while the item was read.
+			if (Self->CurrentSignIn() != SignIn || !Self->IsSignedIn())
+			{
+				Answer(Refusal(EFlockErrorType::Cancelled, TEXT("The player signed out or changed while the item was read, so nothing was bought"),
+					TEXT("Nothing needs fixing: buy it again as the player now signed in, if they want it.")));
+				return;
+			}
+			Self->Web->Purchase(Read.Value, OnComplete);
+		});
+		return;
+	}
 	if (!IsUsable(Refused) || !ProductOf(ShopItemId, Item, ProductId, Refused))
 	{
 		Fail(Refused);
@@ -626,6 +805,11 @@ void UFlockStore::HandleSignedIn(const FFlockAuthInfo& Info)
 	{
 		return;
 	}
+	if (Web.IsValid())
+	{
+		Web->HandleSignedIn();
+		return;
+	}
 	EndBuyingIfSignInEnded();
 	// Purchases that waited for a sign-in go now, and the store is asked for any it still holds (Google hands them back only when asked).
 	TArray<FFlockStoreOrder> Held = MoveTemp(Waiting);
@@ -648,6 +832,11 @@ void UFlockStore::HandleSignedIn(const FFlockAuthInfo& Info)
 
 void UFlockStore::HandleSignInEnded()
 {
+	if (Web.IsValid())
+	{
+		Web->HandleSignInEnded();
+		return;
+	}
 	EndBuyingIfSignInEnded();
 }
 
@@ -893,11 +1082,49 @@ TFlockResult<FFlockStorePrice> UFlockStore::GetPrice(const FString& ShopItemId) 
 	FFlockError Refused;
 	FFlockShopItem Item;
 	FString ProductId;
+	if (Web.IsValid())
+	{
+		if (!IsUsable(Refused) || !KnownItem(ShopItemId, Item, Refused))
+		{
+			return TFlockResult<FFlockStorePrice>::Fail(Refused);
+		}
+		if (!Item.IsRealMoney)
+		{
+			return TFlockResult<FFlockStorePrice>::Fail(Refusal(EFlockErrorType::Validation,
+				FString::Printf(TEXT("'%s' is priced in a game currency, so it has no real-money price"), *Item.Name),
+				TEXT("Show a game-currency item's Price and Currency as they are; GetPrice is for real-money items.")));
+		}
+		return TFlockResult<FFlockStorePrice>::Ok(PriceOfTheItem(Item));
+	}
 	if (!IsUsable(Refused) || !ProductOf(ShopItemId, Item, ProductId, Refused))
 	{
 		return TFlockResult<FFlockStorePrice>::Fail(Refused);
 	}
 	return TFlockResult<FFlockStorePrice>::Ok(Connection->PriceOf(ProductId));
+}
+
+FFlockStorePrice UFlockStore::PriceOfTheItem(const FFlockShopItem& Item)
+{
+	// Flock's server counts these in thousandths or in whole units, and every other currency in hundredths.
+	static const TSet<FString> ThreeDigitCurrencies = { TEXT("BHD"), TEXT("IQD"), TEXT("JOD"), TEXT("KWD"), TEXT("LYD"), TEXT("OMR"), TEXT("TND") };
+	static const TSet<FString> WholeUnitCurrencies = { TEXT("BIF"), TEXT("CLP"), TEXT("DJF"), TEXT("GNF"), TEXT("ISK"), TEXT("JPY"), TEXT("KMF"),
+		TEXT("KRW"), TEXT("PYG"), TEXT("RWF"), TEXT("UGX"), TEXT("VND"), TEXT("VUV"), TEXT("XAF"), TEXT("XOF"), TEXT("XPF") };
+	const FString Currency = Item.Currency.ToUpper();
+	const int32 Digits = ThreeDigitCurrencies.Contains(Currency) ? 3 : WholeUnitCurrencies.Contains(Currency) ? 0 : 2;
+	double Amount = static_cast<double>(Item.Price);
+	for (int32 Index = 0; Index < Digits; ++Index)
+	{
+		Amount /= 10.0;
+	}
+	FNumberFormattingOptions Format;
+	Format.MinimumFractionalDigits = Digits;
+	Format.MaximumFractionalDigits = Digits;
+	FFlockStorePrice Price;
+	Price.bFoundInTheStore = true;
+	Price.AmountInSmallestUnit = Item.Price;
+	Price.CurrencyCode = Currency;
+	Price.Text = Currency + TEXT(" ") + FText::AsNumber(Amount, &Format).ToString();
+	return Price;
 }
 
 void UFlockStore::Restore(TFunction<void(TFlockResult<FFlockStoreRestore>)> OnComplete)
@@ -911,6 +1138,16 @@ void UFlockStore::Restore(TFunction<void(TFlockResult<FFlockStoreRestore>)> OnCo
 	if (!IsSignedIn())
 	{
 		OnComplete(TFlockResult<FFlockStoreRestore>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Auth, NotSignedInMessage(), FFlockErrorHints::SignInFirst())));
+		return;
+	}
+	if (Web.IsValid())
+	{
+		// Flock already holds what the player bought: the checkouts still open are read again, and each one paid now reported.
+		Web->FindOpenCheckouts([OnComplete](const FFlockError& Error)
+		{
+			OnComplete(Error.Type == EFlockErrorType::None ? TFlockResult<FFlockStoreRestore>::Ok(FFlockStoreRestore())
+				: TFlockResult<FFlockStoreRestore>::Fail(Error));
+		});
 		return;
 	}
 	if (CurrentRestore.IsValid() && !CurrentRestore->bEnded)
@@ -1063,6 +1300,12 @@ void UFlockStore::CheckSetup(TFunction<void(TFlockResult<FFlockStoreSetupCheck>)
 		return;
 	}
 	FFlockStoreSetupCheck Check;
+	if (Web.IsValid())
+	{
+		Check.NotChecked = TEXT("The payment gateway: Flock's server says whether one is connected only as a checkout opens. Buy a real-money item with the gateway's test keys connected in the Flock dashboard (Monetization > Payments) and its test card.");
+		OnComplete(TFlockResult<FFlockStoreSetupCheck>::Ok(Check));
+		return;
+	}
 	const FFlockShopItem* AskAbout = nullptr;
 	FString AskedProduct;
 	for (const auto& Entry : ItemsById)

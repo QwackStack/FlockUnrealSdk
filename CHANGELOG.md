@@ -5,6 +5,52 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.46.0] - 2026-11-09
+
+Buying with real money on Windows, Mac and Linux through a web checkout. The same `UFlockStore::Connect` that reaches a
+phone's store opens, on a desktop, a checkout with the game's payment gateway (Stripe, Tap or Moyasar): `FFlockShopProvider::Purchase`
+opens the gateway's payment page in the player's browser and completes once Flock's server reports the payment. Flock's
+server delivers the item itself. Nothing new to install.
+
+### Added
+
+- **Web checkout through `UFlockStore`.** `Connect` with `FFlockStoreOptions::PaymentProvider` empty connects a web checkout
+  through the game's one active gateway on Windows, Mac and Linux; naming `FlockPaymentProviders::Stripe`, `Tap` or `Moyasar`
+  picks one when the game has several active. A phone or a console never opens a payment page: a gateway named on Android
+  or iOS, and a connect on a console, are refused with their fix. `IsWebCheckout` says which way the connection pays.
+- **The purchase call on a web checkout:** reads the item, opens a checkout, opens its payment page, and reads the purchase
+  about every 3 seconds (2.25 to 3.75; `FFlockStoreOptions::CheckEverySeconds`) until it is paid (the result, without
+  `Inventory` or `Wallet`, and `OnPurchaseCompleted` once), declined by the gateway (`FlockStoreFailureReasons::PaymentDeclined`)
+  or expired (the new `FlockStoreFailureReasons::Expired`; a page the player closes waits for this, up to the checkout's
+  hour). A status the SDK does not know yet keeps the checkout read. Reads that stop on another failure end the call with
+  `bOutcomeUnknown`, as the page may still be paid. A checkout still unpaid that the player left open (an earlier launch,
+  another device, a call whose sign-in ended) is found at each sign-in and by `Restore`, and reported once paid; one paid
+  while nothing read it is delivered by Flock but not reported. A checkout just opened that reads as not found is read
+  again for 30 seconds, as the server saves it just after answering. A paid checkout drops the cached player data, so the
+  next wallet read asks the server.
+- **Options:** `ReturnUrl` and `CancelUrl` (where the browser lands; empty leaves them to the server), `CheckEverySeconds`,
+  and `OpenPaymentPage` (C++; shows the payment address another way instead of the default browser).
+- **`FFlockShopProvider::StartCheckout`, `GetPurchase` and `GetPurchases`** (`FFlockCheckout`, `FFlockPlayerPurchase`,
+  `FFlockPlayerPurchasePage`), for a game that builds its own checkout screen or lists the player's purchases. Each acts as
+  the signed-in player and is sent only while that sign-in lasts.
+- **`FFlockStoreSetupCheck::NotChecked`:** on a web checkout, how to check the gateway by hand (the server says whether one
+  is connected only as a checkout opens). `GetPrice` on a web checkout is the item's own price, written out in the
+  currency's digits.
+
+### Money safety
+
+- A checkout is never sent again after an answer that did not come, so one call never opens two checkouts: that failure has
+  `bOutcomeUnknown` set and a fix saying to read the player's open checkouts first. Nothing is queued offline.
+- One purchase of an item at a time; the call is off the books before `OnPurchaseCompleted` runs, so a handler can buy again.
+- A checkout answered after its player signed out or changed opens no page; a sign-out, a player switch, a disconnect or a
+  shutdown ends the wait (Cancelled) and stops its reads.
+
+### Notes
+
+- **Steam:** Steam allows in-game purchases only through the Steam wallet, so a game sold on Steam must not take payments
+  through a web checkout. Connecting one in a build whose engine online service is Steam logs one warning.
+- Mac and Linux follow the same code as Windows but were not run.
+
 ## [1.45.0] - 2026-11-08
 
 Buying with real money through the platform's store. Connect `UFlockStore` once, and `FFlockShopProvider::Purchase` buys a

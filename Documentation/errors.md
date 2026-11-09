@@ -137,8 +137,8 @@ retries Auth, Validation, Serialization, Cancelled or Store. What is left for yo
   player is not allowed to do that, and signing in again changes nothing. A 403 carrying `ShopPlayerMismatch` (a
   purchase naming another player than the one signed in) or `PaymentProviderReceiptBelongsToAnotherPlayer` (a store
   purchase that is another player's) leaves the player signed in; the fix says which player the call has to act for.
-- **`EFlockErrorType::Store`** — the platform's store (Google Play, the App Store) did not take a real-money payment, so
-  nothing was charged; `StoreFailureReason` says why and `Hint` what to do. Offer the item again if the player wants it:
+- **`EFlockErrorType::Store`** — the platform's store (Google Play, the App Store) did not take a real-money payment, or a
+  web checkout's payment gateway declined it or let it expire, so nothing was charged; `StoreFailureReason` says why and `Hint` what to do. Offer the item again if the player wants it:
   see [Real-money purchases](real-money-purchases.md).
 - **`EFlockErrorType::Cancelled`** — you cancelled the call, or it was made for a player who has since signed out
   or been replaced by another sign-in, so its retry was not sent. Nothing to retry: make the call again for the

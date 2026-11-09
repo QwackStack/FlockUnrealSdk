@@ -464,7 +464,8 @@ bool FFlockSignInOptedInCallsTest::RunTest(const FString& Parameters)
 			{ TEXT("IsNameAvailable"), TEXT("ForgotPassword"), TEXT("ResetPassword") } },
 		{ TEXT("../Public/Providers/FlockAuthProvider.h"), TEXT("FFlockAuthProvider"), { TEXT("Link") }, {} },
 		{ TEXT("Providers/FlockShopProvider.cpp"), TEXT("FFlockShopProvider"),
-			{ TEXT("Purchase"), TEXT("RedeemStoreReceipt"), TEXT("ConsumeEntry"), TEXT("ReadInventoryPage") },
+			{ TEXT("Purchase"), TEXT("RedeemStoreReceipt"), TEXT("ConsumeEntry"), TEXT("ReadInventoryPage"),
+			  TEXT("StartCheckout"), TEXT("ReadPurchase"), TEXT("GetPurchases") },
 			{ TEXT("GetAll"), TEXT("GetById"), TEXT("GetByName"), TEXT("GetItem"), TEXT("GetItemsByShop") } },
 		{ TEXT("Providers/FlockPlayerProvider.cpp"), TEXT("FFlockPlayerProvider"),
 			{ TEXT("GetDataById"), TEXT("ReadDataPage"), TEXT("GetBan") },
@@ -522,7 +523,7 @@ bool FFlockSignInOptedInCallsTest::RunTest(const FString& Parameters)
 			}
 		}
 	}
-	TestEqual(TEXT("every call that acts for the player was checked"), Checked, 29);
+	TestEqual(TEXT("every call that acts for the player was checked"), Checked, 32);
 	return true;
 }
 

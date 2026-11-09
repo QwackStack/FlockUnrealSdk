@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.45.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.46.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -147,8 +147,8 @@ turned on in *Project Settings > Plugins > Protokite Playtest Settings*. If you 
 where it sits. Leave it out of projects that are not running playtests. [Playtesting with Protokite](Documentation/playtesting.md)
 walks through the rest, from pointing the build at a playtest to a session on Protokite's Sessions page.
 
-Real-money purchases through Google Play (UE 5.8 or later) and the App Store need nothing more to install: they are part of
-Flock. [Real-money purchases](Documentation/real-money-purchases.md) covers the project settings and `UFlockStore`.
+Real-money purchases through Google Play (UE 5.8 or later) and the App Store, and through a web checkout on Windows, Mac and
+Linux, need nothing more to install: they are part of Flock. [Real-money purchases](Documentation/real-money-purchases.md) covers the project settings and `UFlockStore`.
 
 To see what a playtest recording looks like before any playtest exists, tick **Record Video In Play In Editor** in
 *Project Settings > Plugins > Protokite Playtest Local Settings* and press Play, or type `ProtokitePlaytest.RecordTestVideo 30`
@@ -586,6 +586,8 @@ when no way opens, `relay_unreachable` names each way and why it failed.
 product ids, redeeming a store purchase, the wallet read by currency code and a purchase sent again under one key. **1.45.0 buys
 real-money items through Google Play and the App Store**: connect `UFlockStore`, and
 the same Purchase call charges through the store, has Flock deliver the item, and only then finishes the store's purchase.
+**1.46.0 sells real-money items on Windows, Mac and Linux through a web checkout**: the same connect opens the payment
+gateway's page (Stripe, Tap or Moyasar) in the player's browser and waits for Flock's server to report the payment.
 
 Deliberate omissions and known gaps:
 
@@ -594,7 +596,7 @@ Deliberate omissions and known gaps:
   `Flock Download Asset File` is the documented path for audio.
 - **A few surfaces are C++-only.** Config *patch* reads (all patches, by id, by config) and configs by
   version tag — in Blueprint, `Flock Resolve Config Data` already returns the patched-or-base values,
-  which is what most graphs want. Provider cache clearing, redeeming a store purchase (`RedeemStoreReceipt`) and the store connection (`UFlockStore`: connect, prices, restore, the setup check) are also C++-only; a Blueprint Purchase buys real money through a store connected in C++.
+  which is what most graphs want. Provider cache clearing, redeeming a store purchase (`RedeemStoreReceipt`), the store connection (`UFlockStore`: connect, prices, restore, the setup check) and the web checkout calls (`StartCheckout`, `GetPurchase`, `GetPurchases`) are also C++-only; a Blueprint Purchase buys real money through a store connected in C++.
 - **Asset uploads are not included.** The SDK reads and downloads assets; publishing them is a dashboard
   operation.
 - **Leave `framegrabber.framelatency` at 0 while Protokite Playtest records video.** Changing that engine console

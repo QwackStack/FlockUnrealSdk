@@ -150,6 +150,34 @@ public:
 		TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnComplete);
 
 	/**
+	 * Opens a web checkout for a real-money item as the signed-in player and completes with where to send them
+	 * (FFlockCheckout::PaymentUrl). Nothing is paid or delivered until the payment gateway confirms, which GetPurchase reads.
+	 * Leave Provider empty for the game's one active gateway (FlockPaymentProviders::Stripe, Tap or Moyasar); the browser
+	 * lands on ReturnUrl after paying and CancelUrl after giving up, and an empty one is left to the server. A web checkout
+	 * connected with UFlockStore::Connect does all of this inside Purchase.
+	 *
+	 * **Never sent again** after a failure with no answer, so it never opens a second checkout: that failure has
+	 * bOutcomeUnknown set, and the player's open checkouts are read with GetPurchases(FlockPurchaseStatuses::Pending). Only a
+	 * 408 or 429 (not processed) is retried. Refused (Auth) with no player signed in, and sent only while the sign-in current
+	 * at the call lasts. Refused as not for sale, it drops the shops kept, as a wallet purchase does.
+	 */
+	void StartCheckout(const FString& ShopItemId, const FString& Provider, const FString& ReturnUrl, const FString& CancelUrl,
+		TFunction<void(TFlockResult<FFlockCheckout>)> OnComplete);
+
+	/**
+	 * One of the signed-in player's purchases, read now from the server (never cached): a web checkout's purchase is pending
+	 * until it is paid, failed or expired. Another player's purchase is refused with ShopPurchaseNotFound.
+	 */
+	void GetPurchase(const FString& PurchaseId, TFunction<void(TFlockResult<FFlockPlayerPurchase>)> OnComplete);
+
+	/**
+	 * A page of the signed-in player's purchases, newest first, read now from the server (never cached). Pass
+	 * FlockPurchaseStatuses::Pending for the web checkouts not settled yet, or empty for every purchase; Limit is 1 to 100.
+	 */
+	void GetPurchases(const FString& Status, int32 Page, int32 Limit, TFunction<void(TFlockResult<FFlockPlayerPurchasePage>)> OnComplete);
+
+
+	/**
 	 * Consumes an owned inventory entry, granting whatever it carries. Completes with the updated row,
 	 * what was granted, and the wallet afterwards.
 	 *
@@ -207,6 +235,18 @@ public:
 	void ClearCache();
 
 private:
+	friend class FFlockWebCheckout;
+
+	/**
+	 * GetPurchase for the web checkout: sent only while SignInNumber lasts, its handle kept so a stopped read is cancelled,
+	 * and a not-found answer logged at debug level when bNotFoundIsExpected (a checkout just opened, not saved yet).
+	 */
+	FFlockRequestHandle ReadPurchase(const FString& PurchaseId, int32 SignInNumber, bool bNotFoundIsExpected,
+		TFunction<void(TFlockResult<FFlockPlayerPurchase>)> OnComplete);
+
+	/** A payment settled outside a call that answers with the wallet (a web checkout): the next read of the player's data asks the server. */
+	void ForgetPlayerDataAfterPayment() const { ForgetCachedPlayerData(); }
+
 	/**
 	 * The one owner of "a catalog read keeps its answer only when no clear came while it was out": true when none
 	 * did; otherwise the read's snapshot entry, written before its completion runs, is deleted and nothing is kept.

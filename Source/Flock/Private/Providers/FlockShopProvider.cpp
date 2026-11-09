@@ -353,10 +353,11 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 	{
 		return;
 	}
-	// A real-money item the connected store read when it connected goes through it, without reading the item again.
+	// A real-money item the connected store read when it connected goes through it, without reading the item again; a web
+	// checkout reads the item now, so an item added or repriced since the connect is sold as it is now.
 	FFlockShopItem StoreItem;
 	UFlockStore* const Store = ConnectedStore.Get();
-	if (PlayerId.IsEmpty() && Store != nullptr && Store->FindItem(ShopItemId, StoreItem) && StoreItem.IsRealMoney)
+	if (PlayerId.IsEmpty() && Store != nullptr && !Store->IsWebCheckout() && Store->FindItem(ShopItemId, StoreItem) && StoreItem.IsRealMoney)
 	{
 		Store->Purchase(ShopItemId, MoveTemp(OnComplete));
 		return;
@@ -409,7 +410,7 @@ void FFlockShopProvider::Purchase(const FString& ShopItemId, const FString& Play
 				if (ConnectedNow == nullptr)
 				{
 					Refusal = TEXT("This shop item costs real money, and no way to pay real money is connected, so nothing was bought");
-					Fix = TEXT("Connect the platform's store once at start with UFlockStore::Connect; real-money items are then bought through this same call.");
+					Fix = TEXT("Connect once at start with UFlockStore::Connect (the store on a phone, a web checkout on Windows, Mac and Linux); real-money items are then bought through this same call.");
 				}
 				else if (!bForTheSignedInPlayer)
 				{
@@ -613,6 +614,182 @@ void FFlockShopProvider::RedeemStoreReceipt(const FString& ShopItemId, const FFl
 		},
 		TEXT("Redeem store receipt"), /*bIdempotent*/ true,
 		MoneyCall(TEXT("Leave the store's purchase unfinished and send the same receipt again: it cannot be paid for twice.")));
+}
+
+// ─────────────────────────────── Web checkout ───────────────────────────────
+
+namespace
+{
+	const TCHAR* const CheckoutInDoubtFix = TEXT("A checkout may have been opened: no answer said whether it was. Read the player's open checkouts with GetPurchases(FlockPurchaseStatuses::Pending) before opening another; a checkout nobody pays closes by itself, unpaid, after an hour.");
+
+	FFlockError NoPlayerSignedIn(const TCHAR* Operation)
+	{
+		FFlockError Error = FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), FFlockErrorHints::SignInFirst());
+		Error.Operation = Operation;
+		return Error;
+	}
+}
+
+void FFlockShopProvider::StartCheckout(const FString& ShopItemId, const FString& Provider, const FString& ReturnUrl, const FString& CancelUrl,
+	TFunction<void(TFlockResult<FFlockCheckout>)> OnComplete)
+{
+	if (!RequireNotEmpty(ShopItemId, TEXT("Shop Item ID"), OnComplete))
+	{
+		return;
+	}
+	if (!Session->IsAuthenticated())
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockCheckout>::Fail(NoPlayerSignedIn(TEXT("Start checkout"))));
+		}
+		return;
+	}
+	FFlockCheckoutRequest Request;
+	Request.ShopItemId = ShopItemId;
+	Request.Provider = Provider;
+	Request.ReturnUrl = ReturnUrl;
+	Request.CancelUrl = CancelUrl;
+	FString Body;
+	// Empty members are left out, so the server picks the gateway and the pages it lands on.
+	if (!FFlockJsonUtils::StructToWireJson(Request, Body, /*bOmitEmptyStrings*/ true))
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockCheckout>::Fail(FFlockError::Make(EFlockErrorType::Serialization, TEXT("The SDK could not write the checkout's body"))));
+		}
+		return;
+	}
+
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
+	const FString Url = MakeUrl(FlockEndpoints::ShopCheckout);
+	FFlockRetryHandler::FOperation<FFlockCheckout> SendCheckout = ForSignInOnly<FFlockCheckout>(SessionRef, Session->GetSignInNumber(),
+		[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockCheckout>)> OnAttempt)
+		{
+			return ClientRef->PostJsonRaw<FFlockCheckout>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
+		});
+
+	TWeakPtr<FFlockShopProvider> WeakSelf = AsShared();
+	// Never sent again after an answer that did not come: a second checkout would be a second payment page (payment plan
+	// D-P3). Only 408 and 429, which say nothing was processed, are retried. Bare response.
+	ExecuteMoneyCall<FFlockCheckout>(MoveTemp(SendCheckout),
+		[WeakSelf, OnComplete](TFlockResult<FFlockCheckout> Result)
+		{
+			if (!Result.bSuccess && Result.Error.ErrorCode == EFlockErrorCode::ShopItemNotForSale)
+			{
+				// Switched off in the dashboard: the shops kept no longer show it for sale, as after a wallet purchase's refusal.
+				if (const TSharedPtr<FFlockShopProvider> Self = WeakSelf.Pin())
+				{
+					Self->ClearCache();
+				}
+			}
+			if (Result.bSuccess && (Result.Value.PurchaseId.IsEmpty() || Result.Value.PaymentUrl.IsEmpty()))
+			{
+				// A 2xx with no purchase may still have opened one.
+				FFlockError Unreadable = FFlockError::MakeWithFix(EFlockErrorType::Serialization,
+					TEXT("The server's answer had no purchase id or payment page"), FString(CheckoutInDoubtFix) + TEXT(" ") + FFlockErrorHints::NotFlocksAnswer());
+				Unreadable.Operation = TEXT("Start checkout");
+				Unreadable.bOutcomeUnknown = true;
+				Result = TFlockResult<FFlockCheckout>::Fail(Unreadable);
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		},
+		TEXT("Start checkout"), /*bIdempotent*/ false, MoneyCall(CheckoutInDoubtFix));
+}
+
+void FFlockShopProvider::GetPurchase(const FString& PurchaseId, TFunction<void(TFlockResult<FFlockPlayerPurchase>)> OnComplete)
+{
+	if (!RequireNotEmpty(PurchaseId, TEXT("Purchase ID"), OnComplete))
+	{
+		return;
+	}
+	if (!Session->IsAuthenticated())
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockPlayerPurchase>::Fail(NoPlayerSignedIn(TEXT("Get purchase"))));
+		}
+		return;
+	}
+	ReadPurchase(PurchaseId, Session->GetSignInNumber(), /*bNotFoundIsExpected*/ false, MoveTemp(OnComplete));
+}
+
+FFlockRequestHandle FFlockShopProvider::ReadPurchase(const FString& PurchaseId, int32 SignInNumber, bool bNotFoundIsExpected,
+	TFunction<void(TFlockResult<FFlockPlayerPurchase>)> OnComplete)
+{
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
+	const FString Url = MakeUrl(FlockEndpoints::ShopPurchaseById(PurchaseId));
+	TFunction<bool(const FFlockError&)> Expected;
+	if (bNotFoundIsExpected)
+	{
+		Expected = [](const FFlockError& Error) { return Error.ErrorCode == EFlockErrorCode::ShopPurchaseNotFound; };
+	}
+	// Never cached: a purchase's status is the question. Bare response.
+	return Execute<FFlockPlayerPurchase>(ForSignInOnly<FFlockPlayerPurchase>(SessionRef, SignInNumber,
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerPurchase>)> OnAttempt)
+		{
+			return ClientRef->GetRaw<FFlockPlayerPurchase>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
+		}),
+		[OnComplete, PurchaseId](TFlockResult<FFlockPlayerPurchase> Result)
+		{
+			// An answer naming another purchase is not this one's status.
+			if (Result.bSuccess && (!Result.Value.Id.Equals(PurchaseId, ESearchCase::CaseSensitive) || Result.Value.Status.IsEmpty()))
+			{
+				Result = TFlockResult<FFlockPlayerPurchase>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Serialization,
+					TEXT("The server's answer had no purchase id or status"), FFlockErrorHints::NotFlocksAnswer()));
+			}
+			if (OnComplete)
+			{
+				OnComplete(Result);
+			}
+		},
+		TEXT("Get purchase"), /*bIdempotent*/ true, /*MaxRetriesOverride*/ -1, /*bAllowAuthRetry*/ true, MoveTemp(Expected));
+}
+
+void FFlockShopProvider::GetPurchases(const FString& Status, int32 Page, int32 Limit, TFunction<void(TFlockResult<FFlockPlayerPurchasePage>)> OnComplete)
+{
+	if (!Session->IsAuthenticated())
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockPlayerPurchasePage>::Fail(NoPlayerSignedIn(TEXT("List purchases"))));
+		}
+		return;
+	}
+	FString Path = FString::Printf(TEXT("%s?page=%d&limit=%d"), FlockEndpoints::ShopPurchases, Page, Limit);
+	if (!Status.IsEmpty())
+	{
+		Path += TEXT("&status=") + FlockEndpoints::Encode(Status);
+	}
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
+	const FString Url = MakeUrl(Path);
+	// Never cached, and sent only while the sign-in current at the call lasts. Paginated at the root.
+	Execute<FFlockPlayerPurchasePage>(ForSignInOnly<FFlockPlayerPurchasePage>(SessionRef, Session->GetSignInNumber(),
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerPurchasePage>)> OnAttempt)
+		{
+			return ClientRef->GetPaged<FFlockPlayerPurchase>(Url, SessionRef->GetAuthHeaders(),
+				[OnAttempt](TFlockResult<TFlockPage<FFlockPlayerPurchase>> Result)
+				{
+					if (!Result.bSuccess)
+					{
+						OnAttempt(TFlockResult<FFlockPlayerPurchasePage>::Fail(Result.Error));
+						return;
+					}
+					FFlockPlayerPurchasePage Out;
+					Out.Items = Result.Value.Items;
+					Out.Total = Result.Value.Total;
+					Out.Page = Result.Value.Page;
+					Out.Limit = Result.Value.Limit;
+					OnAttempt(TFlockResult<FFlockPlayerPurchasePage>::Ok(Out));
+				});
+		}),
+		MoveTemp(OnComplete), TEXT("List purchases"));
 }
 
 void FFlockShopProvider::ForgetCachedPlayerData() const

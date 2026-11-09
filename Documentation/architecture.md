@@ -70,7 +70,7 @@ area names on both sides:
 | `Http/` | Transport seam, client, retry, errors, JSON helpers, snapshot store, provider base |
 | `Auth/` | Token store seam and its file implementation, JWT parsing, the auth session |
 | `Providers/` | One file per feature: auth, config, game, shop, player, command, leaderboard, notification, asset, analytics, multiplayer |
-| `Store/` | `UFlockStore`, the one way to pay real money, and `IFlockStoreConnection`, which Flock's store module implements |
+| `Store/` | `UFlockStore`, the one way to pay real money, `IFlockStoreConnection`, which Flock's store module implements, and the web checkout it pays through on Windows, Mac and Linux |
 | `Multiplayer/` | The multiplayer parts: the party object and its owner, the calls the SDK repeats, queue lookup by name |
 | `Models/` | Wire structs, one file per feature |
 | `Analytics/` | The independently-testable analytics parts: consent, spool, session, lifecycle pump, termination tracker |

@@ -1,9 +1,11 @@
 # Real-money purchases
 
-A real-money item (`FFlockShopItem::IsRealMoney`) is paid for through the platform's own store: Google Play on Android, the
-App Store on iOS. Connect `UFlockStore` once at start, and the shop provider's ordinary `Purchase` buys real-money items through
-it: the store charges the player, Flock checks the purchase with the store and delivers the item, and only then is the store's
-purchase finished. Items priced in a game currency are still bought from the wallet by the same call.
+A real-money item (`FFlockShopItem::IsRealMoney`) is paid for through the platform's own way to pay: the store on a phone
+(Google Play on Android, the App Store on iOS), and a web checkout with the game's payment gateway on Windows, Mac and Linux
+(see [Web checkout](#web-checkout-windows-mac-and-linux)). Connect `UFlockStore` once at start, and the shop provider's ordinary
+`Purchase` buys real-money items through it. On a phone the store charges the player, Flock checks the purchase with the store
+and delivers the item, and only then is the store's purchase finished. Items priced in a game currency are still bought from
+the wallet by the same call.
 
 ## Setting it up
 
@@ -52,9 +54,9 @@ UFlockStore::Connect(Sdk, FFlockStoreOptions(), [](TFlockResult<UFlockStore*> Co
 
 `Connect` reads the game's shops, registers each item that has a product id for this store, and from then on sends Flock
 every purchase the store hands over whenever a player is signed in. Leave `FFlockStoreOptions::PaymentProvider` empty for
-this platform's own store. It is refused:
+this platform's own way to pay: on Windows, Mac and Linux that is a web checkout (below). It is refused:
 
-- on a platform with no store of its own (Windows, Mac, Linux): sell only items priced in a game currency there;
+- for a payment gateway named on a phone: a phone store's rules forbid paying for digital goods on a web page;
 - when Flock's store module is not loaded (no store library, for example with the engine's Online Subsystem plugin turned
   off): a phone store's rules forbid paying for digital goods elsewhere, so Flock never opens a web page instead;
 - on Android with an engine older than UE 5.8, or with `bDisableLocalAcknowledgeAndConsume=true` under
@@ -142,8 +144,51 @@ Store->CheckSetup([](TFlockResult<FFlockStoreSetupCheck> Result)
 ```
 
 `CheckSetup` asks Flock's server about a made-up purchase: a store that answers it as unknown proves the game's keys work, and
-a server that accepts it is reported as a problem. One restore runs at a time; a second is refused until the first completes,
-and `Disconnect` ends the one under way.
+a server that accepts it is reported as a problem. On a phone's store one restore runs at a time; a second is refused until the
+first completes, and `Disconnect` ends the one under way.
+
+## Web checkout (Windows, Mac and Linux)
+
+On Windows, Mac and Linux, `Connect` connects a web checkout through the game's payment gateway (Stripe, Tap or Moyasar).
+Leave `PaymentProvider` empty for the game's one active gateway, or name `FlockPaymentProviders::Stripe`, `Tap` or `Moyasar`
+when it has several. `IsWebCheckout()` is true. A console is refused, as its rules forbid paying for digital goods on a web
+page, and so is a gateway named on a phone.
+
+**Setting it up** needs only an item priced in a currency the game's currency config lists as real money, and a payment
+gateway connected with its keys under **Monetization > Payments** in the Flock dashboard. No store product id, and nothing in
+the project settings.
+
+```cpp
+FFlockStoreOptions Options;
+Options.ReturnUrl = TEXT("https://your-game.example/thanks");    // where the browser lands after paying; empty: the server's own page
+Options.CancelUrl = TEXT("https://your-game.example/cancelled"); // after giving up; empty: ReturnUrl
+UFlockStore::Connect(Sdk, Options, [](TFlockResult<UFlockStore*> Connected) { /* as above */ });
+```
+
+- **Buying:** the same `Purchase` call reads the item (so one added or repriced in the dashboard since the connect is sold as it
+  is now), opens a checkout, opens the gateway's payment page in the player's browser, and reads the purchase about every 3
+  seconds (`CheckEverySeconds`; each wait varies by a quarter either way) until Flock's server reports it. Once paid it
+  completes with the purchase's `PurchaseId`, `ItemType`, `Status` and `Granted` (and `OnPurchaseCompleted` once); it carries
+  no `Inventory` or `Wallet`, so read those afterwards. A payment the gateway declines fails `Store` with
+  `FlockStoreFailureReasons::PaymentDeclined`. A page the player closes without paying keeps the call waiting until the
+  checkout expires after its hour, which fails `Store` with `Expired`; show a way to stop waiting in the game if you need
+  one. Flock's server delivers the item itself, so `OnPurchaseNotDelivered` is never raised here.
+- **When the reads stop on a failure** (the player's sign-in refused, a proxy in the way, a checkout the server did not keep),
+  the call fails with `bOutcomeUnknown` set, since the page may still be paid: read the open checkouts before offering it
+  again.
+- **Never opened twice.** A checkout is never sent again after an answer that did not come: that failure has
+  `bOutcomeUnknown` set; read the player's open checkouts (`GetPurchases(FlockPurchaseStatuses::Pending, ...)`) before
+  offering it again. One purchase of an item runs at a time.
+- **Checkouts left open and still unpaid** (the game closed, another device, a call whose player signed out) are found at each
+  sign-in and by `Restore`, read until they end, and reported through `OnPurchaseCompleted` once paid. One paid while nothing
+  read it is delivered by Flock but not reported: refresh the wallet and inventory after each sign-in.
+- **Another way to show the page:** set `FFlockStoreOptions::OpenPaymentPage` (C++) to show the address yourself, such as a
+  QR code, instead of opening the default browser.
+- `GetPrice` is the item's own price as the connect read it, which is what the gateway charges; `CheckSetup` cannot check a gateway without opening a
+  checkout, so its `NotChecked` says how: buy an item with the gateway's test keys and its test card.
+- To build a checkout screen of your own, `FFlockShopProvider::StartCheckout`, `GetPurchase` and `GetPurchases` are the same
+  calls one at a time.
+- Mac and Linux run the same code as Windows but have not been run yet.
 
 ## Things worth knowing
 
@@ -152,8 +197,9 @@ and `Disconnect` ends the one under way.
   (`Flock.Store.EnginePurchaseNodes`) when a Blueprint uses them in a game whose shops sell real-money items. The panel's
   **Test Connection** reads the shops to find out, so the warning appears after a connection check. Keep the engine's nodes
   only for products no Flock shop item sells.
-- **Steam, Epic and consoles** have no store provider in Flock. A Steam build may take payments only through Steam's own
-  wallet.
+- **Steam, Epic and consoles** have no store provider in Flock. **A Steam build may take payments only through Steam's own
+  wallet**, so do not ship a web checkout in it: connecting one in a build whose engine online service is Steam logs a
+  warning. Web checkout is for the Epic Games Store, your own launcher or site, and other storefronts that allow it.
 - **A game with its own store code** can hand `UFlockStore` its own `IFlockStoreConnection` with `UFlockStore::SetStoreLibrary`
   (or `ConnectThrough`), or redeem each purchase itself with `RedeemStoreReceipt`. Its answer to `Buy` sets
   `FFlockStoreOrder::bAnswersThePurchaseDialog`; a purchase handed back any other way leaves it false.

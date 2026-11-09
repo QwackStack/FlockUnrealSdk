@@ -21,7 +21,7 @@ namespace FlockStoreFailureReasons
 {
 	/** The player closed the store's purchase dialog. Nothing was charged. */
 	inline constexpr const TCHAR* Cancelled = TEXT("cancelled");
-	/** The store declined the player's payment method. Nothing was charged. */
+	/** The store, or a web checkout's payment gateway, declined the player's payment. Nothing was charged. */
 	inline constexpr const TCHAR* PaymentDeclined = TEXT("payment_declined");
 	/** This store account already owns the one-time item. */
 	inline constexpr const TCHAR* AlreadyOwned = TEXT("already_owned");
@@ -33,6 +33,8 @@ namespace FlockStoreFailureReasons
 	inline constexpr const TCHAR* StoreUnavailable = TEXT("store_unavailable");
 	/** The player is not signed in to the store on this device. */
 	inline constexpr const TCHAR* NotSignedInToTheStore = TEXT("not_signed_in_to_the_store");
+	/** A web checkout closed unpaid: not paid within the hour it stays open, or cancelled by the gateway. Nothing was charged. */
+	inline constexpr const TCHAR* Expired = TEXT("expired");
 	/** Any other reason; the error's Message carries the store's own words. */
 	inline constexpr const TCHAR* Unknown = TEXT("unknown");
 }
@@ -44,12 +46,32 @@ struct FLOCK_API FFlockStoreOptions
 	GENERATED_BODY()
 
 	/**
-	 * What to pay through: empty for this platform's own store (Google Play on Android, the App Store on iOS), or one of
-	 * FlockPaymentProviders naming a store. A platform with no store of its own (Windows, Mac, Linux) is refused when this
-	 * is empty.
+	 * What to pay through: empty for this platform's own way (Google Play on Android, the App Store on iOS, a web checkout
+	 * through the game's one active payment gateway on Windows, Mac and Linux), or one of FlockPaymentProviders: a store
+	 * (GooglePlay, AppleAppStore), or a payment gateway (Stripe, Tap, Moyasar) when the game has several active. A phone is
+	 * never sent to a web page: a gateway named there is refused, as the phone stores' rules forbid paying for digital goods
+	 * elsewhere.
 	 */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Flock")
 	FString PaymentProvider;
+
+	/** On a web checkout, where the player's browser lands after paying; empty leaves it to the server (its own page). */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Flock")
+	FString ReturnUrl;
+
+	/** On a web checkout, where the player's browser lands after giving up; empty uses ReturnUrl, or the server's own page. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Flock")
+	FString CancelUrl;
+
+	/** On a web checkout, about how often a checkout waiting for its payment is read, in seconds (each wait varies by a quarter either way); 3 when zero, less, or not a number. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Flock")
+	float CheckEverySeconds = 0.f;
+
+	/**
+	 * On a web checkout, opens the payment gateway's page; empty opens it in the player's default browser
+	 * (FPlatformProcess::LaunchURL). Set it to show the address another way, such as a Pay now button or a QR code.
+	 */
+	TFunction<void(const FString& PaymentUrl)> OpenPaymentPage;
 };
 
 /** A real-money item's price as the store shows it to this player: in their currency and with their taxes. */
@@ -137,6 +159,13 @@ struct FLOCK_API FFlockStoreSetupCheck
 	/** True when ServerProblem holds why Flock's server could not ask the store. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	bool bHasServerProblem = false;
+
+	/**
+	 * On a web checkout, what could not be checked and how to check it by hand: Flock's server says whether a payment gateway
+	 * is connected only as a checkout opens. Empty on a store.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString NotChecked;
 
 	/** Why Flock's server could not ask the store (its ErrorCode and Hint say what to fix), when bHasServerProblem. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
@@ -240,7 +269,9 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FFlockOnStorePurchaseNotDelivered, const FFl
  * purchase finished; a purchase Flock did not deliver stays unfinished, so the store hands it back at the next launch, where it
  * is sent again once a player is signed in. The platform's store is reached through a store library, which Flock's store
  * module registers; without one a store is refused, never replaced by a web page, as a phone store's rules forbid paying
- * for digital goods elsewhere.
+ * for digital goods elsewhere. On Windows, Mac and Linux the way to pay is a web checkout: the purchase opens a checkout
+ * with the game's payment gateway (Stripe, Tap or Moyasar), opens its payment page in the player's browser and waits until
+ * Flock's server reports it paid, failed or expired; Flock's server delivers the item itself.
  *
  * One connection at a time: the subsystem holds it (UFlockSubsystem::GetStore) until Disconnect or the SDK shuts down. Game
  * thread only.
@@ -252,12 +283,14 @@ class FLOCK_API UFlockStore : public UObject
 
 public:
 	/**
-	 * Connects the game's way to pay real money: Options.PaymentProvider, or this platform's own store when it is empty. Reads
-	 * the game's shops, registers each item that has a product id for the store (a currency pack or consumable as a consumable
-	 * product, a standard item as a one-time product), and from then on sends Flock the store's unfinished purchases whenever a
-	 * player is signed in. Refused when no store library is registered (Flock's store module not loaded), on a platform with no
-	 * store of its own, and while another connection is connected (Disconnect it first). Completes with the connection, which
-	 * the subsystem also holds.
+	 * Connects the game's way to pay real money: Options.PaymentProvider, or this platform's own when it is empty (the store on
+	 * a phone, a web checkout on Windows, Mac and Linux). Reads the game's shops. A store also registers each item that has a
+	 * product id for it (a currency pack or consumable as a consumable product, a standard item as a one-time product) and from
+	 * then on sends Flock the store's unfinished purchases whenever a player is signed in; a web checkout reads the signed-in
+	 * player's checkouts still open, at connect and at every sign-in. Refused when no store library is registered (Flock's
+	 * store module not loaded), for a payment gateway named on a phone, and while another connection is connected (Disconnect
+	 * it first). A web checkout in a build whose engine online service is Steam logs one warning: Steam's rules allow in-game
+	 * purchases only through the Steam wallet. Completes with the connection, which the subsystem also holds.
 	 */
 	static void Connect(UFlockSubsystem* Flock, const FFlockStoreOptions& Options, TFunction<void(TFlockResult<UFlockStore*>)> OnComplete);
 
@@ -276,18 +309,27 @@ public:
 	/** The store library registered, or null; a caller that replaces it for a while puts this one back afterwards. */
 	static TFunction<TSharedPtr<IFlockStoreConnection>()> GetStoreLibrary();
 
-	/** The store this connection pays through: FlockPaymentProviders::GooglePlay or FlockPaymentProviders::AppleAppStore. */
+	/**
+	 * What this connection pays through: FlockPaymentProviders::GooglePlay or AppleAppStore, the payment gateway named in
+	 * FFlockStoreOptions::PaymentProvider, or empty for a web checkout through the game's one active gateway.
+	 */
 	UFUNCTION(BlueprintPure, Category = "Flock|Store")
 	FString GetPaymentProvider() const { return PaymentProvider; }
+
+	/** True when purchases go through a web checkout (the gateway's payment page in the player's browser), false through a phone's store. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Store")
+	bool IsWebCheckout() const { return Web.IsValid(); }
 
 	/** True from a successful Connect until Disconnect or the SDK shutting down. */
 	UFUNCTION(BlueprintPure, Category = "Flock|Store")
 	bool IsConnected() const { return bReady && !bDisconnected; }
 
 	/**
-	 * A real-money item's price to show this player, as the store shows it, in their currency and with their taxes, rather
-	 * than its Price. bFoundInTheStore is false when the store did not find the item's product. Fails (Validation) for an item
-	 * not in the game's shops when the store connected, or one with no product id for this store.
+	 * A real-money item's price to show this player. On a phone, as the store shows it, in their currency and with their
+	 * taxes, rather than its Price: bFoundInTheStore is false when the store did not find the item's product. On a web
+	 * checkout, the item's own price, which is what the gateway charges. Fails (Validation) for an item not in the game's
+	 * shops when the store connected, one with no product id for this store, and on a web checkout one priced in a game
+	 * currency.
 	 */
 	TFlockResult<FFlockStorePrice> GetPrice(const FString& ShopItemId) const;
 
@@ -296,14 +338,18 @@ public:
 	 * a purchase Flock delivered before grants nothing more. Purchases still unfinished, one whose send failed earlier in this
 	 * launch included, are sent again and reported through OnPurchaseCompleted or OnPurchaseNotDelivered as usual. One made for
 	 * another Flock account is listed in NotDelivered. Fails when no player is signed in, when the store cannot list the
-	 * purchases, and (Cancelled) when the player signs out or changes while it runs, sending none of the rest.
+	 * purchases, and (Cancelled) when the player signs out or changes while it runs, sending none of the rest. On a web
+	 * checkout Flock already holds what the player bought: the player's checkouts still open are read again (each one paid is
+	 * reported through OnPurchaseCompleted; one paid while nothing read it is delivered but not reported), and both lists are
+	 * empty. Several restores may run at once there.
 	 */
 	void Restore(TFunction<void(TFlockResult<FFlockStoreRestore>)> OnComplete);
 
 	/**
 	 * Checks the store's setup without buying anything: which real-money items the store did not find or have no product id
 	 * for this store, and whether Flock's server can ask the store about a purchase with the game's keys (it is asked about a
-	 * made-up purchase, which the store answers as unknown when the keys work). Needs a signed-in player.
+	 * made-up purchase, which the store answers as unknown when the keys work). Needs a signed-in player. On a web checkout
+	 * nothing can be asked without opening a checkout, so NotChecked says how to check the gateway, and no checkout is opened.
 	 */
 	void CheckSetup(TFunction<void(TFlockResult<FFlockStoreSetupCheck>)> OnComplete);
 
@@ -318,18 +364,26 @@ public:
 
 	/**
 	 * Raised for every real-money purchase Flock delivers: one bought just now, one the store was waiting to be paid for, one
-	 * left unfinished at an earlier launch, and one a restore sent again. Refresh the wallet and inventory here.
+	 * left unfinished at an earlier launch, and one a restore sent again; on a web checkout, once for every checkout seen to be
+	 * paid, whether its call still waited or it was found still unpaid at a sign-in (an item that can no longer be read comes
+	 * with its Id alone). A checkout paid while nothing read it (after a sign-out, a disconnect, or with the game closed) is
+	 * delivered by Flock but not reported: refresh the wallet and inventory after each sign-in.
+	 * Refresh the wallet and inventory here.
 	 */
 	FFlockOnStorePurchaseCompleted OnPurchaseCompleted;
 
-	/** Raised for every store purchase the player paid for that Flock did not deliver; it stays unfinished in the store and is sent again at the next launch. */
+	/** Raised for every store purchase the player paid for that Flock did not deliver; it stays unfinished in the store and is sent again at the next launch. Never raised on a web checkout, which Flock's server delivers itself. */
 	FFlockOnStorePurchaseNotDelivered OnPurchaseNotDelivered;
 
 	/**
 	 * FFlockShopProvider::Purchase's real-money path: opens the store's purchase dialog for the item and, once the store has
 	 * charged, has Flock deliver it before the store's purchase is finished. Fails Store with StoreFailureReason when the store
 	 * did not take the payment; a payment the store waits for completes with Status pending, and OnPurchaseCompleted follows
-	 * once paid.
+	 * once paid. On a web checkout: reads the item, opens a checkout, opens its payment page and completes once it is paid,
+	 * with PurchaseId, ItemType, Status and Granted (no Inventory or Wallet: read them after). A payment the gateway declines
+	 * fails Store (PaymentDeclined); a page the player closes keeps the call waiting until the checkout expires after its hour
+	 * (Expired); reads that stop on another failure end with bOutcomeUnknown, as it may still be paid. Never sent again after
+	 * an answer that did not come, so it never opens two checkouts.
 	 */
 	void Purchase(const FString& ShopItemId, TFunction<void(TFlockResult<FFlockPurchaseResult>)> OnComplete);
 
@@ -339,13 +393,18 @@ public:
 	/** This build's own store: Google Play on Android, the App Store on iOS, empty elsewhere. */
 	static FString PaymentProviderOfThisPlatform();
 
+	/** True on Windows, Mac and Linux: the platforms a web checkout is opened on. */
+	static bool IsADesktop();
+
+	/** True when the engine's default online service is Steam ([OnlineSubsystem] DefaultPlatformService in the engine settings). */
+	static bool IsSteamTheDefaultService();
+
 	/** Connects through Connection rather than the store library: for a game's own store code, and for tests. */
 	static void ConnectThrough(UFlockSubsystem* Flock, const TSharedRef<IFlockStoreConnection>& Connection,
 		TFunction<void(TFlockResult<UFlockStore*>)> OnComplete);
 
 	virtual void BeginDestroy() override;
 
-private:
 	/** Ids match letter for letter, as the stores' and the server's do (a map of strings ignores case). */
 	template <typename ValueType>
 	struct FExactIdKeyFuncs : TDefaultMapKeyFuncs<FString, ValueType, /*bInAllowDuplicateKeys*/ false>
@@ -354,6 +413,7 @@ private:
 		static uint32 GetKeyHash(const FString& Key) { return FCrc::StrCrc32(*Key); }
 	};
 
+private:
 	template <typename ValueType>
 	using TExactIdMap = TMap<FString, ValueType, FDefaultSetAllocator, FExactIdKeyFuncs<ValueType>>;
 
@@ -416,6 +476,12 @@ private:
 	void EndEveryBuying(const FFlockError& Error);
 
 	void StartConnecting(TFunction<void(TFlockResult<UFlockStore*>)> OnComplete);
+	/** A web checkout through Gateway (empty: the game's one active gateway): reads the shops, then the open checkouts. */
+	static void ConnectWebCheckout(UFlockSubsystem* Flock, const FString& Gateway, const FFlockStoreOptions& Options,
+		TFunction<void(TFlockResult<UFlockStore*>)> OnComplete);
+	/** Refuses (OnComplete told) when Flock is not ready or a connection is already held; true when one may connect. */
+	static bool MayConnect(UFlockSubsystem* Flock, TFunction<void(TFlockResult<UFlockStore*>)>& OnComplete);
+	static FFlockStorePrice PriceOfTheItem(const FFlockShopItem& Item);
 	void ReadCatalog(int32 Page, TSharedRef<TArray<FFlockShop>> Shops, TFunction<void(TFlockResult<TArray<FFlockShop>>)> OnDone);
 	void LearnCatalog(const TArray<FFlockShop>& Shops, TArray<FFlockStoreProduct>& OutProducts);
 	void RememberProducts(TArray<FFlockStoreProduct>& InOutProducts);
@@ -487,4 +553,6 @@ private:
 	TArray<FWaitingForBuyer> WaitingForBuyer;
 	/** The restore under way, if any: one at a time, and ended by a disconnect. */
 	TSharedPtr<FRestoring> CurrentRestore;
+	/** The web checkout this connection pays through; null on a store. */
+	TSharedPtr<class FFlockWebCheckout> Web;
 };

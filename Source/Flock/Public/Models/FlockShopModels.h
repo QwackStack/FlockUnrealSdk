@@ -417,6 +417,129 @@ struct FLOCK_API FFlockPlayerInventoryPage
 	int32 Limit = 0;
 };
 
+/**
+ * A web checkout the server opened for a real-money item (FFlockShopProvider::StartCheckout): where to send the player to pay.
+ * Nothing is paid or delivered until the payment gateway confirms; read the purchase with FFlockShopProvider::GetPurchase.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockCheckout
+{
+	GENERATED_BODY()
+
+	/** The purchase the checkout pays for: pending until it is paid, failed or expired. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PurchaseId;
+
+	/** The payment gateway that opened it: FlockPaymentProviders::Stripe, Tap or Moyasar. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Provider;
+
+	/** The gateway's payment page, to open in the player's browser. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PaymentUrl;
+
+	/** When the checkout closes unpaid (ISO 8601, UTC); empty when the server did not say. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ExpiresAt;
+};
+
+/**
+ * One of the signed-in player's purchases as the server holds it now (FFlockShopProvider::GetPurchase, GetPurchases). A web
+ * checkout's purchase is pending until the gateway reports it paid, failed or expired.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockPlayerPurchase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Id;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ShopItemId;
+
+	/** The item's kind: one of FlockShopItemTypes. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ItemType;
+
+	/** Where the purchase has got to: one of FlockPurchaseStatuses. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Status;
+
+	/** The price charged, in PriceCurrency's smallest unit for real money (799 is SAR 7.99). */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int64 PriceAmount = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PriceCurrency;
+
+	/** How it was paid: from the wallet, or outside Flock (a store or a payment gateway). */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString SettlementMethod;
+
+	/** The store or payment gateway that took the payment (one of FlockPaymentProviders); empty for a wallet purchase. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PaymentProvider;
+
+	/** What the purchase handed over once paid. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockShopItemReward> Granted;
+
+	/** The inventory entry the purchase made, once paid; empty when it made none. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PlayerInventoryId;
+
+	/** ISO 8601, UTC. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString CreatedAt;
+
+	/** When it was paid, failed or expired; empty while pending. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString SettledAt;
+
+	/** When it was refunded; empty when it was not. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString RefundedAt;
+
+	/** When a pending web checkout closes unpaid; empty when the server did not say. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ExpiresAt;
+
+	bool IsPending() const { return Status.Equals(FlockPurchaseStatuses::Pending, ESearchCase::CaseSensitive); }
+	bool IsPaid() const { return Status.Equals(FlockPurchaseStatuses::Paid, ESearchCase::CaseSensitive); }
+};
+
+/** A page of the signed-in player's purchases, newest first. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockPlayerPurchasePage
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockPlayerPurchase> Items;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int32 Total = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int32 Page = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int32 Limit = 0;
+};
+
+/** Body for `POST shop/checkout`. Only the item is required; an empty member is left out, so the server picks it. */
+USTRUCT()
+struct FLOCK_API FFlockCheckoutRequest
+{
+	GENERATED_BODY()
+
+	UPROPERTY() FString ShopItemId;
+	UPROPERTY() FString Provider;
+	UPROPERTY() FString ReturnUrl;
+	UPROPERTY() FString CancelUrl;
+};
+
 /** Body for `POST shop/transaction`. Both members are required by the backend. */
 USTRUCT()
 struct FLOCK_API FFlockShopTransactionRequest

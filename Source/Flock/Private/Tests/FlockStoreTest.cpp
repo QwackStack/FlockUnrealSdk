@@ -369,7 +369,7 @@ FLOCK_STORE_TEST(FFlockStoreRefusedTest, "AFlockRefusalStaysUnfinishedAndTheCall
 bool FFlockStoreRefusedTest::RunTest(const FString& Parameters)
 {
 	// The SDK logs each refusal the server sends.
-	AddExpectedError(TEXT("failed"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
 	FFixture F(FFlockFakeTransport::Status(422, CredentialsRejected));
 	F.Store->OnBuy = [&F](const FString& ProductId) { F.Store->PayFromTheDialog(ProductId, TEXT("token-1")); };
 	F.SignIn(TEXT("player-a"));
@@ -389,7 +389,7 @@ FLOCK_STORE_TEST(FFlockStoreEventsBeforeTheAnswerTest, "EachPurchasesEventIsRais
 bool FFlockStoreEventsBeforeTheAnswerTest::RunTest(const FString& Parameters)
 {
 	// The SDK logs the refusal the server sends.
-	AddExpectedError(TEXT("failed"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
 	for (const bool bDelivered : { true, false })
 	{
 		FFixture F(bDelivered ? FFlockFakeTransport::Ok(Delivered) : FFlockFakeTransport::Status(422, CredentialsRejected));
@@ -532,7 +532,7 @@ FLOCK_STORE_TEST(FFlockStoreOnceALaunchTest, "AnUnfinishedPurchaseIsSentOnceALau
 bool FFlockStoreOnceALaunchTest::RunTest(const FString& Parameters)
 {
 	// The SDK logs each refusal the server sends.
-	AddExpectedError(TEXT("failed"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
 	FFixture F(FFlockFakeTransport::Status(422, CredentialsRejected));
 	F.SignIn(TEXT("player-a"));
 	F.Connect();
@@ -678,7 +678,7 @@ bool FFlockStoreDialogForTheBuyerTest::RunTest(const FString& Parameters)
 FLOCK_STORE_TEST(FFlockStoreConnectAgainTest, "AConnectionMadeAgainDoesNotSendAPurchaseAlreadySentThisRun")
 bool FFlockStoreConnectAgainTest::RunTest(const FString& Parameters)
 {
-	AddExpectedError(TEXT("failed"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
 	FFixture F(FFlockFakeTransport::Status(422, CredentialsRejected));
 	F.SignIn(TEXT("player-a"));
 	F.Connect();
@@ -695,7 +695,7 @@ FLOCK_STORE_TEST(FFlockStoreCancelledSendTest, "APurchaseWhoseSendEndedWithItsSi
 bool FFlockStoreCancelledSendTest::RunTest(const FString& Parameters)
 {
 	// The SDK logs the refused renewal and the redemption it ended.
-	AddExpectedError(TEXT("failed"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
 	AddExpectedError(TEXT("refresh"), EAutomationExpectedErrorFlags::Contains, 0);
 	FFixture F;
 	// The first answer says the token expired, and the renewal is refused: the sign-in is over, and nothing was redeemed.
@@ -774,7 +774,7 @@ bool FFlockStoreSoldBeforeNoCacheTest::RunTest(const FString& Parameters)
 FLOCK_STORE_TEST(FFlockStoreAnotherPlayersReceiptTest, "AReceiptAnotherPlayerHoldsIsReportedAndNotSentAgainThisRun")
 bool FFlockStoreAnotherPlayersReceiptTest::RunTest(const FString& Parameters)
 {
-	AddExpectedError(TEXT("failed"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
 	FFixture F(FFlockFakeTransport::Coded(403, TEXT("payment_provider.receipt_belongs_to_another_player")));
 	F.SignIn(TEXT("player-a"));
 	F.Connect();
@@ -966,7 +966,7 @@ FLOCK_STORE_TEST(FFlockStoreRestoreRefusalTest, "RestoreListsARefusalAndStillDel
 bool FFlockStoreRestoreRefusalTest::RunTest(const FString& Parameters)
 {
 	// The SDK logs each refusal the server sends.
-	AddExpectedError(TEXT("failed"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
 	FFixture F;
 	F.Fake->OnSequence(TEXT("shop/validate-receipt"), { FFlockFakeTransport::Coded(403, TEXT("payment_provider.receipt_belongs_to_another_player")), FFlockFakeTransport::Ok(Delivered) });
 	F.Store->Own(Sword, TEXT("token-sword"));
@@ -986,7 +986,7 @@ FLOCK_STORE_TEST(FFlockStoreRestoreSendsAgainTest, "RestoreSendsAgainAnUnfinishe
 bool FFlockStoreRestoreSendsAgainTest::RunTest(const FString& Parameters)
 {
 	// The SDK logs each refusal the server sends.
-	AddExpectedError(TEXT("failed"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
 	FFixture F;
 	F.Fake->OnSequence(TEXT("shop/validate-receipt"), { FFlockFakeTransport::Status(422, CredentialsRejected), FFlockFakeTransport::Ok(Delivered) });
 	F.SignIn(TEXT("player-a"));
@@ -1128,7 +1128,7 @@ FLOCK_STORE_TEST(FFlockStoreSetupCheckTest, "TheSetupCheckListsWhatTheStoreDidNo
 bool FFlockStoreSetupCheckTest::RunTest(const FString& Parameters)
 {
 	// The SDK logs each refusal the server sends.
-	AddExpectedError(TEXT("failed"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
 	FFixture F(FFlockFakeTransport::Coded(422, TEXT("payment_provider.receipt_invalid")));
 	FFlockStorePrice Found;
 	Found.bFoundInTheStore = true;
@@ -1156,7 +1156,7 @@ FLOCK_STORE_TEST(FFlockStoreSetupCheckKeysTest, "TheSetupCheckReportsTheStoreRef
 bool FFlockStoreSetupCheckKeysTest::RunTest(const FString& Parameters)
 {
 	// The SDK logs each refusal the server sends.
-	AddExpectedError(TEXT("failed"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
 	FFixture F(FFlockFakeTransport::Status(422, CredentialsRejected));
 	F.SignIn(TEXT("player-a"));
 	F.Connect();
@@ -1172,7 +1172,7 @@ FLOCK_STORE_TEST(FFlockStoreSetupReadyTest, "TheSetupCheckWithEveryProductFoundA
 bool FFlockStoreSetupReadyTest::RunTest(const FString& Parameters)
 {
 	// The SDK logs each refusal the server sends.
-	AddExpectedError(TEXT("failed"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
 	FFixture F(FFlockFakeTransport::Coded(422, TEXT("payment_provider.receipt_invalid")),
 		{ Item(TEXT("gems"), TEXT("currency_pack"), FString::Printf(TEXT("{\"google_play\":\"%s\"}"), *Gems)) });
 	FFlockStorePrice Found;
@@ -1339,7 +1339,7 @@ FLOCK_STORE_TEST(FFlockStoreSoldBeforeGoneTest, "AnUnfinishedPurchaseOfAnItemNoL
 bool FFlockStoreSoldBeforeGoneTest::RunTest(const FString& Parameters)
 {
 	// The SDK logs each refusal the server sends.
-	AddExpectedError(TEXT("failed"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
 	FFixture F;
 	F.Connect();
 	F.Sdk->ShutdownSdk();
@@ -1398,12 +1398,19 @@ bool FFlockStoreConnectRefusalsTest::RunTest(const FString& Parameters)
 	UFlockStore::ClearStoreLibrary();
 	const TOptional<FFlockError> NoLibrary = ConnectWith(FlockPaymentProviders::GooglePlay);
 	TestTrue(TEXT("Without a store library: refused, naming the plugin to keep enabled"), NoLibrary.IsSet() && NoLibrary->Hint.Contains(TEXT("Online Subsystem plugin")));
-	const TOptional<FFlockError> NotAStore = ConnectWith(TEXT("stripe"));
-	TestTrue(TEXT("Not a store: refused"), NotAStore.IsSet() && NotAStore->Type == EFlockErrorType::Validation && NotAStore->Message.Contains(TEXT("not a store")));
+	const TOptional<FFlockError> NotAStore = ConnectWith(TEXT("paypal"));
+	TestTrue(TEXT("Neither a store nor a gateway: refused"), NotAStore.IsSet() && NotAStore->Type == EFlockErrorType::Validation
+		&& NotAStore->Message.Contains(TEXT("not a store or a payment gateway")));
 	if (UFlockStore::PaymentProviderOfThisPlatform().IsEmpty())
 	{
+		// A platform with no store of its own pays through a web checkout, without a store library.
 		const TOptional<FFlockError> NoneHere = ConnectWith(FString());
-		TestTrue(TEXT("A platform with no store of its own: refused"), NoneHere.IsSet() && NoneHere->Message.Contains(TEXT("no store of its own")));
+		TestTrue(TEXT("A platform with no store of its own: a web checkout"), NoneHere.IsSet() && NoneHere->Type == EFlockErrorType::None
+			&& F.Sdk->GetStore() != nullptr && F.Sdk->GetStore()->IsWebCheckout());
+		if (F.Sdk->GetStore() != nullptr)
+		{
+			F.Sdk->GetStore()->Disconnect();
+		}
 	}
 	const TSharedRef<FFakeStore> Apple = MakeShared<FFakeStore>();
 	Apple->Provider = FlockPaymentProviders::AppleAppStore;

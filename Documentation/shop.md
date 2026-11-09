@@ -44,9 +44,9 @@ no JSON parsing node needed.
 **Break the Purchase Result to see what actually happened.** It carries `Inventory` (the row the player
 now owns), `Granted` (what the purchase handed over immediately), `Wallet` (the balances afterwards) and
 `Status`. An item priced in a game currency is bought from the player's wallet, so the purchase is paid at once and
-*Is Purchase Paid* is true. An item priced in real money (`IsRealMoney`) is bought through the platform's store once
-`UFlockStore` is connected (see [Real-money purchases](real-money-purchases.md)): it can then also answer pending, while the
-store waits for the payment. With no store connected, or bought for another player named by id, it is refused before anything is sent; a server too old to say which
+*Is Purchase Paid* is true. An item priced in real money (`IsRealMoney`) is bought through the platform's store, or a web checkout on Windows, Mac and
+Linux, once `UFlockStore` is connected (see [Real-money purchases](real-money-purchases.md)): on a phone it can then also
+answer pending, while the store waits for the payment. With no store connected, or bought for another player named by id, it is refused before anything is sent; a server too old to say which
 items cost real money refuses one with `ShopRealCurrencyNeedsCheckout` instead. An item switched off (Inactive) in the
 dashboard, or one in a switched-off shop, is refused with `ShopItemNotForSale` and nothing is bought; the shop provider
 then clears the shops it kept, so reading the shop again shows the item gone from its items (*Flock Get Shop Item*,
@@ -171,8 +171,8 @@ Sdk->GetShopProvider()->GetItem(ShopItemId,
     {
         if (!Read.bSuccess || !Read.Value.IsRealMoney) { return; }
 
-        // Paid through the platform's store, never from the wallet: Purchase buys it through the connected
-        // UFlockStore (see real-money-purchases.md).
+        // Paid through the platform's store or a web checkout, never from the wallet: Purchase buys it through the
+        // connected UFlockStore (see real-money-purchases.md).
         FString ProductId;
         if (Read.Value.FindStoreProductId(FlockPaymentProviders::GooglePlay, ProductId))
         {

@@ -52,6 +52,7 @@ class FLOCK_API UFlockSubsystem : public UGameInstanceSubsystem
 	friend class UProtokitePlaytestSubsystem;
 	// The store reads the sign-in, the saved state and the game key, and is held here while connected.
 	friend class UFlockStore;
+	friend class FFlockWebCheckout;
 
 public:
 	/**
