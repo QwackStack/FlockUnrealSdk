@@ -54,6 +54,9 @@ public:
 	/** A party call given no party. */
 	static FString PassAHeldParty();
 
+	/** A store call (a price, a restore, a setup check) made with no way to pay real money connected. */
+	static FString ConnectAStoreFirst();
+
 	/** A session that has ended, asked to do something. */
 	static FString FindAnotherSession();
 

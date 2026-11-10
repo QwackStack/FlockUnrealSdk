@@ -185,10 +185,44 @@ UFlockStore::Connect(Sdk, Options, [](TFlockResult<UFlockStore*> Connected) { /*
 - **Another way to show the page:** set `FFlockStoreOptions::OpenPaymentPage` (C++) to show the address yourself, such as a
   QR code, instead of opening the default browser.
 - `GetPrice` is the item's own price as the connect read it, which is what the gateway charges; `CheckSetup` cannot check a gateway without opening a
-  checkout, so its `NotChecked` says how: buy an item with the gateway's test keys and its test card.
+  checkout, so its `NotChecked` says how: buy an item with the gateway's test keys and its test card. `IsReady()` is true when
+  nothing else was found to fix.
 - To build a checkout screen of your own, `FFlockShopProvider::StartCheckout`, `GetPurchase` and `GetPurchases` are the same
   calls one at a time.
 - Mac and Linux run the same code as Windows but have not been run yet.
+
+## Blueprint
+
+The store's nodes live under *Flock | Store*; buying is the ordinary **Flock Purchase** node (*Flock | Shop*).
+
+| Node | What it does |
+|---|---|
+| `Flock Connect Store` | connects the way to pay, once at start: the success pin carries the store Flock holds. Its *Options* pin is `FFlockStoreOptions` without `OpenPaymentPage`, which is C++ only, so from Blueprint a web checkout's page opens in the default browser; leave it unwired for every default |
+| `Flock Get Store Price` | a real-money item's price (*Text* to show); false, with an *Error* saying why, when no store is connected or the item has no price here |
+| `Flock Restore Purchases` | has Flock deliver what the store account owns (*Restored*, *Not Delivered*); on a web checkout, reads the open checkouts again |
+| `Flock Check Store Setup` | what the store did not find, and whether Flock's server can ask it; *Is Store Ready* says whether anything needs fixing (on a web checkout, true when nothing was found: *Not Checked* says how to check the gateway) |
+| `Flock Get Store` | the store Flock holds, or none |
+| `Flock Disconnect Store` | disconnects it; does nothing when none is connected |
+| `Flock Start Checkout` | opens a web checkout and hands back its *Payment Url* and *Purchase Id*, for a game that shows the page itself |
+| `Flock Get Player Purchase`, `Flock Get Player Purchases` | one of the player's purchases, or a page of them by status (*Flock Purchase Status Pending* for the open checkouts); *Is Player Purchase Paid* and *Is Player Purchase Pending* read one |
+| `Flock Redeem Store Receipt` | has Flock redeem a purchase the game's own store code made, from *Make App Store Receipt* or *Make Google Play Receipt*; safe to send again |
+
+Connect from *Call Or Register On Initialized* on Flock's events (*Get Events*), which runs at once when Flock has already
+initialized. Bind **On Store Purchase Completed** on Flock's events once, too: it is raised for every delivery the connected
+store reports, whichever connection made it, right after the store's own `OnPurchaseCompleted` (a web checkout paid while
+nothing read it is delivered but not reported: refresh the wallet and inventory after each sign-in). **On Store Purchase Not Delivered** is
+raised for a store purchase the player paid for that Flock did not deliver; its *Error* says why and how to fix it.
+
+**Flock Purchase**'s success pin can carry a purchase the store is still waiting to be paid for (a pending payment or a
+parent's approval): check *Is Purchase Paid* before handing anything over; On Store Purchase Completed follows once it is
+paid. Its failure pin carries the *Error*: compare its *Store Failure Reason* with the **Flock Store Failure
+Reason** nodes (*Cancelled*, *Payment Declined*, *Already Owned*, *Already Pending*, *Product Unavailable*, *Store
+Unavailable*, *Not Signed In To The Store*, *Expired*, *Unknown*), and check *Outcome Unknown*: true when no answer came, so
+the purchase may have been paid. Read the wallet and inventory, or the open checkouts, before offering it again.
+
+With no store connected, *Flock Get Store Price*, *Flock Restore Purchases* and *Flock Check Store Setup* fail with
+"No store is connected" and how to connect one; with no Flock in the World Context's game, the async nodes and *Flock Get Store Price* say how to initialize it
+(*Flock Get Store* is none, and *Flock Disconnect Store* does nothing).
 
 ## Things worth knowing
 
@@ -205,5 +239,5 @@ UFlockStore::Connect(Sdk, Options, [](TFlockResult<UFlockStore*> Connected) { /*
   `FFlockStoreOrder::bAnswersThePurchaseDialog`; a purchase handed back any other way leaves it false.
 - **Shutting down** (`ShutdownSdk`) disconnects the store, ending a purchase that waits with `Cancelled`. Connect again after
   initializing again.
-- Every call is on the game thread, as the engine's online subsystem is. The connection, prices, restore and the setup check
-  are C++ only in this version.
+- Every call is on the game thread, as the engine's online subsystem is. Blueprint has a node for each call above but
+  `OpenPaymentPage`, `SetStoreLibrary` and `ConnectThrough` (a game's own store code in C++); see [Blueprint](#blueprint).

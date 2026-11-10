@@ -107,7 +107,6 @@ public:
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Payment Provider Moyasar"), Category = "Flock|Shop")
 	static FString PaymentProviderMoyasar() { return FlockPaymentProviders::Moyasar; }
 
-	/** Item kinds as the server spells them, to compare an item's Type against rather than typing them. */
 	/** A currency's balance in the wallet, or 0 when it holds none (Wallet Holds tells the two apart). Codes match with their case. */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Wallet Balance Of"), Category = "Flock|Shop")
 	static int64 WalletBalanceOf(const FFlockWallet& Wallet, const FString& CurrencyCode) { return Wallet.BalanceOf(CurrencyCode); }
@@ -141,6 +140,7 @@ public:
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Inventory Status Revoked"), Category = "Flock|Shop")
 	static FString PlayerInventoryStatusRevoked() { return FlockPlayerInventoryStatuses::Revoked; }
 
+	/** Item kinds as the server spells them, to compare an item's Type against rather than typing them. */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Shop Item Type Standard"), Category = "Flock|Shop")
 	static FString ShopItemTypeStandard() { return FlockShopItemTypes::Standard; }
 

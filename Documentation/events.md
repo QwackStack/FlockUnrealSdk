@@ -4,7 +4,8 @@
 `OnInitializationFailed`, `OnShutdown`), auth (`OnAuthenticated`, `OnTokenRefreshed`, `OnAuthExpired`,
 `OnLoggedOut`, `OnSessionRestored`, `OnAccountLinked`, `OnAccountUnlinked`), session
 (`OnSessionStarted`, `OnSessionRegistered`, `OnSessionEnded`, `OnSessionPaused`, `OnSessionResumed`), notifications
-(`OnUnreadCountChanged`, `OnNotificationReceived`), and consent (`OnConsentChanged`). All are
+(`OnUnreadCountChanged`, `OnNotificationReceived`), consent (`OnConsentChanged`), and real-money purchases
+(`OnStorePurchaseCompleted`, `OnStorePurchaseNotDelivered`, raised with the connected store's own events). All are
 Blueprint-assignable and raised on the game thread.
 
 ## Blueprint

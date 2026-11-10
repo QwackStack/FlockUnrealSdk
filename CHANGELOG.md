@@ -5,6 +5,44 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.47.0] - 2026-11-10
+
+Real-money purchases from Blueprint. A Blueprint-only game can connect the store, show prices, buy, restore, check the store's
+setup and hear every delivery; buying stays the ordinary Flock Purchase node. Nothing new to install, and no change for C++.
+
+### Added
+
+- **Store nodes (*Flock | Store*):** `Flock Connect Store` (the store Flock holds; its *Options* pin is `FFlockStoreOptions`
+  and may be left unwired for every default), `Flock Get Store Price`, `Flock Restore Purchases`, `Flock Check Store Setup` with *Is Store Ready*, `Flock Get Store`
+  and `Flock Disconnect Store`. Each but *Is Store Ready* finds the store from its World Context; with none connected, the
+  price, restore and setup check fail with "No store is connected" and how to connect one.
+- **Web checkout nodes:** `Flock Start Checkout` (the payment page's address and the purchase, for a game that shows the page
+  itself), `Flock Get Player Purchase` and `Flock Get Player Purchases`, with *Is Player Purchase Paid* and *Is Player
+  Purchase Pending* for what they read.
+- **`Flock Redeem Store Receipt`**, for a game whose own store code made the purchase, with *Make App Store Receipt*
+  (transaction id) and *Make Google Play Receipt* (product id, purchase token) to build the receipt.
+- **Nine `Flock Store Failure Reason` nodes**, one per `FlockStoreFailureReasons` spelling, to compare a failed purchase's
+  *Store Failure Reason* against.
+- **Two events on Flock's events hub:** `OnStorePurchaseCompleted` and `OnStorePurchaseNotDelivered`, raised right after the
+  connected store's own `OnPurchaseCompleted` and `OnPurchaseNotDelivered`, so a binding made once at start hears every
+  connection.
+
+### Changed
+
+- **`FFlockStoreSetupCheck::IsReady` (and *Is Store Ready*) is true on a web checkout when nothing was found to fix**: the
+  gateway cannot be checked without opening a checkout, and `NotChecked` still says how to check it by hand. It was false on
+  every web checkout, so a game gating its shop on it hid the shop on Windows, Mac and Linux.
+- **Flock Purchase is kept by the game instance until its pin fires**, as the store nodes are, so a purchase that waits (a web
+  checkout's payment, up to an hour) still answers when the Blueprint that called it is gone. Every shop node holds its World
+  Context weakly, so a waiting node never keeps a level's world alive past a level change.
+- The fix for a refused connect (Flock not initialized, a store already connected) also names the Blueprint nodes.
+
+### Not in Blueprint
+
+- `FFlockStoreOptions::OpenPaymentPage` stays C++ only: from Blueprint a web checkout's page opens in the default browser, and
+  a game that shows the page itself uses `Flock Start Checkout` and `Flock Get Player Purchase`. `SetStoreLibrary` and
+  `ConnectThrough` (a game's own store code in C++) stay C++ only too.
+
 ## [1.46.0] - 2026-11-09
 
 Buying with real money on Windows, Mac and Linux through a web checkout. The same `UFlockStore::Connect` that reaches a

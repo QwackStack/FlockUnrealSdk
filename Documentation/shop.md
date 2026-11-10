@@ -25,6 +25,9 @@ The nodes live under *Flock | Shop*:
 | `Flock Get Owned Item Counts` | how many unused entries of each shop item the player holds, from every page |
 | `Flock Owns Shop Item` | whether the player holds an unused entry of a shop item |
 
+`Flock Purchase` also buys a real-money item, through the store connected with `Flock Connect Store`; the store's own nodes
+are under *Flock | Store* (see [Real-money purchases](real-money-purchases.md#blueprint)).
+
 For a shop screen, read the wallet once (*Flock Get Wallet*, under *Flock | Player*, see [Player data](player-data.md#the-wallet))
 and the owned counts once, then ask per item: *Can Afford* (wallet, item), *Owned Count Of* (counts, item id), *Wallet
 Balance Of* and *Wallet Holds* (wallet, currency code). *Purchase Balances* and *Consume Balances* read a result's wallet the
@@ -197,7 +200,8 @@ reason as a reward's `Type`.
 ### Redeeming a store purchase
 
 `UFlockStore` does this for every purchase it makes (see [Real-money purchases](real-money-purchases.md)). A game whose own
-store code made the purchase hands it to `RedeemStoreReceipt` (C++). Flock asks the store about it and hands the item over, completing with the purchase as `Purchase` does, and the
+store code made the purchase hands it to `RedeemStoreReceipt` (in Blueprint, **Flock Redeem Store Receipt**, with *Make App
+Store Receipt* or *Make Google Play Receipt*). Flock asks the store about it and hands the item over, completing with the purchase as `Purchase` does, and the
 wallet it reports goes into the cached player data. Make the receipt with `FFlockStoreReceipt::FromAppleAppStore` (the
 App Store's transaction id) or `FFlockStoreReceipt::FromGooglePlay` (Google Play's product id and purchase token), each id
 exactly as the store gave it.

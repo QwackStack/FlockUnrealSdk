@@ -21,6 +21,9 @@
 #include "Tests/Support/FlockMemoryTokenStore.h"
 #include "Tests/Support/FlockTestSdk.h"
 #include "Tests/Support/FlockTestSpelling.h"
+#include "Tests/Support/FlockStoreNodeTestListener.h"
+#include "Blueprint/FlockStoreLibrary.h"
+#include "Http/FlockErrorHints.h"
 
 // The store purchase rules, driven through FFlockShopProvider::Purchase and a store of the test's own: Flock delivers before the
 // store's purchase is finished, a refused one stays unfinished, unfinished ones wait for a sign-in and go once a launch, and
@@ -1420,6 +1423,252 @@ bool FFlockStoreConnectRefusalsTest::RunTest(const FString& Parameters)
 	const TOptional<FFlockError> ItsOwn = ConnectWith(FlockPaymentProviders::AppleAppStore);
 	TestTrue(TEXT("Its own store connects through the library"), ItsOwn.IsSet() && ItsOwn->Type == EFlockErrorType::None);
 	TestEqual(TEXT("Connected through it"), Apple->Count(TEXT("connect")), 1);
+	return true;
+}
+
+// ── Blueprint nodes over a store ──
+
+FLOCK_STORE_TEST(FFlockStoreNodeConnectTest, "Nodes.ConnectStoreConnectsThroughTheStoreLibraryAndASecondIsRefused")
+bool FFlockStoreNodeConnectTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	// Flock's store module's library is put back whatever happens below.
+	const TFunction<TSharedPtr<IFlockStoreConnection>()> Registered = UFlockStore::GetStoreLibrary();
+	ON_SCOPE_EXIT { UFlockStore::SetStoreLibrary(Registered); };
+	const TSharedRef<FFakeStore> Library = F.Store;
+	UFlockStore::SetStoreLibrary([Library]() { return Library; });
+	FFlockStoreOptions Options;
+	Options.PaymentProvider = FlockPaymentProviders::GooglePlay;
+
+	FFlockStoreNodes First;
+	First.Connect(UFlockConnectStoreAction::ConnectStore(nullptr, Options))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqualSensitive(TEXT("The success pin, once"), First->FiredText(), FString(TEXT("success")));
+	TestTrue(TEXT("It carries the store Flock holds"), First->Store != nullptr && First->Store == F.Sdk->GetStore());
+	TestEqualSensitive(TEXT("Through the library's store"), First->Store != nullptr ? First->Store->GetPaymentProvider() : FString(),
+		FString(FlockPaymentProviders::GooglePlay));
+	TestEqual(TEXT("Connected through the library"), F.Store->Count(TEXT("connect")), 1);
+
+	FFlockStoreNodes Second;
+	Second.Connect(UFlockConnectStoreAction::ConnectStore(nullptr, Options))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqualSensitive(TEXT("A second connect: the failure pin, once"), Second->FiredText(), FString(TEXT("failure")));
+	TestTrue(TEXT("No store on it"), Second->Store == nullptr);
+	TestFalse(TEXT("With a fix"), Second->Error.Hint.IsEmpty());
+	TestTrue(TEXT("The first is still held"), F.Sdk->GetStore() == First->Store);
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStoreNodePurchaseTest, "Nodes.ThePurchaseNodeBuysARealMoneyItemAndFlocksEventsHearItOnce")
+bool FFlockStoreNodePurchaseTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.Store->OnBuy = [&F](const FString& ProductId) { F.Store->PayFromTheDialog(ProductId, TEXT("token-1")); };
+	F.SignIn(TEXT("player-a"));
+	FFlockStoreNodes Nodes;
+	Nodes->Hear(F.Sdk->GetEvents());
+	F.Connect();
+
+	Nodes.Buy(UFlockPurchaseAction::Purchase(nullptr, TEXT("gems"), FString()))->ActivateWithFlockForTesting(F.Sdk);
+
+	TestEqualSensitive(TEXT("The success pin, once"), Nodes->FiredText(), FString(TEXT("success")));
+	TestTrue(TEXT("Paid"), Nodes->PurchaseResult.IsPaid());
+	TestEqualSensitive(TEXT("The purchase"), Nodes->PurchaseResult.PurchaseId, FString(TEXT("pur-1")));
+	TestEqual(TEXT("Flock's events heard the delivery once"), Nodes->Completed, TArray<FString>{ TEXT("gems:pur-1") });
+	TestEqual(TEXT("As the store's own event did"), F.Completed, Nodes->Completed);
+	TestEqual(TEXT("Nothing reported as not delivered"), Nodes->NotDelivered.Num(), 0);
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStoreNodeCancelTest, "Nodes.APlayerCancelFiresThePurchaseNodesFailurePinWithTheCancelledReason")
+bool FFlockStoreNodeCancelTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.Store->OnBuy = [&F](const FString& ProductId) { F.Store->Fail(ProductId, FlockStoreFailureReasons::Cancelled, TEXT("UserCancelled: closed the dialog")); };
+	F.SignIn(TEXT("player-a"));
+	FFlockStoreNodes Nodes;
+	Nodes->Hear(F.Sdk->GetEvents());
+	F.Connect();
+
+	Nodes.Buy(UFlockPurchaseAction::Purchase(nullptr, TEXT("gems"), FString()))->ActivateWithFlockForTesting(F.Sdk);
+
+	TestEqualSensitive(TEXT("The failure pin, once"), Nodes->FiredText(), FString(TEXT("failure")));
+	TestEqual(TEXT("A store refusal"), Nodes->Error.Type, EFlockErrorType::Store);
+	TestEqualSensitive(TEXT("Its reason is what the Cancelled node spells"), Nodes->Error.StoreFailureReason, UFlockStoreLibrary::StoreFailureReasonCancelled());
+	TestFalse(TEXT("Nothing charged, so nothing in doubt"), Nodes->Error.bOutcomeUnknown);
+	TestEqual(TEXT("Nothing heard"), Nodes->Completed.Num() + Nodes->NotDelivered.Num(), 0);
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStoreNodeNotDeliveredTest, "Nodes.FlocksEventsHearAPaidPurchaseFlockDidNotDeliverOnce")
+bool FFlockStoreNodeNotDeliveredTest::RunTest(const FString& Parameters)
+{
+	// The SDK logs each refusal the server sends.
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
+	FFixture F(FFlockFakeTransport::Status(422, CredentialsRejected));
+	F.Store->OnBuy = [&F](const FString& ProductId) { F.Store->PayFromTheDialog(ProductId, TEXT("token-1")); };
+	F.SignIn(TEXT("player-a"));
+	FFlockStoreNodes Nodes;
+	Nodes->Hear(F.Sdk->GetEvents());
+	F.Connect();
+
+	Nodes.Buy(UFlockPurchaseAction::Purchase(nullptr, TEXT("gems"), FString()))->ActivateWithFlockForTesting(F.Sdk);
+
+	TestEqualSensitive(TEXT("The failure pin, once"), Nodes->FiredText(), FString(TEXT("failure")));
+	TestEqual(TEXT("On its code"), Nodes->Error.ErrorCode, EFlockErrorCode::PaymentProviderStoreCredentialsRejected);
+	TestEqual(TEXT("Heard once"), Nodes->NotDelivered.Num(), 1);
+	TestTrue(TEXT("With its item and code"), Nodes->NotDelivered.Num() == 1 && Nodes->NotDelivered[0].bHasItem
+		&& Nodes->NotDelivered[0].Item.Id == TEXT("gems") && Nodes->NotDelivered[0].Error.ErrorCode == EFlockErrorCode::PaymentProviderStoreCredentialsRejected);
+	TestEqual(TEXT("As the store's own event did"), F.NotDelivered.Num(), 1);
+	TestEqual(TEXT("Nothing heard as delivered"), Nodes->Completed.Num(), 0);
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStoreNodeHeardAcrossConnectionsTest, "Nodes.FlocksEventsBoundOnceHearTheNextConnectionToo")
+bool FFlockStoreNodeHeardAcrossConnectionsTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.Store->OnBuy = [&F](const FString& ProductId) { F.Store->PayFromTheDialog(ProductId, TEXT("token-1")); };
+	F.SignIn(TEXT("player-a"));
+	FFlockStoreNodes Nodes;
+	Nodes->Hear(F.Sdk->GetEvents());
+	F.Connect();
+	F.Buy(TEXT("gems"));
+	F.Connected->Disconnect();
+
+	// The next connection's store hands back a purchase an earlier launch left unfinished.
+	const TSharedRef<FFakeStore> Next = MakeShared<FFakeStore>();
+	bool bConnected = false;
+	UFlockStore::ConnectThrough(F.Sdk, Next, [&bConnected](TFlockResult<UFlockStore*> Result) { bConnected = Result.IsSuccess(); });
+	TestTrue(TEXT("Connected again"), bConnected);
+	Next->Pay(Gems, TEXT("token-2"));
+
+	TestEqual(TEXT("Both connections' deliveries heard, each once"), Nodes->Completed, TArray<FString>{ TEXT("gems:pur-1"), TEXT("gems:pur-1") });
+	TestEqual(TEXT("The handed-back one finished in the next store"), Next->Count(TEXT("finish:token-2")), 1);
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStoreNodePriceTest, "Nodes.GetStorePriceReadsTheStoresPriceAndWithNoStoreConnectedSaysHowToConnectOne")
+bool FFlockStoreNodePriceTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	FFlockStorePrice Price;
+	FFlockError Error;
+	TestFalse(TEXT("No store connected: false"), UFlockStoreLibrary::GetStorePriceWithFlockForTesting(F.Sdk, TEXT("gems"), Price, Error));
+	TestEqualSensitive(TEXT("Saying no store is connected"), Error.Message, FString(TEXT("No store is connected")));
+	TestEqualSensitive(TEXT("And how to connect one"), Error.Hint, FFlockErrorHints::ConnectAStoreFirst());
+
+	FFlockStorePrice Stores;
+	Stores.bFoundInTheStore = true;
+	Stores.Text = TEXT("SAR 4.59");
+	Stores.AmountInSmallestUnit = 459;
+	Stores.CurrencyCode = TEXT("SAR");
+	F.Store->Prices.Add(Gems, Stores);
+	F.Connect();
+	TestTrue(TEXT("Connected: true"), UFlockStoreLibrary::GetStorePriceWithFlockForTesting(F.Sdk, TEXT("gems"), Price, Error));
+	TestEqual(TEXT("No error"), Error.Type, EFlockErrorType::None);
+	TestEqualSensitive(TEXT("The store's own text"), Price.Text, FString(TEXT("SAR 4.59")));
+	TestEqual(TEXT("In the smallest unit"), Price.AmountInSmallestUnit, static_cast<int64>(459));
+
+	TestFalse(TEXT("An item with no product id for this store: false"), UFlockStoreLibrary::GetStorePriceWithFlockForTesting(F.Sdk, TEXT("shield"), Price, Error));
+	TestEqual(TEXT("Refused as the store refuses it"), Error.Type, EFlockErrorType::Validation);
+	TestFalse(TEXT("With its fix"), Error.Hint.IsEmpty());
+	TestFalse(TEXT("And no price left from the call before"), Price.bFoundInTheStore);
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStoreNodeRestoreAndSetupTest, "Nodes.RestoreAndCheckSetupAnswerThroughTheConnectedStoreAndRefuseWithNone")
+bool FFlockStoreNodeRestoreAndSetupTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.Store->Own(Sword, TEXT("token-sword"));
+	F.SignIn(TEXT("player-a"));
+
+	FFlockStoreNodes NoStoreRestore;
+	NoStoreRestore.Restore(UFlockRestorePurchasesAction::RestorePurchases(nullptr))->ActivateWithFlockForTesting(F.Sdk);
+	FFlockStoreNodes NoStoreSetup;
+	NoStoreSetup.Setup(UFlockCheckStoreSetupAction::CheckStoreSetup(nullptr))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqualSensitive(TEXT("No store: Restore's failure pin"), NoStoreRestore->FiredText(), FString(TEXT("failure")));
+	TestEqualSensitive(TEXT("Saying how to connect one"), NoStoreRestore->Error.Hint, FFlockErrorHints::ConnectAStoreFirst());
+	TestEqualSensitive(TEXT("No store: Check Setup's failure pin"), NoStoreSetup->FiredText(), FString(TEXT("failure")));
+	TestEqualSensitive(TEXT("Saying how to connect one"), NoStoreSetup->Error.Hint, FFlockErrorHints::ConnectAStoreFirst());
+	TestEqual(TEXT("Nothing asked of the store"), F.Store->Count(TEXT("restore")), 0);
+
+	F.Connect();
+	FFlockStoreNodes Restore;
+	Restore.Restore(UFlockRestorePurchasesAction::RestorePurchases(nullptr))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqualSensitive(TEXT("Restore's success pin, once"), Restore->FiredText(), FString(TEXT("success")));
+	TestTrue(TEXT("The owned item restored"), Restore->Restore.Restored.Num() == 1 && Restore->Restore.Restored[0].Id == TEXT("sword"));
+	TestEqual(TEXT("Asked the store once"), F.Store->Count(TEXT("restore")), 1);
+
+	FFlockStoreNodes Setup;
+	Setup.Setup(UFlockCheckStoreSetupAction::CheckStoreSetup(nullptr))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqualSensitive(TEXT("Check Setup's success pin, once"), Setup->FiredText(), FString(TEXT("success")));
+	TestTrue(TEXT("The item with no product id here"), Setup->SetupCheck.MissingProductId.ContainsByPredicate([](const FFlockShopItem& Item) { return Item.Id == TEXT("shield"); }));
+	TestFalse(TEXT("Not ready"), UFlockStoreLibrary::IsStoreReady(Setup->SetupCheck));
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStoreNodeSignedOutTest, "Nodes.RestoreWithNobodySignedInFiresTheFailurePinWithItsFix")
+bool FFlockStoreNodeSignedOutTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.Store->Own(Sword, TEXT("token-sword"));
+	F.Connect();
+	FFlockStoreNodes Nodes;
+	Nodes.Restore(UFlockRestorePurchasesAction::RestorePurchases(nullptr))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqualSensitive(TEXT("The failure pin, once"), Nodes->FiredText(), FString(TEXT("failure")));
+	TestEqual(TEXT("A sign-in failure"), Nodes->Error.Type, EFlockErrorType::Auth);
+	TestFalse(TEXT("With a fix"), Nodes->Error.Hint.IsEmpty());
+	TestEqual(TEXT("Nothing redeemed"), F.RedemptionBodies().Num(), 0);
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStoreNodeRedeemTest, "Nodes.RedeemStoreReceiptRedeemsTheReceiptAsTheSignedInPlayer")
+bool FFlockStoreNodeRedeemTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	FFlockStoreNodes SignedOut;
+	SignedOut.Redeem(UFlockRedeemStoreReceiptAction::RedeemStoreReceipt(nullptr, TEXT("gems"),
+		UFlockStoreLibrary::MakeGooglePlayReceipt(Gems, TEXT("token-1"))))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqualSensitive(TEXT("Signed out: the failure pin, once"), SignedOut->FiredText(), FString(TEXT("failure")));
+	TestEqual(TEXT("A sign-in failure"), SignedOut->Error.Type, EFlockErrorType::Auth);
+	TestEqual(TEXT("Nothing sent"), F.RedemptionBodies().Num(), 0);
+
+	F.SignIn(TEXT("player-a"));
+	FFlockStoreNodes Nodes;
+	Nodes.Redeem(UFlockRedeemStoreReceiptAction::RedeemStoreReceipt(nullptr, TEXT("gems"),
+		UFlockStoreLibrary::MakeGooglePlayReceipt(Gems, TEXT("token-1"))))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqualSensitive(TEXT("The success pin, once"), Nodes->FiredText(), FString(TEXT("success")));
+	TestEqualSensitive(TEXT("The purchase"), Nodes->PurchaseResult.PurchaseId, FString(TEXT("pur-1")));
+	const TArray<FString> Bodies = F.RedemptionBodies();
+	TestEqual(TEXT("One redemption"), Bodies.Num(), 1);
+	if (Bodies.Num() == 1)
+	{
+		TestEqualSensitive(TEXT("For the item"), Field(Bodies[0], TEXT("shop_item_id")), FString(TEXT("gems")));
+		TestEqualSensitive(TEXT("From Google Play"), Field(Bodies[0], TEXT("provider")), FString(TEXT("google_play")));
+		TestEqualSensitive(TEXT("Its product"), Field(Bodies[0], TEXT("receipt.product_id")), Gems);
+		TestEqualSensitive(TEXT("Its token"), Field(Bodies[0], TEXT("receipt.purchase_token")), FString(TEXT("token-1")));
+	}
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStoreNodeGetAndDisconnectTest, "Nodes.GetStoreIsTheHeldStoreAndDisconnectStoreEndsIt")
+bool FFlockStoreNodeGetAndDisconnectTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	TestTrue(TEXT("None connected: Get Store is none"), UFlockStoreLibrary::GetStoreWithFlockForTesting(F.Sdk) == nullptr);
+	UFlockStoreLibrary::DisconnectStoreWithFlockForTesting(F.Sdk);
+	TestEqual(TEXT("None connected: Disconnect Store does nothing"), F.Store->Count(TEXT("stop")), 0);
+
+	F.Connect();
+	TestTrue(TEXT("Get Store is the store Flock holds"), F.Connected != nullptr && UFlockStoreLibrary::GetStoreWithFlockForTesting(F.Sdk) == F.Connected);
+	UFlockStoreLibrary::DisconnectStoreWithFlockForTesting(F.Sdk);
+	TestFalse(TEXT("Disconnect Store disconnects it"), F.Connected != nullptr && F.Connected->IsConnected());
+	TestEqual(TEXT("It stops listening to the store"), F.Store->Count(TEXT("stop")), 1);
+	TestTrue(TEXT("Get Store is none again"), UFlockStoreLibrary::GetStoreWithFlockForTesting(F.Sdk) == nullptr);
+	FFlockStorePrice Price;
+	FFlockError Error;
+	TestFalse(TEXT("And Get Store Price says none is connected"), UFlockStoreLibrary::GetStorePriceWithFlockForTesting(F.Sdk, TEXT("gems"), Price, Error));
+	TestEqualSensitive(TEXT("With how to connect one"), Error.Hint, FFlockErrorHints::ConnectAStoreFirst());
 	return true;
 }
 

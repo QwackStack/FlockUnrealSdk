@@ -19,6 +19,15 @@
 #include "Tests/Support/FlockMemoryTokenStore.h"
 #include "Tests/Support/FlockTestSdk.h"
 #include "Tests/Support/FlockTestSpelling.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
+#include "Misc/ScopeExit.h"
+#include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "Tests/Support/FlockStoreNodeTestListener.h"
+#include "Blueprint/FlockShopLibrary.h"
+#include "Blueprint/FlockStoreLibrary.h"
+#include "Containers/Ticker.h"
 
 // Web checkout, driven through FFlockShopProvider::Purchase with UFlockStore connected on this desktop: a checkout opened once
 // and never sent again after an answer that did not come, its payment page opened, the purchase read on the repeating calls'
@@ -1077,7 +1086,7 @@ bool FFlockWebCheckoutSetupCheckTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	TestTrue(TEXT("Says how to check the gateway"), Checked->Value.NotChecked.Contains(TEXT("test card")));
-	TestFalse(TEXT("Not ready until checked by hand"), Checked->Value.IsReady());
+	TestTrue(TEXT("Ready: nothing found to fix, and NotChecked says how to check the gateway by hand"), Checked->Value.IsReady());
 	TestEqual(TEXT("No checkout"), F.Fake->CountTo(FlockEndpoints::ShopCheckout), 0);
 	TestEqual(TEXT("No receipt"), F.Fake->CountTo(FlockEndpoints::ShopValidateReceipt), 0);
 	return true;
@@ -1134,4 +1143,277 @@ bool FFlockWebCheckoutSteamTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-#endif
+// ── Blueprint nodes over a web checkout ──
+
+FLOCK_WEB_CHECKOUT_TEST(FFlockWebCheckoutNodesEndToEndTest, "Nodes.ABlueprintOnlyGameConnectsPricesBuysReadsAndRestores")
+bool FFlockWebCheckoutNodesEndToEndTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn(TEXT("player-a"));
+	F.Fake->On(FlockEndpoints::ShopCheckout, FFlockFakeTransport::Ok(Checkout));
+	F.Fake->OnSequence(TEXT("shop/purchases/pur-1"), { FFlockFakeTransport::Ok(Purchase(TEXT("pur-1"), TEXT("pending"))),
+		FFlockFakeTransport::Ok(Purchase(TEXT("pur-1"), TEXT("paid"), Granted10Gold)) });
+	FFlockStoreNodes Events;
+	Events->Hear(F.Sdk->GetEvents());
+
+	// Connect Store with the options a graph sets; the page opener is the test's, as a graph's default browser would be.
+	FFlockStoreOptions Options;
+	const TSharedRef<TArray<FString>> Pages = F.Opened;
+	Options.OpenPaymentPage = [Pages](const FString& Url) { Pages->Add(Url); };
+	FFlockStoreNodes Connect;
+	Connect.Connect(UFlockConnectStoreAction::ConnectStore(nullptr, Options))->ActivateWithFlockForTesting(F.Sdk);
+	if (!TestEqualSensitive(TEXT("Connect Store: the success pin, once"), Connect->FiredText(), FString(TEXT("success")))
+		|| !TestTrue(TEXT("A web checkout Flock holds"), Connect->Store != nullptr && Connect->Store->IsWebCheckout() && F.Sdk->GetStore() == Connect->Store))
+	{
+		return false;
+	}
+
+	FFlockStorePrice Price;
+	FFlockError PriceError;
+	TestTrue(TEXT("Get Store Price"), UFlockStoreLibrary::GetStorePriceWithFlockForTesting(F.Sdk, TEXT("sword"), Price, PriceError));
+	TestEqual(TEXT("The item's own price"), Price.AmountInSmallestUnit, static_cast<int64>(799));
+	TestEqualSensitive(TEXT("In its currency"), Price.CurrencyCode, FString(TEXT("SAR")));
+
+	FFlockStoreNodes Setup;
+	Setup.Setup(UFlockCheckStoreSetupAction::CheckStoreSetup(nullptr))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqualSensitive(TEXT("Check Store Setup: the success pin, once"), Setup->FiredText(), FString(TEXT("success")));
+	TestFalse(TEXT("Saying how to check the gateway"), Setup->SetupCheck.NotChecked.IsEmpty());
+	TestTrue(TEXT("Ready: nothing found to fix"), UFlockStoreLibrary::IsStoreReady(Setup->SetupCheck));
+	TestEqual(TEXT("Without opening a checkout"), F.Fake->CountTo(FlockEndpoints::ShopCheckout), 0);
+
+	FFlockStoreNodes Buy;
+	Buy.Buy(UFlockPurchaseAction::Purchase(nullptr, TEXT("sword"), FString()))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqual(TEXT("The payment page opened once"), F.Opened->Num(), 1);
+	TestTrue(TEXT("No pin while the payment is waited for"), Buy->Fired.IsEmpty());
+	F.Tick();
+	TestTrue(TEXT("Still none while pending"), Buy->Fired.IsEmpty());
+	F.Tick();
+	TestEqualSensitive(TEXT("Flock Purchase: the success pin, once"), Buy->FiredText(), FString(TEXT("success")));
+	TestTrue(TEXT("Paid"), Buy->PurchaseResult.IsPaid());
+	TestEqual(TEXT("Flock's events heard it once"), Events->Completed, TArray<FString>{ TEXT("sword:pur-1") });
+	F.Tick();
+	TestEqual(TEXT("And no more"), Events->Completed.Num(), 1);
+
+	F.Fake->On(TEXT("shop/purchases/pur-1"), FFlockFakeTransport::Ok(Purchase(TEXT("pur-1"), TEXT("paid"), Granted10Gold)));
+	FFlockStoreNodes Read;
+	Read.Read(UFlockGetPlayerPurchaseAction::GetPlayerPurchase(nullptr, TEXT("pur-1")))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqualSensitive(TEXT("Get Player Purchase: the success pin, once"), Read->FiredText(), FString(TEXT("success")));
+	TestTrue(TEXT("Is Player Purchase Paid"), UFlockStoreLibrary::IsPlayerPurchasePaid(Read->Purchase));
+
+	FFlockStoreNodes List;
+	List.List(UFlockGetPlayerPurchasesAction::GetPlayerPurchases(nullptr, UFlockShopLibrary::PurchaseStatusPending(), 1, 100))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqualSensitive(TEXT("Get Player Purchases: the success pin, once"), List->FiredText(), FString(TEXT("success")));
+	TestEqual(TEXT("Nothing left open"), List->Page.Items.Num(), 0);
+	const FFlockHttpRequest* Listed = F.LastTo(TEXT("shop/purchases?"));
+	TestTrue(TEXT("Asked for the pending ones"), Listed != nullptr && Listed->Url.Contains(TEXT("status=pending"), ESearchCase::CaseSensitive));
+
+	FFlockStoreNodes Restore;
+	Restore.Restore(UFlockRestorePurchasesAction::RestorePurchases(nullptr))->ActivateWithFlockForTesting(F.Sdk);
+	TestEqualSensitive(TEXT("Restore Purchases: the success pin, once"), Restore->FiredText(), FString(TEXT("success")));
+	TestEqual(TEXT("Both lists empty on a web checkout"), Restore->Restore.Restored.Num() + Restore->Restore.NotDelivered.Num(), 0);
+	TestEqual(TEXT("Still heard once"), Events->Completed.Num(), 1);
+	TestEqual(TEXT("One checkout in all"), F.Fake->CountTo(FlockEndpoints::ShopCheckout), 1);
+	return true;
+}
+
+FLOCK_WEB_CHECKOUT_TEST(FFlockWebCheckoutNodesExpiredTest, "Nodes.ACheckoutThatExpiresFiresThePurchaseNodesFailurePinWithTheExpiredReason")
+bool FFlockWebCheckoutNodesExpiredTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	F.SignIn(TEXT("player-a"));
+	F.Fake->On(FlockEndpoints::ShopCheckout, FFlockFakeTransport::Ok(Checkout));
+	F.Fake->On(TEXT("shop/purchases/pur-1"), FFlockFakeTransport::Ok(Purchase(TEXT("pur-1"), TEXT("expired"))));
+	F.Connect();
+	FFlockStoreNodes Nodes;
+	Nodes->Hear(F.Sdk->GetEvents());
+	Nodes.Buy(UFlockPurchaseAction::Purchase(nullptr, TEXT("sword"), FString()))->ActivateWithFlockForTesting(F.Sdk);
+	F.Tick();
+	TestEqualSensitive(TEXT("The failure pin, once"), Nodes->FiredText(), FString(TEXT("failure")));
+	TestEqualSensitive(TEXT("Its reason is what the Expired node spells"), Nodes->Error.StoreFailureReason, UFlockStoreLibrary::StoreFailureReasonExpired());
+	TestFalse(TEXT("Nothing charged, so nothing in doubt"), Nodes->Error.bOutcomeUnknown);
+	TestEqual(TEXT("Nothing heard"), Nodes->Completed.Num() + Nodes->NotDelivered.Num(), 0);
+	return true;
+}
+
+FLOCK_WEB_CHECKOUT_TEST(FFlockWebCheckoutNodesUnknownTest, "Nodes.AReadStoppedByAFailureFiresThePurchaseNodesFailurePinWithTheOutcomeUnknown")
+bool FFlockWebCheckoutNodesUnknownTest::RunTest(const FString& Parameters)
+{
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
+	FFixture F;
+	F.SignIn(TEXT("player-a"));
+	F.Fake->On(FlockEndpoints::ShopCheckout, FFlockFakeTransport::Ok(Checkout));
+	// A proxy's 403 is not worth another try, so the reads stop; the page may still be paid.
+	F.Fake->On(TEXT("shop/purchases/pur-1"), FFlockFakeTransport::Status(403, TEXT("<html>Forbidden</html>")));
+	F.Connect();
+	FFlockStoreNodes Nodes;
+	Nodes->Hear(F.Sdk->GetEvents());
+	Nodes.Buy(UFlockPurchaseAction::Purchase(nullptr, TEXT("sword"), FString()))->ActivateWithFlockForTesting(F.Sdk);
+	F.Tick();
+	TestEqualSensitive(TEXT("The failure pin, once"), Nodes->FiredText(), FString(TEXT("failure")));
+	TestEqual(TEXT("Never reported as not delivered on a web checkout"), Nodes->NotDelivered.Num(), 0);
+	TestTrue(TEXT("Its outcome is unknown"), Nodes->Error.bOutcomeUnknown);
+	TestTrue(TEXT("The fix says it may still be paid"), Nodes->Error.Hint.Contains(TEXT("may still be paid")));
+	return true;
+}
+
+FLOCK_WEB_CHECKOUT_TEST(FFlockWebCheckoutNodesStartCheckoutTest, "Nodes.StartCheckoutOpensACheckoutAndOneWhoseAnswerNeverCameIsUnknownAndNotSentAgain")
+bool FFlockWebCheckoutNodesStartCheckoutTest::RunTest(const FString& Parameters)
+{
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
+	{
+		FFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.Fake->On(FlockEndpoints::ShopCheckout, FFlockFakeTransport::Ok(Checkout));
+		FFlockStoreNodes Nodes;
+		Nodes.Checkout(UFlockStartCheckoutAction::StartCheckout(nullptr, TEXT("sword"), UFlockShopLibrary::PaymentProviderMoyasar(),
+			TEXT("https://game.example/done"), FString()))->ActivateWithFlockForTesting(F.Sdk);
+		TestEqualSensitive(TEXT("The success pin, once"), Nodes->FiredText(), FString(TEXT("success")));
+		TestEqualSensitive(TEXT("The page"), Nodes->Checkout.PaymentUrl, PaymentPage);
+		TestEqualSensitive(TEXT("The purchase to read"), Nodes->Checkout.PurchaseId, FString(TEXT("pur-1")));
+		const FFlockHttpRequest* Sent = F.LastTo(FlockEndpoints::ShopCheckout);
+		TestTrue(TEXT("The pins sent as set, the empty one left out"), Sent != nullptr && Sent->JsonBody.Equals(
+			TEXT("{\"shop_item_id\":\"sword\",\"provider\":\"moyasar\",\"return_url\":\"https://game.example/done\"}"), ESearchCase::CaseSensitive));
+		TestEqual(TEXT("No page opened by Flock: the game shows it"), F.Opened->Num(), 0);
+	}
+	{
+		FFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.Fake->On(FlockEndpoints::ShopCheckout, FFlockFakeTransport::Timeout());
+		FFlockStoreNodes Nodes;
+		Nodes.Checkout(UFlockStartCheckoutAction::StartCheckout(nullptr, TEXT("sword"), FString(), FString(), FString()))->ActivateWithFlockForTesting(F.Sdk);
+		for (int32 Frame = 0; Frame < 20 && Nodes->Fired.IsEmpty(); ++Frame)
+		{
+			FTSTicker::GetCoreTicker().Tick(1.f);
+		}
+		TestEqualSensitive(TEXT("No answer: the failure pin, once"), Nodes->FiredText(), FString(TEXT("failure")));
+		TestTrue(TEXT("Its outcome is unknown"), Nodes->Error.bOutcomeUnknown);
+		TestEqual(TEXT("Never sent again"), F.Fake->CountTo(FlockEndpoints::ShopCheckout), 1);
+	}
+	return true;
+}
+
+FLOCK_WEB_CHECKOUT_TEST(FFlockWebCheckoutNodesSignedOutTest, "Nodes.StartCheckoutGetPurchaseAndGetPurchasesWithNobodySignedInFireTheirFailurePins")
+bool FFlockWebCheckoutNodesSignedOutTest::RunTest(const FString& Parameters)
+{
+	FFixture F;
+	FFlockStoreNodes Opened;
+	Opened.Checkout(UFlockStartCheckoutAction::StartCheckout(nullptr, TEXT("sword"), FString(), FString(), FString()))->ActivateWithFlockForTesting(F.Sdk);
+	FFlockStoreNodes Read;
+	Read.Read(UFlockGetPlayerPurchaseAction::GetPlayerPurchase(nullptr, TEXT("pur-1")))->ActivateWithFlockForTesting(F.Sdk);
+	FFlockStoreNodes Listed;
+	Listed.List(UFlockGetPlayerPurchasesAction::GetPlayerPurchases(nullptr, FString(), 1, 100))->ActivateWithFlockForTesting(F.Sdk);
+	for (const FFlockStoreNodes* Nodes : { &Opened, &Read, &Listed })
+	{
+		TestEqualSensitive(TEXT("The failure pin, once"), (*Nodes)->FiredText(), FString(TEXT("failure")));
+		TestEqual(TEXT("A sign-in failure"), (*Nodes)->Error.Type, EFlockErrorType::Auth);
+		TestFalse(TEXT("With a fix"), (*Nodes)->Error.Hint.IsEmpty());
+	}
+	TestEqual(TEXT("Nothing sent"), F.Fake->CountTo(TEXT("shop/checkout")) + F.Fake->CountTo(TEXT("shop/purchases")), 0);
+	return true;
+}
+
+FLOCK_WEB_CHECKOUT_TEST(FFlockWebCheckoutNodesKeptTest, "Nodes.APurchaseNodeNothingKeepsIsKeptByTheGameInstanceUntilItsPinFires")
+bool FFlockWebCheckoutNodesKeptTest::RunTest(const FString& Parameters)
+{
+	// A web checkout waits up to an hour; the widget that bought may be closed meanwhile. The node, not the widget, answers.
+	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
+	const TStrongObjectPtr<UGameInstance> Instance(NewObject<UGameInstance>(GetTransientPackage()));
+	UWorld* Level = UWorld::CreateWorld(EWorldType::Game, /*bInformEngineOfWorld*/ false, TEXT("FlockStoreNodesLevel"));
+	Level->SetGameInstance(Instance.Get());
+	ON_SCOPE_EXIT
+	{
+		Level->SetGameInstance(nullptr);
+		Level->DestroyWorld(/*bInformEngineOfWorld*/ false);
+	};
+	auto Buy = [](FFixture& F, UObject* WorldContextObject, UFlockStoreNodeTestListener* Listener)
+	{
+		F.SignIn(TEXT("player-a"));
+		F.Fake->On(FlockEndpoints::ShopCheckout, FFlockFakeTransport::Ok(Checkout));
+		F.Fake->On(TEXT("shop/purchases/pur-1"), FFlockFakeTransport::Ok(Purchase(TEXT("pur-1"), TEXT("paid"))));
+		F.Connect();
+		UFlockPurchaseAction* Action = UFlockPurchaseAction::Purchase(WorldContextObject, TEXT("sword"), FString());
+		Action->OnSuccess.AddDynamic(Listener, &UFlockStoreNodeTestListener::Bought);
+		Action->OnFailure.AddDynamic(Listener, &UFlockStoreNodeTestListener::NotBought);
+		Action->ActivateWithFlockForTesting(F.Sdk);
+		return TWeakObjectPtr<UFlockPurchaseAction>(Action);
+	};
+	{
+		// The control: a node nothing keeps is gone at the next collection, which is what the game instance prevents.
+		FFixture F;
+		const TStrongObjectPtr<UFlockStoreNodeTestListener> Listener(NewObject<UFlockStoreNodeTestListener>());
+		const TWeakObjectPtr<UFlockPurchaseAction> Unkept = Buy(F, nullptr, Listener.Get());
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+		TestFalse(TEXT("control: a node with no game instance is collected"), Unkept.IsValid());
+		F.Tick();
+		TestTrue(TEXT("control: and its pin never fires"), Listener->Fired.IsEmpty());
+	}
+	{
+		FFixture F;
+		const TStrongObjectPtr<UFlockStoreNodeTestListener> Listener(NewObject<UFlockStoreNodeTestListener>());
+		const TWeakObjectPtr<UFlockPurchaseAction> Kept = Buy(F, Level, Listener.Get());
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+		TestTrue(TEXT("kept while the payment is waited for"), Kept.IsValid());
+		F.Tick();
+		TestEqualSensitive(TEXT("and its pin fires once paid"), Listener->FiredText(), FString(TEXT("success")));
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+		TestFalse(TEXT("let go once its pin has fired"), Kept.IsValid());
+	}
+	{
+		// The store's own nodes are kept the same way.
+		FFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.Fake->bDeferred = true;
+		const TStrongObjectPtr<UFlockStoreNodeTestListener> Listener(NewObject<UFlockStoreNodeTestListener>());
+		UFlockGetPlayerPurchasesAction* Action = UFlockGetPlayerPurchasesAction::GetPlayerPurchases(Level, FString(), 1, 100);
+		Action->OnSuccess.AddDynamic(Listener.Get(), &UFlockStoreNodeTestListener::PageRead);
+		Action->ActivateWithFlockForTesting(F.Sdk);
+		const TWeakObjectPtr<UFlockGetPlayerPurchasesAction> Kept(Action);
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+		TestTrue(TEXT("a store node is kept while its call is out"), Kept.IsValid());
+		F.Fake->bDeferred = false;
+		F.Fake->FlushPending();
+		TestEqualSensitive(TEXT("and its pin fires"), Listener->FiredText(), FString(TEXT("success")));
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+		TestFalse(TEXT("let go once its success pin has fired"), Kept.IsValid());
+	}
+	{
+		// Let go on the failure pin too.
+		FFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.Fake->bDeferred = true;
+		F.Fake->On(TEXT("shop/purchases?"), FFlockFakeTransport::Coded(400, TEXT("shop.invalid_purchase_status")));
+		const TStrongObjectPtr<UFlockStoreNodeTestListener> Listener(NewObject<UFlockStoreNodeTestListener>());
+		UFlockGetPlayerPurchasesAction* Action = UFlockGetPlayerPurchasesAction::GetPlayerPurchases(Level, TEXT("unpaid"), 1, 100);
+		Action->OnFailure.AddDynamic(Listener.Get(), &UFlockStoreNodeTestListener::PageReadFailed);
+		Action->ActivateWithFlockForTesting(F.Sdk);
+		const TWeakObjectPtr<UFlockGetPlayerPurchasesAction> Kept(Action);
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+		TestTrue(TEXT("kept while its call is out"), Kept.IsValid());
+		F.Fake->bDeferred = false;
+		F.Fake->FlushPending();
+		TestEqualSensitive(TEXT("its failure pin fires"), Listener->FiredText(), FString(TEXT("failure")));
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+		TestFalse(TEXT("let go once its failure pin has fired"), Kept.IsValid());
+	}
+	{
+		// A waiting node does not keep what called it, nor so its level, alive.
+		FFixture F;
+		F.SignIn(TEXT("player-a"));
+		F.Fake->bDeferred = true;
+		TWeakObjectPtr<UObject> Caller = NewObject<UFlockStoreNodeTestListener>(Level);
+		const TStrongObjectPtr<UFlockStoreNodeTestListener> Listener(NewObject<UFlockStoreNodeTestListener>());
+		UFlockGetPlayerPurchasesAction* Action = UFlockGetPlayerPurchasesAction::GetPlayerPurchases(Caller.Get(), FString(), 1, 100);
+		Action->OnSuccess.AddDynamic(Listener.Get(), &UFlockStoreNodeTestListener::PageRead);
+		Action->ActivateWithFlockForTesting(F.Sdk);
+		const TWeakObjectPtr<UFlockGetPlayerPurchasesAction> Kept(Action);
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+		TestTrue(TEXT("the node is kept"), Kept.IsValid());
+		TestFalse(TEXT("its caller is not"), Caller.IsValid());
+		F.Fake->bDeferred = false;
+		F.Fake->FlushPending();
+		TestEqualSensitive(TEXT("and its pin still fires"), Listener->FiredText(), FString(TEXT("success")));
+	}
+	return true;
+}
+
+#endif // WITH_AUTOMATION_TESTS

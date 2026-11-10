@@ -364,6 +364,11 @@ FString FFlockErrorHints::PassAHeldParty()
 	return TEXT("Pass the party the game holds: the one CreateParty, JoinParty or GetMyParty handed back.");
 }
 
+FString FFlockErrorHints::ConnectAStoreFirst()
+{
+	return TEXT("Connect one with Flock Connect Store (UFlockStore::Connect in C++) first, once at start: it stays connected until Disconnect or Flock shuts down. Connect completes with the store, and its failure says why it could not connect.");
+}
+
 FString FFlockErrorHints::FindAnotherSession()
 {
 	return TEXT("Host or join another session (HostSession, JoinSession), or get the player's current one with GetMySession.");

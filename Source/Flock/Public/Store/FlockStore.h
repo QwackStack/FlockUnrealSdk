@@ -171,8 +171,15 @@ struct FLOCK_API FFlockStoreSetupCheck
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FFlockError ServerProblem;
 
-	/** True when nothing above needs fixing. */
-	bool IsReady() const { return bServerCanCheckPurchases && NotFoundInTheStore.Num() == 0 && MissingProductId.Num() == 0; }
+	/**
+	 * True when nothing above needs fixing. On a web checkout, where the gateway cannot be checked without opening a checkout,
+	 * true when nothing was found to fix: NotChecked still says how to check the gateway by hand.
+	 */
+	bool IsReady() const
+	{
+		const bool bCheckedWhatItCould = bServerCanCheckPurchases || !NotChecked.IsEmpty();
+		return bCheckedWhatItCould && NotFoundInTheStore.Num() == 0 && MissingProductId.Num() == 0;
+	}
 };
 
 /** A store product as Flock sells it: consumable (a currency pack or a consumable), or one-time (a standard item). */
@@ -368,7 +375,7 @@ public:
 	 * paid, whether its call still waited or it was found still unpaid at a sign-in (an item that can no longer be read comes
 	 * with its Id alone). A checkout paid while nothing read it (after a sign-out, a disconnect, or with the game closed) is
 	 * delivered by Flock but not reported: refresh the wallet and inventory after each sign-in.
-	 * Refresh the wallet and inventory here.
+	 * Refresh the wallet and inventory here. Blueprint binds UFlockEvents::OnStorePurchaseCompleted, raised right after this.
 	 */
 	FFlockOnStorePurchaseCompleted OnPurchaseCompleted;
 
@@ -505,6 +512,8 @@ private:
 	void Send(const FFlockStoreOrder& Order, const FFlockShopItem& Item, int32 Number);
 	void SendForAnItemNoLongerSold(const FFlockStoreOrder& Order, const FString& ShopItemId);
 	void RaiseNotDelivered(const FFlockShopItem* Item, const FString& ProductId, const FFlockError& Error);
+	/** Reports a delivered purchase: OnPurchaseCompleted, then Flock's events hub (UFlockEvents::OnStorePurchaseCompleted). */
+	void ReportCompleted(const FFlockShopItem& Item, const FFlockPurchaseResult& Result);
 
 	/** Refuses the calls of a connection no longer usable: disconnected (by the game, or by the SDK shutting down). */
 	bool IsUsable(FFlockError& OutError) const;

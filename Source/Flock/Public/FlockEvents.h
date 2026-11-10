@@ -7,6 +7,8 @@
 #include "FlockEventModels.h"
 #include "FlockLogger.h"
 #include "Models/FlockNotificationModels.h"
+#include "Models/FlockShopModels.h"
+#include "Store/FlockStore.h"
 #include "FlockEvents.generated.h"
 
 // ── Multicast events (Assign in Blueprint, AddDynamic in C++) ──
@@ -28,6 +30,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FFlockOnSessionResumed);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnUnreadCountChanged, int32, UnreadCount);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnNotificationReceived, const FFlockNotification&, Notification);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockOnConsentChanged, bool, bGranted);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockStorePurchaseCompletedEvent, const FFlockShopItem&, Item, const FFlockPurchaseResult&, PurchaseResult);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFlockStorePurchaseNotDeliveredEvent, const FFlockUndeliveredPurchase&, Purchase);
 
 // ── One-shot callbacks for the CallOrRegister entry points ──
 DECLARE_DYNAMIC_DELEGATE(FFlockInitializedCallback);
@@ -156,6 +160,24 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Flock|Events")
 	FFlockOnConsentChanged OnConsentChanged;
 
+	// ── Real-money purchases ──
+
+	/**
+	 * The connected store (Flock Connect Store) delivered a real-money purchase: one bought just now, one the store was waiting
+	 * to be paid for, one left unfinished at an earlier launch, one a restore sent again, or a web checkout seen to be paid.
+	 * Raised with UFlockStore::OnPurchaseCompleted, for whichever store is connected, so a binding made once at start hears every
+	 * connection. Refresh the wallet and inventory here.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Flock|Events")
+	FFlockStorePurchaseCompletedEvent OnStorePurchaseCompleted;
+
+	/**
+	 * The player paid a store purchase that Flock did not deliver: it stays unfinished in the store and is sent again at the next
+	 * launch; its Error says why and how to fix it. Raised with UFlockStore::OnPurchaseNotDelivered; never on a web checkout.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Flock|Events")
+	FFlockStorePurchaseNotDeliveredEvent OnStorePurchaseNotDelivered;
+
 	// ── Late-binder-safe registration ──
 
 	/**
@@ -192,6 +214,8 @@ public:
 	void InvokeUnreadCountChanged(int32 UnreadCount);
 	void InvokeNotificationReceived(const FFlockNotification& Notification);
 	void InvokeConsentChanged(bool bGranted);
+	void InvokeStorePurchaseCompleted(const FFlockShopItem& Item, const FFlockPurchaseResult& PurchaseResult);
+	void InvokeStorePurchaseNotDelivered(const FFlockUndeliveredPurchase& Purchase);
 
 	/** Debug-logs every raise through this logger; kept in sync with the subsystem's logger. */
 	void SetLogger(const TSharedPtr<IFlockLogger>& InLogger) { Logger = InLogger; }

@@ -236,14 +236,14 @@ bool UFlockStore::MayConnect(UFlockSubsystem* InFlock, TFunction<void(TFlockResu
 	if (InFlock == nullptr || !InFlock->IsInitialized() || InFlock->GetShopProvider() == nullptr)
 	{
 		Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("Flock is not initialized, so no way to pay real money was connected"),
-			TEXT("Connect once Flock has initialized (UFlockEvents::OnInitialized), with the shop provider built.")));
+			TEXT("Connect once Flock has initialized (UFlockEvents::OnInitialized; in Blueprint, Call Or Register On Initialized on Get Events), with the shop provider built.")));
 		return false;
 	}
 	// One connection a client: two would each send every purchase and raise every event.
 	if (InFlock->ConnectedStore != nullptr)
 	{
 		Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("A way to pay real money is already connected"),
-			TEXT("Use the connected one (UFlockSubsystem::GetStore), or Disconnect it before connecting again.")));
+			TEXT("Use the connected one (UFlockSubsystem::GetStore; Flock Get Store in Blueprint), or Disconnect it (Flock Disconnect Store) before connecting again.")));
 		return false;
 	}
 	return true;
@@ -277,7 +277,7 @@ void UFlockStore::ConnectWebCheckout(UFlockSubsystem* InFlock, const FString& Ga
 		{
 			if (!Self->bDisconnected)
 			{
-				Self->OnPurchaseCompleted.Broadcast(Item, Result);
+				Self->ReportCompleted(Item, Result);
 			}
 		}
 	}, [WeakStore](const FString& ShopItemId, FFlockShopItem& OutItem)
@@ -974,7 +974,7 @@ void UFlockStore::Send(const FFlockStoreOrder& Order, const FFlockShopItem& Item
 		// Finished only once Flock delivered; a finish the store cannot make leaves it to be handed back and answered as a repeat.
 		Self->Connection->Finish(Order);
 		const TFunction<void(TFlockResult<FFlockPurchaseResult>)> Answer = Self->TakeBuying(Order.ProductId, Number);
-		Self->OnPurchaseCompleted.Broadcast(Item, Delivery.Value);
+		Self->ReportCompleted(Item, Delivery.Value);
 		if (Answer)
 		{
 			Answer(Delivery);
@@ -1073,6 +1073,25 @@ void UFlockStore::RaiseNotDelivered(const FFlockShopItem* Item, const FString& P
 	Purchase.ProductId = ProductId;
 	Purchase.Error = Error;
 	OnPurchaseNotDelivered.Broadcast(Purchase);
+	if (UFlockSubsystem* Sdk = Flock.Get())
+	{
+		if (UFlockEvents* Events = Sdk->GetEvents())
+		{
+			Events->InvokeStorePurchaseNotDelivered(Purchase);
+		}
+	}
+}
+
+void UFlockStore::ReportCompleted(const FFlockShopItem& Item, const FFlockPurchaseResult& Result)
+{
+	OnPurchaseCompleted.Broadcast(Item, Result);
+	if (UFlockSubsystem* Sdk = Flock.Get())
+	{
+		if (UFlockEvents* Events = Sdk->GetEvents())
+		{
+			Events->InvokeStorePurchaseCompleted(Item, Result);
+		}
+	}
 }
 
 // ── Price, restore, setup check ──

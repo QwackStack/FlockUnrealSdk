@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.46.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
+> **1.47.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
 > see [Status](#status) for the few surfaces that are C++-only.
 
 ## Contents
@@ -588,6 +588,8 @@ real-money items through Google Play and the App Store**: connect `UFlockStore`,
 the same Purchase call charges through the store, has Flock deliver the item, and only then finishes the store's purchase.
 **1.46.0 sells real-money items on Windows, Mac and Linux through a web checkout**: the same connect opens the payment
 gateway's page (Stripe, Tap or Moyasar) in the player's browser and waits for Flock's server to report the payment.
+**1.47.0 brings all of it to Blueprint**: nodes to connect the store, show prices, restore, check the setup and open a
+checkout, and the store's two events on Flock's events hub.
 
 Deliberate omissions and known gaps:
 
@@ -596,7 +598,7 @@ Deliberate omissions and known gaps:
   `Flock Download Asset File` is the documented path for audio.
 - **A few surfaces are C++-only.** Config *patch* reads (all patches, by id, by config) and configs by
   version tag — in Blueprint, `Flock Resolve Config Data` already returns the patched-or-base values,
-  which is what most graphs want. Provider cache clearing, redeeming a store purchase (`RedeemStoreReceipt`), the store connection (`UFlockStore`: connect, prices, restore, the setup check) and the web checkout calls (`StartCheckout`, `GetPurchase`, `GetPurchases`) are also C++-only; a Blueprint Purchase buys real money through a store connected in C++.
+  which is what most graphs want. Provider cache clearing, a web checkout's own way to show the payment page (`FFlockStoreOptions::OpenPaymentPage`) and a game's own store code (`UFlockStore::SetStoreLibrary`, `ConnectThrough`) are also C++-only.
 - **Asset uploads are not included.** The SDK reads and downloads assets; publishing them is a dashboard
   operation.
 - **Leave `framegrabber.framelatency` at 0 while Protokite Playtest records video.** Changing that engine console
