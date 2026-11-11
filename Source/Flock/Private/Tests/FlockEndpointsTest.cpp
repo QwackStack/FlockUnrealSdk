@@ -30,6 +30,15 @@ bool FFlockEndpointsBuildTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("keeps leaderboard by-name prefix"), EncodedBoard.StartsWith(TEXT("leaderboard/by-name/")));
 	TestFalse(TEXT("no raw space in encoded board name"), EncodedBoard.Contains(TEXT(" ")));
 
+	// A config as the signed-in player reads it, by its name.
+	TestEqualSensitive(TEXT("config for the signed-in player"), FlockEndpoints::GameConfigForMeByName(TEXT("o41_difficulty")),
+		FString(TEXT("game_config/me/by-name/o41_difficulty")));
+	TestEqualSensitive(TEXT("its name encoded"), FlockEndpoints::GameConfigForMeByName(TEXT("hard mode")),
+		FString(TEXT("game_config/me/by-name/hard%20mode")));
+	// A space, a slash and a non-ASCII letter, each percent-encoded as UTF-8 so the name stays one path segment.
+	TestEqualSensitive(TEXT("a slash and a non-ASCII letter encoded"), FlockEndpoints::GameConfigForMeByName(TEXT("hard mode/\u00e9")),
+		FString(TEXT("game_config/me/by-name/hard%20mode%2F%C3%A9")));
+
 	return true;
 }
 

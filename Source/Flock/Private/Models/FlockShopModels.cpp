@@ -252,9 +252,10 @@ namespace
 		const TSharedPtr<FJsonObject>* Codes = nullptr;
 		if (Data.IsValid() && Data->TryGetObjectField(Category, Codes) && Codes != nullptr && Codes->IsValid())
 		{
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Code : (*Codes)->Values)
+			// `auto` and FString(*Code.Key): UE 5.8 interns the key (see Misc/FlockEngineCompat.h).
+			for (const auto& Code : (*Codes)->Values)
 			{
-				AddBalance(Code.Key, Code.Value, OutBalances);
+				AddBalance(FString(*Code.Key), Code.Value, OutBalances);
 			}
 		}
 	}

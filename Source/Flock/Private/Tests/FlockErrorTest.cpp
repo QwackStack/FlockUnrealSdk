@@ -114,6 +114,8 @@ bool FFlockErrorHintStampedTest::RunTest(const FString& Parameters)
 		FFlockErrorHints::For(EFlockErrorCode::PlayerDeviceAlreadyRegistered));
 	TestTrue(TEXT("hint is not empty"), !Coded.Hint.IsEmpty());
 	TestEqualSensitive(TEXT("and it is the failure's fix"), Coded.Hint, FFlockErrorHints::ForFailure(Coded));
+	TestTrue(TEXT("signs in with the id the SDK keeps or the same id registered, never registers again"),
+		Coded.Hint.Contains(TEXT("device id left empty")) && Coded.Hint.Contains(TEXT("same id you registered")));
 
 	// A code this SDK version does not recognize has no advice of its own; the fix for its kind names it.
 	const FFlockError Unrecognized = FFlockError::Make(EFlockErrorType::Validation, TEXT("Something new"),

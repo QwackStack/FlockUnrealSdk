@@ -43,6 +43,7 @@ public:
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Login With Email"), Category = "Flock|Auth")
 	static UFlockLoginAction* LoginWithEmail(UObject* WorldContextObject, const FString& Email, const FString& Password);
 
+	/** Signs in the player registered with Device Id. Leave Device Id empty to use this install's (Flock Get This Device Id); any other id is sent as it is. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Login With Device"), Category = "Flock|Auth")
 	static UFlockLoginAction* LoginWithDevice(UObject* WorldContextObject, const FString& DeviceId);
 
@@ -89,6 +90,7 @@ public:
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Register With Email"), Category = "Flock|Auth")
 	static UFlockRegisterAction* RegisterWithEmail(UObject* WorldContextObject, const FString& Email, const FString& Password, const FString& Name);
 
+	/** Registers a new player with Device Id and signs them in. Leave Device Id empty to use this install's (Flock Get This Device Id); any other id is sent as it is. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Register With Device"), Category = "Flock|Auth")
 	static UFlockRegisterAction* RegisterWithDevice(UObject* WorldContextObject, const FString& DeviceId, const FString& Name);
 
@@ -204,6 +206,7 @@ public:
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Link Email"), Category = "Flock|Auth")
 	static UFlockAccountLinkAction* LinkEmail(UObject* WorldContextObject, const FString& Email, const FString& Password);
 
+	/** Attaches Device Id to the signed-in player. Leave Device Id empty to use this install's (Flock Get This Device Id); any other id is sent as it is. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Flock Link Device"), Category = "Flock|Auth")
 	static UFlockAccountLinkAction* LinkDevice(UObject* WorldContextObject, const FString& DeviceId);
 

@@ -173,6 +173,12 @@ FString FFlockSchemaHasher::ComputeContentHash(const FFlockSchemaSnapshot& Snaps
 			AppendString(Builder, Item->Id);
 			AppendString(Builder, Item->Name);
 			AppendString(Builder, Item->Currency);
+			// The funds enum leaves a real-money item's currency out. Marked on those items alone, so a catalog with none
+			// hashes as before; the same marker text on every engine.
+			if (Item->IsRealMoney)
+			{
+				Builder.Append(TEXT("|real_money"));
+			}
 		}
 		Builder.Append(TEXT("]"));
 	}

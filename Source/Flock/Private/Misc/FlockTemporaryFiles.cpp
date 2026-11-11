@@ -5,6 +5,14 @@
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 
+#if PLATFORM_UNIX || PLATFORM_APPLE || PLATFORM_ANDROID
+#include <errno.h>
+#include <unistd.h>
+#define FLOCK_MOVES_IN_BY_LINKING 1
+#else
+#define FLOCK_MOVES_IN_BY_LINKING 0
+#endif
+
 namespace
 {
 	/** Read and written on the game thread only. */
@@ -54,6 +62,49 @@ bool FFlockTemporaryFiles::SaveThenMove(const TArray<uint8>& Bytes, const FStrin
 {
 	const FString TemporaryPath = MakePath(DestinationPath);
 	return FinishTemporaryFileSave(FFileHelper::SaveArrayToFile(Bytes, *TemporaryPath), TemporaryPath, DestinationPath);
+}
+
+bool FFlockTemporaryFiles::MoveIntoPlaceIfNone(const FString& TemporaryPath, const FString& DestinationPath)
+{
+	IFileManager& Files = IFileManager::Get();
+#if PLATFORM_WINDOWS
+	// Without replacing, the engine's move is MoveFileW, which refuses a destination that is there in the same step.
+	return Files.Move(*DestinationPath, *TemporaryPath, /*bReplace*/ false, /*bEvenIfReadOnly*/ false, /*bAttributes*/ false,
+		/*bDoNotRetryOrError*/ true);
+#else
+#if FLOCK_MOVES_IN_BY_LINKING
+	// rename() replaces a file that is there, so the file is linked in under its new name, which link() refuses when one is
+	// there, and its temporary name is dropped.
+	Files.MakeDirectory(*FPaths::GetPath(DestinationPath), /*Tree*/ true);
+	const FTCHARToUTF8 From(*Files.ConvertToAbsolutePathForExternalAppForWrite(*TemporaryPath));
+	const FTCHARToUTF8 To(*Files.ConvertToAbsolutePathForExternalAppForWrite(*DestinationPath));
+	const int32 Linked = link(From.Get(), To.Get());
+	const int32 LinkError = errno;
+	if (Linked == 0)
+	{
+		Files.Delete(*TemporaryPath, /*bRequireExists*/ false, /*bEvenReadOnly*/ true, /*bQuiet*/ true);
+		return true;
+	}
+	if (LinkError == EEXIST)
+	{
+		return false;
+	}
+#endif
+	// No hard links here: checked, then moved.
+	return !Files.FileExists(*DestinationPath) && Files.Move(*DestinationPath, *TemporaryPath, /*bReplace*/ false,
+		/*bEvenIfReadOnly*/ false, /*bAttributes*/ false, /*bDoNotRetryOrError*/ true);
+#endif
+}
+
+bool FFlockTemporaryFiles::SaveAsNew(const FString& Text, const FString& DestinationPath, FFileHelper::EEncodingOptions Encoding)
+{
+	const FString TemporaryPath = MakePath(DestinationPath);
+	if (FFileHelper::SaveStringToFile(Text, *TemporaryPath, Encoding) && MoveIntoPlaceIfNone(TemporaryPath, DestinationPath))
+	{
+		return true;
+	}
+	IFileManager::Get().Delete(*TemporaryPath, /*bRequireExists*/ false, /*bEvenReadOnly*/ true, /*bQuiet*/ true);
+	return false;
 }
 
 int32 FFlockTemporaryFiles::DeleteLeftOverFilesOf(const FString& DestinationPath)

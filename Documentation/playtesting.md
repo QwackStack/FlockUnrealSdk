@@ -74,7 +74,8 @@ player's Qwacks Community account when they have one. Nothing else is needed fro
 - **The sign-in goes with the session start alone** and is never logged.
 
 A playtest build with no sign-in screen of its own can sign in from the console in Development builds:
-`Flock.LoginWithDevice`.
+`Flock.LoginWithDevice` signs in with this install's device id (the one the SDK keeps), registering it the first time;
+`Flock.LoginWithDevice <id>` signs in with an id of your own.
 
 ## 4. What the player is asked
 

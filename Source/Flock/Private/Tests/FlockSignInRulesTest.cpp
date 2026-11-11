@@ -475,6 +475,9 @@ bool FFlockSignInOptedInCallsTest::RunTest(const FString& Parameters)
 		// Every session route goes through SendAs (pinned by Flock.Multiplayer.Sessions.EveryRouteIsSentAsItsSignIn).
 		{ TEXT("Multiplayer/FlockMultiplayerSessionRequests.cpp"), TEXT("FFlockMultiplayerSessionRequests"), { TEXT("SendAs") }, {} },
 		{ TEXT("Multiplayer/FlockMatchmakingRequests.cpp"), TEXT("FFlockMatchmakingRequests"), { TEXT("SendAs") }, { TEXT("ReadQueues") } },
+		// The config as the signed-in player reads it; the game's reads beside it need no sign-in.
+		{ TEXT("Providers/FlockConfigProvider.cpp"), TEXT("FFlockConfigProvider"), { TEXT("FetchForThePlayer") },
+			{ TEXT("GetConfigById"), TEXT("GetConfigByName"), TEXT("GetPatchesByConfig"), TEXT("ResolveForTheGame") } },
 	};
 
 	auto KeepsItsSignIn = [](const FString& Body)
@@ -523,7 +526,7 @@ bool FFlockSignInOptedInCallsTest::RunTest(const FString& Parameters)
 			}
 		}
 	}
-	TestEqual(TEXT("every call that acts for the player was checked"), Checked, 32);
+	TestEqual(TEXT("every call that acts for the player was checked"), Checked, 33);
 	return true;
 }
 

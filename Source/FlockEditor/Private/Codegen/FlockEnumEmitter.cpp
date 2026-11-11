@@ -100,13 +100,14 @@ TArray<TPair<FString, FString>> FFlockEnumEmitter::CollectShopItems(const FFlock
 
 TArray<TPair<FString, FString>> FFlockEnumEmitter::CollectCurrencies(const FFlockSchemaSnapshot& Snapshot)
 {
-	// Sorted and de-duplicated first, so member order does not follow shop order.
+	// Sorted and de-duplicated first, so member order does not follow shop order. Game currencies only: a real-money item's
+	// currency is paid through a store or a web checkout and is never a wallet fund AddFunds can grant.
 	TArray<FString> Names;
 	for (const FFlockShop& Shop : Snapshot.Shops)
 	{
 		for (const FFlockShopItem& Item : Shop.ShopItems)
 		{
-			if (!Item.Currency.IsEmpty())
+			if (!Item.IsRealMoney && !Item.Currency.IsEmpty())
 			{
 				Names.AddUnique(Item.Currency);
 			}

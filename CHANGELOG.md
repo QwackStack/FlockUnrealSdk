@@ -5,6 +5,53 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+A device id the SDK keeps; config read as the signed-in player sees it.
+
+### Added
+
+- **A device id the SDK makes once and keeps: `FFlockAuthProvider::ThisDeviceId()`** (Blueprint: **Flock Get This Device
+  Id**), a GUID kept in `Saved/Flock/device_id.txt`, beside the saved sign-in, and read again by each start of the SDK (a
+  launch, a Play In Editor session). Two copies of the game started from one project folder share it, and the first to save
+  it wins: the file is only ever made new, never written over. An id written another way (upper case, braces, a line break or
+  a byte-order mark around it) is used as written; a file holding no GUID is set aside for a new id; a file another start is
+  still writing is read again for up to a second; a file that cannot be read is left alone, and that start uses an id of its
+  own with one warning saying why and how to fix it.
+
+### Changed
+
+- **An empty device id means this install's: `LoginWithDevice`, `RegisterWithDevice` and `LinkDevice`** (and *Flock Login
+  With Device*, *Flock Register With Device*, *Flock Link Device* with *Device Id* empty) send `ThisDeviceId()`. Any other id
+  is sent as it is, never trimmed. `LinkDevice` with an empty id used to fail Validation before sending; it now links this
+  install's id. A game that already passes an id of its own keeps passing it: its players are unchanged.
+- **Config read as the signed-in player sees it.** With a player signed in, `ResolveConfigData` (the call every generated
+  `Get <Config>` makes) reads a **gameplay** or **feature** config as the server resolves it for that player: the newest
+  patch, then the overrides of the segments the player is in, then the player's own. Any other config, and every read with nobody
+  signed in, is unchanged. The player's values are held for the sign-in (a new sign-in or `ClearCache()` reads them again)
+  and kept on disk per player, so offline a read gives that player's last values, else the game's. The read is sent only as
+  the sign-in it was asked for; an answer that arrives after that sign-in ended is kept nowhere and the read runs again for
+  whoever is signed in. When the server refuses it (no such player, no Game Version, no config of that name) or it fails in
+  a way that will not change, the game's values answer for the rest of the sign-in and the player's saved copy is deleted;
+  when no answer comes, the player's saved copy (else the game's values) answers and the player's read is sent again 30
+  seconds later. One warning a sign-in, with the fix, when the server got no Game Version.
+- **`FlockCurrencyId` and the generated `Add Funds` list game currencies only**: a real-money item's currency is no longer
+  a member (its item stays in `FlockShopItemId`). Run Sync Schemas again to drop one an earlier sync made. The schema check
+  now counts an item turning real money (or back) as a change: a project with a real-money item sees one drift report and
+  syncs again; one with none keeps the hash it had.
+- **`Flock.LoginWithDevice` with no device id signs in with this install's** (`ThisDeviceId`), registering it the first time;
+  it used the machine's login id. `Flock.LoginWithDevice <id>` is unchanged.
+- **The shop sample's device field starts empty**, and an empty field signs in with this device's own id; type an id to be
+  another player.
+
+### Documentation
+
+- Device sign-in leaves the device id empty (the README's quick start, the authentication page): the page that made and
+  kept a GUID of the game's own now says when to pass one (a game that already does; two copies of the game started from
+  one project folder); its sign-in picture leaves both nodes' *Device Id* unwired. The config page says what a read gives with a
+  player signed in, and to read again after sign-in. The console's `Flock.LoginWithDevice` and the shop sample's steps say an
+  empty id is this device's own.
+
 ## [1.48.0] - 2026-11-10
 
 The shop sample, made of Blueprints only. No change to any call.
@@ -47,6 +94,11 @@ The shop sample, made of Blueprints only. No change to any call.
   when nothing is wired in, instead of failing to compile.
 - **Every message names the settings page as the editor shows it**: Project Settings > Plugins > Flock SDK Settings (42
   messages said "Project Settings > Flock SDK").
+
+### Fixed
+
+- **The SDK compiles for Android on UE 5.8 again.** Reading a wallet whose balances come as an object of codes stopped the
+  Android build with `-Wrange-loop-construct`, a clang error Windows builds never show (Apple's platforms build with clang too).
 
 ### Documentation
 

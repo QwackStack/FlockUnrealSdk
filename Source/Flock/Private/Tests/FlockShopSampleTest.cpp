@@ -12,6 +12,8 @@
 #include "Engine/MemberReference.h"
 #include "Models/FlockShopModels.h"
 #include "Store/FlockStore.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectHash.h"
 
 namespace FlockShopSampleTest
 {
@@ -319,6 +321,59 @@ bool FFlockShopSampleSignInOnceTest::RunTest(const FString& Parameters)
 	};
 	TestTrue(TEXT("its False logs the device in"), LeadsToLogin(NotSignedIn));
 	TestFalse(TEXT("its True does not"), LeadsToLogin(SignedIn));
+	return true;
+}
+
+/**
+ * The device field is empty unless the player types in it, and Log In hands its text to Flock Login With Device and Flock Register
+ * With Device as their Device Id: an empty field sends an empty id, which the SDK reads as this install's own.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopSampleDeviceFieldTest, "Flock.Samples.Shop.LogIn_AnEmptyDeviceField_SignsInWithThisDevicesId",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FFlockShopSampleDeviceFieldTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockShopSampleTest;
+	UBlueprint* Screen = LoadObject<UBlueprint>(nullptr, ScreenPath);
+	if (!TestNotNull(TEXT("the screen's Blueprint loads"), Screen))
+	{
+		return false;
+	}
+	// The field's text, read by its property's name: the SDK does not depend on UMG.
+	int32 Fields = 0;
+	FString Typed;
+	ForEachObjectWithPackage(Screen->GetPackage(), [&Fields, &Typed](UObject* Object)
+	{
+		const FTextProperty* Text = Object->GetFName() == TEXT("DeviceNameField") ? FindFProperty<FTextProperty>(Object->GetClass(), TEXT("Text")) : nullptr;
+		if (Text != nullptr)
+		{
+			++Fields;
+			Typed += Text->GetPropertyValue_InContainer(Object).ToString();
+		}
+		return true;
+	});
+	TestTrue(TEXT("the screen has its device field"), Fields > 0);
+	TestTrue(FString::Printf(TEXT("empty until the player types in it (it holds '%s')"), *Typed), Typed.IsEmpty());
+
+	int32 Calls = 0;
+	for (const UEdGraph* Graph : Screen->UbergraphPages)
+	{
+		for (const UEdGraphNode* Node : Graph != nullptr ? Graph->Nodes : TArray<TObjectPtr<UEdGraphNode>>())
+		{
+			const FName Factory = AsyncFactory(Node);
+			if (Factory != TEXT("LoginWithDevice") && Factory != TEXT("RegisterWithDevice"))
+			{
+				continue;
+			}
+			++Calls;
+			const UEdGraphPin* Device = Node->FindPin(TEXT("DeviceId"), EGPD_Input);
+			const UEdGraphNode* AsString = Device != nullptr && Device->LinkedTo.Num() == 1 ? Device->LinkedTo[0]->GetOwningNode() : nullptr;
+			const UEdGraphPin* FromText = AsString != nullptr ? AsString->FindPin(TEXT("InText"), EGPD_Input) : nullptr;
+			TestTrue(FString::Printf(TEXT("%s's Device Id is the field's text as it is"), *Factory.ToString()),
+				CalledFunction(AsString) == TEXT("Conv_TextToString") && FromText != nullptr && FromText->LinkedTo.Num() == 1
+				&& CalledFunction(FromText->LinkedTo[0]->GetOwningNode()) == TEXT("GetText"));
+		}
+	}
+	TestEqual(TEXT("Log In and Register both"), Calls, 2);
 	return true;
 }
 #endif

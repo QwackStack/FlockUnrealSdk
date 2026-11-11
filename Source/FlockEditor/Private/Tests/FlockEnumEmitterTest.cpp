@@ -127,6 +127,40 @@ bool FFlockEnumCurrencyAchievementTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── The currencies Add Funds grants are game currencies; a real-money item's is never a wallet fund ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockEnumGameCurrenciesOnlyTest, "Flock.Editor.EnumEmitter.CurrenciesHoldGameCurrenciesOnly_NeverARealMoneyItemsCurrency",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockEnumGameCurrenciesOnlyTest::RunTest(const FString& Parameters)
+{
+	FFlockSchemaSnapshot Snapshot;
+	Snapshot.GameVersionId = TEXT("ver-1");
+	FFlockShop Shop;
+	Shop.Id = TEXT("shop-1");
+	Shop.Name = TEXT("Main");
+	FFlockShopItem Potion = Item(TEXT("item-potion"), TEXT("Potion"), TEXT("Gold"));
+	Potion.Type = TEXT("consumable");
+	Potion.Price = 10;
+	FFlockShopItem GemPack = Item(TEXT("item-gems"), TEXT("Gem Pack"), TEXT("SAR"));
+	GemPack.Type = TEXT("currency_pack");
+	GemPack.Price = 399;
+	GemPack.IsRealMoney = true;
+	Shop.ShopItems = { Potion, GemPack };
+	Snapshot.Shops.Add(Shop);
+
+	const TArray<TPair<FString, FString>> Currencies = FFlockEnumEmitter::CollectCurrencies(Snapshot);
+	if (TestEqual(TEXT("one game currency"), Currencies.Num(), 1))
+	{
+		TestEqualSensitive(TEXT("the game currency"), Currencies[0].Value, FString(TEXT("Gold")));
+	}
+	TestFalse(TEXT("a real-money currency is not one Add Funds grants"), Currencies.ContainsByPredicate(
+		[](const TPair<FString, FString>& Member) { return Member.Value.Equals(TEXT("SAR"), ESearchCase::CaseSensitive); }));
+
+	// A real-money item is still bought through the same Purchase, so it keeps its item member.
+	TestEqual(TEXT("both items are items"), FFlockEnumEmitter::CollectShopItems(Snapshot).Num(), 2);
+	return true;
+}
+
 // ── The built enums carry the display names a dropdown shows ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockEnumBuildTest, "Flock.Editor.EnumEmitter.BuildsTypedEnums",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

@@ -95,6 +95,8 @@ namespace FlockEndpoints
 	inline constexpr const TCHAR* GameConfigVersion = TEXT("game_config/version");
 	inline FString GameConfigById(const FString& ConfigId) { return FString::Printf(TEXT("game_config/%s"), *ConfigId); }
 	inline FString GameConfigByName(const FString& Name) { return FString::Printf(TEXT("game_config/by-name/%s"), *Encode(Name)); }
+	/** A config by name as the signed-in player reads it (bearer and X-Game-Version-ID). */
+	inline FString GameConfigForMeByName(const FString& Name) { return FString::Printf(TEXT("game_config/me/by-name/%s"), *Encode(Name)); }
 	inline FString GameConfigPlayerFeatures(const FString& PlayerId) { return FString::Printf(TEXT("game_config/player/%s/features"), *PlayerId); }
 	inline constexpr const TCHAR* GamePatch = TEXT("game_patch");
 	// The path segment is a patch id, not a config id (a prior name here was misleading).

@@ -11,7 +11,7 @@ and the next step to take.
 
 ```
 Device login failed: Invalid credentials [player.invalid_login_credentials, HTTP 401]
-Fix: This device is not registered yet. Call Flock Register With Device once to create the account, then Flock Login With Device on later launches.
+Fix: This device is not registered yet. Call Flock Register With Device once to create the account, then Flock Login With Device on later launches (with Device Id empty, both use the id the SDK keeps for this install).
 ```
 
 Every failure says what is wrong and how to fix it. A segment is dropped only when there is nothing to

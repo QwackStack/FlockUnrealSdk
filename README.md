@@ -54,12 +54,13 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 - **SDK events** — a single hub (`GetEvents()`) for lifecycle, auth, session, notification, consent and
   real-money purchase events, Blueprint-assignable, with auto-init-safe `CallOrRegister` entry points for
   the init events.
-- **Authentication** — email/device/Google/Apple/Steam login and registration, encrypted token
-  persistence, automatic session restore, silent token refresh, and the account flows.
+- **Authentication** — email/device/Google/Apple/Steam login and registration, a device id the SDK makes once
+  and keeps, encrypted token persistence, automatic session restore, silent token refresh, and the account flows.
 - **Analytics** — a diagnostic log API, session tracking, automatic exception capture, an offline
   queue that survives crashes, consent gating, and next-launch crash reporting.
 - **Game config** — fetch configs and patches (by id, by name, by tag, by version tag) and resolve a
-  config's effective values (patch for this game version, else its base data). Read values in Blueprint
+  config's effective values (patch for this game version, else its base data; with a player signed in, a gameplay or
+  feature config's values as the server resolves them for that player). Read values in Blueprint
   with typed accessors by dotted path, or bind them to your `USTRUCT` in C++. Plus the game record and
   version info.
 - **Shop** — browse shops and items (all shops, by id or name, a single item, a shop's items), buy an
@@ -411,32 +412,14 @@ device signs the player in; registering one that already has an account is a suc
 Sign in only when nobody is signed in. A saved sign-in is restored while the game starts, before any `BeginPlay`, so a
 returning player often is signed in already, and a second sign-in ends the session the first one started.
 
-The device id is a GUID the game makes once and keeps. `FPlatformMisc::GetDeviceId` returns an empty
-string on Windows, Mac and Linux, so it cannot be the id there.
+The device id is left empty, so the SDK uses its own: a GUID it makes once and keeps in `Saved/Flock/device_id.txt`
+(`ThisDeviceId`; see [Device ids](Documentation/authentication.md#device-ids) for when to pass an id of your own).
 
 **C++** — add `"Flock"` to your module's `Build.cs` (see [Installation](#installation)), then, in an actor placed in your
 level whose header declares `virtual void BeginPlay() override;`:
 
 ```cpp
 #include "FlockSubsystem.h"
-#include "Misc/FileHelper.h"
-#include "Misc/Guid.h"
-#include "Misc/Paths.h"
-
-// A device id made once and kept in the project's Saved folder. FPlatformMisc::GetDeviceId is empty on
-// Windows, Mac and Linux, so it cannot be the id there.
-FString GetOrMakeFlockDeviceId()
-{
-    const FString Path = FPaths::ProjectSavedDir() / TEXT("FlockDeviceId.txt");
-    FString DeviceId;
-    if (FFileHelper::LoadFileToString(DeviceId, *Path) && !DeviceId.IsEmpty())
-    {
-        return DeviceId;
-    }
-    DeviceId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
-    FFileHelper::SaveStringToFile(DeviceId, *Path);
-    return DeviceId;
-}
 
 // What this quick start does once a player is signed in: read the game's record and print its name.
 void PrintFlockGameName(UFlockSubsystem* Flock)
@@ -472,11 +455,10 @@ void AMyActor::BeginPlay()
         return;
     }
 
-    // 3. Register this device. On the first launch that creates the player and signs them in.
-    const FString DeviceId = GetOrMakeFlockDeviceId();
+    // 3. Register this device (an empty id: the SDK's own). On the first launch that creates the player and signs them in.
     const TWeakObjectPtr<UFlockSubsystem> WeakSdk(Sdk);
-    Sdk->GetAuthProvider()->RegisterWithDevice(DeviceId, FString(),
-        [WeakSdk, DeviceId](TFlockResult<FFlockRegisterResult> Registered)
+    Sdk->GetAuthProvider()->RegisterWithDevice(FString(), FString(),
+        [WeakSdk](TFlockResult<FFlockRegisterResult> Registered)
         {
             UFlockSubsystem* Flock = WeakSdk.Get();
             if (!Flock || !Flock->IsInitialized())
@@ -494,7 +476,7 @@ void AMyActor::BeginPlay()
                 return;
             }
             // 4. A later launch finds this device registered (a success, with bAlreadyRegistered set): log in to it.
-            Flock->GetAuthProvider()->LoginWithDevice(DeviceId,
+            Flock->GetAuthProvider()->LoginWithDevice(FString(),
                 [WeakSdk](TFlockResult<FFlockPlayerLoginResponse> Login)
                 {
                     UFlockSubsystem* SignedIn = WeakSdk.Get();
@@ -520,16 +502,14 @@ your game's name. A failure shows the error and its `Fix:` line as a `LogTemp` w
 **Blueprint** — no C++ to write. Put the nodes in your level's Level Blueprint (the **Blueprints** button in the level
 editor's toolbar → **Open Level Blueprint**), or in any actor placed in the level. In the order they run:
 
-1. On **Event BeginPlay**, get the device id your game keeps and call a custom event, *Sign In With This Device*, with it.
-   The id is a GUID made once: **New Guid** → **To String (Guid)**, kept with **Create Save Game Object** and **Save Game to
-   Slot** and read back with **Load Game from Slot** (slot `FlockDevice`); [Device ids](Documentation/authentication.md#device-ids)
-   lists every node.
-2. *Sign In With This Device* (a custom event with a String input, *Device Id*) starts with a Branch on **Flock Is
-   Authenticated**. On True a player is signed in already: there is nothing to do.
-3. On False, run **Flock Register With Device** with the Device Id. A new device is registered **and signed in** in one
-   step.
+1. On **Event BeginPlay**, call a custom event, *Sign In With This Device*.
+2. *Sign In With This Device* starts with a Branch on **Flock Is Authenticated**. On True a player is signed in already:
+   there is nothing to do.
+3. On False, run **Flock Register With Device** with its *Device Id* left empty: the SDK uses this install's own id, made
+   once and kept ([Device ids](Documentation/authentication.md#device-ids)). A new device is registered **and signed in** in
+   one step.
 4. A device that already has an account also arrives on **On Success**, with **Already Registered** set and nobody signed
-   in yet: break the result, branch on it, and run **Flock Login With Device** with the same Device Id only on True.
+   in yet: break the result, branch on it, and run **Flock Login With Device**, its *Device Id* empty too, only on True.
    Wiring On Success straight into Login signs the player in twice.
 5. From each **On Failure**, print the *Error* through **To String (Flock Error)**.
 

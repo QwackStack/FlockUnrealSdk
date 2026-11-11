@@ -150,13 +150,13 @@ namespace
 			{ EFlockErrorCode::PlayerAccountNotLinked, TEXT("That credential is not linked to this player. Attach it with the matching Flock Link node first.") },
 			{ EFlockErrorCode::PlayerAppleAccountAlreadyRegistered, TEXT("That Apple account is already registered. Call Flock Login With Apple instead.") },
 			{ EFlockErrorCode::PlayerCannotUnlinkLastCredential, TEXT("A player must keep at least one way to sign in. Link another credential before unlinking this one.") },
-			{ EFlockErrorCode::PlayerDeviceAlreadyRegistered, TEXT("This device already has an account. Call Flock Login With Device instead of registering it again.") },
+			{ EFlockErrorCode::PlayerDeviceAlreadyRegistered, TEXT("This device already has an account. Call Flock Login With Device with the device id left empty (the id the SDK keeps for this install) or with the same id you registered, instead of registering it again.") },
 			{ EFlockErrorCode::PlayerEmailAlreadyRegistered, TEXT("That email already has an account. Call Flock Login With Email, or Flock Forgot Password if the password is lost.") },
 			{ EFlockErrorCode::PlayerExpiredToken, TEXT("The player's sign-in expired and could not be renewed. Sign the player in again; the SDK renews a sign-in by itself while its saved session is still valid.") },
 			{ EFlockErrorCode::PlayerGameJwkNotConfigured, TEXT("The game has no signing key configured, so nobody can authenticate. Set one up in the Flock dashboard.") },
 			{ EFlockErrorCode::PlayerGameVersionIdRequired, FString(TEXT("This route needs a game version. ")) + ResolveGameVersion },
 			{ EFlockErrorCode::PlayerGoogleAccountAlreadyRegistered, TEXT("That Google account is already registered. Call Flock Login With Google instead.") },
-			{ EFlockErrorCode::PlayerInvalidDeviceRegistrationRequest, TEXT("The device registration was rejected. Pass a stable, non-empty device id — the same string on every launch, or the account cannot be found again.") },
+			{ EFlockErrorCode::PlayerInvalidDeviceRegistrationRequest, TEXT("The device registration was rejected. Leave the device id empty to use the one the SDK keeps for this install (Flock Get This Device Id), or pass a stable id of your own — the same string on every launch, or the account cannot be found again.") },
 			{ EFlockErrorCode::PlayerInvalidLinkRequest, TEXT("The link request was rejected. Every provider links with the raw token the platform handed you, not a wrapped payload of your own.") },
 			{ EFlockErrorCode::PlayerInvalidLoginCredentials, TEXT("No account matches these credentials. Signing in never creates an account — call the matching Flock Register With node once first.") },
 			{ EFlockErrorCode::PlayerInvalidRefreshToken, TEXT("The saved session is no longer valid. Call Flock Logout and sign in again.") },
@@ -312,7 +312,7 @@ FString FFlockErrorHints::ForAuth(EFlockErrorCode Code, EFlockAuthMethod Method)
 	switch (Method)
 	{
 	case EFlockAuthMethod::Device:
-		return TEXT("This device is not registered yet. Call Flock Register With Device once to create the account, then Flock Login With Device on later launches.");
+		return TEXT("This device is not registered yet. Call Flock Register With Device once to create the account, then Flock Login With Device on later launches (with Device Id empty, both use the id the SDK keeps for this install).");
 	case EFlockAuthMethod::Email:
 		return TEXT("Wrong email or password. If the account does not exist yet, call Flock Register With Email first — signing in never creates one.");
 	case EFlockAuthMethod::Google:

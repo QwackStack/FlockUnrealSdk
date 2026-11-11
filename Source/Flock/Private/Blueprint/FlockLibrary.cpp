@@ -4,6 +4,7 @@
 
 #include "FlockEvents.h"
 #include "FlockSubsystem.h"
+#include "Providers/FlockAuthProvider.h"
 
 // Every node resolves the subsystem from the calling graph's world context and forwards. A missing SDK
 // (no context, or before init) is a safe no-op / default, matching the subsystem methods themselves.
@@ -129,6 +130,13 @@ FString UFlockLibrary::GetPlayerId(const UObject* WorldContextObject)
 {
 	UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
 	return Sdk ? Sdk->GetPlayerId() : FString();
+}
+
+FString UFlockLibrary::GetThisDeviceId(const UObject* WorldContextObject)
+{
+	UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
+	const FFlockAuthProvider* Auth = Sdk && Sdk->IsInitialized() ? Sdk->GetAuthProvider() : nullptr;
+	return Auth ? Auth->ThisDeviceId() : FString();
 }
 
 bool UFlockLibrary::IsRestoringSession(const UObject* WorldContextObject)

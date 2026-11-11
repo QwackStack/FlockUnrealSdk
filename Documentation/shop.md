@@ -340,8 +340,9 @@ To try it:
 3. For real-money items on a phone, create each item's product in Google Play Console or App Store Connect and enter its product
    id on the shop item in the Flock dashboard (see [Real-money purchases](real-money-purchases.md)). On Windows, Mac and Linux,
    connect Stripe, Tap or Moyasar under Monetization → Payments.
-4. Open the `FlockShopSample` level and play it. Type a device name and press **Log in (device)** (once a player is signed in,
-   pressing it again only says so: a second sign-in would end the first). With more than one payment
+4. Open the `FlockShopSample` level and play it. Press **Log in (device)**: with the device id field empty it signs in with this
+   device's own id; type an id to be another player (two copies of the game started from one project folder share this
+   device's id). Once a player is signed in, pressing it again only says so: a second sign-in would end the first. With more than one payment
    gateway connected, type the one to use in the *Payment provider* field (`stripe`, `tap` or `moyasar`) before opening the
    shop; leave it empty for the build's own way to pay. Then press **Open the shop**.
 

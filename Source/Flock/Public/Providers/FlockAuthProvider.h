@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Auth/FlockAuthSession.h"
+#include "Auth/FlockDeviceIdFile.h"
 #include "FlockEventModels.h"
 #include "FlockEvents.h"
 #include "Http/FlockErrorHints.h"
@@ -26,15 +27,26 @@
 class FLOCK_API FFlockAuthProvider : public FFlockProviderBase
 {
 public:
+	/** InDeviceIdFile: where ThisDeviceId is kept; left out, device_id.txt in the SDK's saved files folder (Saved/Flock). */
 	FFlockAuthProvider(const TSharedRef<FFlockHttpClient>& InClient, const FFlockRetryPolicy& InPolicy,
 		const TSharedRef<IFlockLogger>& InLogger, const TSharedRef<FFlockAuthSession>& InSession,
-		const TWeakObjectPtr<UFlockEvents>& InEvents, const FString& InVersionedApiUrl);
+		const TWeakObjectPtr<UFlockEvents>& InEvents, const FString& InVersionedApiUrl,
+		const TSharedPtr<FFlockDeviceIdFile>& InDeviceIdFile = nullptr);
+
+	// ── This device ──
+
+	/**
+	 * This install's device id, made once by the SDK and kept across launches in its saved files (Saved/Flock/device_id.txt);
+	 * a reinstall usually makes a new one. The device sign-in, register and link calls use it when their DeviceId is empty.
+	 */
+	FString ThisDeviceId() const;
 
 	// ── Login ──
 
 	FFlockRequestHandle LoginWithEmail(const FString& Email, const FString& Password,
 		TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete);
 
+	/** Signs in the player registered with DeviceId; an empty DeviceId uses ThisDeviceId. Any other id is sent as it is. */
 	FFlockRequestHandle LoginWithDevice(const FString& DeviceId,
 		TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete);
 
@@ -62,6 +74,7 @@ public:
 	FFlockRequestHandle RegisterWithEmail(const FString& Email, const FString& Password, const FString& Name,
 		TFunction<void(TFlockResult<FFlockRegisterResult>)> OnComplete);
 
+	/** Registers a new player with DeviceId and signs them in; an empty DeviceId uses ThisDeviceId. Any other id is sent as it is. */
 	FFlockRequestHandle RegisterWithDevice(const FString& DeviceId, const FString& Name,
 		TFunction<void(TFlockResult<FFlockRegisterResult>)> OnComplete);
 
@@ -135,7 +148,10 @@ public:
 	FFlockRequestHandle LinkEmail(const FString& Email, const FString& Password,
 		TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
 
-	/** Attaches a device credential — the "keep my guest progress" flow's counterpart. */
+	/**
+	 * Attaches DeviceId to the signed-in player, so it signs them in from now on; an empty DeviceId uses ThisDeviceId. Any other
+	 * id is sent as it is.
+	 */
 	FFlockRequestHandle LinkDevice(const FString& DeviceId,
 		TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete);
 
@@ -200,9 +216,13 @@ private:
 
 	FString AuthUrl(const FString& Endpoint) const;
 
+	/** DeviceId, or ThisDeviceId when it is empty. */
+	FString DeviceIdOrThisDevice(const FString& DeviceId) const;
+
 	TSharedRef<FFlockAuthSession> Session;
 	TWeakObjectPtr<UFlockEvents> Events;
 	FString VersionedApiUrl;
+	TSharedRef<FFlockDeviceIdFile> DeviceIdFile;
 
 	/** Heap-shared (not a plain member) so async restore legs can clear it even if the provider is torn down mid-restore. */
 	TSharedRef<bool> bRestoringSession = MakeShared<bool>(false);

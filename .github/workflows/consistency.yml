@@ -175,6 +175,24 @@ jobs:
           print("Every settings path names Project Settings > Plugins > Flock SDK Settings.")
           SCRIPT
 
+      - name: A loop over a JSON object's members compiles for Android and Apple on UE 5.8
+        run: |
+          set -euo pipefail
+
+          # UE 5.8 interns a JSON member's key, so a loop that names the pair with an FString key makes a converted
+          # copy: MSVC accepts it, clang (Android, iOS, Mac) refuses it under -Wrange-loop-construct, and no Windows
+          # build or test sees it. Nine loops shipped that way (2026-11-04, 2026-11-11). Write `const auto&` and read
+          # the key as FString(*Pair.Key) (Misc/FlockEngineCompat.h).
+          hits=$(git ls-files -z -- Source OptionalPlugins \
+            | xargs -0 grep -n -I -E '(TPair|TTuple)<\s*FString\s*,\s*TSharedPtr<\s*FJsonValue' \
+            | grep -v 'FlockEngineCompat.h' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Name a JSON object's member pair 'const auto&' and read its key as FString(*Pair.Key): UE 5.8's clang builds refuse an FString pair."
+            exit 1
+          fi
+          echo "Every loop over a JSON object's members names its pair auto."
+
   blueprint-nodes:
     # Rules about Blueprint nodes that no compiler checks. Reads text files only, so it needs no engine.
     runs-on: ubuntu-latest

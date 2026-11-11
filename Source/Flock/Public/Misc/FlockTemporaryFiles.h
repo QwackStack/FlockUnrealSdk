@@ -45,6 +45,22 @@ public:
 	static bool SaveThenMove(const TArray<uint8>& Bytes, const FString& DestinationPath);
 
 	/**
+	 * Moves a finished temporary file to DestinationPath only when no file is there, so of two processes making one file at once
+	 * exactly one does. False when a file is there or the move failed; the temporary file then stays where it is.
+	 *
+	 * One step on Windows, Mac, Linux, Android and iOS. On a file system without hard links (some phone storage) and on any other
+	 * platform it is a check and then a move.
+	 */
+	static bool MoveIntoPlaceIfNone(const FString& TemporaryPath, const FString& DestinationPath);
+
+	/**
+	 * Writes Text to a temporary file of its own and moves it to DestinationPath only when no file is there (MoveIntoPlaceIfNone),
+	 * so the file is never seen half written and never written over. The temporary file is deleted when either step fails.
+	 */
+	static bool SaveAsNew(const FString& Text, const FString& DestinationPath,
+		FFileHelper::EEncodingOptions Encoding = FFileHelper::EEncodingOptions::AutoDetect);
+
+	/**
 	 * Deletes the files in Folder whose names match NamePattern (a wildcard such as `*.tmp`) and that are older than
 	 * LeftOverAfterMinutes. Returns how many files were deleted.
 	 */

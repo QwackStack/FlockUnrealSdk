@@ -147,6 +147,14 @@ namespace FlockRelayTestHelpers
 			: Relay(MakeUnique<FFlockFakeRelayServer>(bWithStreams))
 		{
 			FFlockSockets::ResetForTesting();
+			// An earlier test's relay threads may still be ending (its connections were closed as it ended). A test that takes
+			// FFlockRelayThreads::CountForTesting() as its baseline would count them, then see them end mid-test: a busy machine
+			// failed "the stranger's loopback thread ended" with 6 for 8 (UE 5.5 sweep, 2026-11-11). Start from none running.
+			const double Ends = FPlatformTime::Seconds() + 5.0;
+			while (FFlockRelayThreads::CountForTesting() > 0 && FPlatformTime::Seconds() < Ends)
+			{
+				FPlatformProcess::Sleep(0.005f);
+			}
 		}
 
 		~FRelayFixture()

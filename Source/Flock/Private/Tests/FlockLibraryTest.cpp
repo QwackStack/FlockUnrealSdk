@@ -18,6 +18,7 @@ bool FFlockLibrarySafeWithoutSdkTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("IsAuthenticated default"), UFlockLibrary::IsAuthenticated(nullptr));
 	TestEqual(TEXT("GetPlayerId default"), UFlockLibrary::GetPlayerId(nullptr), FString());
 	TestFalse(TEXT("IsRestoringSession default"), UFlockLibrary::IsRestoringSession(nullptr));
+	TestEqual(TEXT("GetThisDeviceId default"), UFlockLibrary::GetThisDeviceId(nullptr), FString());
 	TestFalse(TEXT("IsInitialized default"), UFlockLibrary::IsInitialized(nullptr));
 	TestEqual(TEXT("GetInitializationError default"), UFlockLibrary::GetInitializationError(nullptr), FString());
 	TestEqual(TEXT("GetGameId default"), UFlockLibrary::GetGameId(nullptr), FString());

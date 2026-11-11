@@ -12,7 +12,8 @@ What you get:
 - **A struct per template and config** with real typed pins — ints, floats, strings, bools, arrays,
   string-keyed maps, and nested objects as their own structs.
 - **`FlockShopItemId`, `FlockCurrencyId`, `FlockAchievementId`** — pick an item or an achievement from a
-  dropdown instead of typing an id.
+  dropdown instead of typing an id. `FlockCurrencyId` lists the game currencies the shops price in, the funds `Add Funds`
+  grants; a real-money item's currency is never one of them (its item is still in `FlockShopItemId`).
 - **One node per config and template** — `Get Gameplay`, `Get Currencies`, `Save Currencies`. Each carries
   its own fetch and id, and answers with `Completed` / `Failed` exec pins, the typed struct, and an
   `Error`. (These are macros, so they live in event graphs; the library is parented to Actor, covering

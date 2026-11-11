@@ -230,8 +230,10 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 			Self->EndSessionAndDropPlayerCaches();
 		}
 	});
+	// This install's device id is kept beside the saved sign-in, and read again by each start of the SDK.
 	AuthProvider = MakeUnique<FFlockAuthProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
-		AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl());
+		AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl(),
+		MakeShared<FFlockDeviceIdFile>(bSavesInTestFolder ? TestSavedFilesFolder : FFlockFileTokenStore::DefaultFolder()));
 
 	// Read-side offline cache, shared by config and game. Built before them and pruned to the current game
 	// version so switching versions doesn't accumulate stale trees. Null when disabled in settings, in

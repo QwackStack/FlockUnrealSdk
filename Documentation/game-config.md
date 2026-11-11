@@ -13,8 +13,9 @@ Nearly every graph wants **the effective values for this game version**, not the
 patch. That is one call:
 
 `ResolveConfigData` returns the patch's data when a patch applies to the running game version, and the
-config's own data when none does. The caller never learns which happened, which is the point — the
-resolution policy stays out of your gameplay code.
+config's own data when none does; with a player signed in, a gameplay or feature config's values are the ones the server
+resolves for that player (see [Values for the signed-in player](#values-for-the-signed-in-player)). The caller never learns
+which happened, which is the point — the resolution policy stays out of your gameplay code.
 
 It takes the config's **id**. The id is on the config's record: read the record by its dashboard name
 (`Flock Get Config By Name`, `GetConfigByName`) and pass its `Id` on, as below. After a schema sync, the
@@ -22,6 +23,28 @@ generated function library also holds each config's id as a constant (see [Code 
 
 Reach for the individual config and patch reads only when you specifically need to know what is
 overriding what.
+
+### Values for the signed-in player
+
+What `ResolveConfigData` (and the generated `Get <Config>` nodes, which call it) gives depends on whether a player is
+signed in:
+
+- **Nobody signed in**: the game-wide values, the newest patch of this build's Game Version for the config, or the
+  config's own values when no patch changes it.
+- **A player signed in**: for a **gameplay** or **feature** config, the values the server resolves for that player: the
+  newest patch, then the overrides of the segments the player is in, then the player's own overrides. Overrides apply to
+  those two kinds only, so any other config (currencies, achievements, assets) reads as it does with nobody signed in.
+  Once the server has answered, the SDK holds the player's values for that sign-in, so a later read makes no call; a new
+  sign-in (another player, or the same one again) or `ClearCache()` reads them afresh. The player's values are also kept on
+  disk per player: offline, a read gives that player's last values, else the game-wide ones, never another player's.
+- **When the player's read cannot answer**, the game-wide values answer. A refusal (the server knows no such player, has no
+  Game Version to read, or no config of that name) holds for the rest of the sign-in; no answer (no connection, a 5xx)
+  gives the player's saved values, else the game-wide ones, and the player's read is sent again on a read 30 seconds or
+  more later. The SDK logs one warning a sign-in when the server got no Game Version with the request, with the fix.
+
+So a game that reads a config before the player signs in (at startup, on a title screen) should read it again once they
+have, or it keeps showing the game-wide values: bind **On Authenticated** on the [event hub](events.md) and resolve the
+config again there.
 
 ## Blueprint
 
@@ -79,7 +102,8 @@ Sdk->GetConfigProvider()->GetConfigByName(TEXT("gameplay"), [WeakSdk](TFlockResu
     {
         return;
     }
-    // The effective values for this game version: the patch's when one applies, else the config's.
+    // The effective values for this game version: the patch's when one applies, else the config's; a gameplay or
+    // feature config's as the server resolves them for the signed-in player, when one is.
     Flock->GetConfigProvider()->ResolveConfigData(Config.Value.Id, [](TFlockResult<FFlockStructuredData> Data)
     {
         if (!Data.bSuccess)
@@ -132,7 +156,8 @@ The C++-only reads are on the same provider: `GetAllPatches`, `GetPatchById`, `G
 
 - **Reads are cached and snapshot-backed.** A config fetched once is memoized, written to the offline
   snapshot, and served without a network call next launch. Concurrent fetches of the same key are
-  coalesced into one request.
+  coalesced into one request. A signed-in player's resolved values are held for that sign-in and kept on
+  disk per player.
 - **Player features are kept in memory per player for the run, never on disk.** The first `Get Player Features` for
   a player fetches; later ones for the same player answer from memory until `ClearCache()` or the next launch, which
   always asks the server again.
@@ -142,7 +167,8 @@ The C++-only reads are on the same provider: `GetAllPatches`, `GetPatchById`, `G
 - **Dictionary keys are never transformed.** Object and list field names are Pascal-cased on read so a
   struct can bind to them; a dict's keys are author data and stay verbatim.
 - **The schema is kept verbatim** on every config, which is what codegen reads to emit typed structs.
-- **`ClearCache()`** drops the in-process caches and the config snapshot category. C++ only.
+- **`ClearCache()`** drops the in-process caches and the config snapshot category, the player's values
+  included. C++ only.
 
 ---
 

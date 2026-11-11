@@ -13,7 +13,7 @@ produced and exchanges it for a Flock session. What each provider expects:
 | Provider | Credential | Where it comes from | Register? |
 |---|---|---|---|
 | **Email** | email + password | your own UI | ✅ |
-| **Device** | a device id string | a GUID your game makes once and keeps (see [Device ids](#device-ids)) | ✅ |
+| **Device** | a device id string | left empty: the GUID the SDK makes once and keeps (see [Device ids](#device-ids)) | ✅ |
 | **Google** | an **ID token** | Google Sign-In on the platform | ✅ |
 | **Apple** | an **identity token** | Sign in with Apple | ✅ |
 | **Steam** | a **session ticket** | Steamworks `GetAuthSessionTicket` | ✅ |
@@ -35,42 +35,30 @@ So the first-launch flow is: register; if the result says the identity was alrea
 
 ### Device ids
 
-`FPlatformMisc::GetDeviceId` returns an empty string on Windows, Mac and Linux, so it cannot be the device
-id there. Make a GUID once and keep it — in a `USaveGame`, or in a file as below — and pass the same string
-every launch:
+Leave the device id empty, and the device calls use the SDK's own: `ThisDeviceId()` on the auth provider (Blueprint:
+**Flock Get This Device Id**), a GUID the SDK makes the first time it is needed and keeps in `Saved/Flock/device_id.txt`,
+beside the saved sign-in. So the same player comes back on every launch, and `Logout()` keeps it. An empty id means this
+one for `LoginWithDevice`, `RegisterWithDevice` and `LinkDevice` and their nodes (**Flock Login With Device**, **Flock
+Register With Device**, **Flock Link Device**, with *Device Id* left unwired); any other id is sent exactly as you pass it,
+spaces included. (`FPlatformMisc::GetDeviceId` cannot be the id: it is empty on Windows, Mac and Linux.)
 
 ```cpp
-#include "Misc/FileHelper.h"
-#include "Misc/Guid.h"
-#include "Misc/Paths.h"
-
-// A device id made once and kept in the project's Saved folder. FPlatformMisc::GetDeviceId is empty on
-// Windows, Mac and Linux, so it cannot be the id there.
-FString GetOrMakeFlockDeviceId()
-{
-    const FString Path = FPaths::ProjectSavedDir() / TEXT("FlockDeviceId.txt");
-    FString DeviceId;
-    if (FFileHelper::LoadFileToString(DeviceId, *Path) && !DeviceId.IsEmpty())
-    {
-        return DeviceId;
-    }
-    DeviceId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
-    FFileHelper::SaveStringToFile(DeviceId, *Path);
-    return DeviceId;
-}
+// This install's device id: what the device calls send when their id is empty.
+const FString DeviceId = UFlockSubsystem::Get(this)->GetAuthProvider()->ThisDeviceId();
 ```
 
-In Blueprint, keep it in a save game:
+A new one is made when the file is gone: a reinstall on a phone, a deleted or cleaned `Saved` folder. With a new id the
+player signs in as somebody new, with none of their progress; to keep the player across a reinstall or a new device,
+[link](#account-linking) an email or a social login to them. When the file can be neither read nor written, the SDK logs a
+warning saying why and how to fix it, and uses an id for that run only.
 
-1. Make a Blueprint class whose parent is **SaveGame**, for example `BP_FlockDevice`, with one String variable, *Device Id*.
-2. **Does Save Game Exist** with the slot name `FlockDevice` (User Index 0), into a Branch:
-   - **True:** **Load Game from Slot** (`FlockDevice`, 0), **Cast To BP_FlockDevice**, and read its *Device Id*.
-   - **False:** **New Guid** into **To String (Guid)** makes the id. **Create Save Game Object** (class `BP_FlockDevice`), set
-     its *Device Id* to that string, and **Save Game to Slot** (`FlockDevice`, 0).
-3. Use that string as the *Device Id* of the sign-in nodes below.
+Pass an id of your own only in two cases:
 
-Losing the kept id (a reinstall, a wiped Saved folder) makes the next launch a new player. A guest who
-wants to keep their progress links an email or a social login first: see [Account linking](#account-linking).
+- **Your game already signs players in with an id of its own** (a GUID kept in a save game or a file, as earlier versions
+  of this page showed): keep passing that same id. Leaving it empty would sign every existing player in to a new, empty
+  account.
+- **Two copies of the game started from one project folder** (Play In Editor beside a standalone game, two game clients
+  on one machine) share `Saved/`, so they share the kept id and are one player. Pass another id in one of them.
 
 ## Blueprint
 
@@ -90,24 +78,24 @@ Signing in with a device, the first launch and every later one:
    restored while the game starts, before any Event BeginPlay, so a returning player often is. On **True** there is
    nothing to do. Sign in only on **False**: a second sign-in ends the session the first one started, and a playtest
    waiting for that session never starts.
-2. Feed **Flock Register With Device** the device id your game keeps (see [Device ids](#device-ids)).
+2. Run **Flock Register With Device** with *Device Id* empty: the SDK uses this install's own (see [Device ids](#device-ids)).
 3. From its **On Success**, break the Result and branch on **Already Registered**:
    - **False**: a new device, registered **and signed in** by that one node. You are done.
    - **True**: the device already had an account and nobody is signed in yet. Run **Flock Login With Device**
-     with the same device id.
+     with the same device id, empty again.
 
    Never run On Success straight into the login: that would sign the player in twice, with the same result as above.
 4. Run **On Failure** of either node into what you show errors with, putting `Error` through
    **To String (Flock Error)**.
 
-![A custom event Sign In With This Device, with a Device Id input, runs a Branch on Flock Is Authenticated: True prints Already signed in; False runs Flock Register With Device, whose On Success breaks the result and branches on Already Registered: True runs Flock Login With Device and prints Signed in, False prints Registered and signed in; both On Failure pins print the error through To String (Flock Error)](images/auth-register-then-login.png)
+![A custom event Sign In With This Device runs a Branch on Flock Is Authenticated: True prints Already signed in; False runs Flock Register With Device, its Device Id left empty, whose On Success breaks the result and branches on Already Registered: True runs Flock Login With Device, its Device Id left empty too, and prints Signed in, False prints Registered and signed in; both On Failure pins print the error through To String (Flock Error)](images/auth-register-then-login.png)
 
 **Session and account:** `Flock Restore Session`, `Flock Refresh Token`, `Flock Revoke Token`,
 `Flock Forgot Password`, `Flock Reset Password`, `Flock Send Email Verification`, `Flock Verify Email`,
 `Flock Is Name Available`.
 
 Sign-in state needs no Target pin either — `Flock Is Authenticated`, `Flock Get Player Id`,
-`Flock Is Restoring Session` and `Flock Logout` resolve the SDK from the calling graph.
+`Flock Is Restoring Session`, `Flock Get This Device Id` and `Flock Logout` resolve the SDK from the calling graph.
 
 To react from anywhere rather than at the call site, bind `On Authenticated`, `On Logged Out`,
 `On Session Restored`, and `On Auth Expired` on the [event hub](events.md).
@@ -132,11 +120,11 @@ if (Sdk->IsAuthenticated())
     UE_LOG(LogTemp, Log, TEXT("Already signed in as %s"), *Sdk->GetPlayerId());
     return;
 }
-const FString DeviceId = GetOrMakeFlockDeviceId();
 const TWeakObjectPtr<UFlockSubsystem> WeakSdk(Sdk);
 
-Sdk->GetAuthProvider()->RegisterWithDevice(DeviceId, FString(),
-    [WeakSdk, DeviceId](TFlockResult<FFlockRegisterResult> Registered)
+// An empty device id: this install's own (ThisDeviceId). No display name either.
+Sdk->GetAuthProvider()->RegisterWithDevice(FString(), FString(),
+    [WeakSdk](TFlockResult<FFlockRegisterResult> Registered)
     {
         UFlockSubsystem* Flock = WeakSdk.Get();
         if (!Flock || !Flock->IsInitialized())
@@ -155,7 +143,7 @@ Sdk->GetAuthProvider()->RegisterWithDevice(DeviceId, FString(),
             return;
         }
         // This device has an account already: log in to it.
-        Flock->GetAuthProvider()->LoginWithDevice(DeviceId,
+        Flock->GetAuthProvider()->LoginWithDevice(FString(),
             [](TFlockResult<FFlockPlayerLoginResponse> Login)
             {
                 if (Login.bSuccess)
@@ -176,8 +164,9 @@ level or the SDK is gone.
 ### Every provider
 
 Only the credential argument differs between providers. `Email`, `Password` and the tokens come from your
-sign-in screen and the platform's SDK. Each call below is a sign-in: make one of them, once, and only while
-`IsAuthenticated()` is false, as above.
+sign-in screen and the platform's SDK; `OwnDeviceId` is an id of your game's own, for the two cases that pass one
+(see [Device ids](#device-ids)). Each call below is a sign-in: make one of them, once, and only while `IsAuthenticated()`
+is false, as above.
 
 ```cpp
 auto OnLogin = [](TFlockResult<FFlockPlayerLoginResponse> Result)
@@ -195,7 +184,8 @@ auto OnLogin = [](TFlockResult<FFlockPlayerLoginResponse> Result)
 FFlockAuthProvider* Auth = UFlockSubsystem::Get(this)->GetAuthProvider();
 
 Auth->LoginWithEmail(Email, Password, OnLogin);
-Auth->LoginWithDevice(DeviceId, OnLogin);
+Auth->LoginWithDevice(FString(), OnLogin);          // empty: this install's device id
+Auth->LoginWithDevice(OwnDeviceId, OnLogin);        // an id of your game's own, sent as it is
 Auth->LoginWithGoogle(GoogleIdToken, OnLogin);
 Auth->LoginWithApple(AppleIdentityToken, OnLogin);
 Auth->LoginWithSteam(SteamSessionTicket, OnLogin);
@@ -221,7 +211,7 @@ auto OnRegister = [](TFlockResult<FFlockRegisterResult> Result)
 };
 
 Auth->RegisterWithEmail(Email, Password, TEXT("Nightjar"), OnRegister);
-Auth->RegisterWithDevice(DeviceId, FString(), OnRegister);   // no display name
+Auth->RegisterWithDevice(FString(), FString(), OnRegister);   // this install's device id, no display name
 Auth->RegisterWithGoogle(GoogleIdToken, Name, OnRegister);
 Auth->RegisterWithApple(AppleIdentityToken, Name, OnRegister);
 Auth->RegisterWithSteam(SteamSessionTicket, Name, OnRegister);
@@ -287,7 +277,7 @@ auto OnAccounts = [](TFlockResult<FFlockPlayerAccountsResponse> Result)
 Auth->GetLinkedAccounts(OnAccounts);                       // what is attached right now
 
 Auth->LinkEmail(Email, Password, OnAccounts);
-Auth->LinkDevice(DeviceId, OnAccounts);
+Auth->LinkDevice(FString(), OnAccounts);                   // this install's device id
 Auth->LinkGoogle(IdToken, OnAccounts);                     // also Apple / Steam / Facebook / Discord
 
 Auth->Unlink(EFlockCredentialProvider::DeviceId, OnAccounts);

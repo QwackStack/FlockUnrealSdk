@@ -124,6 +124,36 @@ bool FFlockHasherSensitivityTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── A real-money item is marked in the hash, an item that is not changes nothing ──
+// The funds enum leaves a real-money item's currency out, so flipping an item to real money is drift; a catalog with no
+// real-money item must keep the hash an earlier SDK gave it. Both values are SHA-1 of the canonical text, worked out apart
+// from the hasher: "S6:shop-17:Starter[I6:item-17:GemPack4:GoldI6:item-25:Coins3:USD]", then with "|real_money" after USD.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHasherRealMoneyTest, "Flock.Editor.CodegenHash.ARealMoneyItemIsMarked_ACatalogWithoutOneKeepsItsHash",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockHasherRealMoneyTest::RunTest(const FString& Parameters)
+{
+	FFlockSchemaSnapshot Snapshot;
+	Snapshot.GameVersionId = TEXT("ver-1");
+	FFlockShop Shop;
+	Shop.Id = TEXT("shop-1");
+	Shop.Name = TEXT("Starter");
+	Shop.ShopItems.Add(Item(TEXT("item-1"), TEXT("GemPack"), TEXT("Gold"), 100));
+	Shop.ShopItems.Add(Item(TEXT("item-2"), TEXT("Coins"), TEXT("USD"), 199));
+	Snapshot.Shops.Add(Shop);
+
+	const FString WithoutRealMoney = FFlockSchemaHasher::ComputeContentHash(Snapshot);
+	TestTrue(FString::Printf(TEXT("no real-money item: the hash an earlier SDK gave (%s)"), *WithoutRealMoney),
+		WithoutRealMoney.Equals(TEXT("bf3e7f4e548f76d64bca904b32abe88f411ce232"), ESearchCase::CaseSensitive));
+
+	Snapshot.Shops[0].ShopItems[1].IsRealMoney = true;
+	const FString WithRealMoney = FFlockSchemaHasher::ComputeContentHash(Snapshot);
+	TestTrue(TEXT("flipping an item to real money is drift"), !WithRealMoney.Equals(WithoutRealMoney, ESearchCase::CaseSensitive));
+	TestTrue(FString::Printf(TEXT("marked with \"|real_money\" after that item's currency (%s)"), *WithRealMoney),
+		WithRealMoney.Equals(TEXT("e8903055f1aab7fac727dda7b46479174883f43c"), ESearchCase::CaseSensitive));
+	return true;
+}
+
 // ── Serialization noise is not drift; real reordering of fields is ──
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockHasherCanonicalTest, "Flock.Editor.CodegenHash.IgnoresSerializationNoise",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

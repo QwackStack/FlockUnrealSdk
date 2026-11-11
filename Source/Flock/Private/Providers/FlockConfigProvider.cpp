@@ -4,8 +4,37 @@
 #include "Http/FlockErrorHints.h"
 
 #include "Http/FlockEndpoints.h"
+#include "Http/FlockJsonUtils.h"
 
 const TCHAR* const FFlockConfigProvider::SnapshotCategory = TEXT("config");
+
+namespace
+{
+	/**
+	 * A 2xx JSON answer whose `result` is null or missing is no answer, not a refusal: it is tried again, then the player's saved
+	 * copy or the game's read answers, and the player's read is asked again after the pause. A body that is not JSON, or a result
+	 * that cannot be read, stays a failure of its own.
+	 */
+	TFlockResult<FFlockGameConfigSchema> AsNoAnswerWhenItHasNoResult(TFlockResult<FFlockGameConfigSchema> Result)
+	{
+		if (Result.bSuccess || Result.Error.Type != EFlockErrorType::Serialization)
+		{
+			return Result;
+		}
+		TSharedPtr<FJsonObject> Root;
+		if (!FFlockJsonUtils::TryParseObject(Result.Error.Body, Root) || !Root.IsValid())
+		{
+			return Result;
+		}
+		const TSharedPtr<FJsonValue> Found = Root->TryGetField(TEXT("result"));
+		if (Found.IsValid() && !Found->IsNull())
+		{
+			return Result;
+		}
+		return TFlockResult<FFlockGameConfigSchema>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Network,
+			TEXT("The server's answer has no result in it"), FFlockErrorHints::NotFlocksAnswer()));
+	}
+}
 
 FFlockConfigProvider::FFlockConfigProvider(const TSharedRef<FFlockHttpClient>& InClient, const FFlockRetryPolicy& InPolicy,
 	const TSharedRef<IFlockLogger>& InLogger, const TSharedRef<FFlockAuthSession>& InSession,
@@ -457,6 +486,37 @@ void FFlockConfigProvider::ResolveConfigData(const FString& ConfigId, TFunction<
 	}
 
 	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
+	ReadForTheSignedInPlayer(ConfigId,
+		[WeakSelf, ConfigId, OnComplete](TFlockResult<TOptional<FFlockGameConfigSchema>> ForThePlayer)
+		{
+			const TSharedPtr<FFlockConfigProvider> Self = WeakSelf.Pin();
+			if (!Self.IsValid())
+			{
+				return;
+			}
+			if (!ForThePlayer.bSuccess)
+			{
+				if (OnComplete)
+				{
+					OnComplete(TFlockResult<FFlockStructuredData>::Fail(ForThePlayer.Error));
+				}
+				return;
+			}
+			if (ForThePlayer.Value.IsSet())
+			{
+				if (OnComplete)
+				{
+					OnComplete(TFlockResult<FFlockStructuredData>::Ok(ForThePlayer.Value.GetValue().Data));
+				}
+				return;
+			}
+			Self->ResolveForTheGame(ConfigId, OnComplete);
+		});
+}
+
+void FFlockConfigProvider::ResolveForTheGame(const FString& ConfigId, TFunction<void(TFlockResult<FFlockStructuredData>)> OnComplete)
+{
+	TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
 	GetPatchesByConfig(ConfigId,
 		[WeakSelf, ConfigId, OnComplete](TFlockResult<TArray<FFlockGamePatchSchema>> PatchResult)
 		{
@@ -503,6 +563,219 @@ void FFlockConfigProvider::ResolveConfigData(const FString& ConfigId, TFunction<
 		});
 }
 
+// ─────────────────────────────── The signed-in player ──────────────────────────────
+
+void FFlockConfigProvider::ReadForTheSignedInPlayer(const FString& ConfigId,
+	TFunction<void(TFlockResult<TOptional<FFlockGameConfigSchema>>)> Then)
+{
+	using FPlayersRead = TFlockResult<TOptional<FFlockGameConfigSchema>>;
+	const FString PlayerId = Session->GetPlayerId();
+	if (!Session->IsAuthenticated() || PlayerId.IsEmpty())
+	{
+		Then(FPlayersRead::Ok(TOptional<FFlockGameConfigSchema>()));
+		return;
+	}
+	const int32 SignIn = Session->GetSignInNumber();
+	if (const TOptional<FFlockGameConfigSchema>* Held = PlayerConfigsOf(SignIn).Find(ConfigId))
+	{
+		Then(FPlayersRead::Ok(*Held));
+		return;
+	}
+
+	const FString Key = FString::Printf(TEXT("player_config_%s_%s"), *ConfigId, *PlayerId);
+	const TOptional<FFlockGameConfigSchema> Saved = SavedPlayerConfig(ConfigId, Key);
+	// No connection, or no answer a moment ago: the player's saved copy, else the game's read, at once.
+	const FDateTime* PausedUntil = PlayerReadsPausedUntil.Find(ConfigId);
+	if (!IsServerReachable() || (PausedUntil != nullptr && FDateTime::UtcNow() < *PausedUntil))
+	{
+		Then(FPlayersRead::Ok(Saved));
+		return;
+	}
+
+	const int32 ClearsWhenAsked = Clears;
+	const TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
+	FetchForThePlayer(ConfigId, SignIn, Saved.IsSet(),
+		[WeakSelf, ConfigId, SignIn, Key, Saved, ClearsWhenAsked, Then](FPlayersRead Answer)
+		{
+			const TSharedPtr<FFlockConfigProvider> Self = WeakSelf.Pin();
+			if (!Self.IsValid())
+			{
+				return;
+			}
+			// The sign-in ended before a retry went out, or while the read was on its way: the answer is kept nowhere, and the
+			// read runs again for whoever is signed in now.
+			if (Self->Session->GetSignInNumber() != SignIn)
+			{
+				Self->ReadForTheSignedInPlayer(ConfigId, Then);
+				return;
+			}
+			const bool bKeep = ClearsWhenAsked == Self->Clears;
+			if (!Answer.bSuccess)
+			{
+				const FFlockError& Failed = Answer.Error;
+				if (Failed.Type == EFlockErrorType::Cancelled)
+				{
+					Then(Answer);
+					return;
+				}
+				const bool bNoAnswer = (Failed.Type == EFlockErrorType::Network || Failed.Type == EFlockErrorType::Timeout
+					|| Failed.Type == EFlockErrorType::Connection) && !FFlockError::IsPermanentStatus(Failed.StatusCode);
+				if (bNoAnswer)
+				{
+					if (bKeep)
+					{
+						Self->PlayerConfigsOf(SignIn);
+						Self->PlayerReadsPausedUntil.Add(ConfigId,
+							FDateTime::UtcNow() + FTimespan::FromSeconds(Self->PlayerReadPauseAfterNoAnswerSeconds));
+					}
+					Self->Logger->LogDebug(FString::Printf(TEXT("Config %s: the player's read got no answer, so %s answers for now (%s)"),
+						*ConfigId, Saved.IsSet() ? TEXT("the player's saved copy") : TEXT("the game's read"),
+						Failed.StatusCode != 0 ? *FString::FromInt(Failed.StatusCode) : TEXT("no answer")));
+					Then(FPlayersRead::Ok(Saved));
+					return;
+				}
+				// A refusal, or a failure that will not change during this sign-in: the game's read answers for the rest of it.
+				if (bKeep)
+				{
+					const bool bNotForThePlayersRead = Failed.ErrorCode == EFlockErrorCode::GameConfigPlayerNotFound
+						|| Failed.ErrorCode == EFlockErrorCode::GameConfigPlayerNoGameVersion
+						|| Failed.ErrorCode == EFlockErrorCode::GameConfigConfigNotFound;
+					Self->LeaveToTheGamesRead(SignIn, ConfigId, Key, bNotForThePlayersRead);
+				}
+				if (Failed.ErrorCode == EFlockErrorCode::GameConfigPlayerNoGameVersion && Self->WarnedOfNoGameVersionSignIn != SignIn)
+				{
+					Self->WarnedOfNoGameVersionSignIn = SignIn;
+					Self->Logger->LogWarning(TEXT("Config values are the game's, not the signed-in player's: the server got no Game Version ")
+						TEXT("with the request, so it cannot read the config as this player sees it (the overrides of their segments and ")
+						TEXT("their own). Fix: resolve the Game Version (Tools > Flock > Resolve Game Version, or Project Settings > Plugins > ")
+						TEXT("Flock SDK Settings) so the build sends it on every request; a proxy that drops the X-Game-Version-ID header does ")
+						TEXT("the same."));
+				}
+				else
+				{
+					Self->Logger->LogDebug(FString::Printf(TEXT("Config %s: the player's read cannot answer it, so the game's read does for this sign-in (%s)"),
+						*ConfigId, Failed.Code.IsEmpty() ? *FString::FromInt(Failed.StatusCode) : *Failed.Code));
+				}
+				Then(FPlayersRead::Ok(TOptional<FFlockGameConfigSchema>()));
+				return;
+			}
+
+			// Another config's values (a rename during the launch, another version's config of that name) are not this one's.
+			const bool bForThisConfig = Answer.Value.IsSet() && Answer.Value.GetValue().Id.Equals(ConfigId, ESearchCase::CaseSensitive);
+			if (bKeep)
+			{
+				if (bForThisConfig)
+				{
+					Self->PlayerConfigsOf(SignIn).Add(ConfigId, Answer.Value);
+					Self->SavedPlayerConfigsById.Add(ConfigId, Answer.Value);
+					FString Payload;
+					if (Self->GetSnapshotStore().IsValid() && FFlockJsonUtils::StructToPlainJson(Answer.Value.GetValue(), Payload))
+					{
+						Self->GetSnapshotStore()->Write(Self->GetSnapshotScope(SnapshotCategory), Key, Payload);
+					}
+				}
+				else
+				{
+					Self->LeaveToTheGamesRead(SignIn, ConfigId, Key, Answer.Value.IsSet());
+				}
+			}
+			Then(FPlayersRead::Ok(bForThisConfig ? Answer.Value : TOptional<FFlockGameConfigSchema>()));
+		});
+}
+
+void FFlockConfigProvider::FetchForThePlayer(const FString& ConfigId, int32 SignInNumber, bool bHasSavedCopy,
+	TFunction<void(TFlockResult<TOptional<FFlockGameConfigSchema>>)> Then)
+{
+	using FPlayersRead = TFlockResult<TOptional<FFlockGameConfigSchema>>;
+	const TWeakPtr<FFlockConfigProvider> WeakSelf = AsShared();
+	GetConfigById(ConfigId, [WeakSelf, SignInNumber, bHasSavedCopy, Then](TFlockResult<FFlockGameConfigSchema> Config)
+	{
+		const TSharedPtr<FFlockConfigProvider> Self = WeakSelf.Pin();
+		if (!Self.IsValid())
+		{
+			return;
+		}
+		if (!Config.bSuccess)
+		{
+			Then(FPlayersRead::Fail(Config.Error));
+			return;
+		}
+		// The server resolves only gameplay and feature configs for a player; any other comes back as stored, without its patch.
+		const FString& Tag = Config.Value.Tag;
+		const FString Name = Config.Value.Name;
+		if (Name.IsEmpty() || !(Tag.Equals(TEXT("gameplay"), ESearchCase::IgnoreCase) || Tag.Equals(TEXT("feature"), ESearchCase::IgnoreCase)))
+		{
+			Then(FPlayersRead::Ok(TOptional<FFlockGameConfigSchema>()));
+			return;
+		}
+
+		const TSharedRef<FFlockHttpClient> ClientRef = Self->Client;
+		const TSharedRef<FFlockAuthSession> SessionRef = Self->Session;
+		const FString Url = Self->MakeUrl(FlockEndpoints::GameConfigForMeByName(Name));
+		FFlockRetryHandler::FOperation<FFlockGameConfigSchema> Send =
+			[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockGameConfigSchema>)> OnAttempt)
+			{
+				return ClientRef->Get<FFlockGameConfigSchema>(Url, SessionRef->GetAuthHeaders(),
+					[OnAttempt = MoveTemp(OnAttempt)](TFlockResult<FFlockGameConfigSchema> Result)
+					{
+						OnAttempt(AsNoAnswerWhenItHasNoResult(MoveTemp(Result)));
+					});
+			};
+		// A failure here is answered by the game's read, so it is no error to log; the caller says what happened.
+		Self->Execute<FFlockGameConfigSchema>(ForSignInOnly<FFlockGameConfigSchema>(SessionRef, SignInNumber, MoveTemp(Send)),
+			[Then](TFlockResult<FFlockGameConfigSchema> Result)
+			{
+				Then(Result.bSuccess ? FPlayersRead::Ok(TOptional<FFlockGameConfigSchema>(Result.Value)) : FPlayersRead::Fail(Result.Error));
+			},
+			FString::Printf(TEXT("Fetch config %s for the signed-in player"), *Name), /*bIdempotent*/ true,
+			/*MaxRetriesOverride*/ bHasSavedCopy ? 0 : -1, /*bAllowAuthRetry*/ true, [](const FFlockError&) { return true; });
+	});
+}
+
+void FFlockConfigProvider::LeaveToTheGamesRead(int32 SignInNumber, const FString& ConfigId, const FString& Key, bool bDeleteTheSavedCopy)
+{
+	PlayerConfigsOf(SignInNumber).Add(ConfigId, TOptional<FFlockGameConfigSchema>());
+	if (!bDeleteTheSavedCopy)
+	{
+		return;
+	}
+	SavedPlayerConfigsById.Add(ConfigId, TOptional<FFlockGameConfigSchema>());
+	if (GetSnapshotStore().IsValid())
+	{
+		GetSnapshotStore()->DeleteKey(GetSnapshotScope(SnapshotCategory), Key);
+	}
+}
+
+TOptional<FFlockGameConfigSchema> FFlockConfigProvider::SavedPlayerConfig(const FString& ConfigId, const FString& Key)
+{
+	if (const TOptional<FFlockGameConfigSchema>* Known = SavedPlayerConfigsById.Find(ConfigId))
+	{
+		return *Known;
+	}
+	TOptional<FFlockGameConfigSchema> Saved;
+	FString Payload;
+	FFlockGameConfigSchema Config;
+	if (GetSnapshotStore().IsValid() && GetSnapshotStore()->TryRead(GetSnapshotScope(SnapshotCategory), Key, Payload)
+		&& FFlockJsonUtils::PlainJsonToStruct(Payload, Config))
+	{
+		Saved = Config;
+	}
+	SavedPlayerConfigsById.Add(ConfigId, Saved);
+	return Saved;
+}
+
+TMap<FString, TOptional<FFlockGameConfigSchema>>& FFlockConfigProvider::PlayerConfigsOf(int32 SignInNumber)
+{
+	if (PlayerConfigsSignIn != SignInNumber)
+	{
+		PlayerConfigsById.Reset();
+		SavedPlayerConfigsById.Reset();
+		PlayerReadsPausedUntil.Reset();
+		PlayerConfigsSignIn = SignInNumber;
+	}
+	return PlayerConfigsById;
+}
+
 void FFlockConfigProvider::ClearCache()
 {
 	PatchesById.Reset();
@@ -514,6 +787,10 @@ void FFlockConfigProvider::ClearCache()
 	PlayerFeaturesByPlayer.Reset();
 	bAllPatchesFetched = false;
 	AllPatchIds.Reset();
+	PlayerConfigsById.Reset();
+	SavedPlayerConfigsById.Reset();
+	PlayerReadsPausedUntil.Reset();
+	++Clears;
 	DeleteSnapshotCategory(SnapshotCategory);
 }
 
