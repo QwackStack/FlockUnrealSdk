@@ -20,11 +20,11 @@ namespace
 			const TSharedRef<FJsonObject> NewObj = MakeShared<FJsonObject>();
 			if (Obj.IsValid())
 			{
-				for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Obj->Values)
+				for (const auto& Pair : Obj->Values)
 				{
 					const FString NewKey = bToPascal
-						? FFlockJsonUtils::SnakeToPascal(Pair.Key)
-						: FFlockJsonUtils::ToSnakeCase(Pair.Key);
+						? FFlockJsonUtils::SnakeToPascal(FString(*Pair.Key))
+						: FFlockJsonUtils::ToSnakeCase(FString(*Pair.Key));
 					NewObj->SetField(NewKey, TransformValue(Pair.Value, bToPascal));
 				}
 			}

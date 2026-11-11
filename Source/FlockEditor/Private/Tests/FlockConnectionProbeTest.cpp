@@ -5,6 +5,29 @@
 #if WITH_AUTOMATION_TESTS
 
 #include "Setup/FlockConnectionProbe.h"
+#include "Models/FlockShopModels.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConnectionProbeRealMoneyTest, "Flock.Editor.Setup.Probe.ARealMoneyItemInAnyShopIsFound",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockConnectionProbeRealMoneyTest::RunTest(const FString& Parameters)
+{
+	FFlockShopItem Gems;
+	Gems.Id = TEXT("gems");
+	FFlockShopItem Sword;
+	Sword.Id = TEXT("sword");
+	Sword.IsRealMoney = true;
+
+	FFlockShop Wallet;
+	Wallet.ShopItems = { Gems };
+	FFlockShop Store;
+	Store.ShopItems = { Gems, Sword };
+
+	TestFalse(TEXT("No shops: nothing sold for real money"), FFlockConnectionProbe::SellsRealMoney({}));
+	TestFalse(TEXT("Game-currency items only: nothing sold for real money"), FFlockConnectionProbe::SellsRealMoney({ Wallet }));
+	TestTrue(TEXT("A real-money item in a later shop is found"), FFlockConnectionProbe::SellsRealMoney({ Wallet, Store }));
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockConnectionProbeClassifyTest, "Flock.Editor.Setup.Probe.Classify",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

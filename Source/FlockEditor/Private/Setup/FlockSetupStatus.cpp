@@ -46,7 +46,7 @@ TArray<FFlockSetupFinding> FFlockSetupStatus::Evaluate(const FFlockSetupInput& I
 	{
 		Findings.Add(MakeFinding(TEXT("Flock.Config.ApiUrl"), EFlockSetupSeverity::Error,
 			LOCTEXT("ApiUrlMissingTitle", "API URL is empty"),
-			LOCTEXT("ApiUrlMissingDetail", "Set the API URL in Project Settings > Flock SDK."),
+			LOCTEXT("ApiUrlMissingDetail", "Set the API URL in Project Settings > Plugins > Flock SDK Settings."),
 			EFlockSetupFix::OpenSettings));
 	}
 	else if (!Input.ApiUrl.StartsWith(TEXT("http://")) && !Input.ApiUrl.StartsWith(TEXT("https://")))
@@ -63,7 +63,7 @@ TArray<FFlockSetupFinding> FFlockSetupStatus::Evaluate(const FFlockSetupInput& I
 	{
 		Findings.Add(MakeFinding(TEXT("Flock.Config.ApiKey"), EFlockSetupSeverity::Error,
 			LOCTEXT("ApiKeyMissingTitle", "API Key is empty"),
-			LOCTEXT("ApiKeyMissingDetail", "Paste your API key from the Flock dashboard into Project Settings > Flock SDK."),
+			LOCTEXT("ApiKeyMissingDetail", "Paste your API key from the Flock dashboard into Project Settings > Plugins > Flock SDK Settings."),
 			EFlockSetupFix::OpenSettings));
 	}
 
@@ -169,6 +169,22 @@ TArray<FFlockSetupFinding> FFlockSetupStatus::Evaluate(const FFlockSetupInput& I
 			LOCTEXT("CodegenDriftTitle", "Generated code is from a different game version"),
 			LOCTEXT("CodegenDriftDetail", "The last schema sync generated for a different version than the one baked here. Re-sync to bring them back in line."),
 			EFlockSetupFix::SyncSchemas));
+	}
+
+	// ── Store ──
+	// The engine's in-app purchase nodes finish a purchase as it is made (the deprecated v2 ones always do), before Flock
+	// has delivered it: a purchase Flock then refuses is gone from the store, and the player is never handed it again.
+	// Only a game whose shops sell real money is told (owner, 2026-11-09): a game that sells nothing through Flock's store
+	// may use the engine's nodes freely. The shops are read by the connection check, never automatically.
+
+	if (Input.bStoreLibraryRegistered && Input.bGameSellsRealMoney && Input.BlueprintsUsingEnginePurchaseNodes.Num() > 0)
+	{
+		Findings.Add(MakeFinding(TEXT("Flock.Store.EnginePurchaseNodes"), EFlockSetupSeverity::Warning,
+			LOCTEXT("EnginePurchaseNodesTitle", "Blueprints use the engine's own in-app purchase nodes"),
+			FText::Format(LOCTEXT("EnginePurchaseNodesDetail",
+				"{0} use the engine's in-app purchase nodes, which finish purchases before Flock delivers them, so a purchase Flock refuses is lost. Buy real-money items with Flock's Purchase and UFlockStore instead, or keep the engine's nodes for products no Flock shop item sells."),
+				FText::FromString(FString::Join(Input.BlueprintsUsingEnginePurchaseNodes, TEXT(", ")))),
+			EFlockSetupFix::None));
 	}
 
 	// ── SDK version ──

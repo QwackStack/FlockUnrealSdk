@@ -91,7 +91,6 @@ public:
 
 private:
 	FString MakeUrl(const FString& Path) const { return FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, *Path); }
-	TMap<FString, FString> HeadersNow() const { return Session->GetAuthHeaders(); }
 
 	/**
 	 * Makes the server's "no board by that name" a Validation failure: the caller's mistake, never retried. The 404

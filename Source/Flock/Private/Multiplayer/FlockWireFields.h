@@ -12,9 +12,9 @@ namespace FlockWireFields
 	/** The field whose key is spelled exactly so (letter case counts), or null. */
 	inline TSharedPtr<FJsonValue> SpelledExactly(const FJsonObject& Object, const TCHAR* Key)
 	{
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object.Values)
+		for (const auto& Pair : Object.Values)
 		{
-			if (Pair.Key.Equals(Key, ESearchCase::CaseSensitive))
+			if (FString(*Pair.Key).Equals(Key, ESearchCase::CaseSensitive))
 			{
 				return Pair.Value;
 			}

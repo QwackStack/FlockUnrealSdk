@@ -259,7 +259,9 @@ bool FProtokitePlaytestFormLogoTooWideTest::RunTest(const FString& Parameters)
 	Settings->FeedbackFormLogos = { TSoftObjectPtr<UTexture2D>(Banner.Get()) };
 	Settings->FeedbackFormLogoHeight = 96.f;
 
-	const TArray<const FSlateBrush*> Brushes = FormWith(*Settings)->GetLogoBrushesForTesting();
+	// The form is kept: the brushes are its own, and go with it.
+	const TSharedRef<SProtokitePlaytestFormWidget> Form = FormWith(*Settings);
+	const TArray<const FSlateBrush*> Brushes = Form->GetLogoBrushesForTesting();
 	if (!TestEqual(TEXT("Drawn"), Brushes.Num(), 1))
 	{
 		return false;

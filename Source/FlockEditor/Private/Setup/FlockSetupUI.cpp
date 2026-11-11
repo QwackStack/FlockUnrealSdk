@@ -35,7 +35,7 @@ void FFlockSetupUI::Register()
 		.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory())
 		.SetIcon(FSlateIcon(FFlockEditorStyle::GetStyleSetName(), "Flock.TabIcon"));
 
-	// The banner on Project Settings > Flock SDK. Same findings as the tab — that shared model is the
+	// The banner on Project Settings > Plugins > Flock SDK Settings. Same findings as the tab — that shared model is the
 	// whole reason both surfaces were worth building.
 	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	PropertyModule.RegisterCustomClassLayout(

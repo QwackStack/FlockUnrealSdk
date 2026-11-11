@@ -252,7 +252,6 @@ public:
 
 private:
 	FString MakeUrl(const FString& Path) const { return FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, *Path); }
-	TMap<FString, FString> HeadersNow() const { return Session->GetAuthHeaders(); }
 
 	/**
 	 * "<version>/notification/<player id>" — this player's inbox cache, and the **only** thing ClearCache()

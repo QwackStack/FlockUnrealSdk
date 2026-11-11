@@ -1,7 +1,8 @@
 # Analytics
 
 Sessions, screen views, gameplay events and transactions — what your players did. Everything below is off
-when **Analytics Enabled** is unticked in *Project Settings → Plugins → Flock SDK*.
+when **Analytics Enabled** is unticked (**Project Settings → Plugins → Flock SDK Settings**, its **Analytics**
+section).
 
 The *Flock | Analytics* nodes carry two surfaces that are easy to confuse and must not be. This page covers
 the first. The second — reports of what went wrong — is [Diagnostics](diagnostics.md), and it is read
@@ -25,7 +26,11 @@ the call by the question you want answered, not by which node name is closest to
 
 The nodes live under *Flock | Analytics* and **none of them needs the subsystem wired in** — they resolve
 it from the calling graph: `Flock Track Event`, `Flock Record Screen View`, `Flock Set Analytics Consent`,
-`Flock Flush Analytics`, plus the session nodes. All are safe no-ops before the SDK has initialized.
+`Flock Flush Analytics`, plus the session nodes (`Flock Start Analytics Session`, `Flock End Analytics
+Session`, `Flock Has Active Analytics Session`, `Flock Get Analytics Session Id`, `Flock Get Analytics
+Snapshot`). All are safe no-ops before the SDK has initialized.
+
+![A custom event Level Completed running into Flock Track Event with the name level_completed, its Properties built by Make Flock Event Properties and Flock Event Property (Integer) stars 3](images/analytics-track-event.png)
 
 Build a gameplay event's **Properties** with the *Flock Event Property* nodes — *(Integer)*, *(Float)*,
 *(String)*, *(Boolean)* and *(String Array)* — chained left to right, starting from *Make Flock Event
@@ -37,6 +42,8 @@ nodes are the analytics surface's name for it, so a graph recording a level comp
 for a node called *Set Command Int* to say what happened.
 
 ## C++
+
+The calls live on the subsystem (`#include "FlockSubsystem.h"`; `"Flock"` in your module's `Build.cs`):
 
 ```cpp
 UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
@@ -77,6 +84,42 @@ fresh one. Starting a session while one is open replaces it, closing the old one
 `GetEvents()`, or read `GetAnalyticsSnapshot()` for live metrics. `OnSessionRegistered` carries the id the server
 gave the session, which `GetAnalyticsSessionId()` also returns once it has arrived.
 
+With **Analytics Auto Start Session** on (the default) you never start or end one yourself. To do it by hand,
+the analytics provider has `StartSession` and `EndSession`; `GetAnalyticsProvider()` is null when analytics is
+off. In an actor whose header declares `UFUNCTION() void HandleSessionEnded(const FFlockSessionEndedArgs& Args);`:
+
+```cpp
+void AMyActor::BeginPlay()
+{
+    Super::BeginPlay();
+    if (UFlockSubsystem* Sdk = UFlockSubsystem::Get(this))
+    {
+        Sdk->GetEvents()->OnSessionEnded.AddDynamic(this, &AMyActor::HandleSessionEnded);
+    }
+}
+
+void AMyActor::ShowSession()
+{
+    UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+    if (Sdk->HasActiveAnalyticsSession())
+    {
+        const FFlockSessionSnapshot Session = Sdk->GetAnalyticsSnapshot();
+        UE_LOG(LogTemp, Log, TEXT("%.0f s, %d screens, server id %s"),
+            Session.DurationSeconds, Session.ScreensViewed, *Sdk->GetAnalyticsSessionId());
+    }
+
+    // Only when Analytics Auto Start Session is off, or to end one yourself. Null when analytics is off.
+    if (FFlockAnalyticsProvider* Analytics = Sdk->GetAnalyticsProvider())
+    {
+        Analytics->StartSession();                                  // for the signed-in player
+        Analytics->EndSession(EFlockSessionEndReason::Manual);
+    }
+}
+```
+
+`OnSessionEnded`'s `Args` carry the final snapshot and the reason (`Logout`, `Timeout`, `Quit`, `Restarted`,
+`Manual`). `GetEvents()` returns a `UFlockEvents`, from `#include "FlockEvents.h"`.
+
 A session reports the engine's platform name (Windows, Android and so on). Set **Session Platform** when the store
 matters more than the operating system, for example `steam` for a Steam build. A value that starts or ends with a
 space is not used: the engine's platform name is sent instead, and a warning says so.
@@ -91,9 +134,36 @@ be registered when it started (offline at sign-in, say) registers itself when it
 
 ## Transactions
 
-Purchases through the shop record their own transactions with no call from you. To record one yourself,
-call `RecordTransaction` on the analytics provider. Transactions are sent at once rather than queued, and
-need a signed-in player.
+Purchases through the shop record their own transactions with no call from you. To record one yourself
+(a sale through a store of your own, a refund), call `RecordTransaction` on the analytics provider. It is
+**C++ only: there is no Blueprint node for it.** Transactions are sent at once rather than queued, need a
+signed-in player (without one the call fails with an Auth error), and refuse a negative amount. The ids below
+(`starter_pack`, `my_store`, `order-1234`) are examples: use your item's id and your own store's names.
+
+```cpp
+UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+if (FFlockAnalyticsProvider* Analytics = Sdk->GetAnalyticsProvider())   // null when analytics is off
+{
+    FFlockAnalyticsTransactionRequest Transaction;
+    Transaction.Amount = 4.99;
+    Transaction.CurrencyCode = TEXT("USD");
+    Transaction.ShopItemId = TEXT("starter_pack");
+    Transaction.TransactionType = TEXT("refund");
+    Transaction.PaymentProvider = TEXT("my_store");
+    Transaction.ExternalTransactionId = TEXT("order-1234");
+    // PlayerId, SessionId and CreatedAt are filled in for you.
+
+    Analytics->RecordTransaction(Transaction, [](TFlockResult<FFlockAnalyticsAck> Result)
+    {
+        if (!Result.bSuccess)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("%s"), *Result.Error.ToDisplayText());
+        }
+    });
+}
+```
+
+`TransactionType` defaults to `purchase`, `Status` to `completed` and `Quantity` to 1.
 
 ## Delivery and the offline queue
 
@@ -102,6 +172,26 @@ directory, capped by **Analytics Max Cached Events** (oldest dropped first). The
 interval, when the app is backgrounded, or when you call Flush. Each game's queues are kept apart (by its API
 URL and API key), so a project that switches to another game never sends the old game's queued entries to the
 new one; what an earlier version kept for every game is sent by the first game to start after the update.
+
+To send now — before a level change, or from a "send my data" button — flush. In Blueprint it is
+`Flock Flush Analytics`; in C++:
+
+```cpp
+UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+if (FFlockAnalyticsProvider* Analytics = Sdk->GetAnalyticsProvider())   // null when analytics is off
+{
+    Analytics->Flush([](TFlockResult<FFlockAnalyticsAck> Result)
+    {
+        // Success means nothing was lost, not that the queue is empty.
+        if (!Result.bSuccess)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("%s"), *Result.Error.ToDisplayText());
+        }
+    });
+}
+```
+
+A flush with nothing queued, one already running, or nobody signed in succeeds without sending anything.
 
 - **A send that never reached the server keeps everything queued**, however long the game is offline.
 - **A send the server answered without accepting counts against the entries it carried.** A gameplay event
@@ -119,6 +209,8 @@ it opens the session that sign-in could not — so in an opt-in flow, a player w
 still gets a session.
 
 ```cpp
+UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+
 Sdk->SetAnalyticsConsent(true);            // persists; raises OnConsentChanged
 const bool bOptedIn = Sdk->HasAnalyticsConsent();
 Sdk->EraseLocalAnalyticsData();            // drops the queues, the decision, and any crash marker

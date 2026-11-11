@@ -22,7 +22,7 @@ namespace
 
 	/** Every request is the API URL plus /v1/<route>, so a path in the setting doubles or misses part of every route. */
 	const TCHAR* const ApiUrlAlone =
-		TEXT("API URL under Project Settings > Flock SDK must be the Flock server's address alone, such as https://api.example.com, with no /v1 or other path after it.");
+		TEXT("API URL under Project Settings > Plugins > Flock SDK Settings must be the Flock server's address alone, such as https://api.example.com, with no /v1 or other path after it.");
 
 	/** A wallet is built once, at registration; neither a purchase nor Add Game Funds adds a currency to it. */
 	const TCHAR* const WalletHoldsTemplateCurrencies =
@@ -30,7 +30,25 @@ namespace
 
 	/** A purchase and the shop reads take the shop item's own id, which a newcomer cannot tell from the item's name. */
 	const TCHAR* const ShopItemIdFromShop =
-		TEXT("A purchase (Purchase, Flock Purchase) and GetItem (Flock Get Shop Item) take the shop item's Id, FFlockShopItem::Id, read from its shop with GetAll, GetByName or GetItemsByShop (Flock Get All Shops, Flock Get Shop By Name, Flock Get Shop Items); not the item's name or the shop's id. If the id is right, check API Key under Project Settings > Flock SDK is the key of the game that owns the shop.");
+		TEXT("A purchase (Purchase, Flock Purchase), RedeemStoreReceipt and GetItem (Flock Get Shop Item) take the shop item's Id, FFlockShopItem::Id, read from its shop with GetAll, GetByName or GetItemsByShop (Flock Get All Shops, Flock Get Shop By Name, Flock Get Shop Items); not the item's name or the shop's id. If the id is right, check API Key under Project Settings > Plugins > Flock SDK Settings is the key of the game that owns the shop.");
+
+	/** A game's payment providers (stores and web checkout) and their keys are set up on one dashboard page. */
+	const TCHAR* const PaymentsPage = TEXT("Monetization > Payments in the Flock dashboard");
+
+	/** A receipt the store has not settled yet is never finished at the store, so it comes back to be sent again. */
+	const TCHAR* const SendTheReceiptAgainLater =
+		TEXT("leave the store's purchase unfinished and send the same receipt again later with RedeemStoreReceipt.");
+
+	/** A setup fault met while redeeming a store purchase: the player has paid the store, and nothing was kept. */
+	const TCHAR* const PaidInTheStoreAlready =
+		TEXT(" If this came from RedeemStoreReceipt, the player has already paid the store: leave the store's purchase unfinished, and the same receipt redeems once this is fixed.");
+
+	/** A store refusing the game's own keys is fixed by the studio, never by the player. */
+	FString StoreKeysFix()
+	{
+		return FString(TEXT("check the App Store or Google Play keys under ")) + PaymentsPage
+			+ TEXT(", and that the Google service account has access to the app in the Google Play Console.");
+	}
 
 	const TMap<EFlockErrorCode, FString>& GetHints()
 	{
@@ -45,11 +63,11 @@ namespace
 			{ EFlockErrorCode::AssetAssetNotFound, TEXT("No asset by that id. Upload it in the Flock dashboard and publish it to this game version, then re-read the index with Flock Get Assets.") },
 
 			// Game / key configuration — the settings page, not the call.
-			{ EFlockErrorCode::GameGameNotFound, TEXT("The API key does not resolve to a game. Check API Key under Project Settings > Flock SDK against the dashboard.") },
-			{ EFlockErrorCode::GameInvalidApiKey, TEXT("The server does not know this API key. Copy the game's key from the Flock dashboard into API Key under Project Settings > Flock SDK; a key from another Flock server (local, staging or live) is refused too, so check API URL points at the server the key came from.") },
-			{ EFlockErrorCode::GameMissingApiKey, TEXT("The request reached the server with a blank API key. Set API Key under Project Settings > Flock SDK (or in the config handed to InitializeWithConfig) to the game's key from the Flock dashboard.") },
+			{ EFlockErrorCode::GameGameNotFound, TEXT("The API key does not resolve to a game. Check API Key under Project Settings > Plugins > Flock SDK Settings against the dashboard.") },
+			{ EFlockErrorCode::GameInvalidApiKey, TEXT("The server does not know this API key. Copy the game's key from the Flock dashboard into API Key under Project Settings > Plugins > Flock SDK Settings; a key from another Flock server (local, staging or live) is refused too, so check API URL points at the server the key came from.") },
+			{ EFlockErrorCode::GameMissingApiKey, TEXT("The request reached the server with a blank API key. Set API Key under Project Settings > Plugins > Flock SDK Settings (or in the config handed to InitializeWithConfig) to the game's key from the Flock dashboard.") },
 			{ EFlockErrorCode::GameMissingStudioId, TEXT("The game record has no studio attached. Fix it in the Flock dashboard — nothing in the project can supply it.") },
-			{ EFlockErrorCode::LogEventGameNotFound, TEXT("The API key does not resolve to a game, so log events have nowhere to land. Check API Key under Project Settings > Flock SDK.") },
+			{ EFlockErrorCode::LogEventGameNotFound, TEXT("The API key does not resolve to a game, so log events have nowhere to land. Check API Key under Project Settings > Plugins > Flock SDK Settings.") },
 
 			// Game commands — dashboard content, plus the write-key rule that trips everyone once.
 			{ EFlockErrorCode::GameCommandAchievementNotFound, FString(TEXT("No achievement by that id. ")) + AuthorAndSync },
@@ -86,9 +104,10 @@ namespace
 			{ EFlockErrorCode::MatchmakingAlreadyQueued, TEXT("A player in this search is already searching, and a player searches once at a time per game, in any queue. FindMatch replaces the player's own earlier search itself, so this is the party's search (wait for it with the party's FindMatch, or OnSearchEnded), or a party member searching alone, whose game cancels that search first.") },
 			{ EFlockErrorCode::MatchmakingMatchNotFound, TEXT("No match by that id that the signed-in player is in. Only the players in a match can read it.") },
 			{ EFlockErrorCode::MatchmakingNotPartyLeader, TEXT("Only the party leader can put the party in a queue: the leader's game starts the search with the party's FindMatch, and another member's FindMatch waits for it. Leadership changed before this search went out; read the party again (GetMyParty) and let its leader search.") },
-			{ EFlockErrorCode::MatchmakingPartyTooLarge, TEXT("The party has more players than the queue allows. Raise the queue's \"Max Players\" in the Flock dashboard, or call FindMatch alone or with a smaller party.") },
+			{ EFlockErrorCode::MatchmakingPartyTooLarge, TEXT("The party has more players than the queue allows, or than one of the queue's teams holds. Raise the queue's \"Max Players\", or its \"Players per team\", in the Flock dashboard, or call FindMatch alone or with a smaller party.") },
 			{ EFlockErrorCode::MatchmakingPlayerNotEligible, TEXT("A player in this search is outside the player segments the queue allows. Check the queue's \"Allowed Segments\" in the Flock dashboard.") },
 			{ EFlockErrorCode::MatchmakingQueueNotFound, TEXT("No matchmaking queue by that name in this game. FindMatch takes the queue's name as the Flock dashboard shows it, letter case included; create the queue there first.") },
+			{ EFlockErrorCode::MatchmakingSearchInputRequired, TEXT("This queue matches players by region or skill, and FindMatch sends neither. Turn off \"Same region only\" and \"Similar skill only\" on the queue in the Flock dashboard, or call FindMatch with a queue that has neither on.") },
 			{ EFlockErrorCode::MatchmakingTicketNotCancelable, TEXT("That search has already ended: it was matched, cancelled or ran out of time. A FindMatch cancelled through its handle deals with this itself, giving up the seat a match gave meanwhile.") },
 			{ EFlockErrorCode::MatchmakingTicketNotFound, TEXT("No search by that id for the signed-in player. A player can only read or cancel their own search.") },
 			{ EFlockErrorCode::MatchmakingVersionMismatch, TEXT("A party member's game is on another Game Version than the leader's, or has not reported one yet, and this queue matches one build at a time. A member's game reports its version when it creates, joins or reads the party (GetMyParty), so have every member read the party on the same build, then search again with the party's FindMatch; or turn off \"Same game version only\" on the queue in the Flock dashboard.") },
@@ -113,18 +132,31 @@ namespace
 			{ EFlockErrorCode::PartyNotPartyLeader, TEXT("Only the party leader can do this. Leadership may have moved to another member; GetMyParty reads the party again to show who leads now.") },
 			{ EFlockErrorCode::PartyTargetNotAMember, TEXT("That player is not in the party, so they cannot be removed or made leader.") },
 
+			// Payments: a store purchase's receipt redeemed, a web checkout opened. A code's causes differ only in the server's
+			// reason, which the hints quote; a cause that is not final yet gets "send it again later", never the bad receipt's fix.
+			{ EFlockErrorCode::PaymentProviderCheckoutFailed, FString(TEXT("The payment provider would not open a checkout, so nothing was charged; the reason above carries the provider's own answer. Keys the provider refuses are fixed under ")) + PaymentsPage + TEXT("; a price in a currency the provider does not take is fixed in the Real Currencies of the currency config, whose code must be one the provider accepts, such as USD. A price below the smallest amount the provider charges (Stripe answers \"amount_too_small\", after converting it to the studio's own currency) is fixed by raising the item's price on the dashboard. A provider that was down or timed out recovers: try again later.") },
+			{ EFlockErrorCode::PaymentProviderCredentialsUnreadable, FString(TEXT("The server cannot use the keys stored for this payment provider, so nothing was checked, granted or charged, and trying again will not help: it is a setting of the game, not of the player. Enter the provider's keys again under ")) + PaymentsPage + TEXT(". The App Store's private key is the whole text of the .p8 file Apple gave you, its BEGIN and END lines included; Google Play's service account JSON is the whole key file Google gave you.") + PaidInTheStoreAlready },
+			{ EFlockErrorCode::PaymentProviderProviderNotFound, FString(TEXT("This game has no active payment provider by that name: it was never connected, or it is paused (the reason reads the same for both). Connect it with the game's own keys under ")) + PaymentsPage + TEXT(", or turn Active back on for a paused one. If the dashboard shows it connected and active, check API Key under Project Settings > Plugins > Flock SDK Settings is the key of that game.") + PaidInTheStoreAlready },
+			{ EFlockErrorCode::PaymentProviderProviderNotSupportedHere, TEXT("That payment provider cannot be used for this. A store receipt names its store as apple_app_store or google_play, in lower case exactly; tap, moyasar and stripe take payments through web checkout, which has no receipt to redeem, and any other name is not a payment provider Flock knows.") },
+			{ EFlockErrorCode::PaymentProviderReceiptBelongsToAnotherPlayer, TEXT("This store purchase is another player's, not the signed-in player's, so nothing was granted; the reason above says how. \"belongs to a different player\": the purchase was started for another Flock player, whose account token the store keeps with it. \"redeemed by another player\": another player already redeemed this receipt. Redeem a receipt while the player who bought it is signed in; leave a purchase another account made on this device unfinished until that player signs in.") },
+			{ EFlockErrorCode::PaymentProviderReceiptInvalid, FString(TEXT("The store did not confirm this purchase, so nothing was granted; the reason above tells its causes apart. An \"unreadable\" or \"unexpected\" answer, or one Flock \"could not read\": the store had a bad moment, so ")) + SendTheReceiptAgainLater + TEXT(" Anything else is the receipt itself: the store does not know it or refunded it, or it lacked the store's ids (the App Store's transaction id; Google Play's product id and purchase token). Send the receipt exactly as the store handed it over. An older Flock server sends this code for three causes that newer ones give codes of their own. \"Apple returned 401\", \"Google rejected the service account\", or Google returning 401 or 403: the store refused this game's own keys, not the receipt; ") + StoreKeysFix() + TEXT(" The store returning 429 or a 5xx, or \"Could not reach\" (HTTP 502): the store was busy or down. \"purchase state is 2\": Google is still waiting for the player's payment. In those last two, ") + SendTheReceiptAgainLater },
+			{ EFlockErrorCode::PaymentProviderReceiptPending, FString(TEXT("Google is still waiting for the player's payment (a slow way to pay, such as cash at a shop), so nothing was paid or granted yet: ")) + SendTheReceiptAgainLater },
+			{ EFlockErrorCode::PaymentProviderReceiptProductMismatch, FString(TEXT("The receipt is not for this shop item; the reason above says which way. \"This item has no ... product id configured\": enter the item's product id for that store under Store product IDs on the shop item in the Flock dashboard, exactly as App Store Connect or the Google Play Console shows it. \"Receipt is for 'X', but this item sells 'Y'\": the player bought the store product X, so redeem the receipt for the shop item whose store product id is X, or correct this item's id if it was entered wrong.")) + PaidInTheStoreAlready },
+			{ EFlockErrorCode::PaymentProviderStoreCredentialsRejected, FString(TEXT("The store refused this game's own keys, so the receipt could not be checked; it may well be genuine, and nothing was granted, so ")) + StoreKeysFix() + TEXT(" Leave the store's purchase unfinished: once the keys are fixed, the same receipt goes through.") },
+			{ EFlockErrorCode::PaymentProviderStoreUnavailable, FString(TEXT("Flock could not ask the store about this receipt: the store was busy, down or out of reach. Nothing is known about the purchase yet and nothing was granted, and it is neither a fake receipt nor a setting, so ")) + SendTheReceiptAgainLater },
+
 			// Auth — signing in never creates an account, which is the most common first-run mistake.
 			{ EFlockErrorCode::PlayerAccountAlreadyLinked, TEXT("That credential already belongs to an account. Call Flock Get Linked Accounts to see what this player is already linked to.") },
 			{ EFlockErrorCode::PlayerAccountNotLinked, TEXT("That credential is not linked to this player. Attach it with the matching Flock Link node first.") },
 			{ EFlockErrorCode::PlayerAppleAccountAlreadyRegistered, TEXT("That Apple account is already registered. Call Flock Login With Apple instead.") },
 			{ EFlockErrorCode::PlayerCannotUnlinkLastCredential, TEXT("A player must keep at least one way to sign in. Link another credential before unlinking this one.") },
-			{ EFlockErrorCode::PlayerDeviceAlreadyRegistered, TEXT("This device already has an account. Call Flock Login With Device instead of registering it again.") },
+			{ EFlockErrorCode::PlayerDeviceAlreadyRegistered, TEXT("This device already has an account. Call Flock Login With Device with the device id left empty (the id the SDK keeps for this install) or with the same id you registered, instead of registering it again.") },
 			{ EFlockErrorCode::PlayerEmailAlreadyRegistered, TEXT("That email already has an account. Call Flock Login With Email, or Flock Forgot Password if the password is lost.") },
 			{ EFlockErrorCode::PlayerExpiredToken, TEXT("The player's sign-in expired and could not be renewed. Sign the player in again; the SDK renews a sign-in by itself while its saved session is still valid.") },
 			{ EFlockErrorCode::PlayerGameJwkNotConfigured, TEXT("The game has no signing key configured, so nobody can authenticate. Set one up in the Flock dashboard.") },
 			{ EFlockErrorCode::PlayerGameVersionIdRequired, FString(TEXT("This route needs a game version. ")) + ResolveGameVersion },
 			{ EFlockErrorCode::PlayerGoogleAccountAlreadyRegistered, TEXT("That Google account is already registered. Call Flock Login With Google instead.") },
-			{ EFlockErrorCode::PlayerInvalidDeviceRegistrationRequest, TEXT("The device registration was rejected. Pass a stable, non-empty device id — the same string on every launch, or the account cannot be found again.") },
+			{ EFlockErrorCode::PlayerInvalidDeviceRegistrationRequest, TEXT("The device registration was rejected. Leave the device id empty to use the one the SDK keeps for this install (Flock Get This Device Id), or pass a stable id of your own — the same string on every launch, or the account cannot be found again.") },
 			{ EFlockErrorCode::PlayerInvalidLinkRequest, TEXT("The link request was rejected. Every provider links with the raw token the platform handed you, not a wrapped payload of your own.") },
 			{ EFlockErrorCode::PlayerInvalidLoginCredentials, TEXT("No account matches these credentials. Signing in never creates an account — call the matching Flock Register With node once first.") },
 			{ EFlockErrorCode::PlayerInvalidRefreshToken, TEXT("The saved session is no longer valid. Call Flock Logout and sign in again.") },
@@ -144,7 +176,7 @@ namespace
 			{ EFlockErrorCode::PlayerDataNotFound, TEXT("The player has no record for that template yet. A read never creates one — write it first with Flock Update Player Data.") },
 			{ EFlockErrorCode::PlayerDataPlayerNotFound, LeavePlayerIdEmpty },
 			{ EFlockErrorCode::PlayerInventoryAlreadyUsed, TEXT("That inventory entry has already been consumed — each one is spendable once. Re-read the player's inventory before offering it again.") },
-			{ EFlockErrorCode::PlayerInventoryInventoryEntryNotFound, TEXT("No inventory entry by that id in this game. Consume takes the entry's own id — a purchase result's Inventory.Id — not the shop item id.") },
+			{ EFlockErrorCode::PlayerInventoryInventoryEntryNotFound, TEXT("No inventory entry by that id in this game, or, while a player is signed in, the entry is another player's, which the server answers the same way. Consume takes the signed-in player's own entry id — a purchase result's Inventory.Id — not the shop item id.") },
 			{ EFlockErrorCode::PlayerInventoryPlayerNotFound, LeavePlayerIdEmpty },
 			{ EFlockErrorCode::PlayerTemplateNotFound, FString(TEXT("No player-data template by that id. ")) + AuthorAndSync },
 			{ EFlockErrorCode::PlayerTemplateNotFoundByName, FString(TEXT("No player-data template by that name. ")) + AuthorAndSync },
@@ -157,23 +189,32 @@ namespace
 			{ EFlockErrorCode::RequestNotFound, FString(TEXT("The server found nothing for this request; the reason above says what. A bare \"Not Found\" means no route answers at this address: ")) + ApiUrlAlone + TEXT(" If it is, the server runs an older Flock that does not have this feature yet. Any other reason names a record this game or player does not have: check the id passed to the call.") },
 			{ EFlockErrorCode::RequestPayloadTooLarge, TEXT("The request is larger than the server accepts. Send less in one call: split a large write into several.") },
 			{ EFlockErrorCode::RequestRateLimited, TEXT("The server turned the request away for volume; the reason above says which kind. Too many calls in a short time: the SDK retries reads after the wait the server asks for, so send writes less often, several values together in one call. A limit on how many of a thing a player may hold, such as pending scheduled notifications: cancel some, as waiting will not help.") },
-			{ EFlockErrorCode::RequestUnauthorized, TEXT("The server refused the request's credentials. Check API Key under Project Settings > Flock SDK against the Flock dashboard, and sign the player in again.") },
-			{ EFlockErrorCode::RequestValidationFailed, TEXT("The server refused a value in the request; the reason above names it (body.<name> is a member of what the SDK sent, header.<name> a header). It is usually a value passed to this call: check it against the call's documentation. header.X-Flock-API-Key means API Key under Project Settings > Flock SDK is empty. A member you never pass means this SDK and the server are on different Flock versions.") },
+			{ EFlockErrorCode::RequestUnauthorized, TEXT("The server refused the request's credentials. Check API Key under Project Settings > Plugins > Flock SDK Settings against the Flock dashboard, and sign the player in again.") },
+			{ EFlockErrorCode::RequestValidationFailed, TEXT("The server refused a value in the request; the reason above names it (body.<name> is a member of what the SDK sent, header.<name> a header). It is usually a value passed to this call: check it against the call's documentation. header.X-Flock-API-Key means API Key under Project Settings > Plugins > Flock SDK Settings is empty. A member you never pass means this SDK and the server are on different Flock versions.") },
 
 			// Shop — runtime state the caller can act on, not misconfiguration.
 			{ EFlockErrorCode::ShopCurrencyNotHeld, FString(TEXT("The player's wallet has no balance in the item's currency. ")) + WalletHoldsTemplateCurrencies + TEXT(" Price the item in one of those, or add the currency to the currency template in the Flock dashboard.") },
-			{ EFlockErrorCode::ShopCurrencyTemplateNotFound, TEXT("This Game Version has no currency template (a player-data template tagged currency), so no player has a wallet to pay from. Create one in the Flock dashboard under the version this build runs (Game Version under Project Settings > Flock SDK).") },
-			{ EFlockErrorCode::ShopRealCurrencyNeedsCheckout, TEXT("This item is priced in a currency the game's currency config lists as real money, and Purchase only spends game currencies from the player's wallet. Price the item in a game currency in the Flock dashboard, or leave it out of what the game sells through Purchase.") },
+			{ EFlockErrorCode::ShopCurrencyTemplateNotFound, FString(TEXT("This Game Version has no currency template (a player-data template tagged currency), so no player has a wallet to pay from. Create one in the Flock dashboard under the version this build runs (Game Version under Project Settings > Plugins > Flock SDK Settings).")) + PaidInTheStoreAlready },
+			{ EFlockErrorCode::ShopRealCurrencyNeedsCheckout, TEXT("This item is priced in a currency the game's currency config lists as real money, and Purchase only spends game currencies from the player's wallet. Price the item in a game currency in the Flock dashboard, or sell it through the App Store or Google Play, or a web checkout on Windows, Mac and Linux: connect UFlockStore and Purchase buys it that way, or redeem a purchase of the game's own store code with RedeemStoreReceipt (FFlockShopItem::IsRealMoney says which items these are).") },
+			{ EFlockErrorCode::ShopIdempotencyKeyReused, TEXT("Nothing was bought: this purchase's key was already used for another shop item. Every Purchase call makes a key of its own, so call Purchase again; if it keeps happening, two purchases are sharing a key, which is a fault to report.") },
 			{ EFlockErrorCode::ShopInsufficientFunds, TEXT("The player cannot afford this item. Read the wallet balance before offering the purchase.") },
+			{ EFlockErrorCode::ShopInvalidPurchaseStatus, TEXT("Purchases were listed by a status the server does not have, so nothing was read. A purchase's status is one of pending, paid, failed, expired and refunded, spelled as the Flock Purchase Status nodes give them.") },
+			{ EFlockErrorCode::ShopItemNotForSale, TEXT("The item, or the shop it is in, is switched off (Inactive) in the Flock dashboard, so it is not sold and nothing was bought. Read the shop again (GetAll, GetByName or GetItemsByShop; Flock Get All Shops, Flock Get Shop By Name, Flock Get Shop Items): the purchase has dropped the shops the SDK kept, and the server leaves switched-off items out of a shop's items (an item read alone by its id, GetItem, still comes back, its Status inactive). To sell it, switch it back on in the dashboard.") },
 			{ EFlockErrorCode::ShopItemNotFound, FString(TEXT("No shop item has that id in this game. ")) + ShopItemIdFromShop },
-			{ EFlockErrorCode::ShopMalformedReward, TEXT("The item's stored reward cannot be granted, so the purchase was refused rather than half-applied. Fix that item's rewards in the Flock dashboard — no change to the call will work around it.") },
-			{ EFlockErrorCode::ShopPackGrantsNothing, TEXT("This currency pack has no rewards configured, so buying it would grant nothing. Add its rewards in the Flock dashboard, or take it off sale.") },
-			{ EFlockErrorCode::ShopPlayerNotFound, TEXT("No player has that id in this game. Leave Player Id empty so the purchase acts on the signed-in player, and sign in before offering one; a player id from another game or another Flock server is not found.") },
-			{ EFlockErrorCode::ShopRewardCurrencyNotHeld, FString(TEXT("The reward pays out a currency the player's wallet does not have. ")) + WalletHoldsTemplateCurrencies + TEXT(" Reward one of those, or add the currency to the currency template in the Flock dashboard.") },
-			{ EFlockErrorCode::ShopShopNotFound, TEXT("No shop by that name in this build's Game Version, or by that id in this game. A shop belongs to one Game Version: create it in the Flock dashboard under the version this build runs (Game Version under Project Settings > Flock SDK), and give its name exactly as the dashboard shows it, letter case included.") },
-			{ EFlockErrorCode::ShopWalletNotFound, TEXT("This player has no wallet in this Game Version. The server makes a player's wallet when the player registers, from the version's currency template, so a player who registered before that template existed, or under another Game Version, has none. Create the currency template first, then register the player under this build's Game Version.") },
+			{ EFlockErrorCode::ShopMalformedReward, FString(TEXT("The item's stored reward cannot be granted, so the purchase was refused rather than half-applied. Fix that item's rewards in the Flock dashboard — no change to the call will work around it.")) + PaidInTheStoreAlready },
+			{ EFlockErrorCode::ShopNotARealCurrencyItem, TEXT("This item is priced in a game currency, so it is bought from the player's wallet with Purchase (Flock Purchase), never with real money: a store purchase or a web checkout is for real-money items only. If it should cost real money, price it in one of the Real Currencies of the currency config of this build's Game Version in the Flock dashboard.") },
+			{ EFlockErrorCode::ShopPackGrantsNothing, FString(TEXT("This currency pack has no rewards configured, so buying it would grant nothing. Add its rewards in the Flock dashboard, or take it off sale.")) + PaidInTheStoreAlready },
+			{ EFlockErrorCode::ShopPlayerMismatch, TEXT("The call names a different player than the one signed in, and the server buys only for the signed-in player, so nothing was bought or charged. Leave Player Id empty on Purchase (Flock Purchase) so it buys for the signed-in player, or sign that other player in first.") },
+			{ EFlockErrorCode::ShopPlayerNotFound, FString(TEXT("No player has that id in this game. Leave Player Id empty so the purchase acts on the signed-in player, and sign in before offering one; a player id from another game or another Flock server is not found. RedeemStoreReceipt takes no player id: it redeems for the player signed in, so this means that player is gone from the game; sign in again.")) + PaidInTheStoreAlready },
+			{ EFlockErrorCode::ShopPlayerRequired, FString(TEXT("The call named no player: it went out with no sign-in and no player id. ")) + FFlockErrorHints::SignInFirst() },
+			{ EFlockErrorCode::ShopPurchaseNotFound, TEXT("The signed-in player has no purchase with that id in this game; another player's purchase is not found either. A purchase's id is the PurchaseId of the result its purchase returned (FFlockPurchaseResult::PurchaseId); an id from another game, or from another Flock server, is not found. An older Flock server sends this code, with \"Unknown purchase status\" (HTTP 422), when purchases were listed by a status it does not have; ask for pending, paid, failed, expired or refunded.") },
+			{ EFlockErrorCode::ShopRealCurrencySettlementUnavailable, FString(TEXT("No web checkout can be opened for this game, so nothing was charged; the reason above says why. \"no web payment provider configured\" (HTTP 422): connect Tap Payments, Moyasar or Stripe under ")) + PaymentsPage + TEXT(", or turn Active back on for a paused one. \"PAYMENT_WEBHOOK_BASE_URL is not configured\" (HTTP 503): the Flock server itself is not set up to confirm payments, which nothing in the game can change; whoever runs that server sets it.") },
+			{ EFlockErrorCode::ShopRewardCurrencyNotHeld, FString(TEXT("The reward pays out a currency the player's wallet does not have. ")) + WalletHoldsTemplateCurrencies + TEXT(" Reward one of those, or add the currency to the currency template in the Flock dashboard.") + PaidInTheStoreAlready },
+			{ EFlockErrorCode::ShopShopNotFound, TEXT("No shop by that name in this build's Game Version, or by that id in this game, or the shop is switched off (Inactive) in the Flock dashboard, which players are not shown. A shop belongs to one Game Version: create it in the Flock dashboard under the version this build runs (Game Version under Project Settings > Plugins > Flock SDK Settings), and give its name exactly as the dashboard shows it, letter case included.") },
+			{ EFlockErrorCode::ShopWalletNotFound, FString(TEXT("This player has no wallet in this Game Version. The server makes a player's wallet when the player registers, from the version's currency template, so a player who registered before that template existed, or under another Game Version, has none. Create the currency template first, then register the player under this build's Game Version.")) + PaidInTheStoreAlready },
+			{ EFlockErrorCode::ShopWebhookProviderUnknown, FString(TEXT("The server could not tell which web checkout provider to use; the reason above says why. \"does not open web checkouts\": the provider named is a store (apple_app_store, google_play) or a name Flock does not know; name tap, moyasar or stripe. \"Several payment providers are active\": name one of those the reason lists, or pause the others under ")) + PaymentsPage + TEXT(".") },
 			{ EFlockErrorCode::ShopItemShopItemNotFound, FString(TEXT("No shop item has that id in this game. ")) + ShopItemIdFromShop },
-			{ EFlockErrorCode::ShopItemShopNotFound, TEXT("No shop has that id in this game. GetItemsByShop (Flock Get Shop Items) takes the shop's Id, FFlockShop::Id, read with GetAll or GetByName (Flock Get All Shops, Flock Get Shop By Name); not the shop's name.") },
+			{ EFlockErrorCode::ShopItemShopNotFound, TEXT("No shop has that id in this game, or the shop is switched off (Inactive) in the Flock dashboard, which players are not shown. GetItemsByShop (Flock Get Shop Items) takes the shop's Id, FFlockShop::Id, read with GetAll or GetByName (Flock Get All Shops, Flock Get Shop By Name); not the shop's name.") },
 		};
 		return Hints;
 	}
@@ -215,6 +256,8 @@ FString FFlockErrorHints::ForFailure(const FFlockError& Error)
 	{
 	case EFlockErrorType::Cancelled:
 		return TEXT("Nothing needs fixing if the game cancelled this call, the player signed out or Flock shut down; otherwise make the call again.");
+	case EFlockErrorType::Store:
+		return TEXT("The store did not take the payment, so nothing was charged; StoreFailureReason says why. Offer the item again if the player wants it.");
 	case EFlockErrorType::Timeout:
 		return TEXT("Check the device's network connection, then try again; the SDK retries a read by itself. A purchase or other change that timed out may still have been made, so read the result before sending it again.");
 	case EFlockErrorType::Connection:
@@ -269,7 +312,7 @@ FString FFlockErrorHints::ForAuth(EFlockErrorCode Code, EFlockAuthMethod Method)
 	switch (Method)
 	{
 	case EFlockAuthMethod::Device:
-		return TEXT("This device is not registered yet. Call Flock Register With Device once to create the account, then Flock Login With Device on later launches.");
+		return TEXT("This device is not registered yet. Call Flock Register With Device once to create the account, then Flock Login With Device on later launches (with Device Id empty, both use the id the SDK keeps for this install).");
 	case EFlockAuthMethod::Email:
 		return TEXT("Wrong email or password. If the account does not exist yet, call Flock Register With Email first — signing in never creates one.");
 	case EFlockAuthMethod::Google:
@@ -303,7 +346,7 @@ FString FFlockErrorHints::SignInFirst()
 
 FString FFlockErrorHints::InitializeFlockFirst()
 {
-	return TEXT("Initialize Flock before this call. It initializes itself at startup when Auto Initialize On Load is on under Project Settings > Flock SDK, and the Output Log says what stopped it (an unresolved Game Version, an empty API URL); otherwise call Initialize From Settings or Initialize With Config on the Flock subsystem first. A Blueprint node also needs an object in the game's world as its World Context.");
+	return TEXT("Initialize Flock before this call. It initializes itself at startup when Auto Initialize On Load is on under Project Settings > Plugins > Flock SDK Settings, and the Output Log says what stopped it (an unresolved Game Version, an empty API URL); otherwise call Initialize From Settings or Initialize With Config on the Flock subsystem first. A Blueprint node also needs an object in the game's world as its World Context.");
 }
 
 FString FFlockErrorHints::NotFlocksAnswer()
@@ -319,6 +362,11 @@ FString FFlockErrorHints::PassAHeldSession()
 FString FFlockErrorHints::PassAHeldParty()
 {
 	return TEXT("Pass the party the game holds: the one CreateParty, JoinParty or GetMyParty handed back.");
+}
+
+FString FFlockErrorHints::ConnectAStoreFirst()
+{
+	return TEXT("Connect one with Flock Connect Store (UFlockStore::Connect in C++) first, once at start: it stays connected until Disconnect or Flock shuts down. Connect completes with the store, and its failure says why it could not connect.");
 }
 
 FString FFlockErrorHints::FindAnotherSession()

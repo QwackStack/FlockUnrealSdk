@@ -105,6 +105,22 @@ bool FFlockError::IsNotProcessed(int32 InStatusCode)
 	return InStatusCode == 408 || InStatusCode == 429;
 }
 
+bool FFlockError::LeavesTheOutcomeUnknown(const FFlockError& Error)
+{
+	switch (Error.Type)
+	{
+	case EFlockErrorType::Serialization:
+	case EFlockErrorType::Timeout:
+	case EFlockErrorType::Connection:
+		return true;
+	case EFlockErrorType::Network:
+		// A server failure with a code of its own names its cause (a setting to fix), so the server refused before doing it.
+		return (Error.StatusCode == 0 || Error.StatusCode >= 500) && FFlockErrorHints::For(Error.ErrorCode).IsEmpty();
+	default:
+		return false;
+	}
+}
+
 bool FFlockError::IsPermanentFailure(const FFlockError& Error)
 {
 	// Ambiguous, not authoritative: the SDK could not read the response, which says nothing about whether

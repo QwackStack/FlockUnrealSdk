@@ -163,4 +163,75 @@ bool FFlockSelfTestNarrationUnknownTypeTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── The payment leg: a real-money item names every store's product id, in store order, or that it has none ──
+// Values from the store suite's catalog (FlockStoreTest.cpp), verbatim.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSelfTestNarrationRealMoneyItemTest, "Flock.SelfTest.Narration.RealMoneyItem_NamesEachStoresProductId",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSelfTestNarrationRealMoneyItemTest::RunTest(const FString& Parameters)
+{
+	FFlockShopItem Gems;
+	Gems.Id = TEXT("gems");
+	Gems.Name = TEXT("gems");
+	Gems.Price = 199;
+	Gems.Currency = TEXT("USD");
+	Gems.IsRealMoney = true;
+	Gems.StoreProductIds.Add(TEXT("google_play"), TEXT("com.flock.gems"));
+	Gems.StoreProductIds.Add(TEXT("apple_app_store"), TEXT("com.flock.gems.ios"));
+	FFlockShopItem Shield = Gems;
+	Shield.Id = TEXT("shield");
+	Shield.Name = TEXT("shield");
+	Shield.StoreProductIds.Reset();
+
+	FFlockRecordingLogger Log;
+	FlockNarrateRealMoneyItem(Gems, Log);
+	FlockNarrateRealMoneyItem(Shield, Log);
+	TestTrue(TEXT("the item's name, id and Flock price"), FFlockRecordingLogger::AnyContains(Log.Infos, TEXT("real-money item 'gems' (gems) 199 USD (in the currency's smallest unit)")));
+	TestTrue(TEXT("each store's product id, by store name in order"),
+		FFlockRecordingLogger::AnyContains(Log.Infos, TEXT("store product ids: apple_app_store=com.flock.gems.ios, google_play=com.flock.gems")));
+	TestTrue(TEXT("an item with none says it is sold through a web checkout only"),
+		FFlockRecordingLogger::AnyContains(Log.Infos, TEXT("'shield' (shield) 199 USD (in the currency's smallest unit); store product ids: (none - sold through a web checkout only)")));
+	TestEqual(TEXT("nothing is logged as a warning"), Log.Warnings.Num(), 0);
+	return true;
+}
+
+// ── The payment leg: a setup check names each item to fix and the server's problem with its fix; a web checkout's says how to check ──
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockSelfTestNarrationSetupCheckTest, "Flock.SelfTest.Narration.StoreSetupCheck_NamesWhatToFix",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockSelfTestNarrationSetupCheckTest::RunTest(const FString& Parameters)
+{
+	FFlockShopItem Sword;
+	Sword.Id = TEXT("sword");
+	Sword.Name = TEXT("sword");
+	FFlockShopItem Shield;
+	Shield.Id = TEXT("shield");
+	Shield.Name = TEXT("shield");
+	FFlockStoreSetupCheck Store;
+	Store.NotFoundInTheStore.Add(Sword);
+	Store.MissingProductId.Add(Shield);
+	Store.bHasServerProblem = true;
+	Store.ServerProblem = FFlockError::Make(EFlockErrorType::Validation,
+		TEXT("Google rejected this game's store credentials (service account refused (HTTP 400)); the studio's payment settings need fixing before receipts can be verified"),
+		400, FString(), TEXT("payment_provider.store_credentials_rejected"));
+
+	FFlockRecordingLogger Log;
+	FlockNarrateStoreSetupCheck(Store, Log);
+	TestTrue(TEXT("not ready"), FFlockRecordingLogger::AnyContains(Log.Infos, TEXT("store setup check -> not ready")));
+	TestTrue(TEXT("the item the store did not find"), FFlockRecordingLogger::AnyContains(Log.Infos, TEXT("the store did not find 'sword' (sword)")));
+	TestTrue(TEXT("the item with no product id"), FFlockRecordingLogger::AnyContains(Log.Infos, TEXT("'shield' (shield) has no product id for this store")));
+	TestTrue(TEXT("the server's problem, its cause"), FFlockRecordingLogger::AnyContains(Log.Infos, TEXT("Google rejected this game's store credentials")));
+	TestTrue(TEXT("and its fix"), !Store.ServerProblem.Hint.IsEmpty() && FFlockRecordingLogger::AnyContains(Log.Infos, Store.ServerProblem.Hint));
+	TestFalse(TEXT("no claim the server can check purchases"), FFlockRecordingLogger::AnyContains(Log.Infos, TEXT("can ask the store about purchases with")));
+
+	FFlockStoreSetupCheck Web;
+	Web.NotChecked = TEXT("The payment gateway: buy a real-money item with the gateway's test card.");
+	FFlockRecordingLogger WebLog;
+	FlockNarrateStoreSetupCheck(Web, WebLog);
+	TestTrue(TEXT("a web checkout with nothing found is ready"), FFlockRecordingLogger::AnyContains(WebLog.Infos, TEXT("store setup check -> ready")));
+	TestTrue(TEXT("and says how to check the gateway"), FFlockRecordingLogger::AnyContains(WebLog.Infos, TEXT("not checked: The payment gateway: buy a real-money item")));
+	TestEqual(TEXT("nothing is logged as a warning"), Log.Warnings.Num() + WebLog.Warnings.Num(), 0);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS && !UE_BUILD_SHIPPING

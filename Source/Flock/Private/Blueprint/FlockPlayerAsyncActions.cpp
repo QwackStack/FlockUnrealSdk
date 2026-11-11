@@ -383,3 +383,46 @@ void UFlockGetPlayerBanAction::Complete(const TFlockResult<FFlockPlayerBan>& Res
 	}
 	SetReadyToDestroy();
 }
+
+// ────────────────────────────── Get Wallet ──────────────────────────────
+
+UFlockGetWalletAction* UFlockGetWalletAction::GetWallet(UObject* WorldContextObject)
+{
+	UFlockGetWalletAction* Action = NewObject<UFlockGetWalletAction>();
+	Action->WorldContextObject = WorldContextObject;
+	return Action;
+}
+
+void UFlockGetWalletAction::Activate()
+{
+	FFlockError Error;
+	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockWallet>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockGetWalletAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
+	Provider->GetWallet([WeakThis](TFlockResult<FFlockWallet> Result)
+	{
+		if (UFlockGetWalletAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockGetWalletAction::Complete(const TFlockResult<FFlockWallet>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(FFlockWallet(), Result.Error);
+	}
+	SetReadyToDestroy();
+}

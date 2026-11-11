@@ -7,6 +7,7 @@
 #include "Http/FlockResult.h"
 #include "Kismet/BlueprintAsyncActionBase.h"
 #include "Models/FlockPlayerModels.h"
+#include "Models/FlockShopModels.h"
 #include "FlockPlayerAsyncActions.generated.h"
 
 /**
@@ -27,6 +28,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPlayerDataListPin, const TArr
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPlayerTemplatePin, const FFlockPlayerTemplateSchema&, Template, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPlayerTemplateListPin, const TArray<FFlockPlayerTemplateSchema>&, Templates, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPlayerBanPin, const FFlockPlayerBan&, Ban, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockWalletPin, const FFlockWallet&, Wallet, const FFlockError&, Error);
 
 /** Fetches a single player-data row by its id. */
 UCLASS()
@@ -240,4 +242,33 @@ private:
 	TObjectPtr<UObject> WorldContextObject;
 
 	FString PlayerId;
+};
+
+/**
+ * The signed-in player's wallet: balances by currency code, from the template tagged "currency". Ask Wallet Balance Of,
+ * Wallet Holds and Can Afford on it. Read through the player-data cache, which purchases and fund grants keep current.
+ */
+UCLASS()
+class FLOCK_API UFlockGetWalletAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockWalletPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockWalletPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Get Wallet"), Category = "Flock|Player")
+	static UFlockGetWalletAction* GetWallet(UObject* WorldContextObject);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockWallet>& Result);
+
+	UPROPERTY()
+	TObjectPtr<UObject> WorldContextObject;
 };

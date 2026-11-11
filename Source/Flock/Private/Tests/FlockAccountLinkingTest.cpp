@@ -266,7 +266,8 @@ bool FFlockAccountLinkingGuardTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("all nine failed with an Auth error"), Failures, 9);
 		TestEqual(TEXT("no network touched"), F.Fake->Requests.Num(), 0);
 	}
-	// Empty arguments are a Validation failure, not a request.
+	// Empty arguments are a Validation failure, not a request. An empty device id is not one of them: it links ThisDeviceId
+	// (Flock.Auth.ThisDeviceId.TheDeviceCallsSendTheKeptIdWhenTheirIdIsEmpty).
 	{
 		FFixture F;
 		F.SignIn();
@@ -279,10 +280,9 @@ bool FFlockAccountLinkingGuardTest::RunTest(const FString& Parameters)
 
 		F.Provider->LinkEmail(FString(), TEXT("pw"), Count);
 		F.Provider->LinkEmail(TEXT("a@b.c"), FString(), Count);
-		F.Provider->LinkDevice(FString(), Count);
 		F.Provider->LinkGoogle(FString(), Count);
 
-		TestEqual(TEXT("four validation failures"), Failures, 4);
+		TestEqual(TEXT("three validation failures"), Failures, 3);
 		TestEqual(TEXT("no network touched"), F.Fake->Requests.Num(), 0);
 	}
 	// Unknown is not a sendable provider — it must never build a URL with an empty segment.

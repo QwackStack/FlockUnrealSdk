@@ -8,6 +8,7 @@
 #include "FlockSubsystem.h"
 #include "FlockInitConfig.h"
 #include "FlockLogger.h"
+#include "Providers/FlockGameProvider.h"
 #include "Config/FlockConfig.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/ScopeLock.h"
@@ -146,6 +147,58 @@ bool FFlockNullLoggerTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Init still fails cleanly with a silent logger"), Sdk->IsInitialized());
 	TestFalse(TEXT("Error is still recorded programmatically"), Sdk->GetInitializationError().IsEmpty());
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLoggerSetAfterInitializingTest, "Flock.Runtime.Logger.ALoggerSetAfterInitializingReachesEveryPart",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockLoggerSetAfterInitializingTest::RunTest(const FString& Parameters)
+{
+	// The parts are made at initialization and keep the logger they were handed; a logger the game sets afterwards must still
+	// get their lines, and the subsystem's own.
+	const FFlockTestSdk Test;
+	UFlockSubsystem* Sdk = Test.Sdk;
+	Sdk->SetLogger(MakeShared<FFlockNullLogger>());
+	Sdk->InitializeWithConfig(MakeValidConfig());
+	if (!TestTrue(TEXT("the SDK initialized"), Sdk->IsInitialized()))
+	{
+		return false;
+	}
+	const TSharedRef<FCapturingLogger> Capture = MakeShared<FCapturingLogger>();
+	Sdk->SetLogger(Capture);
+
+	const TArray<TPair<const TCHAR*, FFlockProviderBase*>> Parts = {
+		{ TEXT("auth"), Sdk->GetAuthProvider() }, { TEXT("analytics"), Sdk->GetAnalyticsProvider() },
+		{ TEXT("config"), Sdk->GetConfigProvider() }, { TEXT("game"), Sdk->GetGameProvider() },
+		{ TEXT("shop"), Sdk->GetShopProvider() }, { TEXT("assets"), Sdk->GetAssetProvider() },
+		{ TEXT("leaderboards"), Sdk->GetLeaderboardProvider() }, { TEXT("notifications"), Sdk->GetNotificationProvider() },
+		{ TEXT("multiplayer"), Sdk->GetMultiplayerProvider() }, { TEXT("players"), Sdk->GetPlayerProvider() },
+		{ TEXT("commands"), Sdk->GetCommandProvider() } };
+	for (const TPair<const TCHAR*, FFlockProviderBase*>& Part : Parts)
+	{
+		if (TestNotNull(*FString::Printf(TEXT("the %s part exists"), Part.Key), Part.Value))
+		{
+			Part.Value->GetLogger().LogInfo(FString::Printf(TEXT("a line from the %s part"), Part.Key));
+			TestTrue(*FString::Printf(TEXT("the line from the %s part reaches the logger set after initializing"), Part.Key),
+				Capture->Infos.Contains(FString::Printf(TEXT("a line from the %s part"), Part.Key)));
+		}
+	}
+
+	// A call's network trace, from the HTTP client made at initialization (the test's transport never answers).
+	Sdk->GetGameProvider()->GetGame([](TFlockResult<FFlockGameSchema>) {});
+	TestTrue(TEXT("the call's network trace reaches it"),
+		Capture->Debugs.ContainsByPredicate([](const FString& Line) { return Line.StartsWith(TEXT("-> GET ")); }));
+
+	// The subsystem's own line, the events hub's, and one after the SDK shut down and started again.
+	Sdk->InitializeWithConfig(MakeValidConfig());
+	TestTrue(TEXT("the subsystem's warning reaches it"), Capture->Warnings.Num() > 0);
+	Sdk->ShutdownSdk();
+	TestTrue(TEXT("the events hub's line reaches it"),
+		Capture->Debugs.ContainsByPredicate([](const FString& Line) { return Line.Contains(TEXT(" fired -> ")); }));
+	const int32 InfosBefore = Capture->Infos.Num();
+	Sdk->InitializeWithConfig(MakeValidConfig());
+	TestTrue(TEXT("and it stays after shutting down and initializing again"), Capture->Infos.Num() > InfosBefore);
 	return true;
 }
 

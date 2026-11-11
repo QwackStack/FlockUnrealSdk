@@ -165,7 +165,7 @@ void FFlockSchemaFetcher::Fetch(const TSharedRef<FFlockHttpClient>& Client, cons
 {
 	if (GameVersionName.IsEmpty())
 	{
-		OnComplete.ExecuteIfBound(TFlockResult<FFlockSchemaSnapshot>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("Game Version is empty in Project Settings > Flock SDK"), TEXT("Set Game Version there to the version's name in the Flock dashboard, then sync again."))));
+		OnComplete.ExecuteIfBound(TFlockResult<FFlockSchemaSnapshot>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation, TEXT("Game Version is empty in Project Settings > Plugins > Flock SDK Settings"), TEXT("Set Game Version there to the version's name in the Flock dashboard, then sync again."))));
 		return;
 	}
 
@@ -189,7 +189,7 @@ void FFlockSchemaFetcher::Fetch(const TSharedRef<FFlockHttpClient>& Client, cons
 			if (Result.Value.Id.IsEmpty())
 			{
 				State->Fail(TEXT("Resolve game version"), FFlockError::MakeWithFix(EFlockErrorType::Validation,
-					FString::Printf(TEXT("The server returned no id for game version '%s'"), *GameVersionName), TEXT("Check the version exists in the Flock dashboard under that name, and that API URL under Project Settings > Flock SDK points at the server the game lives on.")));
+					FString::Printf(TEXT("The server returned no id for game version '%s'"), *GameVersionName), TEXT("Check the version exists in the Flock dashboard under that name, and that API URL under Project Settings > Plugins > Flock SDK Settings points at the server the game lives on.")));
 				return;
 			}
 
@@ -226,7 +226,7 @@ void FFlockSchemaFetcher::FetchFromSettings(FOnSchemaFetched OnComplete)
 	if (!Missing.IsEmpty())
 	{
 		OnComplete.ExecuteIfBound(TFlockResult<FFlockSchemaSnapshot>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
-			FString::Printf(TEXT("%s is not set in Project Settings > Flock SDK"), *Missing), TEXT("Set it there, then sync again."))));
+			FString::Printf(TEXT("%s is not set in Project Settings > Plugins > Flock SDK Settings"), *Missing), TEXT("Set it there, then sync again."))));
 		return;
 	}
 

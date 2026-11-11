@@ -73,7 +73,10 @@ public:
 	/** Every shop item across every shop: display name from the item's name, wire value its id. */
 	static TArray<TPair<FString, FString>> CollectShopItems(const FFlockSchemaSnapshot& Snapshot);
 
-	/** Every distinct currency any item is priced in; the currency name is both display and wire value. */
+	/**
+	 * Every distinct game currency an item is priced in, the funds Add Funds grants; a real-money item's currency is left out.
+	 * The currency name is both display and wire value.
+	 */
 	static TArray<TPair<FString, FString>> CollectCurrencies(const FFlockSchemaSnapshot& Snapshot);
 
 	/** The "achievement"-tagged template's fields; the declared field name is the wire value. */

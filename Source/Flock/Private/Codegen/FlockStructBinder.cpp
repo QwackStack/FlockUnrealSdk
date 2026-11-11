@@ -82,10 +82,10 @@ int32 FFlockStructBinder::FillStructFromObject(const UStruct* Struct, void* Stru
 	// looks exactly like a working lookup.
 	TMap<FString, TSharedPtr<FJsonValue>> ByName;
 	ByName.Reserve(Source->Values.Num() * 2);
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Source->Values)
+	for (const auto& Pair : Source->Values)
 	{
-		ByName.Add(Pair.Key, Pair.Value);
-		const FString Pascal = FFlockJsonUtils::SnakeToPascal(Pair.Key);
+		ByName.Add(FString(*Pair.Key), Pair.Value);
+		const FString Pascal = FFlockJsonUtils::SnakeToPascal(FString(*Pair.Key));
 		if (!ByName.Contains(Pascal))
 		{
 			ByName.Add(Pascal, Pair.Value);

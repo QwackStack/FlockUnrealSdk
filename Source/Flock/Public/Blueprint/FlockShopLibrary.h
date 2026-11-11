@@ -80,4 +80,73 @@ public:
 	/** The consume counterpart: true when consuming the entry moved currency and reported the new balances. */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Has Wallet (Consume)"), Category = "Flock|Shop")
 	static bool ConsumeHasWallet(const FFlockConsumeResult& ConsumeResult) { return ConsumeResult.HasWallet(); }
+
+	/**
+	 * The item's product id in Store (one of the Flock Payment Provider nodes), exactly as set in the Flock dashboard. Matches the
+	 * store's name with its letter case, which a map's own Find does not. False when the item has none there.
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Find Store Product Id"), Category = "Flock|Shop")
+	static bool FindStoreProductId(const FFlockShopItem& Item, const FString& Store, FString& ProductId)
+	{
+		return Item.FindStoreProductId(Store, ProductId);
+	}
+
+	/** Store and payment gateway names as the server spells them. Apple App Store and Google Play are the keys of an item's Store Product Ids; a web checkout needs no product id. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Payment Provider Apple App Store"), Category = "Flock|Shop")
+	static FString PaymentProviderAppleAppStore() { return FlockPaymentProviders::AppleAppStore; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Payment Provider Google Play"), Category = "Flock|Shop")
+	static FString PaymentProviderGooglePlay() { return FlockPaymentProviders::GooglePlay; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Payment Provider Stripe"), Category = "Flock|Shop")
+	static FString PaymentProviderStripe() { return FlockPaymentProviders::Stripe; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Payment Provider Tap"), Category = "Flock|Shop")
+	static FString PaymentProviderTap() { return FlockPaymentProviders::Tap; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Payment Provider Moyasar"), Category = "Flock|Shop")
+	static FString PaymentProviderMoyasar() { return FlockPaymentProviders::Moyasar; }
+
+	/** A currency's balance in the wallet, or 0 when it holds none (Wallet Holds tells the two apart). Codes match with their case. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Wallet Balance Of"), Category = "Flock|Shop")
+	static int64 WalletBalanceOf(const FFlockWallet& Wallet, const FString& CurrencyCode) { return Wallet.BalanceOf(CurrencyCode); }
+
+	/** Whether the wallet holds a balance in this currency at all, a zero one included. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Wallet Holds"), Category = "Flock|Shop")
+	static bool WalletHolds(const FFlockWallet& Wallet, const FString& CurrencyCode) { return Wallet.Holds(CurrencyCode); }
+
+	/** Whether Purchase can pay for this item from the wallet; false for a real-money item, which a store sells. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Can Afford"), Category = "Flock|Shop")
+	static bool CanAfford(const FFlockWallet& Wallet, const FFlockShopItem& Item) { return Wallet.CanAfford(Item); }
+
+	/** The balances a purchase left, by currency code; empty when it moved no currency (Has Wallet is false). */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Purchase Balances"), Category = "Flock|Shop")
+	static FFlockWallet PurchaseBalances(const FFlockPurchaseResult& PurchaseResult) { return FFlockWallet::From(PurchaseResult.Wallet); }
+
+	/** The balances a consume left, by currency code; empty when it granted no currency (Has Wallet is false). */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Consume Balances"), Category = "Flock|Shop")
+	static FFlockWallet ConsumeBalances(const FFlockConsumeResult& ConsumeResult) { return FFlockWallet::From(ConsumeResult.Wallet); }
+
+	/** How many unused entries of this shop item the counts hold; 0 when none. The id matches with its case. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Owned Count Of"), Category = "Flock|Shop")
+	static int32 OwnedCountOf(const FFlockOwnedItemCounts& Counts, const FString& ShopItemId) { return Counts.CountOf(ShopItemId); }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Inventory Status Unused"), Category = "Flock|Shop")
+	static FString PlayerInventoryStatusUnused() { return FlockPlayerInventoryStatuses::Unused; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Inventory Status Used"), Category = "Flock|Shop")
+	static FString PlayerInventoryStatusUsed() { return FlockPlayerInventoryStatuses::Used; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Inventory Status Revoked"), Category = "Flock|Shop")
+	static FString PlayerInventoryStatusRevoked() { return FlockPlayerInventoryStatuses::Revoked; }
+
+	/** Item kinds as the server spells them, to compare an item's Type against rather than typing them. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Shop Item Type Standard"), Category = "Flock|Shop")
+	static FString ShopItemTypeStandard() { return FlockShopItemTypes::Standard; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Shop Item Type Currency Pack"), Category = "Flock|Shop")
+	static FString ShopItemTypeCurrencyPack() { return FlockShopItemTypes::CurrencyPack; }
+
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Flock Shop Item Type Consumable"), Category = "Flock|Shop")
+	static FString ShopItemTypeConsumable() { return FlockShopItemTypes::Consumable; }
 };

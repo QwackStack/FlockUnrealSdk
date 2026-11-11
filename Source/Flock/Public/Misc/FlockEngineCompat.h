@@ -64,11 +64,11 @@
  *
  * The `FJsonObject::Values` entry is why the SDK reaches for `HasField` / `TryGetField` / `SetField`
  * wherever it can: those have stable signatures across the range, and the container behind them does
- * not. Ten places do loop over `Values` directly, and eight of them name the pair
- * `TPair<FString, TSharedPtr<FJsonValue>>`. That compiles on 5.4 through 5.8, where the key really is
- * an FString, and it is what would break first if a later engine interns the key - so whoever moves
- * the ceiling should spell those `auto` and read the key as `FString(*Pair.Key)`, the way
- * `FlockTestSpelling::HasMemberSpelled` and `FFlockJsonUtils::GetFieldNames` already do.
+ * not. Where the SDK does loop over `Values` directly, it spells the pair `auto` and reads the key as
+ * `FString(*Pair.Key)`: UE 5.8 interns the key (`UE::TSharedString`), so a pair named
+ * `TPair<FString, TSharedPtr<FJsonValue>>` is a converted copy. MSVC accepts that silently; clang
+ * (Android, and Apple's platforms) refuses it under -Werror,-Wrange-loop-construct, which is how the
+ * Android build on 5.8 found it.
  *
  * ASCII only in this file. Tooling on both sides reads it - a PowerShell script and a shell script in
  * CI - and a BOM-less round trip through Windows PowerShell turns non-ASCII into mojibake.
@@ -136,7 +136,11 @@ static_assert(!UE_VERSION_OLDER_THAN(FLOCK_ENGINE_FLOOR_MAJOR, FLOCK_ENGINE_FLOO
 // the SDK supplies its own, so the same test source reads the same on every engine in the range.
 #define FLOCK_ENGINE_HAS_TEST_EQUAL_SENSITIVE (!UE_VERSION_OLDER_THAN(5, 5, 0))
 
-#if WITH_AUTOMATION_TESTS && !FLOCK_ENGINE_HAS_TEST_EQUAL_SENSITIVE
+// Google Play takes new builds only from a Billing Library still supported (Billing 7 ended 2026-11-01). UE 5.4 to 5.7 ship
+// Billing 6 or 7 with their Google Play subsystem; UE 5.8 ships Billing 8.1.0, so Flock's store module buys on Android from 5.8.
+#define FLOCK_ENGINE_GOOGLE_PLAY_BILLING_IS_CURRENT (!UE_VERSION_OLDER_THAN(5, 8, 0))
+
+#if WITH_AUTOMATION_TESTS
 
 #include "Misc/AutomationTest.h"
 
@@ -145,7 +149,8 @@ namespace FlockEngineCompat
 	/**
 	 * What TestEqualSensitive does on the engines that have it: fails the check unless the two strings are the same
 	 * letter for letter. It lives here, rather than beside the other spelling checks in the Flock module's private
-	 * test support, because FlockEditor and the playtest plugin call it too and neither can reach that folder.
+	 * test support, because FlockEditor and the playtest plugin call it too and neither can reach that folder. Built on
+	 * every engine, so a test helper outside a RunTest (where the stand-in macro below cannot reach `this`) calls it too.
 	 */
 	inline bool CheckEqualSpelledExactly(FAutomationTestBase& Test, const FString& What, const FString& Actual,
 		const FString& Expected)
@@ -158,6 +163,10 @@ namespace FlockEngineCompat
 		return false;
 	}
 }
+
+#endif // WITH_AUTOMATION_TESTS
+
+#if WITH_AUTOMATION_TESTS && !FLOCK_ENGINE_HAS_TEST_EQUAL_SENSITIVE
 
 // A macro, because the call sites name it the way the engine's own is named: unqualified, inside a test's RunTest,
 // where `this` is the test. On UE 5.5 and newer this is not defined at all and the engine's member is what runs.

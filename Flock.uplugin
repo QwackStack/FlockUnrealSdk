@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 63,
-	"VersionName": "1.40.0",
+	"Version": 71,
+	"VersionName": "1.48.0",
 	"FriendlyName": "Flock SDK",
 	"Description": "A game backend SDK for Unreal Engine with authentication, game configuration, player data, shop, and analytics.",
 	"Category": "Online Platform",
@@ -24,11 +24,20 @@
 			"Name": "FlockEditor",
 			"Type": "Editor",
 			"LoadingPhase": "PostEngineInit"
+		},
+		{
+			"Name": "FlockPlatformStore",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [
 		{
 			"Name": "DataValidation",
+			"Enabled": true
+		},
+		{
+			"Name": "OnlineSubsystem",
 			"Enabled": true
 		}
 	]

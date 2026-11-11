@@ -1,6 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Analytics/FlockLogSink.h"
+#include "FlockPassOnLogger.h"
 
 #include "Analytics/FlockStackTrace.h"
 #include "CoreGlobals.h"
@@ -121,6 +122,12 @@ void FFlockLogSink::Serialize(const TCHAR* Message, ELogVerbosity::Type Verbosit
 		return;
 	}
 	if (Message == nullptr || IsExcluded(Category))
+	{
+		return;
+	}
+	// A line the SDK is handing to the game's own logger: the game's logger may write it under its own category, and
+	// capturing it would send the SDK's own failure as the game's exception (and log again when that send fails).
+	if (GFlockPassingOnAnSdkLine)
 	{
 		return;
 	}

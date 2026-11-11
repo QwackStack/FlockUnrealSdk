@@ -87,8 +87,8 @@ UPackage* FFlockGeneratedAssets::OpenPackageFor(const FString& ContentRoot, cons
 	{
 		OutProblem = FString::Printf(
 			TEXT("'%s' is a %s, not the %s codegen makes under that name, so it was left as it is and nothing was "
-				"generated in its place. Rename or move it, or set Generated Content Path in Project Settings > Flock "
-				"SDK > Codegen to a folder of its own, such as /Game/Flock/Generated."),
+				"generated in its place. Rename or move it, or set Generated Content Path in Project Settings > Plugins > "
+				"Flock SDK Settings > Codegen to a folder of its own, such as /Game/Flock/Generated."),
 			*Existing->GetPathName(), *Existing->GetClass()->GetName(), *AssetClass->GetName());
 		return nullptr;
 	}

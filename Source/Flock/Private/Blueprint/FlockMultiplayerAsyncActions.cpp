@@ -2,6 +2,7 @@
 
 #include "Blueprint/FlockMultiplayerAsyncActions.h"
 #include "Blueprint/FlockBlueprintCallOrigin.h"
+#include "Blueprint/FlockBlueprintNodeLife.h"
 #include "Http/FlockErrorHints.h"
 
 #include "Engine/Engine.h"
@@ -40,29 +41,6 @@ namespace
 	TOptional<int32> SetUnlessZero(int32 Value)
 	{
 		return Value != 0 ? TOptional<int32>(Value) : TOptional<int32>();
-	}
-
-	/**
-	 * The game instance a node registers with, so it keeps the node until a pin has fired: the graph that made it holds it only
-	 * in a variable a second call of the same node replaces, and a search or a travel outlives that by minutes. Null when the
-	 * world context leads to none, which registering ignores.
-	 */
-	UGameInstance* GameInstanceOf(const UObject* WorldContextObject)
-	{
-		if (WorldContextObject == nullptr)
-		{
-			return nullptr;
-		}
-		const UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull) : nullptr;
-		if (UGameInstance* Instance = World ? World->GetGameInstance() : nullptr)
-		{
-			return Instance;
-		}
-		if (const UGameInstance* Instance = Cast<UGameInstance>(WorldContextObject))
-		{
-			return const_cast<UGameInstance*>(Instance);
-		}
-		return WorldContextObject->GetTypedOuter<UGameInstance>();
 	}
 }
 
@@ -151,7 +129,7 @@ void UFlockPartyAction::ActivateWithProviderForTesting(FFlockMultiplayerProvider
 
 void UFlockPartyAction::Start(FFlockMultiplayerProvider* Provider)
 {
-	RegisterWithGameInstance(GameInstanceOf(WorldContextObject.Get()));
+	RegisterWithGameInstance(FlockBlueprintNodeLife::GameInstanceOf(WorldContextObject.Get()));
 	const TWeakObjectPtr<UFlockPartyAction> WeakThis(this);
 	FFlockOnParty Done = [WeakThis](TFlockResult<UFlockParty*> Result)
 	{
@@ -237,7 +215,7 @@ void UFlockGetMyPartyAction::ActivateWithProviderForTesting(FFlockMultiplayerPro
 
 void UFlockGetMyPartyAction::Start(FFlockMultiplayerProvider* Provider)
 {
-	RegisterWithGameInstance(GameInstanceOf(WorldContextObject.Get()));
+	RegisterWithGameInstance(FlockBlueprintNodeLife::GameInstanceOf(WorldContextObject.Get()));
 	if (Provider == nullptr)
 	{
 		Complete(TFlockResult<UFlockParty*>::Fail(FlockNotRunning()));
@@ -365,7 +343,7 @@ void UFlockSessionAction::ActivateWithProviderForTesting(FFlockMultiplayerProvid
 
 void UFlockSessionAction::Start(FFlockMultiplayerProvider* Provider)
 {
-	RegisterWithGameInstance(GameInstanceOf(WorldContextObject.Get()));
+	RegisterWithGameInstance(FlockBlueprintNodeLife::GameInstanceOf(WorldContextObject.Get()));
 	const TWeakObjectPtr<UFlockSessionAction> WeakThis(this);
 	FFlockOnMultiplayerSession Done = [WeakThis](TFlockResult<UFlockMultiplayerSession*> Result)
 	{
@@ -455,7 +433,7 @@ void UFlockGetMySessionAction::ActivateWithProviderForTesting(FFlockMultiplayerP
 
 void UFlockGetMySessionAction::Start(FFlockMultiplayerProvider* Provider)
 {
-	RegisterWithGameInstance(GameInstanceOf(WorldContextObject.Get()));
+	RegisterWithGameInstance(FlockBlueprintNodeLife::GameInstanceOf(WorldContextObject.Get()));
 	if (Provider == nullptr)
 	{
 		Complete(TFlockResult<UFlockMultiplayerSession*>::Fail(FlockNotRunning()));
@@ -524,7 +502,7 @@ void UFlockFindMatchAction::ActivateWithProviderForTesting(FFlockMultiplayerProv
 
 void UFlockFindMatchAction::Start(FFlockMultiplayerProvider* Provider)
 {
-	RegisterWithGameInstance(GameInstanceOf(WorldContextObject.Get()));
+	RegisterWithGameInstance(FlockBlueprintNodeLife::GameInstanceOf(WorldContextObject.Get()));
 	if (bAsParty ? Party == nullptr : Provider == nullptr)
 	{
 		Complete(TFlockResult<FFlockMatchmakingResult>::Fail(bAsParty ? NoPartyGiven() : FlockNotRunning()));
@@ -595,7 +573,7 @@ UFlockRequestJoinTokenAction* UFlockRequestJoinTokenAction::RequestJoinToken(UOb
 
 void UFlockRequestJoinTokenAction::Activate()
 {
-	RegisterWithGameInstance(GameInstanceOf(WorldContextObject.Get()));
+	RegisterWithGameInstance(FlockBlueprintNodeLife::GameInstanceOf(WorldContextObject.Get()));
 	if (Session == nullptr)
 	{
 		Complete(TFlockResult<FFlockMultiplayerSessionJoinToken>::Fail(NoSessionGiven()));
@@ -636,7 +614,7 @@ UFlockVerifyJoinTokenAction* UFlockVerifyJoinTokenAction::VerifyJoinToken(UObjec
 
 void UFlockVerifyJoinTokenAction::Activate()
 {
-	RegisterWithGameInstance(GameInstanceOf(WorldContextObject.Get()));
+	RegisterWithGameInstance(FlockBlueprintNodeLife::GameInstanceOf(WorldContextObject.Get()));
 	if (Session == nullptr)
 	{
 		Complete(TFlockResult<FString>::Fail(NoSessionGiven()));
@@ -676,7 +654,7 @@ UFlockFindDirectAddressAction* UFlockFindDirectAddressAction::FindDirectAddress(
 
 void UFlockFindDirectAddressAction::Activate()
 {
-	RegisterWithGameInstance(GameInstanceOf(WorldContextObject.Get()));
+	RegisterWithGameInstance(FlockBlueprintNodeLife::GameInstanceOf(WorldContextObject.Get()));
 	if (Session == nullptr)
 	{
 		Complete(TFlockResult<FFlockDirectAddress>::Fail(NoSessionGiven()));
@@ -720,7 +698,7 @@ UFlockWaitForConnectionAction* UFlockWaitForConnectionAction::WaitForConnection(
 
 void UFlockWaitForConnectionAction::Activate()
 {
-	RegisterWithGameInstance(GameInstanceOf(WorldContextObject.Get()));
+	RegisterWithGameInstance(FlockBlueprintNodeLife::GameInstanceOf(WorldContextObject.Get()));
 	if (Session == nullptr)
 	{
 		Complete(TFlockResult<UFlockMultiplayerSession*>::Fail(NoSessionGiven()));
@@ -812,7 +790,7 @@ void UFlockTravelToSessionAction::ActivateWithProviderForTesting(FFlockMultiplay
 
 void UFlockTravelToSessionAction::Start(FFlockMultiplayerProvider* Provider)
 {
-	RegisterWithGameInstance(GameInstanceOf(WorldContextObject.Get()));
+	RegisterWithGameInstance(FlockBlueprintNodeLife::GameInstanceOf(WorldContextObject.Get()));
 	if (Session == nullptr)
 	{
 		Complete(TFlockResult<FFlockTravelToSessionResult>::Fail(NoSessionGiven()));

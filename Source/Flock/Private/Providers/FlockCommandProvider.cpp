@@ -288,7 +288,7 @@ void FFlockCommandProvider::AddGameFunds(const FString& Currency, int32 Amount, 
 			// bIdempotent=false: an ambiguous failure may mean the credit already landed, so the retry
 			// handler must surface it rather than re-post and double-credit.
 			Self->PostCommand(FlockEndpoints::CommandAddGameFunds, SerializeObject(Body), TEXT("Add game funds"),
-				/*bIdempotent*/ false, OnComplete);
+				/*bIdempotent*/ false, OnComplete, /*bMovesMoney*/ true);
 		});
 }
 
@@ -495,7 +495,7 @@ void FFlockCommandProvider::HandleBackgroundChanged(bool bBackgrounded)
 // ───────────────────────────────────  Internals  ───────────────────────────────
 
 void FFlockCommandProvider::PostCommand(const FString& Path, const FString& PayloadJson, const FString& Context,
-	bool bIdempotent, TFunction<void(TFlockResult<FFlockPlayerData>)> OnComplete)
+	bool bIdempotent, TFunction<void(TFlockResult<FFlockPlayerData>)> OnComplete, bool bMovesMoney)
 {
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(Path);
@@ -503,16 +503,17 @@ void FFlockCommandProvider::PostCommand(const FString& Path, const FString& Payl
 
 	// Bare response: the command routes answer with the player-data row at the root, not under `result`.
 	// Headers are fetched inside the operation so a post-refresh replay carries the new bearer.
-	Execute<FFlockPlayerData>(
+	FFlockRetryHandler::FOperation<FFlockPlayerData> Send =
 		[ClientRef, Url, PayloadJson, WeakSelf](TFunction<void(TFlockResult<FFlockPlayerData>)> OnAttempt)
 		{
 			TMap<FString, FString> Headers;
 			if (const TSharedPtr<FFlockCommandProvider> Self = WeakSelf.Pin())
 			{
-				Headers = Self->HeadersNow();
+				Headers = Self->Session->GetAuthHeaders();
 			}
 			return ClientRef->PostJsonRaw<FFlockPlayerData>(Url, Headers, PayloadJson, MoveTemp(OnAttempt));
-		},
+		};
+	TFunction<void(TFlockResult<FFlockPlayerData>)> Done =
 		[WeakSelf, OnComplete](TFlockResult<FFlockPlayerData> Result)
 		{
 			if (const TSharedPtr<FFlockCommandProvider> Self = WeakSelf.Pin())
@@ -526,8 +527,17 @@ void FFlockCommandProvider::PostCommand(const FString& Path, const FString& Payl
 			{
 				OnComplete(Result);
 			}
-		},
-		Context, bIdempotent);
+		};
+	if (!bMovesMoney)
+	{
+		Execute<FFlockPlayerData>(MoveTemp(Send), MoveTemp(Done), Context, bIdempotent);
+		return;
+	}
+	// A fund grant that got no answer may have landed: the call ends unknown and the cached wallet is dropped.
+	FMoneyCall Rules;
+	Rules.ForgetPlayersData = FFlockPlayerProvider::ClearsPlayerDataCacheOf(PlayerProvider);
+	Rules.FixWhenUnknown = TEXT("The funds may have been added: no answer said whether they were. Read the player's wallet before adding them again; a new AddGameFunds call adds them again.");
+	ExecuteMoneyCall<FFlockPlayerData>(MoveTemp(Send), MoveTemp(Done), Context, bIdempotent, MoveTemp(Rules));
 }
 
 void FFlockCommandProvider::SendQueueable(const FString& Path, const FString& PayloadJson, const FString& Context,

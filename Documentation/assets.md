@@ -37,7 +37,7 @@ them, exactly once, at the end.
 `Progress` stays at 0 for the first tick or two, until the server reports how large the file is. Show an
 indeterminate bar until it moves rather than treating it as "stuck".
 
-These pure nodes answer immediately, with no network call:
+These nodes have no execution pins and answer immediately, with no network call:
 
 | Node | Answers |
 |---|---|
@@ -84,7 +84,7 @@ want everything.
 
 **Do not start it straight from Event Construct.** Auto-init finishes during GameInstance startup —
 before any Blueprint can bind — so a widget that waits on the SDK's initialization event waits forever.
-Run Event Construct into **Flock Get Events** → **Call Or Register On Initialized**, and bind a custom
+Run Event Construct into **Flock Get Events** → **Call or Register on Initialized**, and bind a custom
 event to its delegate pin: that fires immediately when the SDK is already up, and waits when it is not.
 See [SDK events](events.md).
 
@@ -99,15 +99,15 @@ appearing a beat late.
 
 ## C++
 
-Everything lives on the asset provider:
+Everything lives on the asset provider (`#include "FlockSubsystem.h"`):
 
 ```cpp
 UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
 FFlockAssetProvider* Assets = Sdk->GetAssetProvider();
 
 // The list, and a lookup by name or id.
-Assets->GetAll([](TFlockResult<TArray<FFlockAsset>> Result) { /* ... */ });
-Assets->GetByName(TEXT("title_logo"), [](TFlockResult<FFlockAsset> Result) { /* ... */ });
+Assets->GetAll([](TFlockResult<TArray<FFlockAsset>> Result) { /* Result.Value */ });
+Assets->GetByName(TEXT("title_logo"), [](TFlockResult<FFlockAsset> Result) { /* Result.Value.Id */ });
 
 // Download by name or id, with progress.
 FFlockAssetProgress Progress;
@@ -129,7 +129,47 @@ Assets->DownloadTexture(TEXT("title_logo"), Progress, [](TFlockResult<UTexture2D
 already-resolved `FFlockAsset` instead of a string, which skips the lookup when you already hold the
 record.
 
-`PreloadWhere` takes a predicate for the C++ side of a loading screen:
+The C++ side of a loading screen: fetch the list, keep what is not on disk yet, preload that. The cache
+queries answer at once, with no network call:
+
+```cpp
+UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+const TWeakObjectPtr<UFlockSubsystem> WeakSdk(Sdk);
+
+Sdk->GetAssetProvider()->GetAll([WeakSdk](TFlockResult<TArray<FFlockAsset>> All)
+{
+    UFlockSubsystem* Flock = WeakSdk.Get();
+    if (!All.bSuccess || !Flock || !Flock->IsInitialized())
+    {
+        return;
+    }
+    FFlockAssetProvider* Assets = Flock->GetAssetProvider();
+
+    // Only what is not on disk yet, so a second launch has nothing to do.
+    const TArray<FFlockAsset> Missing = Assets->GetUncached(All.Value);
+    Assets->Preload(Missing,
+        [](float Fraction) { /* drive the bar */ },
+        [](TFlockResult<int32> Landed) { /* Landed.Value of the missing ones arrived */ });
+
+    for (const FFlockAsset& Asset : All.Value)
+    {
+        if (Assets->IsCached(Asset))
+        {
+            const FString File = Assets->GetCachedFilePath(Asset);   // read it without a download
+        }
+    }
+});
+```
+
+| Call | Answers |
+|---|---|
+| `IsCached(Asset)` | Whether this exact version of the asset is on disk |
+| `GetUncached(Assets)` | Those of `Assets` that are not, which is what a preload would fetch |
+| `GetCachedFilePath(Asset)` | The file of this exact version on disk, or an empty string; never downloads |
+| `GetCacheDirectory()` | Where the cache lives on this device |
+| `ClearCache()` | Deletes every cached file, the list in memory, and the cached list |
+
+`PreloadWhere` preloads every asset matching a predicate (`Assets` is the provider from the first sample):
 
 ```cpp
 Assets->PreloadWhere(
@@ -137,8 +177,6 @@ Assets->PreloadWhere(
     [](float Fraction) { /* drive a bar */ },
     [](TFlockResult<int32> Result) { /* Result.Value landed */ });
 ```
-
-`IsCached`, `GetUncached`, `GetCachedFilePath`, `GetCacheDirectory` and `ClearCache` are synchronous.
 
 ## Caching
 
@@ -167,7 +205,7 @@ link — you do not need to handle it.
 
 ## Settings
 
-Under *Project Settings > Flock SDK > Asset Cache*:
+In **Project Settings → Plugins → Flock SDK Settings**, its **Asset Cache** section:
 
 | Setting | Default | Does |
 |---|---|---|

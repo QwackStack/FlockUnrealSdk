@@ -81,12 +81,12 @@ namespace
 		{
 			// Dict keys are author-supplied data, NOT field names — kept verbatim, never case-transformed.
 			TSharedRef<FJsonObject> DictObject = MakeShared<FJsonObject>();
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Value->AsObject()->Values)
+			for (const auto& Pair : Value->AsObject()->Values)
 			{
 				const TSharedPtr<FJsonObject> EntryField = Pair.Value.IsValid() ? Pair.Value->AsObject() : nullptr;
 				if (EntryField.IsValid())
 				{
-					DictObject->SetField(Pair.Key, FlattenField(EntryField));
+					DictObject->SetField(FString(*Pair.Key), FlattenField(EntryField));
 				}
 			}
 			return MakeShared<FJsonValueObject>(DictObject);
@@ -97,7 +97,7 @@ namespace
 	}
 }
 
-FFlockStructuredData FFlockStructuredData::FromWireData(const TSharedPtr<FJsonValue>& DataValue)
+FFlockStructuredData FFlockStructuredData::FromWireData(const TSharedPtr<FJsonValue>& DataValue, bool bKeepWireNode)
 {
 	FFlockStructuredData Result;
 	if (!DataValue.IsValid() || DataValue->Type == EJson::Null)
@@ -120,6 +120,12 @@ FFlockStructuredData FFlockStructuredData::FromWireData(const TSharedPtr<FJsonVa
 		}
 	}
 	// A scalar `data` is not a shape we can flatten — leave the handle empty.
+	if (bKeepWireNode && !Result.FlatJson.IsEmpty())
+	{
+		const TSharedRef<FJsonObject> Wire = MakeShared<FJsonObject>();
+		Wire->SetField(TEXT("data"), DataValue);
+		Result.WireJson = SerializeObject(Wire);
+	}
 
 	return Result;
 }
@@ -156,6 +162,8 @@ void FFlockStructuredData::OverlayFields(const TSharedRef<FJsonObject>& Fields)
 	}
 
 	FlatJson = SerializeObject(Merged);
+	// The server's own node no longer matches what is held.
+	WireJson.Reset();
 	bParsed = false;
 	CachedObject.Reset();
 }

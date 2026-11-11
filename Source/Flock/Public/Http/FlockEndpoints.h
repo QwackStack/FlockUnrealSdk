@@ -95,6 +95,8 @@ namespace FlockEndpoints
 	inline constexpr const TCHAR* GameConfigVersion = TEXT("game_config/version");
 	inline FString GameConfigById(const FString& ConfigId) { return FString::Printf(TEXT("game_config/%s"), *ConfigId); }
 	inline FString GameConfigByName(const FString& Name) { return FString::Printf(TEXT("game_config/by-name/%s"), *Encode(Name)); }
+	/** A config by name as the signed-in player reads it (bearer and X-Game-Version-ID). */
+	inline FString GameConfigForMeByName(const FString& Name) { return FString::Printf(TEXT("game_config/me/by-name/%s"), *Encode(Name)); }
 	inline FString GameConfigPlayerFeatures(const FString& PlayerId) { return FString::Printf(TEXT("game_config/player/%s/features"), *PlayerId); }
 	inline constexpr const TCHAR* GamePatch = TEXT("game_patch");
 	// The path segment is a patch id, not a config id (a prior name here was misleading).
@@ -108,6 +110,10 @@ namespace FlockEndpoints
 	inline FString ShopById(const FString& ShopId) { return FString::Printf(TEXT("shop/%s"), *ShopId); }
 	inline FString ShopByName(const FString& Name) { return FString::Printf(TEXT("shop/by-name/%s"), *Encode(Name)); }
 	inline constexpr const TCHAR* ShopTransaction = TEXT("shop/transaction");
+	inline constexpr const TCHAR* ShopValidateReceipt = TEXT("shop/validate-receipt");
+	inline constexpr const TCHAR* ShopCheckout = TEXT("shop/checkout");
+	inline constexpr const TCHAR* ShopPurchases = TEXT("shop/purchases");
+	inline FString ShopPurchaseById(const FString& PurchaseId) { return FString::Printf(TEXT("shop/purchases/%s"), *Encode(PurchaseId)); }
 	inline FString ShopItemById(const FString& ShopItemId) { return FString::Printf(TEXT("shop_item/%s"), *ShopItemId); }
 	inline FString ShopItemsByShop(const FString& ShopId) { return FString::Printf(TEXT("shop_item/shop/%s"), *ShopId); }
 	inline FString PlayerInventoryByPlayer(const FString& PlayerId) { return FString::Printf(TEXT("player_inventory/player/%s"), *PlayerId); }

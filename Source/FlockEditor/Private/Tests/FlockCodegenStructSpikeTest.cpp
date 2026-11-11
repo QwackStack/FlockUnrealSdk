@@ -116,10 +116,10 @@ namespace FlockCodegenSpike
 	int32 FillFromJson(const UStruct* Struct, void* StructMemory, const TSharedRef<FJsonObject>& Source)
 	{
 		TMap<FString, TSharedPtr<FJsonValue>> ByName;
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Source->Values)
+		for (const auto& Pair : Source->Values)
 		{
-			ByName.Add(Pair.Key, Pair.Value);
-			const FString Pascal = FFlockJsonUtils::SnakeToPascal(Pair.Key);
+			ByName.Add(FString(*Pair.Key), Pair.Value);
+			const FString Pascal = FFlockJsonUtils::SnakeToPascal(FString(*Pair.Key));
 			if (!ByName.Contains(Pascal))
 			{
 				ByName.Add(Pascal, Pair.Value);

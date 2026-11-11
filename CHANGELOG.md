@@ -5,6 +5,426 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+A device id the SDK keeps; config read as the signed-in player sees it.
+
+### Added
+
+- **A device id the SDK makes once and keeps: `FFlockAuthProvider::ThisDeviceId()`** (Blueprint: **Flock Get This Device
+  Id**), a GUID kept in `Saved/Flock/device_id.txt`, beside the saved sign-in, and read again by each start of the SDK (a
+  launch, a Play In Editor session). Two copies of the game started from one project folder share it, and the first to save
+  it wins: the file is only ever made new, never written over. An id written another way (upper case, braces, a line break or
+  a byte-order mark around it) is used as written; a file holding no GUID is set aside for a new id; a file another start is
+  still writing is read again for up to a second; a file that cannot be read is left alone, and that start uses an id of its
+  own with one warning saying why and how to fix it.
+
+### Changed
+
+- **An empty device id means this install's: `LoginWithDevice`, `RegisterWithDevice` and `LinkDevice`** (and *Flock Login
+  With Device*, *Flock Register With Device*, *Flock Link Device* with *Device Id* empty) send `ThisDeviceId()`. Any other id
+  is sent as it is, never trimmed. `LinkDevice` with an empty id used to fail Validation before sending; it now links this
+  install's id. A game that already passes an id of its own keeps passing it: its players are unchanged.
+- **Config read as the signed-in player sees it.** With a player signed in, `ResolveConfigData` (the call every generated
+  `Get <Config>` makes) reads a **gameplay** or **feature** config as the server resolves it for that player: the newest
+  patch, then the overrides of the segments the player is in, then the player's own. Any other config, and every read with nobody
+  signed in, is unchanged. The player's values are held for the sign-in (a new sign-in or `ClearCache()` reads them again)
+  and kept on disk per player, so offline a read gives that player's last values, else the game's. The read is sent only as
+  the sign-in it was asked for; an answer that arrives after that sign-in ended is kept nowhere and the read runs again for
+  whoever is signed in. When the server refuses it (no such player, no Game Version, no config of that name) or it fails in
+  a way that will not change, the game's values answer for the rest of the sign-in and the player's saved copy is deleted;
+  when no answer comes, the player's saved copy (else the game's values) answers and the player's read is sent again 30
+  seconds later. One warning a sign-in, with the fix, when the server got no Game Version.
+- **`FlockCurrencyId` and the generated `Add Funds` list game currencies only**: a real-money item's currency is no longer
+  a member (its item stays in `FlockShopItemId`). Run Sync Schemas again to drop one an earlier sync made. The schema check
+  now counts an item turning real money (or back) as a change: a project with a real-money item sees one drift report and
+  syncs again; one with none keeps the hash it had.
+- **`Flock.LoginWithDevice` with no device id signs in with this install's** (`ThisDeviceId`), registering it the first time;
+  it used the machine's login id. `Flock.LoginWithDevice <id>` is unchanged.
+- **The shop sample's device field starts empty**, and an empty field signs in with this device's own id; type an id to be
+  another player.
+- **A passing store setup check no longer logs a warning and an error.** `UFlockStore::CheckSetup` (and *Flock Check Store
+  Setup*) sends a receipt no store issued, and its refusal (`payment_provider.receipt_invalid`) is what proves Flock's server
+  checks purchases; that refusal is now logged at Verbose. A game's own receipt refused the same way still logs its warning and
+  error.
+
+### Documentation
+
+- Device sign-in leaves the device id empty (the README's quick start, the authentication page): the page that made and
+  kept a GUID of the game's own now says when to pass one (a game that already does; two copies of the game started from
+  one project folder); its sign-in picture leaves both nodes' *Device Id* unwired. The config page says what a read gives with a
+  player signed in, and to read again after sign-in. The console's `Flock.LoginWithDevice` and the shop sample's steps say an
+  empty id is this device's own.
+
+## [1.48.0] - 2026-11-10
+
+The shop sample, made of Blueprints only. No change to any call.
+
+### Added
+
+- **`Content/Samples/Shop`** (turn on Show Plugin Content in the Content Browser): `WBP_FlockShopSample`, a shop screen that
+  logs a device in (registering a device that has no account yet), reads every page of the game's shops, and shows the wallet
+  and a row for each item; `WBP_FlockShopSampleItem`, the row: the item's price (the store's own for a real-money item on a
+  phone, Flock's through a web checkout), how many the player owns, **Buy** (or why it cannot be bought now: owned, not enough of
+  its currency, the store not connected or not selling it) and **Use** for a consumable the player holds; and `FlockShopSample`,
+  a level that shows the screen.
+  - When an item is sold for real money, the screen uses the store Flock already holds, or connects one with its *Payment
+    provider* field empty (Connect Store with its *Options* pin left unwired: the build's own way to pay) or naming the payment
+    gateway to use when the game has more than one. The rows show at once and again once the store answers. It disconnects only
+    a store it connected, when the screen is closed (its Destruct).
+  - Each outcome is a line in plain words followed by the SDK's own cause and fix: bought (with what it granted), waiting for its
+    payment, the store's common reasons, not enough currency, no answer from Flock (for a real-money item, which the player may
+    have paid for, its row reads **Waiting for delivery** and **Flock Restore Purchases** runs, so it is not offered again until
+    it is delivered or Restore succeeds); the wallet and what the player owns are then read again, and once more a second later (Refresh After Change), as Flock's server can answer a purchase, a use or a restore
+    just before it has saved it, and a read made at once can still show the item as not owned. While a purchase, a use, a restore or the shops' read is under way, the rows, **Restore purchases**, **Open
+    the shop** and **Log in** are off, so a second press cannot buy twice; **Log in** signs in only when nobody is.
+  - **Restore purchases** (on a phone) and **Check store setup** sit under the rows. Every graph is under comment boxes saying
+    what it does. See the shop guide's "The shop sample".
+- **`Flock.SelfTest` covers payments** (development builds): the wallet, the owned item counts and each real-money item with its
+  store product ids; on Windows, Mac and Linux, when the game sells a real-money item, the store connected (a web checkout), each
+  real-money price and the setup check, then the store disconnected; and the player's purchases. It opens no checkout and moves
+  no money. A phone's store is not connected: connecting one delivers the purchases the store still holds unfinished to whoever
+  is signed in, here the self-test's player.
+
+### Changed
+
+- **A logger set at any time reaches every part of the SDK.** `UFlockSubsystem::SetLogger` called after initializing used
+  to reach only the subsystem's and the events hub's own lines; every line from then on now reaches it, the calls' and the
+  network trace's included. A logger set before initializing behaves as before. An SDK error a game's logger writes under its
+  own category is no longer captured as one of the game's exceptions (its failed send would log another).
+- **The first node of a Blueprint chain can be left unwired.** *Set Command Int / Float / String / Bool / String Array / Json*
+  (their *Data*), the four *Set Feedback ... Answer* nodes of the playtest plugin (their *Answers*), and the string-array values
+  (*Set Command String Array*, *Command Value (String Array)*, *Flock Event Property (String Array)*) start from an empty value
+  when nothing is wired in, instead of failing to compile.
+- **Every message names the settings page as the editor shows it**: Project Settings > Plugins > Flock SDK Settings (42
+  messages said "Project Settings > Flock SDK").
+
+### Fixed
+
+- **The SDK compiles for Android on UE 5.8 again.** Reading a wallet whose balances come as an object of codes stopped the
+  Android build with `-Wrange-loop-construct`, a clang error Windows builds never show (Apple's platforms build with clang too).
+
+### Documentation
+
+- Every page has a C++ example or a Blueprint picture, each one built: the C++ examples compile in the harness, and the 16
+  Blueprint pictures are graphs the harness makes and compiles clean (Flock and the Protokite plugin: the feedback form, its
+  own-form answers, consent, the recording's upload, a playtest event; the store, the events hub, sign-in, player data,
+  diagnostics, analytics, leaderboards, config, errors, notifications, account linking).
+- Sign-in flows check *Flock Is Authenticated* first, register, and log in only when *Already Registered* is set: registering a
+  new identity signs the player in, and a second sign-in ends the first session. On Windows, Mac and Linux the device id is a
+  GUID the game keeps (`FPlatformMisc::GetDeviceId` is empty there).
+- Real-money pages say what to do when Flock's answer never came: on a phone, the player paid and the item is delivered at the
+  next launch or after Restore; on a web checkout, read the open checkouts before offering the item again. A purchase refused for
+  the sign-in raises no `OnPurchaseNotDelivered` and is sent at the next sign-in.
+- Node names match the editor (*Call or Register on Initialized*, *Make Flock Event Properties*); where the API key and Game Name
+  come from; each feature's success line in the log. Pictures that are no longer referenced were removed, and a key that one
+  picture showed is masked.
+- The Protokite playtest plugin's *Record Playtest Event* says to build its Properties with *Make Flock Event Properties*.
+
+## [1.47.0] - 2026-11-10
+
+Real-money purchases from Blueprint. A Blueprint-only game can connect the store, show prices, buy, restore, check the store's
+setup and hear every delivery; buying stays the ordinary Flock Purchase node. Nothing new to install, and no change for C++.
+
+### Added
+
+- **Store nodes (*Flock | Store*):** `Flock Connect Store` (the store Flock holds; its *Options* pin is `FFlockStoreOptions`
+  and may be left unwired for every default), `Flock Get Store Price`, `Flock Restore Purchases`, `Flock Check Store Setup` with *Is Store Ready*, `Flock Get Store`
+  and `Flock Disconnect Store`. Each but *Is Store Ready* finds the store from its World Context; with none connected, the
+  price, restore and setup check fail with "No store is connected" and how to connect one.
+- **Web checkout nodes:** `Flock Start Checkout` (the payment page's address and the purchase, for a game that shows the page
+  itself), `Flock Get Player Purchase` and `Flock Get Player Purchases`, with *Is Player Purchase Paid* and *Is Player
+  Purchase Pending* for what they read.
+- **`Flock Redeem Store Receipt`**, for a game whose own store code made the purchase, with *Make App Store Receipt*
+  (transaction id) and *Make Google Play Receipt* (product id, purchase token) to build the receipt.
+- **Nine `Flock Store Failure Reason` nodes**, one per `FlockStoreFailureReasons` spelling, to compare a failed purchase's
+  *Store Failure Reason* against.
+- **Two events on Flock's events hub:** `OnStorePurchaseCompleted` and `OnStorePurchaseNotDelivered`, raised right after the
+  connected store's own `OnPurchaseCompleted` and `OnPurchaseNotDelivered`, so a binding made once at start hears every
+  connection.
+
+### Changed
+
+- **`FFlockStoreSetupCheck::IsReady` (and *Is Store Ready*) is true on a web checkout when nothing was found to fix**: the
+  gateway cannot be checked without opening a checkout, and `NotChecked` still says how to check it by hand. It was false on
+  every web checkout, so a game gating its shop on it hid the shop on Windows, Mac and Linux.
+- **Flock Purchase is kept by the game instance until its pin fires**, as the store nodes are, so a purchase that waits (a web
+  checkout's payment, up to an hour) still answers when the Blueprint that called it is gone. Every shop node holds its World
+  Context weakly, so a waiting node never keeps a level's world alive past a level change.
+- The fix for a refused connect (Flock not initialized, a store already connected) also names the Blueprint nodes.
+
+### Not in Blueprint
+
+- `FFlockStoreOptions::OpenPaymentPage` stays C++ only: from Blueprint a web checkout's page opens in the default browser, and
+  a game that shows the page itself uses `Flock Start Checkout` and `Flock Get Player Purchase`. `SetStoreLibrary` and
+  `ConnectThrough` (a game's own store code in C++) stay C++ only too.
+
+## [1.46.0] - 2026-11-09
+
+Buying with real money on Windows, Mac and Linux through a web checkout. The same `UFlockStore::Connect` that reaches a
+phone's store opens, on a desktop, a checkout with the game's payment gateway (Stripe, Tap or Moyasar): `FFlockShopProvider::Purchase`
+opens the gateway's payment page in the player's browser and completes once Flock's server reports the payment. Flock's
+server delivers the item itself. Nothing new to install.
+
+### Added
+
+- **Web checkout through `UFlockStore`.** `Connect` with `FFlockStoreOptions::PaymentProvider` empty connects a web checkout
+  through the game's one active gateway on Windows, Mac and Linux; naming `FlockPaymentProviders::Stripe`, `Tap` or `Moyasar`
+  picks one when the game has several active. A phone or a console never opens a payment page: a gateway named on Android
+  or iOS, and a connect on a console, are refused with their fix. `IsWebCheckout` says which way the connection pays.
+- **The purchase call on a web checkout:** reads the item, opens a checkout, opens its payment page, and reads the purchase
+  about every 3 seconds (2.25 to 3.75; `FFlockStoreOptions::CheckEverySeconds`) until it is paid (the result, without
+  `Inventory` or `Wallet`, and `OnPurchaseCompleted` once), declined by the gateway (`FlockStoreFailureReasons::PaymentDeclined`)
+  or expired (the new `FlockStoreFailureReasons::Expired`; a page the player closes waits for this, up to the checkout's
+  hour). A status the SDK does not know yet keeps the checkout read. Reads that stop on another failure end the call with
+  `bOutcomeUnknown`, as the page may still be paid. A checkout still unpaid that the player left open (an earlier launch,
+  another device, a call whose sign-in ended) is found at each sign-in and by `Restore`, and reported once paid; one paid
+  while nothing read it is delivered by Flock but not reported. A checkout just opened that reads as not found is read
+  again for 30 seconds, as the server saves it just after answering. A paid checkout drops the cached player data, so the
+  next wallet read asks the server.
+- **Options:** `ReturnUrl` and `CancelUrl` (where the browser lands; empty leaves them to the server), `CheckEverySeconds`,
+  and `OpenPaymentPage` (C++; shows the payment address another way instead of the default browser).
+- **`FFlockShopProvider::StartCheckout`, `GetPurchase` and `GetPurchases`** (`FFlockCheckout`, `FFlockPlayerPurchase`,
+  `FFlockPlayerPurchasePage`), for a game that builds its own checkout screen or lists the player's purchases. Each acts as
+  the signed-in player and is sent only while that sign-in lasts.
+- **`FFlockStoreSetupCheck::NotChecked`:** on a web checkout, how to check the gateway by hand (the server says whether one
+  is connected only as a checkout opens). `GetPrice` on a web checkout is the item's own price, written out in the
+  currency's digits.
+
+### Money safety
+
+- A checkout is never sent again after an answer that did not come, so one call never opens two checkouts: that failure has
+  `bOutcomeUnknown` set and a fix saying to read the player's open checkouts first. Nothing is queued offline.
+- One purchase of an item at a time; the call is off the books before `OnPurchaseCompleted` runs, so a handler can buy again.
+- A checkout answered after its player signed out or changed opens no page; a sign-out, a player switch, a disconnect or a
+  shutdown ends the wait (Cancelled) and stops its reads.
+
+### Notes
+
+- **Steam:** Steam allows in-game purchases only through the Steam wallet, so a game sold on Steam must not take payments
+  through a web checkout. Connecting one in a build whose engine online service is Steam logs one warning.
+- Mac and Linux follow the same code as Windows but were not run.
+
+## [1.45.0] - 2026-11-08
+
+Buying with real money through the platform's store. Connect `UFlockStore` once, and `FFlockShopProvider::Purchase` buys a
+real-money item through Google Play or the App Store: the store charges the player, Flock checks the purchase with the store
+and delivers the item, and only then is the store's purchase finished. The store is reached through a new module of Flock's,
+`FlockPlatformStore`, over the engine's online subsystem: nothing more to install.
+
+### Added
+
+- **`UFlockStore`** (`Store/FlockStore.h`): `Connect(Flock, FFlockStoreOptions)` connects this platform's store (Google
+  Play on Android, the App Store on iOS), or the one `PaymentProvider` names. It reads the game's shops, registers each
+  item with a product id for the store (a standard item as a one-time product, a currency pack or consumable as a
+  consumable one), and from then on sends Flock every purchase the store hands over while a player is signed in. Also
+  `GetPrice` (the store's own price, in the player's currency and with their taxes), `Restore` (the one-time purchases this
+  store account owns, delivered to the signed-in player; `FFlockStoreRestore`), `CheckSetup` (products the store did not
+  find, items with no product id for this store, and whether Flock's server can ask the store with the game's keys;
+  `FFlockStoreSetupCheck`), `Disconnect`, and the events `OnPurchaseCompleted` and `OnPurchaseNotDelivered`
+  (`FFlockUndeliveredPurchase`). One connection at a time; the subsystem holds it (`UFlockSubsystem::GetStore`).
+- **The purchase rules:** the store's purchase is finished only once Flock delivered it; a purchase Flock refused stays
+  unfinished, so the store hands it back at the next launch, where it is sent again once a player is signed in; each one
+  is sent once a launch; each sign-in asks the store for unfinished purchases; an item switched off since the store
+  connected is refused before the store's dialog opens; a purchase is bought for the sign-in it started under, and its wait
+  ends when that sign-in ends or Flock shuts down; a product two items sell is matched only by the purchase that names the
+  item; a product no Flock item sells is left to the game; the products a store sold are kept between launches (per game
+  and store, whether or not the offline cache is on), so a paid purchase of an item the shops no longer list is still
+  delivered. One store purchase runs at a time, and only the store dialog's own answer completes it; a dialog paid after its
+  call ended waits for the player who opened it to sign in again; a purchase is sent once per run of the game, even across
+  connections. The events are raised before the call is answered.
+- **`EFlockErrorType::Store`** and **`FFlockError::StoreFailureReason`**: a store that did not take the payment fails
+  with one of `FlockStoreFailureReasons` (`Cancelled`, `PaymentDeclined`, `AlreadyOwned`, `AlreadyPending`,
+  `ProductUnavailable`, `StoreUnavailable`, `NotSignedInToTheStore`, `Unknown`), each with its fix. A payment the store
+  waits for (a pending payment, a parent's approval) completes with `Status` pending, and `OnPurchaseCompleted` follows once
+  paid.
+- **`IFlockStoreConnection`** and **`UFlockStore::SetStoreLibrary`**: how a store is reached. Flock's store module registers
+  one; a game with its own store code can register its own.
+- **The `FlockPlatformStore` module** (`Source/FlockPlatformStore`, part of Flock; Flock now turns the engine's Online
+  Subsystem plugin on with it): buys through the engine's online subsystem
+  (`IOnlinePurchase`, `IOnlineStoreV2`). On Google Play a one-time item is acknowledged, not consumed, and a consumable is
+  consumed; a payment completed outside a checkout (pending, then paid), which the engine reports with no receipt, is read
+  from the store again and sent; a one-time item acknowledged at an earlier launch is not sent again. Google Play needs UE
+  5.8 or later (Billing Library 8; Google no longer takes new builds with the Billing Library of UE 5.4 to 5.7), and a
+  game that turned the engine's own finishing off (`bDisableLocalAcknowledgeAndConsume`) is refused at connect. Receipts
+  go unbound: no account id is sent, as the engine hashes it before Google sees it and never hands it to Apple.
+- **The editor's setup check** warns (`Flock.Store.EnginePurchaseNodes`) when a Blueprint uses the engine's own in-app
+  purchase nodes in a game whose shops sell real-money items: those nodes finish a purchase before Flock delivers it.
+  **Test Connection** now also reads the game's shops to learn whether any item is sold for real money.
+
+### Changed
+
+- **`FFlockShopProvider::Purchase`** buys a real-money item (`IsRealMoney`) through the connected `UFlockStore`, for the
+  signed-in player; with no store connected, or with another player named, it is refused before anything is sent. Every
+  other item is bought from the wallet as before.
+
+## [1.44.0] - 2026-11-08
+
+The wallet and shop-screen calls. A wallet purchase is sent again under its one key and never bought twice; a money call
+that got no answer says it may have been done; a shop screen reads the wallet by currency code and what the player owns;
+and the attempt after an expired token is renewed carries the new token on every call.
+
+### Added
+
+- **`FFlockError::bOutcomeUnknown`** (Blueprint too): set on a purchase, store redemption, consume or fund grant that
+  failed with no answer saying whether it was done, even when a later attempt was refused or the player signed out before
+  it, with a fix saying what to read before doing it again (and, after it, the fix of a refusal that named its cause). A cancel after such an attempt ends with that attempt's
+  failure, marked; a cancel with none stays `Cancelled`. Either drops the cached player data, so the next wallet read asks
+  the server. A coded 5xx that names a setting to fix is certain.
+- **`FFlockPlayerProvider::GetWallet`** and **`FFlockWallet`** (`GameCurrencies`, `RealCurrencies`, `BalanceOf`, `Holds`,
+  `CanAfford`; Blueprint: *Flock Get Wallet*, *Wallet Balance Of*, *Wallet Holds*, *Can Afford*): the signed-in player's
+  balances by currency code, read through the player-data cache from the template tagged `currency`. Codes are the
+  server's own and match with their letter case; a real-money item is never affordable from the wallet. *Purchase
+  Balances* and *Consume Balances* read a result's wallet the same way.
+- **`FFlockShopProvider::GetOwnedItemCounts`** and **`Owns(ShopItemId)`** (*Flock Get Owned Item Counts*, *Flock Owns
+  Shop Item*, *Owned Count Of*): the unused entries the signed-in player holds, by shop item, from every page of the
+  inventory; used and refunded entries do not count, and an entry handed back on two pages (a purchase landing between
+  the page reads) counts once.
+- **`FFlockShopProvider::ConsumeOne(ShopItemId)`** (*Flock Consume One*): uses the first unused entry of a shop item the
+  player holds, passing over one used meanwhile on another device and stopping on any other failure, so one call never
+  uses two. The sign-in is taken before the inventory is read.
+- **`FlockPlayerInventoryStatuses`** (`Unused`, `Used`, `Revoked`) and their *Flock Inventory Status* nodes.
+
+### Changed
+
+- **A wallet purchase carries an `idempotency_key`**, one per `Purchase` call and the same on every attempt, so an answer
+  that never came (a timeout, a dropped connection, a 5xx) is sent again under the retry policy and the server answers it
+  with the first purchase. Needs a Flock server from 2026-10-28 on: an older one ignores the key, and a purchase sent
+  again there is charged twice. A refusal for funds or sale after an attempt in doubt is certain (the server checks the
+  key first). `ShopIdempotencyKeyReused`'s fix now says each call makes its own key.
+- **Every call reads the player's token on each attempt**: config, game, player data, shop, leaderboard, notification and
+  asset calls took it once before sending, so the attempt after an expired token was renewed went out with the expired
+  one and failed again.
+- **A player's own data, ban, inventory and consume act for the sign-in they were called under**: a retry after a
+  sign-out or another player's sign-in is never sent as the next player. Template and catalog reads are game-wide and
+  keep retrying.
+- **`Consume` refuses a 2xx that names no entry**, where it read as a use, and records it as unknown.
+- **A player-data read already on its way keeps nothing** once the cached data is dropped or a newer row is applied (a
+  purchase's wallet, a game command's row): it answers its callers, and the next read asks the server. A read that ends
+  late never removes a newer read's place, and one sent under a sign-in that has ended (the same player signing in
+  again) is not joined by a read made after.
+- **A purchase whose outcome is unknown, or one cancelled while it was out, records no Purchased or Failed analytics
+  transaction**, as one naming no purchase already did.
+- **A server row older than the cached one is not kept**: two money answers arriving in the opposite order to the one the
+  server wrote them in left the older wallet cached (their `UpdatedAt` decides now).
+- **A player-data read out when the player provider is torn down still answers its callers**, as a cancel; they were
+  never answered.
+
+## [1.43.0] - 2026-11-05
+
+Store purchases. A game redeems a purchase the player made in the App Store or Google Play, and Flock hands the item over.
+
+### Added
+
+- **`FFlockShopProvider::RedeemStoreReceipt(ShopItemId, Receipt, OnComplete)`** on `POST /v1/shop/validate-receipt`:
+  Flock asks the store about the purchase and hands the item over, completing with the purchase as `Purchase` does and
+  writing the wallet it reports into the cached player data. It acts as the signed-in player: the body names no player,
+  the call fails before sending with nobody signed in, and a retry is never sent once that player signs out or another
+  signs in. Leave the store's purchase unfinished until it succeeds.
+- **`FFlockStoreReceipt`**, made with **`FromAppleAppStore(TransactionId)`** or **`FromGooglePlay(ProductId,
+  PurchaseToken)`**. Each id is sent exactly as given: an empty one, or one with spaces around it, is refused before
+  sending rather than trimmed (white space is Unicode's, the same on every platform), and a receipt whose store is
+  neither is refused rather than read as the other store.
+
+### Changed
+
+- **A redemption is sent again after an answer that never came**, a timeout or a 5xx, the store being unavailable
+  included, under the retry policy: the server makes one purchase per store transaction and answers a repeat with what
+  the first delivered. A wallet purchase still never is.
+- **No call is sent again after a 5xx naming a setting someone has to fix**: the game's payment keys the server
+  cannot read (`PaymentProviderCredentialsUnreadable`), or a Flock server with no address for a payment provider to
+  confirm a payment (`ShopRealCurrencySettlementUnavailable`). It stays the same until the setting is fixed.
+- **An expired token is renewed by the shop, player data, config and game calls**, as by every other call; these four
+  failed with it and left it expired. `Purchase` and `RedeemStoreReceipt` are then sent again with the new token, the
+  server refusing an expired one before it does anything; their other calls send the token they started with, so the
+  renewed token is used from the next call on.
+- **A 2xx with an empty or unreadable body fails `Purchase` and `RedeemStoreReceipt` with the call's own fix**, as an
+  answer naming no purchase does: whether the money moved is unknown.
+- **A 2xx that names no purchase fails `Purchase`**, where it read as a paid purchase, with a fix to read the inventory
+  and wallet before offering the item again; it records no outcome and drops the cached player data, so that read asks
+  the server.
+- **Fixes name the redeem call**: "send the same receipt again later with `RedeemStoreReceipt`", the shop item id
+  sentence, `ShopRealCurrencyNeedsCheckout` (sell the item through a store and redeem it), and the five setup faults a
+  player who paid a store can meet (`ShopCurrencyTemplateNotFound`, `ShopMalformedReward`, `ShopPackGrantsNothing`,
+  `ShopWalletNotFound`, `ShopRewardCurrencyNotHeld`), and the store setup faults (`PaymentProviderCredentialsUnreadable`,
+  `PaymentProviderProviderNotFound`, `PaymentProviderReceiptProductMismatch`): the player has already paid, and the same
+  receipt redeems once the setup is fixed.
+
+### Fixed
+
+- **The analytics Session Platform setting refuses white space at either end the same way on every platform**: a no-break
+  or ideographic space was taken for white space only where the C runtime said so, so the same setting was refused on
+  Windows and sent from another platform.
+
+## [1.42.0] - 2026-11-05
+
+Real-money shop items. A game can tell which shop items cost real money and read each one's product id in each store.
+
+### Added
+
+- **`FFlockShopItem::IsRealMoney`** (*Is Real Money* in Blueprint): true when the item's currency is one the game's
+  currency config lists as real money, so the item is paid for through a store or a web checkout, never from the wallet
+  (`Purchase` refuses it with `ShopRealCurrencyNeedsCheckout`). It is the server's own answer, sent with the catalog by
+  every shop read; a server that does not send it reads false, and the SDK never guesses it from the currency's code.
+- **`FFlockShopItem::StoreProductIds`**: the item's product id in each store, keyed by store name, exactly as set in the
+  Flock dashboard. An item with none reads an empty map, and a store the SDK does not know yet is kept. Look one up with
+  **`FindStoreProductId`** (C++, and the *Find Store Product Id* node), which matches the store's name with its letter
+  case, as a map's own Find does not.
+- **`FlockPaymentProviders`** and **`FlockShopItemTypes`**: the server's names for its stores and payment gateways
+  (`apple_app_store`, `google_play`, `stripe`, `tap`, `moyasar`) and for its item kinds (`standard`, `currency_pack`,
+  `consumable`), as string constants, since the server can add to either; the *Flock Payment Provider* and *Flock Shop
+  Item Type* nodes hand the same values to a graph.
+- **`EFlockErrorCode::MatchmakingSearchInputRequired`** with its fix. Flock's matchmaking can match players by region or
+  skill, and a queue given those rules refuses every search that sends neither, as `FindMatch` does; it read as `Unknown`
+  until now.
+
+### Changed
+
+- **`FFlockShopItem::Price` says its unit**: for a real-money item it is the currency's smallest unit (199 is USD 1.99). A
+  phone shows the player the store's own price for the product.
+- **`MatchmakingPartyTooLarge`'s fix covers a queue's team size**, which Flock's matchmaking also checks a party against.
+- **`FFlockShopItemReward::IsCurrency` (*Is Currency Reward*) reads the kind with its letter case**: a kind spelled
+  `Currency` is not the server's `currency`. The server sends it in lower case, so no reward it sends changes answer.
+
+## [1.41.0] - 2026-11-05
+
+Every payment failure a game can meet has its own error code, a plain cause and a fix, ready for the purchase calls that
+follow.
+
+### Added
+
+- **19 error codes for payments**, each with its fix in the error's hint. Ten for the store and payment providers:
+  `PaymentProviderCheckoutFailed`, `PaymentProviderCredentialsUnreadable`, `PaymentProviderProviderNotFound`,
+  `PaymentProviderProviderNotSupportedHere`, `PaymentProviderReceiptBelongsToAnotherPlayer`,
+  `PaymentProviderReceiptInvalid`, `PaymentProviderReceiptPending`, `PaymentProviderReceiptProductMismatch`,
+  `PaymentProviderStoreCredentialsRejected`, `PaymentProviderStoreUnavailable`. Nine for the shop:
+  `ShopIdempotencyKeyReused`, `ShopInvalidPurchaseStatus`, `ShopItemNotForSale`, `ShopNotARealCurrencyItem`,
+  `ShopPlayerMismatch`, `ShopPlayerRequired`, `ShopPurchaseNotFound`, `ShopRealCurrencySettlementUnavailable`,
+  `ShopWebhookProviderUnknown`. Each read as `Unknown` before.
+- **A code with several causes names each in its hint**, by the words of the server's reason: a receipt the store does
+  not know, the studio's own store keys refused, a store that was busy or down, and a Google payment still waiting are
+  told apart, and a cause that is not final yet says to send the same receipt again later, never that the receipt is bad.
+  An older Flock server sends `PaymentProviderReceiptInvalid` for causes newer ones give codes of their own; its hint
+  still covers them.
+
+### Changed
+
+- **Purchase of an item switched off (Inactive) in the dashboard** is refused with `ShopItemNotForSale` (409), and the
+  shop provider clears its shops and items, in memory and on disk, before the caller is told, so reading the shop again
+  asks the server, which leaves the item out of the shop's items (an item read alone by its id still comes back, its
+  `Status` inactive). Offline, the shop is not shown from the old copy until a read reaches the server again.
+- **`ClearCache` on the shop provider**: a shop read still on its way when it runs answers its caller and keeps nothing,
+  in memory or on disk; it used to put back what it read, answered before the clear.
+- **Purchase refused with `ShopInsufficientFunds` or `ShopCurrencyNotHeld`** drops the cached player data, so the
+  wallet read the fix asks for asks the server instead of answering with the balance the game had cached. A player data
+  read already on its way when the purchase is refused can still put the old balance back.
+- **Purchase given a Player Id other than the signed-in player's** is refused by the server with `ShopPlayerMismatch`
+  (403), and nothing is bought; its hint says to leave Player Id empty. The error is a refusal, not a sign-in problem:
+  the player stays signed in.
+- Three hints cover more causes: `PlayerInventoryInventoryEntryNotFound` (an entry of another player, which the server
+  answers as not found while a player is signed in), and `ShopShopNotFound` and `ShopItemShopNotFound` (a shop switched
+  off in the dashboard, which players are not shown).
+
 ## [1.40.0] - 2026-11-04
 
 The playtest feedback form carries the game's own logos, and Powered by Qwacks at its bottom left.
@@ -36,9 +456,20 @@ The playtest feedback form carries the game's own logos, and Powered by Qwacks a
 
 ### Fixed
 
+- **Flock compiles for Android on UE 5.8.** UE 5.8 changed the key type of a JSON object's members. Eight loops
+  over them named the pair with FString keys, which makes a converted copy. Android's compiler refuses that
+  (`-Wrange-loop-construct`), while the Windows compiler accepts it, so the Windows sweep never saw it. The loops now read each key as
+  `FString(*Pair.Key)`, which compiles on UE 5.4 to 5.8. Found by the first Android build on UE 5.8.
+- **An API URL that is a scheme alone stops initialization and says why.** An address written by hand in a config file
+  without quotes, `ApiUrl=http://127.0.0.1:8001`, reaches the game as `http:`: the engine reads everything from `//` on as
+  a comment. Flock used to initialize on it and fail every call as unable to reach the server, with no word about the
+  address. Initialization now fails with a message that names the address and the quotes it needs. An address without a
+  scheme works as before. Found by the first Android build on UE 5.8.
 - Tests: the two video recording tests that hold the disk (a stalled write, writing falling behind) hand frames over no
   faster than the encoder takes them and hold the write for a measured time, so a busy machine no longer fails them. A
   fixed pace failed one of them on UE 5.8 during a run of every engine's suite.
+- Tests: the direct path test of a player let in again through a new bridge waits for the host's new link, as its other
+  steps wait, rather than reading it the instant the earlier link stops.
 
 ## [1.39.0] - 2026-11-02
 

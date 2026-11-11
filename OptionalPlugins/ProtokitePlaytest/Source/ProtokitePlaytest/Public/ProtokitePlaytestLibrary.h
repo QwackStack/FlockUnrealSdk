@@ -117,8 +117,8 @@ public:
 	// ── Events ──
 
 	/**
-	 * Records one of the game's own events for this playtest, under the playtest category. Build Properties with the Set
-	 * Command nodes. Recorded only while playtesting is ready and the playtest turns heavy analytics on. Returns false,
+	 * Records one of the game's own events for this playtest, under the playtest category. Build Properties with Make Flock
+	 * Event Properties and the Flock Event Property nodes. Recorded only while playtesting is ready and the playtest turns heavy analytics on. Returns false,
 	 * and records nothing, otherwise; for a name the plugin sends itself (performance_window, level_loaded); and when the
 	 * Flock SDK refuses the event (its analytics off, consent withheld, an empty name, or a name over 200 characters).
 	 */
@@ -203,20 +203,23 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (DisplayName = "Find Feedback Form Problems"))
 	static TArray<FProtokitePlaytestFormProblem> FindFeedbackFormProblems(const FProtokitePlaytestFormAnswers& Answers, const FProtokitePlaytestForm& Form);
 
+	// The Set Feedback nodes take the answers so far and return them with one more; the first one's Answers pin is left
+	// unwired and starts from no answers, so a chain needs no variable.
+
 	/** Records a text or text-area answer, and any kind of question this plugin does not know, which the server reads as text. */
-	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (DisplayName = "Set Feedback Text Answer"))
+	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (AutoCreateRefTerm = "Answers", DisplayName = "Set Feedback Text Answer"))
 	static FProtokitePlaytestFormAnswers SetFeedbackTextAnswer(const FProtokitePlaytestFormAnswers& Answers, const FString& FieldId, const FString& Text);
 
 	/** Records a rating, 1 to 5. 0 clears it, which reads as unanswered. */
-	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (DisplayName = "Set Feedback Rating Answer"))
+	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (AutoCreateRefTerm = "Answers", DisplayName = "Set Feedback Rating Answer"))
 	static FProtokitePlaytestFormAnswers SetFeedbackRatingAnswer(const FProtokitePlaytestFormAnswers& Answers, const FString& FieldId, int32 Rating);
 
 	/** Records a checkbox, ticked or not. An unticked box is an answer, not the absence of one. */
-	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (DisplayName = "Set Feedback Checkbox Answer"))
+	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (AutoCreateRefTerm = "Answers", DisplayName = "Set Feedback Checkbox Answer"))
 	static FProtokitePlaytestFormAnswers SetFeedbackCheckboxAnswer(const FProtokitePlaytestFormAnswers& Answers, const FString& FieldId, bool bChecked);
 
 	/** Records the option a player picked for a select question. It must be one of the question's options, letter for letter. */
-	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (DisplayName = "Set Feedback Chosen Option"))
+	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (AutoCreateRefTerm = "Answers", DisplayName = "Set Feedback Chosen Option"))
 	static FProtokitePlaytestFormAnswers SetFeedbackChosenOption(const FProtokitePlaytestFormAnswers& Answers, const FString& FieldId, const FString& Option);
 
 	/** The question kind for a one-line text answer. */

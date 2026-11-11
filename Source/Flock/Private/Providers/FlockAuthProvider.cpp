@@ -1,17 +1,20 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
 #include "Providers/FlockAuthProvider.h"
+#include "Auth/FlockFileTokenStore.h"
 #include "FlockEvents.h"
 #include "GenericPlatform/GenericPlatformProperties.h"
 #include "Http/FlockEndpoints.h"
 
 FFlockAuthProvider::FFlockAuthProvider(const TSharedRef<FFlockHttpClient>& InClient, const FFlockRetryPolicy& InPolicy,
 	const TSharedRef<IFlockLogger>& InLogger, const TSharedRef<FFlockAuthSession>& InSession,
-	const TWeakObjectPtr<UFlockEvents>& InEvents, const FString& InVersionedApiUrl)
+	const TWeakObjectPtr<UFlockEvents>& InEvents, const FString& InVersionedApiUrl,
+	const TSharedPtr<FFlockDeviceIdFile>& InDeviceIdFile)
 	: FFlockProviderBase(InClient, InPolicy, InLogger)
 	, Session(InSession)
 	, Events(InEvents)
 	, VersionedApiUrl(InVersionedApiUrl)
+	, DeviceIdFile(InDeviceIdFile.IsValid() ? InDeviceIdFile.ToSharedRef() : MakeShared<FFlockDeviceIdFile>(FFlockFileTokenStore::DefaultFolder()))
 {
 	SetAuthSession(InSession);
 }
@@ -19,6 +22,18 @@ FFlockAuthProvider::FFlockAuthProvider(const TSharedRef<FFlockHttpClient>& InCli
 FString FFlockAuthProvider::AuthUrl(const FString& Endpoint) const
 {
 	return FString::Printf(TEXT("%s/%s"), *VersionedApiUrl, *Endpoint);
+}
+
+FString FFlockAuthProvider::ThisDeviceId() const
+{
+	const TSharedRef<IFlockLogger> Log = Logger;
+	return DeviceIdFile->Read([Log](const FString& Line) { Log->LogWarning(Line); });
+}
+
+FString FFlockAuthProvider::DeviceIdOrThisDevice(const FString& DeviceId) const
+{
+	// Never trimmed: an id the game passes is the one the server knows.
+	return DeviceId.IsEmpty() ? ThisDeviceId() : DeviceId;
 }
 
 // ── Login ──
@@ -38,7 +53,7 @@ FFlockRequestHandle FFlockAuthProvider::LoginWithDevice(const FString& DeviceId,
 {
 	FFlockPlayerDeviceLoginRequest Request;
 	Request.DeviceType = FPlatformProperties::IniPlatformName();
-	Request.DeviceId = DeviceId;
+	Request.DeviceId = DeviceIdOrThisDevice(DeviceId);
 	return ExecuteAuth(Request, FlockEndpoints::PlayerLoginDevice, TEXT("Device login"), EFlockAuthMethod::Device, MoveTemp(OnComplete));
 }
 
@@ -102,7 +117,7 @@ FFlockRequestHandle FFlockAuthProvider::RegisterWithDevice(const FString& Device
 {
 	FFlockPlayerDeviceRegistrationRequest Request;
 	Request.DeviceType = FPlatformProperties::IniPlatformName();
-	Request.DeviceId = DeviceId;
+	Request.DeviceId = DeviceIdOrThisDevice(DeviceId);
 	Request.Name = Name;
 	return ExecuteRegistration(Request, FlockEndpoints::PlayerRegisterDevice, TEXT("Device registration"),
 		EFlockAuthMethod::Device, MoveTemp(OnComplete));
@@ -414,14 +429,13 @@ FFlockRequestHandle FFlockAuthProvider::LinkEmail(const FString& Email, const FS
 FFlockRequestHandle FFlockAuthProvider::LinkDevice(const FString& DeviceId,
 	TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnComplete)
 {
-	if (!RequireAuthenticated<FFlockPlayerAccountsResponse>(OnComplete)
-		|| !RequireNotEmpty<FFlockPlayerAccountsResponse>(DeviceId, TEXT("DeviceId"), OnComplete))
+	if (!RequireAuthenticated<FFlockPlayerAccountsResponse>(OnComplete))
 	{
 		return FFlockRequestHandle();
 	}
 	FFlockPlayerLinkDeviceRequest Request;
 	Request.DeviceType = FPlatformProperties::IniPlatformName();
-	Request.DeviceId = DeviceId;
+	Request.DeviceId = DeviceIdOrThisDevice(DeviceId);
 	return Link(Request, FlockEndpoints::PlayerLinkDevice, EFlockCredentialProvider::DeviceId,
 		TEXT("Link device"), MoveTemp(OnComplete));
 }

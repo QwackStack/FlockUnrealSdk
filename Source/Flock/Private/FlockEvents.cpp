@@ -151,6 +151,18 @@ void UFlockEvents::InvokeConsentChanged(bool bGranted)
 	OnConsentChanged.Broadcast(bGranted);
 }
 
+void UFlockEvents::InvokeStorePurchaseCompleted(const FFlockShopItem& Item, const FFlockPurchaseResult& PurchaseResult)
+{
+	LogRaise(TEXT("OnStorePurchaseCompleted"), OnStorePurchaseCompleted.GetAllObjects().Num());
+	OnStorePurchaseCompleted.Broadcast(Item, PurchaseResult);
+}
+
+void UFlockEvents::InvokeStorePurchaseNotDelivered(const FFlockUndeliveredPurchase& Purchase)
+{
+	LogRaise(TEXT("OnStorePurchaseNotDelivered"), OnStorePurchaseNotDelivered.GetAllObjects().Num());
+	OnStorePurchaseNotDelivered.Broadcast(Purchase);
+}
+
 void UFlockEvents::LogRaise(const TCHAR* EventName, int32 SubscriberCount) const
 {
 	if (Logger.IsValid())

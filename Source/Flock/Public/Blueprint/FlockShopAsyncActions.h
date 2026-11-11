@@ -9,6 +9,8 @@
 #include "Models/FlockShopModels.h"
 #include "FlockShopAsyncActions.generated.h"
 
+class UFlockSubsystem;
+
 /**
  * Blueprint async nodes for the shop: catalog reads, purchase, and player inventory. Each resolves the
  * SDK from its world context on Activate and fires exactly one pin; when the SDK is unavailable the
@@ -26,6 +28,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockShopItemListPin, const TArray
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPurchaseResultPin, const FFlockPurchaseResult&, PurchaseResult, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockConsumeResultPin, const FFlockConsumeResult&, ConsumeResult, const FFlockError&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPlayerInventoryPagePin, const FFlockPlayerInventoryPage&, Page, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockOwnedItemCountsPin, const FFlockOwnedItemCounts&, Counts, const FFlockError&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockOwnsShopItemPin, bool, bOwns, const FFlockError&, Error);
 
 /** Fetches a page of shops. */
 UCLASS()
@@ -49,8 +53,8 @@ public:
 private:
 	void Complete(const TFlockResult<FFlockShopPage>& Result);
 
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: a node must not keep a level's object (and so its world) alive past a level change; Flock Purchase is kept by the game instance. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 
 	int32 Page = 1;
 	int32 Limit = 100;
@@ -82,8 +86,8 @@ public:
 private:
 	void Complete(const TFlockResult<FFlockShop>& Result);
 
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: a node must not keep a level's object (and so its world) alive past a level change; Flock Purchase is kept by the game instance. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 
 	bool bByName = false;
 	FString ShopIdOrName;
@@ -111,8 +115,8 @@ public:
 private:
 	void Complete(const TFlockResult<FFlockShopItem>& Result);
 
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: a node must not keep a level's object (and so its world) alive past a level change; Flock Purchase is kept by the game instance. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 
 	FString ShopItemId;
 };
@@ -139,15 +143,16 @@ public:
 private:
 	void Complete(const TFlockResult<TArray<FFlockShopItem>>& Result);
 
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: a node must not keep a level's object (and so its world) alive past a level change; Flock Purchase is kept by the game instance. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 
 	FString ShopId;
 	FString PatchId;
 };
 
 /**
- * Buys an item for a player (empty player id = the signed-in player).
+ * Buys an item for a player (empty player id = the signed-in player). Kept by the game instance until its pin fires, so a
+ * purchase that waits (a web checkout's payment, up to an hour) still answers when the Blueprint that called it is gone.
  *
  * The success pin carries the whole purchase result, not just the inventory row: break it for Inventory,
  * Granted and Wallet. An item that grants its contents outright leaves Inventory empty — check its Id
@@ -171,11 +176,14 @@ public:
 
 	virtual void Activate() override;
 
+	/** Runs the node against Flock rather than the one its World Context finds (null runs it as with no Flock). */
+	void ActivateWithFlockForTesting(UFlockSubsystem* Flock);
+
 private:
 	void Complete(const TFlockResult<FFlockPurchaseResult>& Result);
 
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: a node must not keep a level's object (and so its world) alive past a level change; Flock Purchase is kept by the game instance. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 
 	FString ShopItemId;
 	FString PlayerId;
@@ -209,8 +217,8 @@ public:
 private:
 	void Complete(const TFlockResult<FFlockConsumeResult>& Result);
 
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: a node must not keep a level's object (and so its world) alive past a level change; Flock Purchase is kept by the game instance. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 
 	FString InventoryId;
 };
@@ -238,10 +246,99 @@ public:
 private:
 	void Complete(const TFlockResult<FFlockPlayerInventoryPage>& Result);
 
-	UPROPERTY()
-	TObjectPtr<UObject> WorldContextObject;
+	/** Weak: a node must not keep a level's object (and so its world) alive past a level change; Flock Purchase is kept by the game instance. */
+	TWeakObjectPtr<UObject> WorldContextObject;
 
 	FString PlayerId;
 	int32 Page = 1;
 	int32 Limit = 100;
+};
+
+/**
+ * Uses up one unused entry of a shop item the signed-in player holds, granting what it holds. Reads the inventory to find
+ * one; an entry used meanwhile on another device is passed over for the next. The failure pin fires when the player holds
+ * none, when nobody is signed in, or with Outcome Unknown set when no answer said whether it was used.
+ */
+UCLASS()
+class FLOCK_API UFlockConsumeOneAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockConsumeResultPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockConsumeResultPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Consume One"), Category = "Flock|Shop")
+	static UFlockConsumeOneAction* ConsumeOne(UObject* WorldContextObject, const FString& ShopItemId);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockConsumeResult>& Result);
+
+	/** Weak: a node must not keep a level's object (and so its world) alive past a level change; Flock Purchase is kept by the game instance. */
+	TWeakObjectPtr<UObject> WorldContextObject;
+
+	FString ShopItemId;
+};
+
+/**
+ * How many unused entries of each shop item the signed-in player holds, from every page of the inventory. Read it once for
+ * a screen of items and ask Owned Count Of per item.
+ */
+UCLASS()
+class FLOCK_API UFlockGetOwnedItemCountsAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockOwnedItemCountsPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockOwnedItemCountsPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Get Owned Item Counts"), Category = "Flock|Shop")
+	static UFlockGetOwnedItemCountsAction* GetOwnedItemCounts(UObject* WorldContextObject);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<FFlockOwnedItemCounts>& Result);
+
+	/** Weak: a node must not keep a level's object (and so its world) alive past a level change; Flock Purchase is kept by the game instance. */
+	TWeakObjectPtr<UObject> WorldContextObject;
+};
+
+/** Whether the signed-in player holds an unused entry of a shop item. Reads the whole inventory. */
+UCLASS()
+class FLOCK_API UFlockOwnsShopItemAction : public UBlueprintAsyncActionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FFlockOwnsShopItemPin OnSuccess;
+
+	UPROPERTY(BlueprintAssignable)
+	FFlockOwnsShopItemPin OnFailure;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+		DisplayName = "Flock Owns Shop Item"), Category = "Flock|Shop")
+	static UFlockOwnsShopItemAction* OwnsShopItem(UObject* WorldContextObject, const FString& ShopItemId);
+
+	virtual void Activate() override;
+
+private:
+	void Complete(const TFlockResult<bool>& Result);
+
+	/** Weak: a node must not keep a level's object (and so its world) alive past a level change; Flock Purchase is kept by the game instance. */
+	TWeakObjectPtr<UObject> WorldContextObject;
+
+	FString ShopItemId;
 };

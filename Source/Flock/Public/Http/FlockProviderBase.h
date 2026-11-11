@@ -9,6 +9,7 @@
 #include "Http/FlockRetryPolicy.h"
 #include "Http/FlockResult.h"
 #include "Http/FlockError.h"
+#include "Http/FlockErrorHints.h"
 #include "Http/FlockJsonUtils.h"
 #include "Http/FlockSnapshotStore.h"
 #include "FlockLogger.h"
@@ -100,14 +101,109 @@ protected:
 		const FString& Context, bool bIdempotent = true, int32 MaxRetriesOverride = -1, bool bAllowAuthRetry = true,
 		TFunction<bool(const FFlockError&)> IsExpectedFailure = nullptr)
 	{
+		return ExecuteSettling<T>(MoveTemp(Operation), MoveTemp(OnComplete), Context, bIdempotent, MaxRetriesOverride,
+			bAllowAuthRetry, MoveTemp(IsExpectedFailure), nullptr);
+	}
+
+	/** What a call that moves money or items needs beyond Execute: what to forget when its outcome is unsure, and its fix then. */
+	struct FMoneyCall
+	{
+		/** Drops the cached player data, so the next wallet read asks the server. May be null. */
+		TFunction<void()> ForgetPlayersData;
+		/** The fix a failure gets once it is unknown whether the call was done: what to read before doing it again. */
+		FString FixWhenUnknown;
+		/**
+		 * A refusal the server makes only once it found no earlier attempt had done it (the wallet purchase, whose key the
+		 * server looks up before refusing for funds or sale), so an attempt in doubt before it does not make it unknown.
+		 */
+		TFunction<bool(const FFlockError&)> ProvesNoAttemptDidIt;
+	};
+
+	/**
+	 * Execute for a call that moves money or items: a purchase, a redemption, a consume, a fund grant. Once any attempt fails
+	 * leaving it unknown whether it was done (FFlockError::LeavesTheOutcomeUnknown), retries and the replay after a token
+	 * renewal included, the failure the call ends with has bOutcomeUnknown set and the call's FixWhenUnknown, and the cached
+	 * player data is dropped: a 429, a refused renewal or a later refusal does not make "maybe done" read as "not done". A
+	 * cancel after such an attempt, the game's own included, ends with that attempt's failure, marked unknown; a cancel with
+	 * none in doubt stays Cancelled and still drops the cached player data, since the request may have gone out. Settled
+	 * before the failure is logged, so the log carries the fix.
+	 */
+	template <typename T>
+	FFlockRequestHandle ExecuteMoneyCall(FFlockRetryHandler::FOperation<T> Operation, TFunction<void(TFlockResult<T>)> OnComplete,
+		const FString& Context, bool bIdempotent, FMoneyCall Rules, TFunction<bool(const FFlockError&)> IsExpectedFailure = nullptr)
+	{
+		// The first attempt that failed with its outcome unknown, for the whole call.
+		const TSharedRef<TOptional<FFlockError>> InDoubt = MakeShared<TOptional<FFlockError>>();
+		FFlockRetryHandler::FOperation<T> Watched =
+			[InDoubt, Operation = MoveTemp(Operation)](TFunction<void(TFlockResult<T>)> OnAttempt) -> FFlockRequestHandle
+			{
+				return Operation([InDoubt, OnAttempt = MoveTemp(OnAttempt)](TFlockResult<T> Result)
+				{
+					if (!Result.bSuccess && !InDoubt->IsSet() && FFlockError::LeavesTheOutcomeUnknown(Result.Error))
+					{
+						*InDoubt = Result.Error;
+					}
+					OnAttempt(MoveTemp(Result));
+				});
+			};
+		TFunction<void(FFlockError&)> Settle = [InDoubt, Rules = MoveTemp(Rules)](FFlockError& Error)
+		{
+			if (Error.Type == EFlockErrorType::Cancelled)
+			{
+				if (!InDoubt->IsSet())
+				{
+					// It may have gone out before the cancel, so the cached wallet is no longer known to be the server's.
+					if (Rules.ForgetPlayersData)
+					{
+						Rules.ForgetPlayersData();
+					}
+					return;
+				}
+				// "Cancelled" must never read as "nothing bought" once an attempt may have done it.
+				Error = InDoubt->GetValue();
+			}
+			const bool bProvedNotDone = Rules.ProvesNoAttemptDidIt && Rules.ProvesNoAttemptDidIt(Error);
+			if (!FFlockError::LeavesTheOutcomeUnknown(Error) && (!InDoubt->IsSet() || bProvedNotDone))
+			{
+				return;
+			}
+			Error.bOutcomeUnknown = true;
+			if (!Rules.FixWhenUnknown.IsEmpty())
+			{
+				// A refusal that named its cause keeps that fix after the call's own: both are true.
+				const FString CodeFix = FFlockErrorHints::For(Error.ErrorCode);
+				Error.Hint = CodeFix.IsEmpty() ? Rules.FixWhenUnknown : Rules.FixWhenUnknown + TEXT(" ") + CodeFix;
+			}
+			if (Rules.ForgetPlayersData)
+			{
+				Rules.ForgetPlayersData();
+			}
+		};
+		return ExecuteSettling<T>(MoveTemp(Watched), MoveTemp(OnComplete), Context, bIdempotent, -1, true, MoveTemp(IsExpectedFailure),
+			MoveTemp(Settle));
+	}
+
+private:
+	/** Execute, with SettleFailure run on the failure the call ends with before it is logged and handed over. */
+	template <typename T>
+	FFlockRequestHandle ExecuteSettling(FFlockRetryHandler::FOperation<T> Operation, TFunction<void(TFlockResult<T>)> OnComplete,
+		const FString& Context, bool bIdempotent, int32 MaxRetriesOverride, bool bAllowAuthRetry,
+		TFunction<bool(const FFlockError&)> IsExpectedFailure, TFunction<void(FFlockError&)> SettleFailure)
+	{
 		const TSharedRef<IFlockLogger> Log = Logger;
 		// Resolved now, at dispatch, so the completion still reports the origin that made the call.
 		const FString LoggedContext = DecorateContext(Context);
+		// Read at dispatch too: the refusal the caller asked for on purpose (the setup check's made-up receipt) is no failure.
+		const FString ExpectedCode = FFlockExpectedAnswer::Get();
 		TFunction<void(TFlockResult<T>)> Finish =
-			[Log, Context, LoggedContext, OnComplete, IsExpectedFailure](TFlockResult<T> Result)
+			[Log, Context, LoggedContext, OnComplete, IsExpectedFailure, SettleFailure, ExpectedCode](TFlockResult<T> Result)
 		{
 			if (!Result.bSuccess)
 			{
+				if (SettleFailure)
+				{
+					SettleFailure(Result.Error);
+				}
 				// The label each call site already declares, so a failure names the call that produced
 				// it. Stamped here rather than per provider: every call funnels through this one place.
 				Result.Error.Operation = Context;
@@ -117,7 +213,8 @@ protected:
 				// A cancel is the game's or the SDK's own choice (a handle cancelled, a sign-in ended), so it is no failure either.
 				// What went wrong and how to fix it, as the developer reads it everywhere else.
 				const FString Line = FString::Printf(TEXT("%s failed: %s"), *LoggedContext, *Result.Error.ReasonAndFix());
-				if (Result.Error.Type == EFlockErrorType::Cancelled || (IsExpectedFailure && IsExpectedFailure(Result.Error)))
+				if (Result.Error.Type == EFlockErrorType::Cancelled || (IsExpectedFailure && IsExpectedFailure(Result.Error))
+					|| (!ExpectedCode.IsEmpty() && Result.Error.Code.Equals(ExpectedCode, ESearchCase::CaseSensitive)))
 				{
 					Log->LogDebug(Line);
 				}
@@ -183,6 +280,7 @@ protected:
 		return FFlockRequestHandle(CallToken);
 	}
 
+protected:
 	/**
 	 * For a call that acts as the signed-in player through their token: every attempt, retries and the replay after a
 	 * token refresh included, goes out only while the sign-in current now lasts, and fails Cancelled once it has ended,
@@ -429,6 +527,29 @@ struct FLOCK_API FFlockCallOriginScope
 
 	FFlockCallOriginScope(const FFlockCallOriginScope&) = delete;
 	FFlockCallOriginScope& operator=(const FFlockCallOriginScope&) = delete;
+
+	FString Previous;
+};
+
+/**
+ * Marks the calls dispatched while it is open as asking for a refusal with this server code (FFlockExpectedAnswer), then
+ * restores the previous one. Only the store setup check opens one, around its made-up receipt.
+ */
+struct FLOCK_API FFlockExpectedAnswerScope
+{
+	explicit FFlockExpectedAnswerScope(const FString& Code)
+		: Previous(FFlockExpectedAnswer::Get())
+	{
+		FFlockExpectedAnswer::Set(Code);
+	}
+
+	~FFlockExpectedAnswerScope()
+	{
+		FFlockExpectedAnswer::Set(Previous);
+	}
+
+	FFlockExpectedAnswerScope(const FFlockExpectedAnswerScope&) = delete;
+	FFlockExpectedAnswerScope& operator=(const FFlockExpectedAnswerScope&) = delete;
 
 	FString Previous;
 };

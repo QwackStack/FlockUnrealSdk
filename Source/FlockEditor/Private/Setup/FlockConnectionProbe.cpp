@@ -4,6 +4,7 @@
 #include "Version/FlockVersionLookup.h"
 #include "Version/FlockVersionResolver.h"
 #include "Models/FlockGameModels.h"
+#include "Models/FlockShopModels.h"
 #include "Http/FlockHttpClient.h"
 #include "Http/FlockResult.h"
 #include "Config/FlockConfig.h"
@@ -38,6 +39,53 @@ EFlockProbeState FFlockConnectionProbe::Classify(const FFlockError& Error)
 	return EFlockProbeState::Failed;
 }
 
+bool FFlockConnectionProbe::SellsRealMoney(const TArray<FFlockShop>& Shops)
+{
+	for (const FFlockShop& Shop : Shops)
+	{
+		for (const FFlockShopItem& Item : Shop.ShopItems)
+		{
+			if (Item.IsRealMoney)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+namespace
+{
+	constexpr int32 ShopPageSize = 100;
+
+	/** Step 3: reads the shops a page at a time until a real-money item or the last page; unset when a page failed. */
+	void ReadShopsFrom(const TSharedRef<FFlockHttpClient>& Client, const FString& ApiUrl, const TMap<FString, FString>& Headers, int32 Page,
+		TFunction<void(TOptional<bool>)> OnDone)
+	{
+		const FString Url = FFlockVersionResolver::VersionedUrl(ApiUrl, FString::Printf(TEXT("shop?page=%d&limit=%d"), Page, ShopPageSize));
+		Client->GetPaged<FFlockShop>(Url, Headers,
+			[Client, ApiUrl, Headers, Page, OnDone](TFlockResult<TFlockPage<FFlockShop>> Result)
+			{
+				if (!Result.bSuccess)
+				{
+					OnDone(TOptional<bool>());
+					return;
+				}
+				if (FFlockConnectionProbe::SellsRealMoney(Result.Value.Items))
+				{
+					OnDone(true);
+					return;
+				}
+				if (Result.Value.Items.Num() == 0 || Page * ShopPageSize >= Result.Value.Total)
+				{
+					OnDone(false);
+					return;
+				}
+				ReadShopsFrom(Client, ApiUrl, Headers, Page + 1, OnDone);
+			});
+	}
+}
+
 void FFlockConnectionProbe::Run(const FString& ApiUrl, const FString& ApiKey, const FString& GameVersion,
 	FFlockProbeComplete OnComplete)
 {
@@ -70,7 +118,7 @@ void FFlockConnectionProbe::Run(const FString& ApiUrl, const FString& ApiKey, co
 
 			const FString ResolvedId = Resolve.GameVersionId;
 			Client->Get<FFlockGameSchema>(Url, Headers,
-				[OnComplete, ResolvedId](TFlockResult<FFlockGameSchema> Game)
+				[OnComplete, ResolvedId, Client, ApiUrl, Headers](TFlockResult<FFlockGameSchema> Game)
 				{
 					FFlockProbeResult Result;
 					Result.GameVersionId = ResolvedId;
@@ -84,7 +132,11 @@ void FFlockConnectionProbe::Run(const FString& ApiUrl, const FString& ApiKey, co
 						Result.ServerGameName = Game.Value.Name;
 					}
 
-					OnComplete.ExecuteIfBound(Result);
+					ReadShopsFrom(Client, ApiUrl, Headers, 1, [OnComplete, Result](TOptional<bool> SellsRealMoney) mutable
+					{
+						Result.SellsRealMoney = SellsRealMoney;
+						OnComplete.ExecuteIfBound(Result);
+					});
 				});
 		}));
 }

@@ -148,11 +148,88 @@ jobs:
           fi
           echo "No shipped file names another engine's SDK."
 
+      - name: Every settings path a developer reads is the one the editor shows
+        run: |
+          set -euo pipefail
+
+          # The editor lists Flock's settings under Project Settings > Plugins > Flock SDK Settings; a message that
+          # says "Project Settings > Flock SDK" sends a developer to a page that does not exist (42 did, 2026-11-11).
+          # Each match is checked, in either arrow, after joining a C++ string split across literals.
+          python3 - <<'SCRIPT'
+          import re, subprocess, sys
+          files = subprocess.run(['git', 'ls-files', '--', 'Source', 'OptionalPlugins', 'Documentation', 'README.md'],
+                                 capture_output=True, text=True).stdout.split()
+          wrong = re.compile(r'Project Settings\**\s*(?:>|->|\u2192)\s*\**\s*Flock')
+          hits = []
+          for path in files:
+              if not path.endswith(('.cpp', '.h', '.md', '.ini', '.cs')):
+                  continue
+              text = open(path, encoding='utf-8', errors='replace').read()
+              joined = re.sub(r'"\s*\n\s*(?:TEXT\()?"', '', text) if path.endswith(('.cpp', '.h')) else text
+              for match in wrong.finditer(joined):
+                  hits.append(f"{path}: ...{joined[max(match.start() - 30, 0):match.end() + 30]}...".replace('\n', ' '))
+          if hits:
+              print("\n".join(hits))
+              print("::error::Write the settings path as the editor shows it: Project Settings > Plugins > Flock SDK Settings.")
+              sys.exit(1)
+          print("Every settings path names Project Settings > Plugins > Flock SDK Settings.")
+          SCRIPT
+
+      - name: A loop over a JSON object's members compiles for Android and Apple on UE 5.8
+        run: |
+          set -euo pipefail
+
+          # UE 5.8 interns a JSON member's key, so a loop that names the pair with an FString key makes a converted
+          # copy: MSVC accepts it, clang (Android, iOS, Mac) refuses it under -Wrange-loop-construct, and no Windows
+          # build or test sees it. Nine loops shipped that way (2026-11-04, 2026-11-11). Write `const auto&` and read
+          # the key as FString(*Pair.Key) (Misc/FlockEngineCompat.h).
+          hits=$(git ls-files -z -- Source OptionalPlugins \
+            | xargs -0 grep -n -I -E '(TPair|TTuple)<\s*FString\s*,\s*TSharedPtr<\s*FJsonValue' \
+            | grep -v 'FlockEngineCompat.h' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Name a JSON object's member pair 'const auto&' and read its key as FString(*Pair.Key): UE 5.8's clang builds refuse an FString pair."
+            exit 1
+          fi
+          echo "Every loop over a JSON object's members names its pair auto."
+
   blueprint-nodes:
-    # Three rules about Blueprint nodes that no compiler checks. Reads text files only, so it needs no engine.
+    # Rules about Blueprint nodes that no compiler checks. Reads text files only, so it needs no engine.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: A node that adds to what it is handed can start a chain with its input unwired
+        run: |
+          set -euo pipefail
+
+          # Set Command Int, Set Feedback Rating Answer and their kind take the bag so far and return it with one more.
+          # Without AutoCreateRefTerm on that input, the first node of a chain will not compile until something is
+          # wired into it, so a game needs a variable it has no other use for. A term naming no parameter compiles
+          # silently and does nothing, so every term is checked too.
+          python3 - <<'SCRIPT'
+          import re, subprocess, sys
+          files = subprocess.run(['git', 'ls-files', '--', 'Source/*.h', 'OptionalPlugins/*.h'], capture_output=True, text=True).stdout.split()
+          problems = []
+          for path in files:
+              text = open(path, encoding='utf-8').read()
+              for m in re.finditer(r'UFUNCTION\(((?:[^()]|\([^()]*\))*)\)\s*static\s+([\w<>:]+)\s+(\w+)\s*\(([^;]*?)\)\s*;', text, re.S):
+                  meta, returned, name, params = m.groups()
+                  names = re.findall(r'(\w+)\s*(?:=[^,]*)?(?:,|$)', params.strip())
+                  auto = re.search(r'AutoCreateRefTerm\s*=\s*"([^"]*)"', meta)
+                  terms = [term.strip() for term in auto.group(1).split(',')] if auto else []
+                  for term in terms:
+                      if term not in names:
+                          problems.append(f"{path}: {name}: AutoCreateRefTerm names '{term}', which is not one of its parameters")
+                  first = re.search(r'const\s+(F\w+)\s*&\s*(\w+)', params)
+                  if returned.startswith('F') and first and first.group(1) == returned and first.group(2) not in terms:
+                      problems.append(f"{path}: {name}: add AutoCreateRefTerm = \"{first.group(2)}\", so a chain can start from it")
+          if problems:
+              print("\n".join(problems))
+              print("::error::A builder node's first input must be allowed unwired, and every AutoCreateRefTerm term must name a parameter.")
+              sys.exit(1)
+          print("Every node that adds to what it is handed can start a chain, and every AutoCreateRefTerm term names a parameter.")
+          SCRIPT
 
       - name: A node the game instance keeps holds its world context weakly
         run: |
@@ -475,7 +552,7 @@ jobs:
           echo "VersionName $VERSION is ahead of main's $BASE_VERSION."
 
           # Version, the integer the engine compares to tell an update from an older build, moves forward with it.
-          # The playtest plugin's must equal Flock's (playtest-plugin.yml), so checking Flock's covers both.
+          # Each optional plugin's must equal Flock's (playtest-plugin.yml), so checking Flock's covers them all.
           NUMBER=$(grep -oE '"Version": *[0-9]+' "$MANIFEST" | grep -oE '[0-9]+$' || true)
           BASE_NUMBER=$(git show "${BASE_SHA}:${MANIFEST}" | grep -oE '"Version": *[0-9]+' | grep -oE '[0-9]+$' || true)
           if [ -z "$NUMBER" ] || [ -z "$BASE_NUMBER" ] || [ "$NUMBER" -le "$BASE_NUMBER" ]; then

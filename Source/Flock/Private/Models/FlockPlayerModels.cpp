@@ -47,7 +47,8 @@ bool FFlockPlayerData::FromWireObject(const TSharedRef<FJsonObject>& Object, FFl
 	Object->TryGetStringField(TEXT("created_at"), OutStruct.CreatedAt);
 	Object->TryGetStringField(TEXT("updated_at"), OutStruct.UpdatedAt);
 
-	OutStruct.Data = FFlockStructuredData::FromWireData(Object->TryGetField(TEXT("data")));
+	// The server's own node too: the wallet's currency codes are the server's names, which the flattening recases.
+	OutStruct.Data = FFlockStructuredData::FromWireData(Object->TryGetField(TEXT("data")), /*bKeepWireNode*/ true);
 
 	OutStruct.LeaderboardRefusals.Reset();
 	const TArray<TSharedPtr<FJsonValue>>* Refusals = nullptr;
@@ -99,13 +100,13 @@ bool FFlockPlayerBan::FromWireObject(const TSharedRef<FJsonObject>& Object, FFlo
 	const TSharedPtr<FJsonObject>* DataObject = nullptr;
 	if (Object->TryGetObjectField(TEXT("data"), DataObject) && DataObject != nullptr)
 	{
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*DataObject)->Values)
+		for (const auto& Pair : (*DataObject)->Values)
 		{
 			// Feature keys are author data — kept verbatim (never case-transformed). Guard the type before
 			// AsObject(): a non-object would otherwise deserialize as a valid-but-empty entry.
 			if (Pair.Value.IsValid() && Pair.Value->Type == EJson::Object)
 			{
-				OutStruct.Data.Add(Pair.Key, FFlockFeatureBan::FromWire(Pair.Value->AsObject()));
+				OutStruct.Data.Add(FString(*Pair.Key), FFlockFeatureBan::FromWire(Pair.Value->AsObject()));
 			}
 		}
 	}

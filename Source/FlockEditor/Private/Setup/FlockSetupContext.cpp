@@ -6,6 +6,8 @@
 #include "Codegen/FlockCodegenPaths.h"
 #include "Config/FlockConfig.h"
 #include "FlockSubsystem.h"
+#include "Setup/FlockEnginePurchaseNodes.h"
+#include "Store/FlockStore.h"
 #include "Misc/App.h"
 
 namespace
@@ -50,6 +52,13 @@ FFlockSetupInput FFlockSetupContext::BuildInput()
 	if (const UFlockEditorUserSettings* UserSettings = UFlockEditorUserSettings::Get())
 	{
 		Input.LastSeenSdkVersion = UserSettings->LastSeenSdkVersion;
+	}
+
+	Input.bStoreLibraryRegistered = UFlockStore::HasStoreLibrary();
+	Input.bGameSellsRealMoney = GLastProbe.SellsRealMoney.Get(false);
+	if (Input.bStoreLibraryRegistered && Input.bGameSellsRealMoney)
+	{
+		Input.BlueprintsUsingEnginePurchaseNodes = FFlockEnginePurchaseNodes::FindBlueprintsUsingThem();
 	}
 
 	return Input;

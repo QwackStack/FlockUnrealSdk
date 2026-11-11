@@ -2,6 +2,8 @@
 
 #include "Blueprint/FlockShopAsyncActions.h"
 #include "Blueprint/FlockBlueprintCallOrigin.h"
+#include "Blueprint/FlockBlueprintNodeLife.h"
+#include "Blueprint/FlockBlueprintShop.h"
 #include "Http/FlockErrorHints.h"
 
 #include "FlockSubsystem.h"
@@ -11,14 +13,7 @@ namespace
 {
 	FFlockShopProvider* ResolveShop(UObject* WorldContextObject, FFlockError& OutError)
 	{
-		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
-		FFlockShopProvider* Provider = Sdk ? Sdk->GetShopProvider() : nullptr;
-		if (!Provider)
-		{
-			OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
-				TEXT("Flock shop is not available: Flock is not initialized"), FFlockErrorHints::InitializeFlockFirst());
-		}
-		return Provider;
+		return FlockBlueprintShop::ShopOf(UFlockSubsystem::Get(WorldContextObject), OutError);
 	}
 }
 
@@ -36,7 +31,7 @@ UFlockGetAllShopsAction* UFlockGetAllShopsAction::GetAllShops(UObject* WorldCont
 void UFlockGetAllShopsAction::Activate()
 {
 	FFlockError Error;
-	FFlockShopProvider* Provider = ResolveShop(WorldContextObject, Error);
+	FFlockShopProvider* Provider = ResolveShop(WorldContextObject.Get(), Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockShopPage>::Fail(Error));
@@ -44,7 +39,7 @@ void UFlockGetAllShopsAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetAllShopsAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	Provider->GetAll(Page, Limit, [WeakThis](TFlockResult<FFlockShopPage> Result)
 	{
 		if (UFlockGetAllShopsAction* Self = WeakThis.Get())
@@ -90,7 +85,7 @@ UFlockGetShopAction* UFlockGetShopAction::GetShopByName(UObject* WorldContextObj
 void UFlockGetShopAction::Activate()
 {
 	FFlockError Error;
-	FFlockShopProvider* Provider = ResolveShop(WorldContextObject, Error);
+	FFlockShopProvider* Provider = ResolveShop(WorldContextObject.Get(), Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockShop>::Fail(Error));
@@ -98,7 +93,7 @@ void UFlockGetShopAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetShopAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	auto OnDone = [WeakThis](TFlockResult<FFlockShop> Result)
 	{
 		if (UFlockGetShopAction* Self = WeakThis.Get())
@@ -143,7 +138,7 @@ UFlockGetShopItemAction* UFlockGetShopItemAction::GetShopItem(UObject* WorldCont
 void UFlockGetShopItemAction::Activate()
 {
 	FFlockError Error;
-	FFlockShopProvider* Provider = ResolveShop(WorldContextObject, Error);
+	FFlockShopProvider* Provider = ResolveShop(WorldContextObject.Get(), Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockShopItem>::Fail(Error));
@@ -151,7 +146,7 @@ void UFlockGetShopItemAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetShopItemAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	Provider->GetItem(ShopItemId, [WeakThis](TFlockResult<FFlockShopItem> Result)
 	{
 		if (UFlockGetShopItemAction* Self = WeakThis.Get())
@@ -189,7 +184,7 @@ UFlockGetShopItemsAction* UFlockGetShopItemsAction::GetShopItems(UObject* WorldC
 void UFlockGetShopItemsAction::Activate()
 {
 	FFlockError Error;
-	FFlockShopProvider* Provider = ResolveShop(WorldContextObject, Error);
+	FFlockShopProvider* Provider = ResolveShop(WorldContextObject.Get(), Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<TArray<FFlockShopItem>>::Fail(Error));
@@ -197,7 +192,7 @@ void UFlockGetShopItemsAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetShopItemsAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	Provider->GetItemsByShop(ShopId, PatchId, [WeakThis](TFlockResult<TArray<FFlockShopItem>> Result)
 	{
 		if (UFlockGetShopItemsAction* Self = WeakThis.Get())
@@ -234,8 +229,15 @@ UFlockPurchaseAction* UFlockPurchaseAction::Purchase(UObject* WorldContextObject
 
 void UFlockPurchaseAction::Activate()
 {
+	ActivateWithFlockForTesting(UFlockSubsystem::Get(WorldContextObject.Get()));
+}
+
+void UFlockPurchaseAction::ActivateWithFlockForTesting(UFlockSubsystem* Flock)
+{
+	// Kept by the game instance until its pin fires (Complete lets it go).
+	RegisterWithGameInstance(FlockBlueprintNodeLife::GameInstanceOf(WorldContextObject.Get()));
 	FFlockError Error;
-	FFlockShopProvider* Provider = ResolveShop(WorldContextObject, Error);
+	FFlockShopProvider* Provider = FlockBlueprintShop::ShopOf(Flock, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPurchaseResult>::Fail(Error));
@@ -243,7 +245,7 @@ void UFlockPurchaseAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockPurchaseAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	Provider->Purchase(ShopItemId, PlayerId, [WeakThis](TFlockResult<FFlockPurchaseResult> Result)
 	{
 		if (UFlockPurchaseAction* Self = WeakThis.Get())
@@ -280,7 +282,7 @@ UFlockConsumeInventoryAction* UFlockConsumeInventoryAction::ConsumeInventoryItem
 void UFlockConsumeInventoryAction::Activate()
 {
 	FFlockError Error;
-	FFlockShopProvider* Provider = ResolveShop(WorldContextObject, Error);
+	FFlockShopProvider* Provider = ResolveShop(WorldContextObject.Get(), Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockConsumeResult>::Fail(Error));
@@ -288,7 +290,7 @@ void UFlockConsumeInventoryAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockConsumeInventoryAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	Provider->Consume(InventoryId, [WeakThis](TFlockResult<FFlockConsumeResult> Result)
 	{
 		if (UFlockConsumeInventoryAction* Self = WeakThis.Get())
@@ -327,7 +329,7 @@ UFlockGetPlayerInventoryAction* UFlockGetPlayerInventoryAction::GetPlayerInvento
 void UFlockGetPlayerInventoryAction::Activate()
 {
 	FFlockError Error;
-	FFlockShopProvider* Provider = ResolveShop(WorldContextObject, Error);
+	FFlockShopProvider* Provider = ResolveShop(WorldContextObject.Get(), Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerInventoryPage>::Fail(Error));
@@ -335,7 +337,7 @@ void UFlockGetPlayerInventoryAction::Activate()
 	}
 
 	TWeakObjectPtr<UFlockGetPlayerInventoryAction> WeakThis(this);
-	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject));
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
 	Provider->GetPlayerInventory(PlayerId, Page, Limit, [WeakThis](TFlockResult<FFlockPlayerInventoryPage> Result)
 	{
 		if (UFlockGetPlayerInventoryAction* Self = WeakThis.Get())
@@ -354,6 +356,137 @@ void UFlockGetPlayerInventoryAction::Complete(const TFlockResult<FFlockPlayerInv
 	else
 	{
 		OnFailure.Broadcast(FFlockPlayerInventoryPage(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
+// ────────────────────────────── Consume One ──────────────────────────────
+
+UFlockConsumeOneAction* UFlockConsumeOneAction::ConsumeOne(UObject* WorldContextObject, const FString& ShopItemId)
+{
+	UFlockConsumeOneAction* Action = NewObject<UFlockConsumeOneAction>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->ShopItemId = ShopItemId;
+	return Action;
+}
+
+void UFlockConsumeOneAction::Activate()
+{
+	FFlockError Error;
+	FFlockShopProvider* Provider = ResolveShop(WorldContextObject.Get(), Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockConsumeResult>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockConsumeOneAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
+	Provider->ConsumeOne(ShopItemId, [WeakThis](TFlockResult<FFlockConsumeResult> Result)
+	{
+		if (UFlockConsumeOneAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockConsumeOneAction::Complete(const TFlockResult<FFlockConsumeResult>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(FFlockConsumeResult(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
+// ────────────────────────────── Get Owned Item Counts ──────────────────────────────
+
+UFlockGetOwnedItemCountsAction* UFlockGetOwnedItemCountsAction::GetOwnedItemCounts(UObject* WorldContextObject)
+{
+	UFlockGetOwnedItemCountsAction* Action = NewObject<UFlockGetOwnedItemCountsAction>();
+	Action->WorldContextObject = WorldContextObject;
+	return Action;
+}
+
+void UFlockGetOwnedItemCountsAction::Activate()
+{
+	FFlockError Error;
+	FFlockShopProvider* Provider = ResolveShop(WorldContextObject.Get(), Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<FFlockOwnedItemCounts>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockGetOwnedItemCountsAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
+	Provider->GetOwnedItemCounts([WeakThis](TFlockResult<FFlockOwnedItemCounts> Result)
+	{
+		if (UFlockGetOwnedItemCountsAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockGetOwnedItemCountsAction::Complete(const TFlockResult<FFlockOwnedItemCounts>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(FFlockOwnedItemCounts(), Result.Error);
+	}
+	SetReadyToDestroy();
+}
+
+// ────────────────────────────── Owns Shop Item ──────────────────────────────
+
+UFlockOwnsShopItemAction* UFlockOwnsShopItemAction::OwnsShopItem(UObject* WorldContextObject, const FString& ShopItemId)
+{
+	UFlockOwnsShopItemAction* Action = NewObject<UFlockOwnsShopItemAction>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->ShopItemId = ShopItemId;
+	return Action;
+}
+
+void UFlockOwnsShopItemAction::Activate()
+{
+	FFlockError Error;
+	FFlockShopProvider* Provider = ResolveShop(WorldContextObject.Get(), Error);
+	if (!Provider)
+	{
+		Complete(TFlockResult<bool>::Fail(Error));
+		return;
+	}
+
+	TWeakObjectPtr<UFlockOwnsShopItemAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
+	Provider->Owns(ShopItemId, [WeakThis](TFlockResult<bool> Result)
+	{
+		if (UFlockOwnsShopItemAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockOwnsShopItemAction::Complete(const TFlockResult<bool>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, FFlockError());
+	}
+	else
+	{
+		OnFailure.Broadcast(false, Result.Error);
 	}
 	SetReadyToDestroy();
 }

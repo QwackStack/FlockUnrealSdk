@@ -13,6 +13,7 @@
 #include "Models/FlockGameModels.h"
 #include "FlockLogger.h"
 #include "Tests/Support/FlockFakeTransport.h"
+#include "Tests/Support/FlockTestRefusals.h"
 
 namespace
 {
@@ -25,7 +26,7 @@ namespace
 		const TCHAR* Body;
 	};
 
-	// Bodies as the backend sends them: 21 copied from live answers, the other 8 from the spec's examples or the backend's own messages.
+	// Bodies as the backend sends them: 21 copied from live answers, the other 10 from the spec's examples or the backend's own messages.
 	const FMultiplayerRefusal MultiplayerRefusals[] = {
 		{ 409, EFlockErrorType::Network, TEXT("matchmaking.already_queued"), EFlockErrorCode::MatchmakingAlreadyQueued,
 			TEXT(R"BODY({"detail":{"code":"matchmaking.already_queued","message":"Player 01M46J2QM0KSQ1X3QNF03RRT6V is already queued for this game"}})BODY") },
@@ -35,10 +36,14 @@ namespace
 			TEXT(R"BODY({"detail":{"code":"matchmaking.not_party_leader","message":"Only the party leader can queue the party"}})BODY") },
 		{ 400, EFlockErrorType::Validation, TEXT("matchmaking.party_too_large"), EFlockErrorCode::MatchmakingPartyTooLarge,
 			TEXT(R"BODY({"detail":{"code":"matchmaking.party_too_large","message":"The party has more players than the queue allows"}})BODY") },
+		{ 400, EFlockErrorType::Validation, TEXT("matchmaking.party_too_large"), EFlockErrorCode::MatchmakingPartyTooLarge,
+			TEXT(R"BODY({"detail":{"code":"matchmaking.party_too_large","message":"This party has 3 players but a team in this queue holds at most 2"}})BODY") },
 		{ 403, EFlockErrorType::Auth, TEXT("matchmaking.player_not_eligible"), EFlockErrorCode::MatchmakingPlayerNotEligible,
 			TEXT(R"BODY({"detail":{"code":"matchmaking.player_not_eligible","message":"A player is not eligible for this queue"}})BODY") },
 		{ 404, EFlockErrorType::Network, TEXT("matchmaking.queue_not_found"), EFlockErrorCode::MatchmakingQueueNotFound,
 			TEXT(R"BODY({"detail":{"code":"matchmaking.queue_not_found","message":"Matchmaking queue not found"}})BODY") },
+		{ 400, EFlockErrorType::Validation, TEXT("matchmaking.search_input_required"), EFlockErrorCode::MatchmakingSearchInputRequired,
+			TEXT(R"BODY({"detail":{"code":"matchmaking.search_input_required","message":"This queue matches by skill and player 01M46J2QM0KSQ1X3QNF03RRT6V sent no skill"}})BODY") },
 		{ 409, EFlockErrorType::Network, TEXT("matchmaking.ticket_not_cancelable"), EFlockErrorCode::MatchmakingTicketNotCancelable,
 			TEXT(R"BODY({"detail":{"code":"matchmaking.ticket_not_cancelable","message":"This ticket is no longer queued"}})BODY") },
 		{ 404, EFlockErrorType::Network, TEXT("matchmaking.ticket_not_found"), EFlockErrorCode::MatchmakingTicketNotFound,
@@ -99,29 +104,14 @@ bool FFlockMultiplayerRefusalsParseTest::RunTest(const FString& Parameters)
 	const TSharedRef<FFlockFakeTransport> Fake = MakeShared<FFlockFakeTransport>();
 	const TSharedRef<FFlockHttpClient> Client = MakeShared<FFlockHttpClient>(Fake, MakeShared<FFlockNullLogger>());
 
-	TestEqual(TEXT("one row for each of the 29 multiplayer codes"), static_cast<int32>(UE_ARRAY_COUNT(MultiplayerRefusals)), 29);
+	TestEqual(TEXT("one row for each of the 30 multiplayer codes, and a second for a party too large for a team"),
+		static_cast<int32>(UE_ARRAY_COUNT(MultiplayerRefusals)), 31);
 
 	for (const FMultiplayerRefusal& Refusal : MultiplayerRefusals)
 	{
-		Fake->On(TEXT("refusal"), FFlockFakeTransport::Status(Refusal.Status, Refusal.Body));
-		bool bAnswered = false;
-		FFlockError Error;
-		Client->Get<FFlockGameVersionSchema>(TEXT("http://x/refusal"), {},
-			[&bAnswered, &Error](TFlockResult<FFlockGameVersionSchema> Result) { bAnswered = true; Error = Result.Error; });
-
-		if (!TestTrue(FString::Printf(TEXT("%s answered"), Refusal.Code), bAnswered))
-		{
-			continue;
-		}
-		TestEqualSensitive(FString::Printf(TEXT("%s: raw code kept"), Refusal.Code), Error.Code, FString(Refusal.Code));
-		TestEqual(FString::Printf(TEXT("%s: its own member"), Refusal.Code),
-			static_cast<int32>(Error.ErrorCode), static_cast<int32>(Refusal.Member));
-		TestEqual(FString::Printf(TEXT("%s: status kept"), Refusal.Code), Error.StatusCode, Refusal.Status);
-		TestEqual(FString::Printf(TEXT("%s: error type for its status"), Refusal.Code),
-			static_cast<int32>(Error.Type), static_cast<int32>(Refusal.Type));
-		TestFalse(FString::Printf(TEXT("%s: the server's reason survives"), Refusal.Code), Error.ServerMessage.IsEmpty());
-		TestFalse(FString::Printf(TEXT("%s: carries a hint"), Refusal.Code), Error.Hint.IsEmpty());
-		TestEqualSensitive(FString::Printf(TEXT("%s: the hint is its code's"), Refusal.Code), Error.Hint, FFlockErrorHints::For(Refusal.Member));
+		FlockTestRefusals::CheckRefusal(*this, *Fake, *Client, Refusal.Code, Refusal.Status, Refusal.Type, Refusal.Member, Refusal.Body);
+		TestTrue(FString::Printf(TEXT("%s: the row's code is its body's"), Refusal.Code),
+			FlockTestRefusals::CodeIn(Refusal.Body).Equals(Refusal.Code, ESearchCase::CaseSensitive));
 	}
 	return true;
 }
@@ -161,6 +151,24 @@ bool FFlockMultiplayerPermissionHintsTest::RunTest(const FString& Parameters)
 	}
 
 	TestTrue(TEXT("the refusal table has 403 rows to check"), Checked > 0);
+	return true;
+}
+
+// A queue's rules are switched in the Flock dashboard under these labels (its English translations, read 2026-11-05), so a
+// fix that names them lets the studio find the switch. A party too large is too large for the whole queue or for one team.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockMatchmakingFixesNameTheQueueSettingsTest, "Flock.Http.ErrorHints.MatchmakingFixesNameTheQueueSettings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockMatchmakingFixesNameTheQueueSettingsTest::RunTest(const FString& Parameters)
+{
+	const FString TooLarge = FFlockErrorHints::For(EFlockErrorCode::MatchmakingPartyTooLarge);
+	TestTrue(TEXT("a party too large names the queue's Max Players"), TooLarge.Contains(TEXT("\"Max Players\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and its Players per team"), TooLarge.Contains(TEXT("\"Players per team\""), ESearchCase::CaseSensitive));
+
+	const FString InputRequired = FFlockErrorHints::For(EFlockErrorCode::MatchmakingSearchInputRequired);
+	TestTrue(TEXT("a search without region or skill names Same region only"), InputRequired.Contains(TEXT("\"Same region only\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and Similar skill only"), InputRequired.Contains(TEXT("\"Similar skill only\""), ESearchCase::CaseSensitive));
+	TestTrue(TEXT("and says FindMatch sends neither"), InputRequired.Contains(TEXT("FindMatch sends neither"), ESearchCase::CaseSensitive));
 	return true;
 }
 

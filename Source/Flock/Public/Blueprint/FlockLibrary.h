@@ -159,6 +159,14 @@ public:
 		DisplayName = "Flock Is Restoring Session"))
 	static bool IsRestoringSession(const UObject* WorldContextObject);
 
+	/**
+	 * This install's device id, made once by the SDK and kept in its saved files, so the same player comes back on every launch.
+	 * The device login, register and link nodes use it when their Device Id is left empty. Empty before initialization.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock|Auth", meta = (WorldContext = "WorldContextObject",
+		DisplayName = "Flock Get This Device Id"))
+	static FString GetThisDeviceId(const UObject* WorldContextObject);
+
 	/** Logs the current player out locally; safe when signed out. */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Auth", meta = (WorldContext = "WorldContextObject",
 		DisplayName = "Flock Logout"))

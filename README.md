@@ -2,8 +2,10 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.40.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8;
-> see [Status](#status) for the few surfaces that are C++-only.
+> **1.48.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8 and a C++ compiler: the plugin
+> ships as source, so a Blueprint-only project is converted once into a C++ project (see
+> [Blueprint-only projects](#blueprint-only-projects)). Your game itself needs no C++: every feature has Blueprint nodes,
+> apart from the few calls listed under [Status](#status).
 
 ## Contents
 
@@ -49,20 +51,25 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
 - **Typed errors** — every failure is an `FFlockError` with a typed `EFlockErrorType`, the server's
   `EFlockErrorCode`, and the server's human-readable message (`ServerMessage`) — Blueprint-ready,
   with `UFlockErrorLibrary` exposing display text and coded-error group checks to Blueprint.
-- **SDK events** — a single hub (`GetEvents()`) for lifecycle, auth, session, and consent events,
-  Blueprint-assignable, with auto-init-safe `CallOrRegister` entry points for the init events.
-- **Authentication** — email/device/Google/Apple/Steam login and registration, encrypted token
-  persistence, automatic session restore, silent token refresh, and the account flows.
+- **SDK events** — a single hub (`GetEvents()`) for lifecycle, auth, session, notification, consent and
+  real-money purchase events, Blueprint-assignable, with auto-init-safe `CallOrRegister` entry points for
+  the init events.
+- **Authentication** — email/device/Google/Apple/Steam login and registration, a device id the SDK makes once
+  and keeps, encrypted token persistence, automatic session restore, silent token refresh, and the account flows.
 - **Analytics** — a diagnostic log API, session tracking, automatic exception capture, an offline
   queue that survives crashes, consent gating, and next-launch crash reporting.
 - **Game config** — fetch configs and patches (by id, by name, by tag, by version tag) and resolve a
-  config's effective values (patch for this game version, else its base data). Read values in Blueprint
+  config's effective values (patch for this game version, else its base data; with a player signed in, a gameplay or
+  feature config's values as the server resolves them for that player). Read values in Blueprint
   with typed accessors by dotted path, or bind them to your `USTRUCT` in C++. Plus the game record and
   version info.
 - **Shop** — browse shops and items (all shops, by id or name, a single item, a shop's items), buy an
-  item for a player, and read a player's inventory. Catalog reads are cached and snapshot-backed; a
-  purchase is money-safe (never retried on an ambiguous failure, never queued) and reports the
-  transaction for revenue metrics; inventory is always fetched fresh.
+  item for a player, read a player's inventory, count what they own, check one item, and use one up. Each item says
+  whether it costs real money and gives its product id in each store, and a purchase the player made in the App Store or
+  Google Play is redeemed for the item it bought. Catalog reads are cached and snapshot-backed; a purchase is money-safe
+  (sent again only under its one key, so never bought twice; never queued; an answer that never came reads as "may have
+  been bought") and reports the transaction for revenue metrics (a store purchase's revenue is recorded by the server);
+  inventory is always fetched fresh.
 - **Player data & templates** — read a player's saved data (by row id, a page of rows, or the signed-in
   player's row for a template by the template's id or tag), browse the player templates that define those
   records, and check a player's ban status. A player's rows are paginated once and cached; templates are
@@ -106,9 +113,10 @@ The Flock Unreal SDK provides access to Flock's game backend services from Unrea
   notification, and asset-list reads are cached to disk, scoped to the game version, and served when the
   network is down; toggleable in settings.
 - **Pluggable logger** — route SDK breadcrumbs and errors into your own telemetry or on-screen debugger.
-- **Blueprint-friendly** — every provider call is a self-contained async node, and the fire-and-forget
-  calls plus auth/session state are one-node too (no "Get Flock Subsystem" needed). Events, error types,
-  and structured data all read from Blueprint.
+- **Blueprint-friendly** — nearly every provider call is a self-contained async node (the few C++-only
+  ones are listed under [Status](#status)), and the fire-and-forget calls plus auth/session state are
+  one-node too (no "Get Flock Subsystem" needed). Events, error types, and structured data all read from
+  Blueprint.
 
 ## Installation
 
@@ -124,14 +132,19 @@ Get the plugin into your project one of two ways:
 Then, either way:
 
 1. Right-click your `.uproject` → **Generate Visual Studio project files**.
-2. Rebuild the project. The plugin's `Flock` runtime and `FlockEditor` editor modules compile with it.
-3. The plugin is enabled by default — verify under **Edit → Plugins → Online Platform → Flock SDK**.
+2. Rebuild the project. The plugin's three modules compile with it: `Flock` (runtime, the whole SDK),
+   `FlockPlatformStore` (runtime, real-money purchases through the platform's store) and `FlockEditor`
+   (editor only, the setup panel and code generation).
+3. The plugin is enabled by default — verify under **Edit → Plugins → Online Platform → Flock SDK**. It
+   turns on two engine plugins it needs: **OnlineSubsystem** (for the platform's store) and
+   **DataValidation** (for its editor checks).
 
 Each release is built from the tagged source, so it contains no compiled binaries: you build it once with
 your project, against your engine version and toolchain.
 
 **Calling Flock from C++.** Add `"Flock"` to your game module's `Build.cs`; `PrivateDependencyModuleNames` is
-enough, and a Blueprint-only project needs nothing. That covers every call a game makes, the typed reads
+enough. A game written only in Blueprint needs no `Build.cs` line, though a Blueprint-only project still has to be
+converted once (below). That covers every call a game makes, the typed reads
 `GetDataAs<T>` and `GetAs<T>` included. Only a module that builds its own requests on Flock's HTTP layer (a
 subclass of `FFlockProviderBase`, or `FFlockHttpClient`'s request templates) also adds `"Json"` and
 `"JsonUtilities"`.
@@ -139,22 +152,25 @@ subclass of `FFlockProviderBase`, or `FFlockHttpClient`'s request templates) als
 **Optional: Protokite Playtest (beta).** Releases also carry `ProtokitePlaytest-<version>.zip`, a separate plugin for
 Protokite playtests. Extract it next to the Flock SDK, so that `Plugins/ProtokitePlaytest/` sits beside
 `Plugins/FlockUnrealSdk/`, then enable it under **Edit → Plugins**. It stays off until **Enable Playtesting** is
-turned on in *Project Settings > Plugins > Protokite Playtest Settings*. If you cloned the repository, copy or link
+turned on in **Project Settings → Plugins → Protokite Playtest Settings**. If you cloned the repository, copy or link
 `Plugins/FlockUnrealSdk/OptionalPlugins/ProtokitePlaytest/` to `Plugins/ProtokitePlaytest/`: Unreal does not load it
 where it sits. Leave it out of projects that are not running playtests. [Playtesting with Protokite](Documentation/playtesting.md)
 walks through the rest, from pointing the build at a playtest to a session on Protokite's Sessions page.
 
+Real-money purchases through Google Play (UE 5.8 or later) and the App Store, and through a web checkout on Windows, Mac and
+Linux, need nothing more to install: they are part of Flock. [Real-money purchases](Documentation/real-money-purchases.md) covers the project settings and `UFlockStore`.
+
 To see what a playtest recording looks like before any playtest exists, tick **Record Video In Play In Editor** in
-*Project Settings > Plugins > Protokite Playtest Local Settings* and press Play, or type `ProtokitePlaytest.RecordTestVideo 30`
+**Project Settings → Plugins → Protokite Playtest Local Settings** and press Play, or type `ProtokitePlaytest.RecordTestVideo 30`
 in the console of a Development build. The video is saved under `Saved/ProtokitePlaytest/Recordings/TestVideos/`, and the
-log names the file, which is a WebM video a browser plays. Video is recorded on 64-bit Windows, with the **Video Recording** settings in *Protokite
-Playtest Settings*. Recordings are kept inside **Recordings Disk Budget**, and the oldest test videos make room first.
+log names the file, which is a WebM video a browser plays. Video is recorded on 64-bit Windows, with the **Video Recording** settings in **Protokite
+Playtest Settings**. Recordings are kept inside **Recordings Disk Budget**, and the oldest test videos make room first.
 
 ### Blueprint-only projects
 
-Flock is a **code plugin**: it ships C++ source and no binaries, so something has to compile it. A
-Blueprint-only project has no `Source/` folder and nothing to compile it *with*, so adding Flock makes
-your project a C++ project.
+**Yes, a Blueprint-only project must be converted once, and no, you never write C++.** Flock is a **code plugin**: it
+ships C++ source and no binaries, so something has to compile it. A Blueprint-only project has no `Source/` folder and
+nothing to compile it *with*, so adding Flock makes your project a C++ project.
 
 You never have to write any C++ — your game stays entirely in Blueprint, and the conversion itself is a
 couple of clicks. What it does change is that the project needs a compiler from then on, which is worth
@@ -240,10 +256,14 @@ Everything below can be done from that panel, or directly in
 **Project Settings → Plugins → Flock SDK Settings**. Required values:
 
 - **API URL** — Flock API endpoint (default: `https://api-flock.qwacks.com`)
-- **API Key** — your Flock API key
-- **Game Name** — your game's name from the Flock dashboard
-- **Game Version** — your game version name; the matching ID is resolved at edit time and baked in, so
-  init makes no network call
+- **API Key** — your game's API key, from the Flock dashboard
+- **Game Name** — your game's name, as the Flock dashboard shows it
+- **Game Version** — the name of one of your game's versions in the Flock dashboard; the matching ID is resolved at edit
+  time and baked in, so init makes no network call
+
+All three come from the Flock dashboard, where you create the game: open the game there and copy its API Key, its name and
+a Game Version's name. The Unreal page of the Flock documentation, <https://docs.qwacks.com/sdk/unreal>, links to the
+dashboard.
 
 Values are written to your project's `DefaultGame.ini`.
 
@@ -326,22 +346,34 @@ parse, but only a device build shows a banner arriving.
 
 ### Automatic (default)
 
-With the settings above filled in, **Auto-Initialize On Load** is on by default, so `UFlockSubsystem`
+With the settings above filled in, **Auto Initialize on Load** is on by default, so `UFlockSubsystem`
 initializes itself when the game starts. Nothing to call — just use the subsystem when you need it.
 
+To react to initialization (optional), in an actor whose header declares
+`UFUNCTION() void HandleFlockReady();`:
+
 ```cpp
-// React to init (optional). Auto-init completes before BeginPlay, so use CallOrRegister —
-// it fires immediately if the SDK is already initialized, otherwise when init succeeds:
-if (UFlockSubsystem* Flock = UFlockSubsystem::Get(this))
+#include "FlockEvents.h"
+#include "FlockSubsystem.h"
+
+void AMyActor::BeginPlay()
 {
-    FFlockInitializedCallback OnReady;
-    OnReady.BindDynamic(this, &AMyActor::HandleFlockReady); // HandleFlockReady must be a UFUNCTION()
-    Flock->GetEvents()->CallOrRegister_OnInitialized(OnReady);
+    Super::BeginPlay();
+
+    // Auto-init completes before BeginPlay, so use CallOrRegister: it runs the callback at once when the
+    // SDK is already initialized, otherwise when initialization succeeds.
+    if (UFlockSubsystem* Flock = UFlockSubsystem::Get(this))
+    {
+        FFlockInitializedCallback OnReady;
+        OnReady.BindDynamic(this, &AMyActor::HandleFlockReady);
+        Flock->GetEvents()->CallOrRegister_OnInitialized(OnReady);
+    }
 }
 ```
 
-To drive init yourself — e.g. to defer past a splash screen or EULA — turn **Auto-Initialize On Load**
-off (Flock SDK Settings → Initialization) and call one of the manual entry points below.
+To drive init yourself — to start it after a splash screen or a license agreement, for example — turn **Auto Initialize
+on Load** off (**Project Settings → Plugins → Flock SDK Settings**, its **Initialization** section) and call one of
+the manual entry points below.
 
 > **Init is fail-safe.** A bad config or an unresolved Game Version leaves the SDK uninitialized and
 > logs the reason (it never crashes startup). Guard with `IsInitialized()`, read
@@ -349,13 +381,15 @@ off (Flock SDK Settings → Initialization) and call one of the manual entry poi
 
 ### Manual
 
+From any actor (or from your game instance, with `GetSubsystem<UFlockSubsystem>()` directly):
+
 ```cpp
 UFlockSubsystem* Flock = GetGameInstance()->GetSubsystem<UFlockSubsystem>();
 
 // From project settings:
 Flock->InitializeFromSettings();
 
-// ...or from an explicit config (e.g. tests / custom startup):
+// ...or from a config you fill in (for tests, or a startup of your own):
 FFlockInitConfig Config;
 Config.ApiUrl = TEXT("https://api-flock.qwacks.com");
 Config.ApiKey = TEXT("...");
@@ -370,35 +404,129 @@ Flock->InitializeWithConfig(Config);
 The shortest path from zero to reading data — the SDK initializes itself, so sign a player in and read
 something back. Every feature follows the same shape; see the [Feature guides](#feature-guides).
 
-**C++**
+A device needs an account before it can log in: on the first launch, logging in alone fails with
+`player.invalid_login_credentials`. So the quick start registers the device first. Registering a new
+device signs the player in; registering one that already has an account is a success that says so
+(`bAlreadyRegistered`), and then the player logs in.
+
+Sign in only when nobody is signed in. A saved sign-in is restored while the game starts, before any `BeginPlay`, so a
+returning player often is signed in already, and a second sign-in ends the session the first one started.
+
+The device id is left empty, so the SDK uses its own: a GUID it makes once and keeps in `Saved/Flock/device_id.txt`
+(`ThisDeviceId`; see [Device ids](Documentation/authentication.md#device-ids) for when to pass an id of your own).
+
+**C++** — add `"Flock"` to your module's `Build.cs` (see [Installation](#installation)), then, in an actor placed in your
+level whose header declares `virtual void BeginPlay() override;`:
 
 ```cpp
-// 1. With Auto-Initialize On Load on (the default), the SDK is already running by BeginPlay.
-UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+#include "FlockSubsystem.h"
 
-// 2. Sign the player in.
-Sdk->GetAuthProvider()->LoginWithDevice(DeviceId,
-    [Sdk](TFlockResult<FFlockPlayerLoginResponse> Login)
+// What this quick start does once a player is signed in: read the game's record and print its name.
+void PrintFlockGameName(UFlockSubsystem* Flock)
+{
+    Flock->GetGameProvider()->GetGame([](TFlockResult<FFlockGameSchema> Game)
     {
-        if (!Login.bSuccess) { return; }
-
-        // 3. Read something back.
-        Sdk->GetGameProvider()->GetGame(
-            [](TFlockResult<FFlockGameSchema> Game)
-            {
-                UE_LOG(LogTemp, Log, TEXT("Playing %s"), *Game.Value.Name);
-            });
+        if (Game.bSuccess)
+        {
+            UE_LOG(LogTemp, Log, TEXT("Playing %s"), *Game.Value.Name);
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("%s"), *Game.Error.ToDisplayText());
+        }
     });
+}
+
+void AMyActor::BeginPlay()
+{
+    Super::BeginPlay();
+
+    // 1. With Auto Initialize on Load on (the default), the SDK is already running by BeginPlay.
+    UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+    if (!Sdk || !Sdk->IsInitialized())
+    {
+        return;
+    }
+
+    // 2. Signed in already (a saved sign-in, restored while the game started)? Then sign in no more.
+    if (Sdk->IsAuthenticated())
+    {
+        PrintFlockGameName(Sdk);
+        return;
+    }
+
+    // 3. Register this device (an empty id: the SDK's own). On the first launch that creates the player and signs them in.
+    const TWeakObjectPtr<UFlockSubsystem> WeakSdk(Sdk);
+    Sdk->GetAuthProvider()->RegisterWithDevice(FString(), FString(),
+        [WeakSdk](TFlockResult<FFlockRegisterResult> Registered)
+        {
+            UFlockSubsystem* Flock = WeakSdk.Get();
+            if (!Flock || !Flock->IsInitialized())
+            {
+                return;
+            }
+            if (!Registered.bSuccess)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("%s"), *Registered.Error.ToDisplayText());
+                return;
+            }
+            if (!Registered.Value.bAlreadyRegistered)
+            {
+                PrintFlockGameName(Flock);   // 5. a new player, signed in by registering
+                return;
+            }
+            // 4. A later launch finds this device registered (a success, with bAlreadyRegistered set): log in to it.
+            Flock->GetAuthProvider()->LoginWithDevice(FString(),
+                [WeakSdk](TFlockResult<FFlockPlayerLoginResponse> Login)
+                {
+                    UFlockSubsystem* SignedIn = WeakSdk.Get();
+                    if (!Login.bSuccess)
+                    {
+                        UE_LOG(LogTemp, Warning, TEXT("%s"), *Login.Error.ToDisplayText());
+                    }
+                    else if (SignedIn && SignedIn->IsInitialized())
+                    {
+                        PrintFlockGameName(SignedIn);   // 5. read something back
+                    }
+                });
+        });
+}
 ```
 
-**Blueprint** — drop `Flock Login With Device` into a graph and wire its success pin to `Flock Get Game`.
-Neither node needs a Target pin; both resolve the SDK from the graph they are in.
+The callbacks hold the subsystem weakly (`TWeakObjectPtr`), never `this` or a raw pointer: an answer can
+arrive after the level or the SDK is gone.
 
-![A BeginPlay event running into Flock Login With Device, whose On Success pin runs into Flock Get Game](Documentation/images/quickstart-graph.png)
+**What success looks like:** press Play, and the Output Log (**Window → Output Log**) shows `LogTemp: Playing` followed by
+your game's name. A failure shows the error and its `Fix:` line as a `LogTemp` warning.
+
+**Blueprint** — no C++ to write. Put the nodes in your level's Level Blueprint (the **Blueprints** button in the level
+editor's toolbar → **Open Level Blueprint**), or in any actor placed in the level. In the order they run:
+
+1. On **Event BeginPlay**, call a custom event, *Sign In With This Device*.
+2. *Sign In With This Device* starts with a Branch on **Flock Is Authenticated**. On True a player is signed in already:
+   there is nothing to do.
+3. On False, run **Flock Register With Device** with its *Device Id* left empty: the SDK uses this install's own id, made
+   once and kept ([Device ids](Documentation/authentication.md#device-ids)). A new device is registered **and signed in** in
+   one step.
+4. A device that already has an account also arrives on **On Success**, with **Already Registered** set and nobody signed
+   in yet: break the result, branch on it, and run **Flock Login With Device**, its *Device Id* empty too, only on True.
+   Wiring On Success straight into Login signs the player in twice.
+5. From each **On Failure**, print the *Error* through **To String (Flock Error)**.
+
+No node needs a Target pin; each resolves the SDK from the graph it is in. Once signed in, any other node works, for
+example `Flock Get Game`.
+
+![A custom event Sign In With This Device, with a Device Id input, runs a Branch on Flock Is Authenticated: True prints Already signed in; False runs Flock Register With Device, whose On Success breaks the result and branches on Already Registered: True runs Flock Login With Device and prints Signed in, False prints Registered and signed in; both On Failure pins print the error through To String (Flock Error)](Documentation/images/auth-register-then-login.png)
+
+**What success looks like:** press Play, and the Print String nodes write *Registered and signed in* (the first launch),
+*Signed in* (a later launch) or *Already signed in* (a saved sign-in) on the screen, and on a `LogBlueprintUserMessages`
+line in the Output Log. A failure prints the error and its `Fix:` line.
+
+[Authentication](Documentation/authentication.md#blueprint) walks through the same flow step by step.
 
 ## Accessing the SDK
 
-**C++:**
+**C++** (with `"Flock"` in your module's `Build.cs`):
 
 ```cpp
 #include "FlockSubsystem.h"
@@ -407,13 +535,13 @@ if (UFlockSubsystem* Flock = UFlockSubsystem::Get(WorldContextObject))
 {
     if (Flock->IsInitialized())
     {
-        const FString VersionedUrl = Flock->GetVersionedApiUrl(); // e.g. https://.../v1
+        const FString VersionedUrl = Flock->GetVersionedApiUrl(); // such as https://.../v1
     }
 }
 ```
 
-`UFlockSubsystem::Get(WorldContext)` is a convenience wrapper over
-`GetGameInstance()->GetSubsystem<UFlockSubsystem>()`; either works.
+`WorldContextObject` is any object in a game world: an actor, a component, a widget. `UFlockSubsystem::Get`
+is a convenience wrapper over `GetGameInstance()->GetSubsystem<UFlockSubsystem>()`; either works.
 
 **Blueprint: you usually don't need to get the subsystem at all.** Every node resolves the SDK from the
 graph it's called in, so a call is one node with no Target pin to wire:
@@ -440,9 +568,9 @@ so you can read only the half you work in.
 |-------|--------|
 | [Authentication](Documentation/authentication.md) | Login/register for every provider, logout, token refresh and revocation, password reset, email verification, account linking |
 | [Game config & metadata](Documentation/game-config.md) | Resolving effective values, configs and patches, feature flags, game/version records |
-| [Player data & templates](Documentation/player-data.md) | Reads by id/template/tag, templates, pagination, bans |
+| [Player data & templates](Documentation/player-data.md) | Reads by id/template/tag, the wallet by currency code, templates, pagination, bans |
 | [Game commands](Documentation/game-commands.md) | Updating a row, achievements, funds, the offline queue and its money-safety rules |
-| [Shop](Documentation/shop.md) | Shops and items, purchase and its money-safety contract, player inventory |
+| [Shop](Documentation/shop.md) | Shops and items, real-money items and their store product ids, redeeming a store purchase, purchase and its money-safety contract, player inventory, owned counts and consume one |
 | [Assets](Documentation/assets.md) | Listing and resolving assets, the four download flavours, preloading, the binary cache |
 | [Leaderboards](Documentation/leaderboards.md) | Boards by name, standings, a player's own rank, windows and score formatting, why there is no submit call |
 | [Notifications](Documentation/notifications.md) | The inbox, scheduled reminders, the template catalog, push device tokens and what push delivery needs |
@@ -451,8 +579,9 @@ so you can read only the half you work in.
 | [Code generation](Documentation/codegen.md) | Sync Schemas, generated structs/enums/one-node macros, the C++ target, Clean |
 | [Analytics](Documentation/analytics.md) | Sessions, screen views, gameplay events, transactions, consent — what players did (Dashboards → Game Metrics) |
 | [Diagnostics](Documentation/diagnostics.md) | Log entries, automatic exception and Blueprint exception capture, crash reporting — what went wrong (Diagnostics → Errors / Events) |
+| [Real-money purchases](Documentation/real-money-purchases.md) | Google Play and App Store setup, `UFlockStore` (connect, buy, pending payments, restore, prices, the setup check), what is delivered when, and the limits |
 | [Playtesting with Protokite](Documentation/playtesting.md) | The optional Protokite Playtest plugin: setup, the session per launch, video, heavy analytics, exceptions, the feedback form, its logos and its Blueprint nodes, what to tell players |
-| [SDK events](Documentation/events.md) | The event hub — lifecycle, auth, and session events |
+| [SDK events](Documentation/events.md) | The event hub — lifecycle, auth, session, notification, consent and real-money purchase events, and when to bind each |
 | [Errors](Documentation/errors.md) | What an `FFlockError` carries, branching on codes, the hint that names the fix, field-error validation failures |
 | [Logging & debugging](Documentation/logging.md) | The SDK's own log output, the network call trace, the self-test |
 | [Architecture](Documentation/architecture.md) | How the SDK is layered and why, the module split, the folder map, and the rules that hold across every feature |
@@ -460,17 +589,22 @@ so you can read only the half you work in.
 ## Error handling
 
 Every call answers with a `TFlockResult<T>` rather than throwing — Unreal builds with exceptions off.
-Check `bSuccess`, then read `Value` or `Error`:
+Check `bSuccess`, then read `Value` or `Error`. Here `gem_pack_small` is an example item id, read from its shop (an id is
+not the item's name):
 
 ```cpp
-if (!Result.bSuccess && Result.Error.ErrorCode == EFlockErrorCode::ShopInsufficientFunds)
+UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+Sdk->GetShopProvider()->Purchase(TEXT("gem_pack_small"), [](TFlockResult<FFlockPurchaseResult> Result)
 {
-    // The server declined — not enough funds.
-}
+    if (!Result.bSuccess && Result.Error.ErrorCode == EFlockErrorCode::ShopInsufficientFunds)
+    {
+        // The server declined: not enough funds.
+    }
+});
 ```
 
 `FFlockError` carries a typed `EFlockErrorType` (Auth, Validation, Network, Connection, Timeout,
-Serialization, Cancelled), the server's `EFlockErrorCode`, and the server's own human-readable
+Serialization, Cancelled, Store), the server's `EFlockErrorCode`, and the server's own human-readable
 `ServerMessage`. `UFlockErrorLibrary` exposes display text and coded-error group checks to Blueprint, so
 a graph can branch on a failure without matching strings.
 
@@ -486,9 +620,10 @@ Full details in the [errors guide](Documentation/errors.md).
 
 ## Offline caching
 
-Successful config, game, shop-catalog, and player-template reads are snapshotted to disk, scoped to the
-game version, and served when the server is unreachable. There are no TTLs — an entry lives until a fresh
-success replaces it. Toggle it with **Enable Offline Cache** in settings.
+Successful config, game, shop-catalog, player-template, leaderboard, notification, and asset-list reads are
+snapshotted to disk, scoped to the game version, and served when the server is unreachable. There are no
+TTLs — an entry lives until a fresh success replaces it. Toggle it with **Enable Offline Cache**
+(**Project Settings → Plugins → Flock SDK Settings**, its **Offline Cache** section).
 
 The server is tried first, with one exception: once a request has failed because the server could not be
 reached at all, the SDK serves cached reads directly for a short window instead of waiting out calls that
@@ -501,8 +636,8 @@ server-side at any moment. Player data rows are cached per player and dropped on
 
 ## Testing
 
-Automation tests live beside each feature: the SDK's under the `Flock.` prefix, and the optional playtest plugin's
-under `Protokite.`. Run them from **Tools → Session Frontend → Automation** (filter `Flock.`, or `Protokite.` for the
+Automation tests live beside each feature: the SDK's under the `Flock.` prefix (the store module's under
+`Flock.PlatformStore.`), and the optional playtest plugin's under `Protokite.`. Run them from **Tools → Session Frontend → Automation** (filter `Flock.`, or `Protokite.` for the
 playtest plugin), or headless:
 
 ```
@@ -511,70 +646,52 @@ UnrealEditor-Cmd.exe <YourProject>.uproject -ExecCmds="Automation RunTests Flock
 
 ## Status
 
-**The full feature set ships in 1.0.0**: the boot/init foundation, the HTTP transport, automatic version
-baking, the SDK event hub, player authentication, analytics, game config (with the offline snapshot
-cache), the shop (catalog, purchase, inventory), player data & templates (with bans), game commands (with
-the offline queue), assets (metadata, streamed downloads, and a binary cache), typed code generation for
-Blueprint or C++, and the editor setup panel with its live Play-In-Editor view. **1.2.0 adds
-leaderboards** — boards by name, standings, and a player's own placement. **1.3.0 adds notifications** —
-the per-player inbox, server-side scheduled reminders, the template catalog, and push device-token
-registration. **1.4.0 adds account linking** — attaching and detaching credentials on a signed-in player.
-**1.6.0 completes the notification surface**: an unread-count and a notification-received event on the
-event hub, and the pending-schedule list (`Get Pending Schedules`, `Cancel All Scheduled`) that lets a
-game see and clear the reminders it created. **1.6.1 is a correctness release** — leaderboard standings,
-rank and around-me now address the board by name, which is the only form the API serves; see the
-[CHANGELOG](CHANGELOG.md) for that and two data-durability fixes. **1.7.0 adds shop rewards**: items that grant
-currency or other rewards when bought, a call to consume an owned item, and reading a player's scheduled
-notifications back from the server. A purchase now completes with the rewards granted and the updated wallet
-alongside the inventory row, which changes its result type. **1.8.0 makes failures name the fix**: every error
-carries the call that failed and a next step, and a request the server rejects for a bad field names that field.
-**1.9.0 keeps a player's queued offline writes** when a build ships with a new Game Version. **1.10.0 adds
-gameplay events** (`Flock Track Event`) and captures Blueprint script errors such as Accessed None
-automatically, counting repeats of the same error instead of sending each one. **1.11.0 adds Protokite Playtest**,
-an optional plugin for Protokite playtests, in beta and shipped as its own download: its settings, and a status
-that says whether playtest work may run. **1.12.0 has it fetch the build's playtest from Protokite**, with the
-playtest's feature switches and feedback form, and say why when it cannot. **1.13.0 starts one Protokite session
-per launch**, named after the launch's first Flock session and sent with the player's Steam id or a device id, and
-ends it when the game shuts down; it also adds `OnSessionRegistered` and the **Session Platform** setting to the
-Flock SDK. **1.14.0 sends heavy analytics** when a playtest turns it on: a performance window for every ten seconds
-of play, each level load, and the game's own playtest events, all through the Flock SDK's analytics. **1.15.0 records
-the game's screen** when a playtest turns video recording on, saving VP9 video on disk on 64-bit Windows, and lets a
-developer try it in Play In Editor or with the `ProtokitePlaytest.RecordTestVideo` console command. **1.16.0 keeps a
-playtest recording that was not uploaded** for a later launch, with the session it belongs to, finishes a recording cut
-off when its game ended, and keeps recordings inside a disk budget. **1.17.0 uploads playtest recordings** to the
-session they belong to, and pushes what earlier launches left. **1.18.0 adds the playtest's feedback form**, built from
-the questions the playtest publishes, with a button to upload the recording from it. **1.19.0 adds Blueprint nodes for
-the whole playtest**, including a form of your own, setup findings when Play starts, a warning for a Shipping build
-carrying a playtest, and reports a crash once rather than three times. **1.26.0 adds parties**, the first multiplayer
-feature: create, join by invite code, get the player's party back after a restart, and the leader's calls, with events
-when the party changes. **1.27.0 adds sessions**: host, join by code, my session after a restart, the host's calls,
-join tokens, and heartbeats that keep the seat and keep the session current. **1.29.0 adds matchmaking**: search a queue by
-its name alone or as a party, every member's game told when the party's search starts and ends, and a match handing over
-the session it seats the player in. **1.30.0 connects the players**: Travel To Session opens the host's level listening
-and publishes how to reach it, and takes every other player there, to the host's LAN address when both share a public
-address; a connection of the game's own (Steam, EOS) is published and read back the same way. **1.31.0 checks who joins**:
-the host's game mode calls Flock's check from `PreLoginAsync`, which lets in only players whose Flock join token checks out,
-one connection a player, and says which Flock player each connection is; a player turned away learns why. **1.32.0 brings
-multiplayer to Blueprint**: a node for every party, session and matchmaking call and for Travel To Session, a node for every
-value a result carries, and ready-made game modes (`AFlockGameModeBase`, `AFlockGameMode`) that let in only the session's
-players, with the game's own check overridable in Blueprint. **1.33.0 builds Flock's relay client into the SDK**, and
-**1.34.0 connects players through it**: Travel To Session takes a player who cannot reach the host directly through Flock's
-relay (`Relay`: When Needed by default, Always or Never), the engine's own networking carrying it, and keeps a fresh join
-token on hand for a player a host's level change brings back. **1.35.0 makes a host change one call**: on On Host Changed (or
-On Relay Lost, raised when this device's relay stops working) the game calls Travel To Session again, which does this device's
-part from wherever the game is, a newer travel taking over one under way. **1.36.0 adds the multiplayer sample**, made of
-Blueprints only (`Content/Samples/Multiplayer`): sign in, host, join by code, quick match and leave, following host changes.
-**1.37.0 comes from playing through Cloudflare's relay**: a relay that stops answering this device is told lost within a minute,
-so On Relay Lost brings the game back rather than a silent wait. **1.38.0 moves relayed players to a direct path** (When Needed)
-once they and the host reach each other, and back to the relay when it goes quiet, the game's connection carrying on through
-both; a player connecting again through its relay address is back in within seconds rather than the engine's minute.
-**1.38.1 builds and runs on Android**, where no name was looked up before, so the relay could not be reached: a phone on mobile
-data plays through Flock's relay and moves to a direct path with a host on another network. **1.38.2 makes codegen delete
-only what it made**: a Clean or a switch of Codegen Target keeps the game's own assets and files in the generated folders,
-and a Generated Content Path of a whole content folder such as `/Game` is refused. **1.38.3 reaches the relay another way
-when a network blocks UDP to it**: UDP over IPv4, then UDP over IPv6, then TCP and TLS, each way Flock lists, so a player on a
-phone hotspot or an office network that drops UDP, or on a network with IPv6 alone, still hosts and joins through the relay;
-when no way opens, `relay_unreachable` names each way and why it failed.
+Everything below ships today. What each version added, oldest first (the [CHANGELOG](CHANGELOG.md) has the
+detail and the fixes):
+
+| Version | What it added |
+|---|---|
+| 1.0.0 | **The full feature set**: the boot/init foundation, the HTTP transport, automatic version baking, the SDK event hub, player authentication, analytics, game config (with the offline snapshot cache), the shop (catalog, purchase, inventory), player data & templates (with bans), game commands (with the offline queue), assets (metadata, streamed downloads, and a binary cache), typed code generation for Blueprint or C++, and the editor setup panel with its live Play-In-Editor view |
+| 1.2.0 | **Leaderboards**: boards by name, standings, and a player's own placement |
+| 1.3.0 | **Notifications**: the per-player inbox, server-side scheduled reminders, the template catalog, and push device-token registration |
+| 1.4.0 | **Account linking**: attaching and detaching credentials on a signed-in player |
+| 1.6.0 | **The rest of notifications**: an unread-count and a notification-received event on the event hub, and the pending-schedule list (`Get Pending Schedules`, `Cancel All Scheduled`) that lets a game see and clear the reminders it created |
+| 1.6.1 | **A correctness release**: leaderboard standings, rank and around-me address the board by name, which is the only form the API serves; and two data-durability fixes (see the CHANGELOG) |
+| 1.7.0 | **Shop rewards**: items that grant currency or other rewards when bought, a call to consume an owned item, and reading a player's scheduled notifications back from the server. A purchase completes with the rewards granted and the updated wallet alongside the inventory row, which changed its result type |
+| 1.8.0 | **Failures name the fix**: every error carries the call that failed and a next step, and a request the server rejects for a bad field names that field |
+| 1.9.0 | **Queued offline writes kept** when a build ships with a new Game Version |
+| 1.10.0 | **Gameplay events** (`Flock Track Event`), and Blueprint script errors such as Accessed None captured automatically, counting repeats of the same error instead of sending each one |
+| 1.11.0 | **Protokite Playtest**, an optional plugin for Protokite playtests, in beta and shipped as its own download: its settings, and a status that says whether playtest work may run |
+| 1.12.0 | The playtest plugin **fetches the build's playtest** from Protokite, with the playtest's feature switches and feedback form, and says why when it cannot |
+| 1.13.0 | **One Protokite session per launch**, named after the launch's first Flock session and sent with the player's Steam id or a device id, ended when the game shuts down; also `OnSessionRegistered` and the **Session Platform** setting in the Flock SDK |
+| 1.14.0 | **Heavy analytics** when a playtest turns it on: a performance window for every ten seconds of play, each level load, and the game's own playtest events, all through the Flock SDK's analytics |
+| 1.15.0 | **Screen recording** when a playtest turns video recording on, saving VP9 video on disk on 64-bit Windows; a developer tries it in Play In Editor or with the `ProtokitePlaytest.RecordTestVideo` console command |
+| 1.16.0 | **Recordings kept**: one that was not uploaded waits for a later launch, with the session it belongs to; one cut off when its game ended is finished; recordings stay inside a disk budget |
+| 1.17.0 | **Recording upload** to the session each recording belongs to, including what earlier launches left |
+| 1.18.0 | **The playtest's feedback form**, built from the questions the playtest publishes, with a button to upload the recording from it |
+| 1.19.0 | **Blueprint nodes for the whole playtest**, including a form of your own; setup findings when Play starts; a warning for a Shipping build carrying a playtest; a crash reported once rather than three times |
+| 1.26.0 | **Parties**, the first multiplayer feature: create, join by invite code, get the player's party back after a restart, and the leader's calls, with events when the party changes |
+| 1.27.0 | **Sessions**: host, join by code, my session after a restart, the host's calls, join tokens, and heartbeats that keep the seat and keep the session current |
+| 1.29.0 | **Matchmaking**: search a queue by its name alone or as a party, every member's game told when the party's search starts and ends, and a match handing over the session it seats the player in |
+| 1.30.0 | **Connecting the players**: Travel To Session opens the host's level listening and publishes how to reach it, and takes every other player there, to the host's LAN address when both share a public address; a connection of the game's own (Steam, EOS) is published and read back the same way |
+| 1.31.0 | **Checking who joins**: the host's game mode calls Flock's check from `PreLoginAsync`, which lets in only players whose Flock join token checks out, one connection a player, and says which Flock player each connection is; a player turned away learns why |
+| 1.32.0 | **Multiplayer in Blueprint**: a node for every party, session and matchmaking call and for Travel To Session, a node for every value a result carries, and ready-made game modes (`AFlockGameModeBase`, `AFlockGameMode`) that let in only the session's players, with the game's own check overridable in Blueprint |
+| 1.33.0 | **Flock's relay client** built into the SDK |
+| 1.34.0 | **Players connected through the relay**: Travel To Session takes a player who cannot reach the host directly through Flock's relay (`Relay`: When Needed by default, Always or Never), the engine's own networking carrying it, and keeps a fresh join token on hand for a player a host's level change brings back |
+| 1.35.0 | **A host change is one call**: on On Host Changed (or On Relay Lost, raised when this device's relay stops working) the game calls Travel To Session again, which does this device's part from wherever the game is, a newer travel taking over one under way |
+| 1.36.0 | **The multiplayer sample**, made of Blueprints only (`Content/Samples/Multiplayer`): sign in, host, join by code, quick match and leave, following host changes |
+| 1.37.0 | **From playing through Cloudflare's relay**: a relay that stops answering this device is told lost within a minute, so On Relay Lost brings the game back rather than a silent wait |
+| 1.38.0 | **Direct paths for relayed players** (When Needed) once they and the host reach each other, and back to the relay when it goes quiet, the game's connection carrying on through both; a player connecting again through its relay address is back in within seconds rather than the engine's minute |
+| 1.38.1 | **Android**: builds and runs there, where no name was looked up before, so the relay could not be reached; a phone on mobile data plays through Flock's relay and moves to a direct path with a host on another network |
+| 1.38.2 | **Codegen deletes only what it made**: a Clean or a switch of Codegen Target keeps the game's own assets and files in the generated folders, and a Generated Content Path of a whole content folder such as `/Game` is refused |
+| 1.38.3 | **The relay reached another way when a network blocks UDP to it**: UDP over IPv4, then UDP over IPv6, then TCP and TLS, each way Flock lists, so a player on a phone hotspot or an office network that drops UDP, or on a network with IPv6 alone, still hosts and joins through the relay; when no way opens, `relay_unreachable` names each way and why it failed |
+| 1.39.0 | **A playtest session carries the player's sign-in** when it starts while a player is signed in |
+| 1.40.0 | **The feedback form's logos**: the game's own logos, and Powered by Qwacks at its bottom left |
+| 1.41.0 to 1.44.0 | **The shop's payment calls**: every payment failure's own code and fix, real-money items with their store product ids, redeeming a store purchase, the wallet read by currency code and a purchase sent again under one key |
+| 1.45.0 | **Real-money items through Google Play and the App Store**: connect `UFlockStore`, and the same Purchase call charges through the store, has Flock deliver the item, and only then finishes the store's purchase |
+| 1.46.0 | **Real-money items on Windows, Mac and Linux through a web checkout**: the same connect opens the payment gateway's page (Stripe, Tap or Moyasar) in the player's browser and waits for Flock's server to report the payment |
+| 1.47.0 | **All of it in Blueprint**: nodes to connect the store, show prices, restore, check the setup and open a checkout, and the store's two events on Flock's events hub |
+| 1.48.0 | **The shop sample**, made of Blueprints only (`Content/Samples/Shop`): every item with its price and what the player owns, buying, using, restoring and the setup check |
 
 Deliberate omissions and known gaps:
 
@@ -583,7 +700,10 @@ Deliberate omissions and known gaps:
   `Flock Download Asset File` is the documented path for audio.
 - **A few surfaces are C++-only.** Config *patch* reads (all patches, by id, by config) and configs by
   version tag — in Blueprint, `Flock Resolve Config Data` already returns the patched-or-base values,
-  which is what most graphs want. Provider cache clearing is also C++-only.
+  which is what most graphs want. Recording an analytics transaction yourself (`RecordTransaction`), a custom
+  logger (`SetLogger`), provider cache clearing, a web checkout's own way to show the payment page
+  (`FFlockStoreOptions::OpenPaymentPage`) and a game's own store code (`UFlockStore::SetStoreLibrary`,
+  `ConnectThrough`) are also C++-only.
 - **Asset uploads are not included.** The SDK reads and downloads assets; publishing them is a dashboard
   operation.
 - **Leave `framegrabber.framelatency` at 0 while Protokite Playtest records video.** Changing that engine console

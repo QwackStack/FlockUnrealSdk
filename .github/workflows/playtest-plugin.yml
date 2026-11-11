@@ -86,7 +86,16 @@ jobs:
             fi
           done
 
-          echo "OptionalPlugins/ holds only ProtokitePlaytest."
+          # Each known plugin must be there too: a rename or a removal that left these checks naming a folder that is
+          # gone would pass them all against nothing.
+          for NAME in ProtokitePlaytest; do
+            if [ ! -f "OptionalPlugins/$NAME/$NAME.uplugin" ]; then
+              echo "::error::OptionalPlugins/$NAME/$NAME.uplugin is missing. This workflow and release.yml name it; update both if it moved."
+              exit 1
+            fi
+          done
+
+          echo "OptionalPlugins/ holds ProtokitePlaytest, covered."
 
       - name: The playtest plugin stays off until a project turns it on
         run: |
@@ -135,11 +144,11 @@ jobs:
 
           echo "$SETTINGS: Enable Playtesting defaults to off, and no shipped config turns it on."
 
-      - name: The playtest plugin depends on Flock
+      - name: Each optional plugin depends on Flock
         run: |
           set -euo pipefail
 
-          MANIFEST=OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin
+          for MANIFEST in OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin; do
           if [ ! -f "$MANIFEST" ]; then
             echo "::error::$MANIFEST is missing. This check reads it; if it moved, update this workflow with it."
             exit 1
@@ -157,17 +166,18 @@ jobs:
               for plugin in manifest.get("Plugins", [])
           )
           if not depends_on_flock:
-              print(f"::error file={path}::List Flock under Plugins, enabled and not optional. Without it, a project can enable the playtest plugin with Flock off, and the playtest module then fails to load.")
+              print(f"::error file={path}::List Flock under Plugins, enabled and not optional. Without it, a project can enable this plugin with Flock off, and its module then fails to load.")
               sys.exit(1)
           print(f"{path}: depends on Flock.")
           PY
+          done
 
       - name: The playtest plugin carries Flock's version
         run: |
           set -euo pipefail
 
           FLOCK=Flock.uplugin
-          PLAYTEST=OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin
+          for PLAYTEST in OptionalPlugins/ProtokitePlaytest/ProtokitePlaytest.uplugin; do
 
           for f in "$FLOCK" "$PLAYTEST"; do
             if [ ! -f "$f" ]; then
@@ -189,8 +199,9 @@ jobs:
           fi
 
           if [ "$FLOCK_NAME" != "$PLAYTEST_NAME" ] || [ "$FLOCK_NUMBER" != "$PLAYTEST_NUMBER" ]; then
-            echo "::error file=$PLAYTEST::The playtest plugin is at $PLAYTEST_NAME (Version $PLAYTEST_NUMBER) but Flock is at $FLOCK_NAME (Version $FLOCK_NUMBER). Both ship from one tag, so bump VersionName and Version in both manifests together."
+            echo "::error file=$PLAYTEST::$PLAYTEST is at $PLAYTEST_NAME (Version $PLAYTEST_NUMBER) but Flock is at $FLOCK_NAME (Version $FLOCK_NUMBER). Both ship from one tag, so bump VersionName and Version in both manifests together."
             exit 1
           fi
 
-          echo "Both plugins are at $FLOCK_NAME (Version $FLOCK_NUMBER)."
+          echo "$PLAYTEST is at $FLOCK_NAME (Version $FLOCK_NUMBER), as Flock is."
+          done

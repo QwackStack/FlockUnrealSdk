@@ -161,4 +161,34 @@ bool FFlockTemporaryFilesFailedMoveGivesUpAtOnceTest::RunTest(const FString& Par
 	return true;
 }
 
+/** A file made only when none is there: of two processes making it, the first keeps it and the second is told. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockTemporaryFilesSaveAsNewTest, "Flock.TemporaryFiles.SaveAsNewNeverWritesOverAFile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockTemporaryFilesSaveAsNewTest::RunTest(const FString& Parameters)
+{
+	const FTemporaryFilesTestFolder Folder;
+	const FString Destination = FPaths::Combine(Folder.Path, TEXT("made-once.txt"));
+
+	bool bSecondSaved = true;
+	int32 Complaints = 0;
+	const double StartedAt = FPlatformTime::Seconds();
+	TestTrue(TEXT("The first save makes the file, its folder too"), FFlockTemporaryFiles::SaveAsNew(TEXT("first"), Destination));
+	{
+		FFlockFileManagerComplaintCounter Counter;
+		bSecondSaved = FFlockTemporaryFiles::SaveAsNew(TEXT("second"), Destination);
+		Complaints = Counter.Count();
+	}
+	const double Seconds = FPlatformTime::Seconds() - StartedAt;
+
+	FString Contents;
+	FFileHelper::LoadFileToString(Contents, *Destination);
+	TestFalse(TEXT("The second save is told a file is there"), bSecondSaved);
+	TestTrue(TEXT("The file holds the first save"), Contents.Equals(TEXT("first"), ESearchCase::CaseSensitive));
+	TestTrue(FString::Printf(TEXT("It gives up at once (took %.2f s)"), Seconds), Seconds < FlockTestSecondsWithoutARetry);
+	TestEqual(TEXT("The file manager logs no warning or error"), Complaints, 0);
+	TestEqual(TEXT("No temporary file is left"), Folder.TemporaryFiles().Num(), 0);
+	return true;
+}
+
 #endif // WITH_AUTOMATION_TESTS

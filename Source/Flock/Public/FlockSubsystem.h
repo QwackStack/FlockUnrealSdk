@@ -27,6 +27,8 @@
 #include "FlockSubsystem.generated.h"
 
 class UFlockEvents;
+class UFlockStore;
+class FFlockPassOnLogger;
 
 /**
  * The global Flock SDK accessor.
@@ -49,6 +51,9 @@ class FLOCK_API UFlockSubsystem : public UGameInstanceSubsystem
 	// The playtest plugin sends the signed-in player's access token on its session start, and renews one about to run
 	// out first, so it reads the auth session; no public call hands out the token.
 	friend class UProtokitePlaytestSubsystem;
+	// The store reads the sign-in, the saved state and the game key, and is held here while connected.
+	friend class UFlockStore;
+	friend class FFlockWebCheckout;
 
 public:
 	/**
@@ -91,7 +96,8 @@ public:
 	/**
 	 * Injects a custom logger so SDK breadcrumbs/errors flow into your own telemetry or debugger.
 	 * C++ only (IFlockLogger is not a UObject).
-	 * If never called, a default logger is used (verbose when Enable Debug Logs is on).
+	 * If never called, a default logger is used (verbose when Enable Debug Logs is on). It can be called at any time,
+	 * before or after initializing: every line from then on reaches it, the calls' and the network trace's included.
 	 */
 	void SetLogger(const TSharedRef<IFlockLogger>& InLogger);
 
@@ -296,6 +302,13 @@ public:
 	 */
 	FFlockShopProvider* GetShopProvider() const { return ShopProvider.Get(); }
 
+	/**
+	 * The way to pay real money UFlockStore::Connect connected (from the moment it starts connecting), or null. Held here until
+	 * it is disconnected or the SDK shuts down, which disconnects it.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Flock|Store")
+	UFlockStore* GetStore() const { return ConnectedStore; }
+
 	// ── Assets ──
 
 	/**
@@ -416,16 +429,26 @@ private:
 	/** The active logger, lazily defaulted from the project's Enable Debug Logs setting when unset. */
 	IFlockLogger& GetLogger();
 
+	/** The logger every part is handed, made on first use; it passes each line on to the game's or the default one. */
+	FFlockPassOnLogger& PassOnLogger();
+
+	/** The same logger, shared, for a part made now. */
+	TSharedRef<IFlockLogger> SharedLogger();
+
 	bool bInitialized = false;
 	FString InitializationError;
 	FFlockInitConfig ActiveConfig;
-	TSharedPtr<IFlockLogger> Logger;
+	TSharedPtr<FFlockPassOnLogger> Logger;
 	/** The game handed in its own logger (SetLogger); otherwise each initialization makes the default one from its config. */
 	bool bLoggerSetByGame = false;
 
 	/** Backing store for GetEvents(); created on first use so events can be bound before init. */
 	UPROPERTY(Transient)
 	TObjectPtr<UFlockEvents> Events;
+
+	/** The connected way to pay real money (GetStore); kept from garbage collection while connected. */
+	UPROPERTY(Transient)
+	TObjectPtr<UFlockStore> ConnectedStore;
 
 	// Auth stack, built per-initialization and dropped on shutdown. Everything is shared-ptr
 	// backed; in-flight callbacks hold what they need, so teardown mid-request stays safe.

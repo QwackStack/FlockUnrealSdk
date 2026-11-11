@@ -1,5 +1,7 @@
 // Copyright 2022, Qwacks. Licensed under the MIT License - see LICENSE.md.
 
+#include "FlockDevelopmentCommands.h"
+
 #include "CoreMinimal.h"
 
 #if !UE_BUILD_SHIPPING
@@ -34,6 +36,11 @@ DEFINE_LOG_CATEGORY_STATIC(LogFlockTestException, Log, All);
  */
 namespace FlockDevelopmentCommands
 {
+	FString DeviceIdToSignInWith(const TArray<FString>& Arguments)
+	{
+		return Arguments.Num() > 0 ? Arguments[0] : FString();
+	}
+
 	/** The SDK of the game that is actually running. The self-test builds a game instance of its own; this must not. */
 	UFlockSubsystem* FindRunningFlockSubsystem()
 	{
@@ -73,14 +80,17 @@ namespace FlockDevelopmentCommands
 			return;
 		}
 
-		// A device id of this machine's own, so two machines are two players; an argument overrides it when a
-		// particular player is wanted, or when one is being signed in twice from one machine.
-		FString DeviceId = Arguments.Num() > 0 ? Arguments[0] : FPlatformMisc::GetLoginId();
+		// This install's device id, the one the SDK keeps, so two installs are two players; an argument overrides it when a
+		// particular player is wanted, or when one is being signed in twice from one project folder.
+		const FString DeviceId = DeviceIdToSignInWith(Arguments);
 		if (DeviceId.IsEmpty())
 		{
-			DeviceId = TEXT("flock-console-device");
+			UE_LOG(LogFlock, Log, TEXT("Flock.LoginWithDevice: signing in with this install's device id."));
 		}
-		UE_LOG(LogFlock, Log, TEXT("Flock.LoginWithDevice: signing in with the device id %s."), *DeviceId);
+		else
+		{
+			UE_LOG(LogFlock, Log, TEXT("Flock.LoginWithDevice: signing in with the device id %s."), *DeviceId);
+		}
 
 		// Signing in exactly once is the whole point of this order, and getting it wrong is not obvious: registering
 		// first and then signing in authenticates twice, and the second sign-in ends the session the first one
@@ -148,7 +158,7 @@ namespace FlockDevelopmentCommands
 	FAutoConsoleCommand GFlockLoginWithDeviceCommand(
 		TEXT("Flock.LoginWithDevice"),
 		TEXT("Signs a player in with a device id, so a running game starts an analytics session without a sign-in "
-			"screen of its own. Takes the device id to use, or picks one for this machine (development builds only)."),
+			"screen of its own. Takes the device id to use, or uses this install's own (development builds only)."),
 		FConsoleCommandWithArgsDelegate::CreateStatic(&SignInWithDevice));
 
 	/**

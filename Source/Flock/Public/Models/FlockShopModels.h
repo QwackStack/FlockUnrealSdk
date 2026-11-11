@@ -24,6 +24,34 @@ namespace FlockShopItemRewardTypes
 }
 
 /**
+ * What kind of item a shop item is (FFlockShopItem::Type). An open set the server can widen, so compare against these,
+ * never a literal; a kind added later still reads, through Type.
+ */
+namespace FlockShopItemTypes
+{
+	/** Lands in the player's inventory. In a store, set it up as a one-time (non-consumable) product. */
+	inline constexpr const TCHAR* Standard = TEXT("standard");
+	/** Pays its rewards straight into the wallet. In a store, set it up as a consumable product. */
+	inline constexpr const TCHAR* CurrencyPack = TEXT("currency_pack");
+	/** Lands in the inventory and grants its rewards when consumed. In a store, set it up as a consumable product. */
+	inline constexpr const TCHAR* Consumable = TEXT("consumable");
+}
+
+/**
+ * The stores and web payment gateways Flock takes real money through, as the server names them. Only the stores
+ * (AppleAppStore, GooglePlay) are keys of FFlockShopItem::StoreProductIds: a web checkout needs no product id. An open set
+ * the server can widen, so a store added later is kept, never dropped.
+ */
+namespace FlockPaymentProviders
+{
+	inline constexpr const TCHAR* AppleAppStore = TEXT("apple_app_store");
+	inline constexpr const TCHAR* GooglePlay = TEXT("google_play");
+	inline constexpr const TCHAR* Stripe = TEXT("stripe");
+	inline constexpr const TCHAR* Tap = TEXT("tap");
+	inline constexpr const TCHAR* Moyasar = TEXT("moyasar");
+}
+
+/**
  * Where a purchase has got to. A wallet purchase is born paid; the others belong to real-money checkouts, whose result comes
  * later. An open set the server can widen, so compare against these, never a literal.
  */
@@ -34,6 +62,17 @@ namespace FlockPurchaseStatuses
 	inline constexpr const TCHAR* Failed = TEXT("failed");
 	inline constexpr const TCHAR* Expired = TEXT("expired");
 	inline constexpr const TCHAR* Refunded = TEXT("refunded");
+}
+
+/**
+ * Where an inventory entry has got to: unused (the player holds it), used (consumed), or revoked (taken back with a refund).
+ * An open set the server can widen, so compare against these, never a literal.
+ */
+namespace FlockPlayerInventoryStatuses
+{
+	inline constexpr const TCHAR* Unused = TEXT("unused");
+	inline constexpr const TCHAR* Used = TEXT("used");
+	inline constexpr const TCHAR* Revoked = TEXT("revoked");
 }
 
 /**
@@ -58,8 +97,8 @@ struct FLOCK_API FFlockShopItemReward
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	int32 Amount = 0;
 
-	/** True for a currency grant — the only kind that exists today, and the reason Type is not an enum. */
-	bool IsCurrency() const { return Type == FlockShopItemRewardTypes::Currency; }
+	/** True for a currency grant — the only kind that exists today, and the reason Type is not an enum. Letter case counts. */
+	bool IsCurrency() const { return Type.Equals(FlockShopItemRewardTypes::Currency, ESearchCase::CaseSensitive); }
 };
 
 /**
@@ -114,19 +153,39 @@ struct FLOCK_API FFlockShopItem
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString PatchId;
 
+	/** The price in Currency; for a real-money item, in the currency's smallest unit (199 is USD 1.99). */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	int32 Price = 0;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString Currency;
 
-	/** What kind of item this is — it drives whether buying grants rewards or lands in inventory. */
+	/**
+	 * True when Currency is one the game's currency config lists as real money: the item is paid for through a store or a
+	 * web checkout, never from the wallet: Purchase refuses it with ShopRealCurrencyNeedsCheckout, and a store's purchase of
+	 * it is redeemed with FFlockShopProvider::RedeemStoreReceipt. The server's own
+	 * answer, sent with the catalog by every shop read: false when the server does not send it (an older server), and never
+	 * guessed from the currency's code.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	bool IsRealMoney = false;
+
+	/** What kind of item this is, one of FlockShopItemTypes: it drives whether buying grants rewards or lands in inventory. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString Type;
 
 	/** What this item grants when bought or consumed. Empty for a plain inventory item, never null. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	TArray<FFlockShopItemReward> Rewards;
+
+	/**
+	 * This item's product id in each store, keyed by FlockPaymentProviders name, exactly as set in the Flock dashboard; empty
+	 * when none is set. A store the SDK does not know yet is kept. A phone shows the player the store's own price for the
+	 * product, in their currency and with their taxes, not Price. Look an id up with FindStoreProductId, which matches the
+	 * store's name with its letter case (a map's own Find ignores case).
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TMap<FString, FString> StoreProductIds;
 
 	/** The free-form `data` object (empty when absent). Read with TryGet* / UFlockJsonDataLibrary. */
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
@@ -138,7 +197,13 @@ struct FLOCK_API FFlockShopItem
 	UPROPERTY(BlueprintReadOnly, Category = "Flock")
 	FString UpdatedAt;
 
-	/** Builds the item from a wire object, capturing `data` verbatim. */
+	/**
+	 * This item's product id in Store (one of FlockPaymentProviders), matching the store's name with its letter case. False,
+	 * with OutProductId emptied, when the item has none there.
+	 */
+	bool FindStoreProductId(const FString& Store, FString& OutProductId) const;
+
+	/** Builds the item from a wire object, capturing `data` and each store's product id verbatim. */
 	static bool FromWireObject(const TSharedRef<FJsonObject>& Object, FFlockShopItem& OutStruct, FString& OutError);
 };
 
@@ -352,6 +417,129 @@ struct FLOCK_API FFlockPlayerInventoryPage
 	int32 Limit = 0;
 };
 
+/**
+ * A web checkout the server opened for a real-money item (FFlockShopProvider::StartCheckout): where to send the player to pay.
+ * Nothing is paid or delivered until the payment gateway confirms; read the purchase with FFlockShopProvider::GetPurchase.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockCheckout
+{
+	GENERATED_BODY()
+
+	/** The purchase the checkout pays for: pending until it is paid, failed or expired. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PurchaseId;
+
+	/** The payment gateway that opened it: FlockPaymentProviders::Stripe, Tap or Moyasar. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Provider;
+
+	/** The gateway's payment page, to open in the player's browser. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PaymentUrl;
+
+	/** When the checkout closes unpaid (ISO 8601, UTC); empty when the server did not say. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ExpiresAt;
+};
+
+/**
+ * One of the signed-in player's purchases as the server holds it now (FFlockShopProvider::GetPurchase, GetPurchases). A web
+ * checkout's purchase is pending until the gateway reports it paid, failed or expired.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockPlayerPurchase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Id;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ShopItemId;
+
+	/** The item's kind: one of FlockShopItemTypes. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ItemType;
+
+	/** Where the purchase has got to: one of FlockPurchaseStatuses. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Status;
+
+	/** The price charged, in PriceCurrency's smallest unit for real money (799 is SAR 7.99). */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int64 PriceAmount = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PriceCurrency;
+
+	/** How it was paid: from the wallet, or outside Flock (a store or a payment gateway). */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString SettlementMethod;
+
+	/** The store or payment gateway that took the payment (one of FlockPaymentProviders); empty for a wallet purchase. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PaymentProvider;
+
+	/** What the purchase handed over once paid. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockShopItemReward> Granted;
+
+	/** The inventory entry the purchase made, once paid; empty when it made none. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PlayerInventoryId;
+
+	/** ISO 8601, UTC. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString CreatedAt;
+
+	/** When it was paid, failed or expired; empty while pending. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString SettledAt;
+
+	/** When it was refunded; empty when it was not. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString RefundedAt;
+
+	/** When a pending web checkout closes unpaid; empty when the server did not say. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ExpiresAt;
+
+	bool IsPending() const { return Status.Equals(FlockPurchaseStatuses::Pending, ESearchCase::CaseSensitive); }
+	bool IsPaid() const { return Status.Equals(FlockPurchaseStatuses::Paid, ESearchCase::CaseSensitive); }
+};
+
+/** A page of the signed-in player's purchases, newest first. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockPlayerPurchasePage
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockPlayerPurchase> Items;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int32 Total = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int32 Page = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int32 Limit = 0;
+};
+
+/** Body for `POST shop/checkout`. Only the item is required; an empty member is left out, so the server picks it. */
+USTRUCT()
+struct FLOCK_API FFlockCheckoutRequest
+{
+	GENERATED_BODY()
+
+	UPROPERTY() FString ShopItemId;
+	UPROPERTY() FString Provider;
+	UPROPERTY() FString ReturnUrl;
+	UPROPERTY() FString CancelUrl;
+};
+
 /** Body for `POST shop/transaction`. Both members are required by the backend. */
 USTRUCT()
 struct FLOCK_API FFlockShopTransactionRequest
@@ -360,4 +548,127 @@ struct FLOCK_API FFlockShopTransactionRequest
 
 	UPROPERTY() FString ShopItemId;
 	UPROPERTY() FString PlayerId;
+	/** One per purchase call, the same on every attempt: the server answers a purchase sent again with the first one. */
+	UPROPERTY() FString IdempotencyKey;
+};
+
+/**
+ * A purchase a store made, as Flock redeems it: the App Store's transaction id, or Google Play's product id and purchase
+ * token. Make one with FromAppleAppStore or FromGooglePlay, and hand it to FFlockShopProvider::RedeemStoreReceipt.
+ * Each id is kept exactly as given: one with spaces around it is refused when redeemed, never trimmed.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockStoreReceipt
+{
+	GENERATED_BODY()
+
+	/** The store that made the purchase: FlockPaymentProviders::AppleAppStore or FlockPaymentProviders::GooglePlay. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Store;
+
+	/** The App Store's transaction id (StoreKit's transaction id); empty for Google Play. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString TransactionId;
+
+	/** The Google Play product id the player bought; empty for the App Store. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ProductId;
+
+	/** The Google Play purchase token; empty for the App Store. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString PurchaseToken;
+
+	/** An App Store purchase, by its transaction id, exactly as StoreKit gave it. */
+	static FFlockStoreReceipt FromAppleAppStore(const FString& InTransactionId)
+	{
+		FFlockStoreReceipt Receipt;
+		Receipt.Store = FlockPaymentProviders::AppleAppStore;
+		Receipt.TransactionId = InTransactionId;
+		return Receipt;
+	}
+
+	/** A Google Play purchase, by its product id and purchase token, exactly as Google Play gave them. */
+	static FFlockStoreReceipt FromGooglePlay(const FString& InProductId, const FString& InPurchaseToken)
+	{
+		FFlockStoreReceipt Receipt;
+		Receipt.Store = FlockPaymentProviders::GooglePlay;
+		Receipt.ProductId = InProductId;
+		Receipt.PurchaseToken = InPurchaseToken;
+		return Receipt;
+	}
+};
+
+/** One currency's balance in a wallet. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockCurrencyBalance
+{
+	GENERATED_BODY()
+
+	/** The currency's code, exactly as the game's currency config spells it. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString Code;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int64 Amount = 0;
+};
+
+/**
+ * A player's balances by currency code, read from their wallet (the player data of the template tagged "currency"). Game
+ * currencies are spent through FFlockShopProvider::Purchase; real currencies are never spent from the wallet. Codes are
+ * matched with their letter case, as the server matches them.
+ */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockWallet
+{
+	GENERATED_BODY()
+
+	/** Balances of the game's own currencies. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockCurrencyBalance> GameCurrencies;
+
+	/** Balances of real currencies. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockCurrencyBalance> RealCurrencies;
+
+	/** The balance of a currency, or 0 when the wallet does not hold it (Holds tells the two apart). */
+	int64 BalanceOf(const FString& CurrencyCode) const;
+
+	/** Whether the wallet holds a balance in this currency at all. */
+	bool Holds(const FString& CurrencyCode) const;
+
+	/**
+	 * Whether Purchase can pay for this item from the wallet: a game-currency item whose price the wallet covers. A real-money
+	 * item is never bought from the wallet, so it reads false; it is bought through a store.
+	 */
+	bool CanAfford(const FFlockShopItem& Item) const;
+
+	/** Reads a wallet row (a purchase's Wallet, or the player's currency data): a currency object per category, as the server answers. */
+	static FFlockWallet From(const FFlockPlayerData& Wallet);
+};
+
+/** How many unused entries of one shop item the player holds. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockOwnedItemCount
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	FString ShopItemId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	int32 Count = 0;
+};
+
+/** What the signed-in player holds unused, by shop item, from every page of their inventory. Used and refunded entries do not count. */
+USTRUCT(BlueprintType)
+struct FLOCK_API FFlockOwnedItemCounts
+{
+	GENERATED_BODY()
+
+	/** One row per shop item held, in the order the inventory first names each. */
+	UPROPERTY(BlueprintReadOnly, Category = "Flock")
+	TArray<FFlockOwnedItemCount> Items;
+
+	/** How many unused entries of this shop item are held; 0 when none. The id is matched with its letter case. */
+	int32 CountOf(const FString& ShopItemId) const;
 };

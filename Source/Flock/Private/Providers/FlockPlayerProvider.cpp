@@ -15,6 +15,8 @@ FFlockPlayerProvider::FFlockPlayerProvider(const TSharedRef<FFlockHttpClient>& I
 	, Session(InSession)
 	, VersionedApiUrl(InVersionedApiUrl)
 {
+	// A call whose token has expired renews it once and is sent again, as on every provider that acts for the player.
+	SetAuthSession(InSession);
 	SetSnapshotStore(InSnapshotStore, InGameVersionId);
 }
 
@@ -28,19 +30,26 @@ void FFlockPlayerProvider::GetDataById(const FString& PlayerDataId, TFunction<vo
 	}
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(FlockEndpoints::PlayerDataById(PlayerDataId));
-	const TMap<FString, FString> Headers = HeadersNow();
 
-	// Enveloped ({error,response,result}); never cached — a direct row read is always fresh.
-	Execute<FFlockPlayerData>(
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockPlayerData>)> OnAttempt)
+	// Enveloped ({error,response,result}); never cached — a direct row read is always fresh. Sent only while the sign-in
+	// current now lasts, the token read on each attempt.
+	Execute<FFlockPlayerData>(ForTheCurrentSignInOnly<FFlockPlayerData>(
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerData>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockPlayerData>(Url, Headers, MoveTemp(OnAttempt));
-		},
+			return ClientRef->Get<FFlockPlayerData>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
+		}),
 		MoveTemp(OnComplete), TEXT("Fetch player data"));
 }
 
 void FFlockPlayerProvider::GetAllData(const FString& PlayerId, int32 Page, int32 Limit,
+	TFunction<void(TFlockResult<FFlockPlayerDataPage>)> OnComplete)
+{
+	ReadDataPage(PlayerId, Session->GetSignInNumber(), Page, Limit, MoveTemp(OnComplete));
+}
+
+void FFlockPlayerProvider::ReadDataPage(const FString& PlayerId, int32 SignInNumber, int32 Page, int32 Limit,
 	TFunction<void(TFlockResult<FFlockPlayerDataPage>)> OnComplete)
 {
 	FString Path = FString::Printf(TEXT("%s?page=%d&limit=%d"), FlockEndpoints::PlayerData, Page, Limit);
@@ -50,15 +59,15 @@ void FFlockPlayerProvider::GetAllData(const FString& PlayerId, int32 Page, int32
 	}
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	const FString Url = MakeUrl(Path);
-	const TMap<FString, FString> Headers = HeadersNow();
 
 	// Bare paginated ({items,total,page,limit}); never cached. GetPaged returns the template page — copy it
-	// into the concrete, Blueprint-able page struct.
-	Execute<FFlockPlayerDataPage>(
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockPlayerDataPage>)> OnAttempt)
+	// into the concrete, Blueprint-able page struct. Sent only while SignInNumber lasts, the token read on each attempt.
+	Execute<FFlockPlayerDataPage>(ForSignInOnly<FFlockPlayerDataPage>(SessionRef, SignInNumber,
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerDataPage>)> OnAttempt)
 		{
-			return ClientRef->GetPaged<FFlockPlayerData>(Url, Headers,
+			return ClientRef->GetPaged<FFlockPlayerData>(Url, SessionRef->GetAuthHeaders(),
 				[OnAttempt](TFlockResult<TFlockPage<FFlockPlayerData>> Result)
 				{
 					if (!Result.bSuccess)
@@ -73,7 +82,7 @@ void FFlockPlayerProvider::GetAllData(const FString& PlayerId, int32 Page, int32
 					Page.Limit = Result.Value.Limit;
 					OnAttempt(TFlockResult<FFlockPlayerDataPage>::Ok(Page));
 				});
-		},
+		}),
 		MoveTemp(OnComplete), TEXT("Fetch player data list"));
 }
 
@@ -155,6 +164,30 @@ void FFlockPlayerProvider::GetMyDataByTag(const FString& Tag, TFunction<void(TFl
 		});
 }
 
+void FFlockPlayerProvider::GetWallet(TFunction<void(TFlockResult<FFlockWallet>)> OnComplete)
+{
+	GetMyDataByTag(TEXT("currency"), [OnComplete](TFlockResult<FFlockPlayerData> Result)
+	{
+		if (!OnComplete)
+		{
+			return;
+		}
+		if (!Result.bSuccess)
+		{
+			OnComplete(TFlockResult<FFlockWallet>::Fail(Result.Error));
+			return;
+		}
+		if (Result.Value.Id.IsEmpty())
+		{
+			OnComplete(TFlockResult<FFlockWallet>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("The signed-in player has no wallet in this Game Version"),
+				TEXT("The server makes a player's wallet when the player registers, from the Game Version's currency template, so a player who registered before that template existed, or under another Game Version, has none. Create the currency template first, then register the player under this build's Game Version."))));
+			return;
+		}
+		OnComplete(TFlockResult<FFlockWallet>::Ok(FFlockWallet::From(Result.Value)));
+	});
+}
+
 // ─────────────────────────────────── Templates ─────────────────────────────────
 
 void FFlockPlayerProvider::GetTemplates(TFunction<void(TFlockResult<TArray<FFlockPlayerTemplateSchema>>)> OnComplete)
@@ -176,14 +209,14 @@ void FFlockPlayerProvider::GetTemplates(TFunction<void(TFlockResult<TArray<FFloc
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::PlayerTemplate);
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockPlayerProvider> WeakSelf = AsShared();
 
 	// Enveloped list ({error,response,result:[...]}) — GetList unwraps `result` as a bare array.
 	FetchListWithSnapshot<FFlockPlayerTemplateSchema>(SnapshotCategory, Key,
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<TArray<FFlockPlayerTemplateSchema>>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<TArray<FFlockPlayerTemplateSchema>>)> OnAttempt)
 		{
-			return ClientRef->GetList<FFlockPlayerTemplateSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->GetList<FFlockPlayerTemplateSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		TEXT("Fetch player templates"),
 		[WeakSelf, Key](TFlockResult<TArray<FFlockPlayerTemplateSchema>> Result)
@@ -227,15 +260,15 @@ void FFlockPlayerProvider::GetTemplateById(const FString& PlayerTemplateId, TFun
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::PlayerTemplateById(PlayerTemplateId));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockPlayerProvider> WeakSelf = AsShared();
 
 	// Memoize only: a single by-id template read is not worth a snapshot entry — the all-templates
 	// fetch is the one that has to survive an outage.
 	Execute<FFlockPlayerTemplateSchema>(
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockPlayerTemplateSchema>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerTemplateSchema>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockPlayerTemplateSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->Get<FFlockPlayerTemplateSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		[WeakSelf, OnComplete](TFlockResult<FFlockPlayerTemplateSchema> Result)
 		{
@@ -274,13 +307,13 @@ void FFlockPlayerProvider::GetTemplateByName(const FString& Name, TFunction<void
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::PlayerTemplateByName(Name));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 	TWeakPtr<FFlockPlayerProvider> WeakSelf = AsShared();
 
 	Execute<FFlockPlayerTemplateSchema>(
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockPlayerTemplateSchema>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerTemplateSchema>)> OnAttempt)
 		{
-			return ClientRef->Get<FFlockPlayerTemplateSchema>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->Get<FFlockPlayerTemplateSchema>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		[WeakSelf, OnComplete](TFlockResult<FFlockPlayerTemplateSchema> Result)
 		{
@@ -341,13 +374,13 @@ void FFlockPlayerProvider::GetTemplatePlayerData(const FString& PlayerTemplateId
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FlockEndpoints::PlayerTemplateData(PlayerTemplateId));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 
 	// Enveloped list; never cached (a template's rows change as players play).
 	Execute<TArray<FFlockPlayerData>>(
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<TArray<FFlockPlayerData>>)> OnAttempt)
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<TArray<FFlockPlayerData>>)> OnAttempt)
 		{
-			return ClientRef->GetList<FFlockPlayerData>(Url, Headers, MoveTemp(OnAttempt));
+			return ClientRef->GetList<FFlockPlayerData>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
 		},
 		MoveTemp(OnComplete), TEXT("Fetch player data for template"));
 }
@@ -364,15 +397,16 @@ void FFlockPlayerProvider::GetBan(const FString& PlayerId, TFunction<void(TFlock
 
 	const TSharedRef<FFlockHttpClient> ClientRef = Client;
 	const FString Url = MakeUrl(FString::Printf(TEXT("%s?player_id=%s"), FlockEndpoints::PlayerBan, *ResolvedPlayerId));
-	const TMap<FString, FString> Headers = HeadersNow();
+	const TSharedRef<FFlockAuthSession> SessionRef = Session;
 
 	// Enveloped but nullable (Union[PlayerBanSchema, None]) — GetRaw into the wrapper, whose custom parse
-	// treats a null `result` as "not banned". Never cached: a ban can change server-side at any time.
-	Execute<FFlockPlayerBanResponse>(
-		[ClientRef, Url, Headers](TFunction<void(TFlockResult<FFlockPlayerBanResponse>)> OnAttempt)
+	// treats a null `result` as "not banned". Never cached: a ban can change server-side at any time. Sent only while the
+	// sign-in current now lasts.
+	Execute<FFlockPlayerBanResponse>(ForTheCurrentSignInOnly<FFlockPlayerBanResponse>(
+		[ClientRef, SessionRef, Url](TFunction<void(TFlockResult<FFlockPlayerBanResponse>)> OnAttempt)
 		{
-			return ClientRef->GetRaw<FFlockPlayerBanResponse>(Url, Headers, MoveTemp(OnAttempt));
-		},
+			return ClientRef->GetRaw<FFlockPlayerBanResponse>(Url, SessionRef->GetAuthHeaders(), MoveTemp(OnAttempt));
+		}),
 		[OnComplete](TFlockResult<FFlockPlayerBanResponse> Result)
 		{
 			if (!OnComplete)
@@ -393,7 +427,13 @@ void FFlockPlayerProvider::GetBan(const FString& PlayerId, TFunction<void(TFlock
 
 void FFlockPlayerProvider::ApplyServerPlayerData(const FFlockPlayerData& Row)
 {
-	if (Row.Id.IsEmpty() || Row.PlayerId.IsEmpty() || Row.PlayerTemplateId.IsEmpty())
+	if (Row.PlayerId.IsEmpty())
+	{
+		return;
+	}
+	// Newer than any read of player data already on its way: that read is not kept, and a read from now on is sent afresh.
+	DropReadsOnTheirWay(Row.PlayerId);
+	if (Row.Id.IsEmpty() || Row.PlayerTemplateId.IsEmpty())
 	{
 		return;
 	}
@@ -401,6 +441,17 @@ void FFlockPlayerProvider::ApplyServerPlayerData(const FFlockPlayerData& Row)
 	// off a single row, and every other template would then read as absent without a refetch.
 	if (TMap<FString, FFlockPlayerData>* Rows = PlayerDataByPlayer.Find(Row.PlayerId))
 	{
+		// Two money answers can arrive in the opposite order to the one the server wrote them in: the older never replaces
+		// the newer. A row whose time cannot be read replaces the cached one, as before.
+		if (const FFlockPlayerData* Cached = Rows->Find(Row.PlayerTemplateId))
+		{
+			FDateTime CachedAt;
+			FDateTime RowAt;
+			if (FDateTime::ParseIso8601(*Cached->UpdatedAt, CachedAt) && FDateTime::ParseIso8601(*Row.UpdatedAt, RowAt) && RowAt < CachedAt)
+			{
+				return;
+			}
+		}
 		// A refusal describes the one write it came back with, never the row a later read finds.
 		FFlockPlayerData Kept = Row;
 		Kept.LeaderboardRefusals.Reset();
@@ -454,6 +505,7 @@ void FFlockPlayerProvider::EvictPlayerCacheByRow(const FString& PlayerDataId)
 	if (!OwningPlayerId.IsEmpty())
 	{
 		PlayerDataByPlayer.Remove(OwningPlayerId);
+		DropReadsOnTheirWay(OwningPlayerId);
 	}
 }
 
@@ -463,13 +515,28 @@ void FFlockPlayerProvider::ClearCache()
 	TemplateIdByName.Reset();
 	bAllTemplatesFetched = false;
 	AllTemplateIds.Reset();
-	PlayerDataByPlayer.Reset();
+	ClearPlayerDataCache();
 	DeleteSnapshotCategory(SnapshotCategory);
 }
 
 void FFlockPlayerProvider::ClearPlayerDataCache()
 {
 	PlayerDataByPlayer.Reset();
+	DropReadsOnTheirWay(FString());
+}
+
+void FFlockPlayerProvider::DropReadsOnTheirWay(const FString& PlayerId)
+{
+	// One count for every player: a read keeps its answer only when nothing was dropped or applied while it was out.
+	++PlayerDataDrops;
+	if (PlayerId.IsEmpty())
+	{
+		PlayerDataReads.Reset();
+	}
+	else
+	{
+		PlayerDataReads.Remove(PlayerId);
+	}
 }
 
 // ─────────────────────────────────── Internals ─────────────────────────────────
@@ -511,33 +578,54 @@ void FFlockPlayerProvider::GetOrFetchPlayerData(const FString& PlayerId, TFuncti
 		}
 		return;
 	}
-	// Coalesce concurrent asks for the same player: only the first caller kicks off the paged fetch.
-	if (!PlayerDataInFlight.Register(PlayerId, MoveTemp(OnComplete)))
+	// Coalesce concurrent asks for the same player: only the first caller kicks off the paged fetch. A read sent under a sign-in
+	// that has ended (the same player signing in again) is not joined: its later pages are refused, so this one goes out afresh.
+	if (const TSharedRef<FPlayerDataRead>* OnItsWay = PlayerDataReads.Find(PlayerId))
 	{
-		return;
+		if ((*OnItsWay)->SignInNumber == Session->GetSignInNumber())
+		{
+			(*OnItsWay)->Waiters.Add(MoveTemp(OnComplete));
+			return;
+		}
 	}
-	FetchPlayerDataPage(PlayerId, 1, MakeShared<TMap<FString, FFlockPlayerData>>());
+	const TSharedRef<FPlayerDataRead> Read = MakeShared<FPlayerDataRead>();
+	Read->Waiters.Add(MoveTemp(OnComplete));
+	Read->DropsWhenSent = PlayerDataDrops;
+	Read->SignInNumber = Session->GetSignInNumber();
+	// Kept before it is sent, so a read that ends at once (its sign-in already over) is never left as the one on its way.
+	PlayerDataReads.Add(PlayerId, Read);
+	FetchPlayerDataPage(PlayerId, 1, MakeShared<TMap<FString, FFlockPlayerData>>(), Read);
 }
 
-void FFlockPlayerProvider::FetchPlayerDataPage(const FString& PlayerId, int32 Page, const TSharedRef<TMap<FString, FFlockPlayerData>>& Accumulated)
+void FFlockPlayerProvider::FetchPlayerDataPage(const FString& PlayerId, int32 Page, const TSharedRef<TMap<FString, FFlockPlayerData>>& Accumulated,
+	const TSharedRef<FPlayerDataRead>& Read)
 {
 	static constexpr int32 PageSize = 100;
 	const FString PlayerIdCopy = PlayerId;
 	const TSharedRef<TMap<FString, FFlockPlayerData>> Acc = Accumulated;
 	TWeakPtr<FFlockPlayerProvider> WeakSelf = AsShared();
 
-	GetAllData(PlayerIdCopy, Page, PageSize,
-		[WeakSelf, PlayerIdCopy, Page, Acc](TFlockResult<FFlockPlayerDataPage> Result)
+	ReadDataPage(PlayerIdCopy, Read->SignInNumber, Page, PageSize,
+		[WeakSelf, PlayerIdCopy, Page, Acc, Read](TFlockResult<FFlockPlayerDataPage> Result)
 		{
 			const TSharedPtr<FFlockPlayerProvider> Self = WeakSelf.Pin();
 			if (!Self.IsValid())
 			{
+				// Torn down while the read was out: its callers still hear back.
+				const TArray<TFunction<void(TFlockResult<TMap<FString, FFlockPlayerData>>)>> Waiters = MoveTemp(Read->Waiters);
+				for (const TFunction<void(TFlockResult<TMap<FString, FFlockPlayerData>>)>& Waiter : Waiters)
+				{
+					if (Waiter)
+					{
+						Waiter(TFlockResult<TMap<FString, FFlockPlayerData>>::Fail(FFlockError::Make(EFlockErrorType::Cancelled,
+							TEXT("Player provider was destroyed"))));
+					}
+				}
 				return;
 			}
 			if (!Result.bSuccess)
 			{
-				Self->PlayerDataInFlight.Complete(PlayerIdCopy,
-					TFlockResult<TMap<FString, FFlockPlayerData>>::Fail(Result.Error));
+				Self->FinishPlayerDataRead(PlayerIdCopy, Read, TFlockResult<TMap<FString, FFlockPlayerData>>::Fail(Result.Error));
 				return;
 			}
 
@@ -552,12 +640,36 @@ void FFlockPlayerProvider::FetchPlayerDataPage(const FString& PlayerId, int32 Pa
 			const int32 Count = Result.Value.Items.Num();
 			if (Count == 0 || Count < PageSize)
 			{
-				// Last page: cache the whole map and fan the result out to every coalesced caller.
-				Self->PlayerDataByPlayer.Add(PlayerIdCopy, *Acc);
-				Self->PlayerDataInFlight.Complete(PlayerIdCopy,
-					TFlockResult<TMap<FString, FFlockPlayerData>>::Ok(*Acc));
+				Self->FinishPlayerDataRead(PlayerIdCopy, Read, TFlockResult<TMap<FString, FFlockPlayerData>>::Ok(*Acc));
 				return;
 			}
-			Self->FetchPlayerDataPage(PlayerIdCopy, Page + 1, Acc);
+			Self->FetchPlayerDataPage(PlayerIdCopy, Page + 1, Acc, Read);
 		});
+}
+
+void FFlockPlayerProvider::FinishPlayerDataRead(const FString& PlayerId, const TSharedRef<FPlayerDataRead>& Read,
+	const TFlockResult<TMap<FString, FFlockPlayerData>>& Result)
+{
+	// Only this read's own place is given up: a newer read sent after a drop keeps its place for the next caller to join.
+	if (const TSharedRef<FPlayerDataRead>* OnItsWay = PlayerDataReads.Find(PlayerId))
+	{
+		if (*OnItsWay == Read)
+		{
+			PlayerDataReads.Remove(PlayerId);
+		}
+	}
+	// An answer sent before a drop or a server row may be older than either, so it goes to its callers but is not kept.
+	if (Result.bSuccess && Read->DropsWhenSent == PlayerDataDrops)
+	{
+		PlayerDataByPlayer.Add(PlayerId, Result.Value);
+	}
+	TArray<TFunction<void(TFlockResult<TMap<FString, FFlockPlayerData>>)>> Waiters = MoveTemp(Read->Waiters);
+	Read->Waiters.Reset();
+	for (TFunction<void(TFlockResult<TMap<FString, FFlockPlayerData>>)>& Waiter : Waiters)
+	{
+		if (Waiter)
+		{
+			Waiter(Result);
+		}
+	}
 }

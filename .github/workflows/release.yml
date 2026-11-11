@@ -92,8 +92,14 @@ jobs:
           require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Multiplayer/FlockMultiplayerSample.umap
           require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Multiplayer/BP_FlockSampleGameInstance.uasset
           require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Multiplayer/WBP_FlockMultiplayerSample.uasset
+          # The Blueprint-only shop sample ships beside it (Content/Samples/Shop).
+          require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Shop/FlockShopSample.umap
+          require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Shop/WBP_FlockShopSample.uasset
+          require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Shop/WBP_FlockShopSampleItem.uasset
+          # Real-money purchases through the platform's store are a module of Flock's own.
+          require_entry flock-entries.txt FlockUnrealSdk/Source/FlockPlatformStore/FlockPlatformStore.Build.cs
           if grep -E '(^|/)OptionalPlugins/|ProtokitePlaytest' flock-entries.txt; then
-            echo "::error::Flock's archive contains the playtest plugin (entries above). Keep OptionalPlugins/ export-ignored in .gitattributes."
+            echo "::error::Flock's archive contains an optional plugin (entries above). Keep OptionalPlugins/ export-ignored in .gitattributes."
             FAILED=1
           fi
 
@@ -116,7 +122,7 @@ jobs:
           if [ "$FAILED" != "0" ]; then
             exit 1
           fi
-          echo "$FLOCK_ZIP: $(wc -l < flock-entries.txt) entries, no playtest plugin. $PLAYTEST_ZIP: $(wc -l < playtest-entries.txt) entries, one manifest, licence included."
+          echo "$FLOCK_ZIP: $(wc -l < flock-entries.txt) entries, no optional plugin. $PLAYTEST_ZIP: $(wc -l < playtest-entries.txt) entries, one manifest, licence included."
 
       # Informational only. The notes are no longer affected by a release already existing — the step
       # below composes the whole body, so a re-run replaces it — but it is still worth knowing that this
@@ -184,8 +190,8 @@ jobs:
 
           {
             printf '%s\n\n' "$GENERATED"
-            # Two zips are attached, and the second one is easy to extract into the wrong place: inside Flock's
-            # folder, where Unreal never loads it.
+            # Two zips are attached, and the optional one is easy to extract into the wrong place: inside Flock's
+            # folder, where Unreal never loads them.
             printf '## Downloads\n\n'
             printf -- '- `FlockUnrealSdk-%s.zip`: the Flock SDK. Extract it into the `Plugins/` folder of your project.\n' "$GITHUB_REF_NAME"
             printf -- '- `ProtokitePlaytest-%s.zip`: the optional Protokite playtesting plugin, in beta. Extract it next to the Flock SDK, so that `Plugins/ProtokitePlaytest/` sits beside `Plugins/FlockUnrealSdk/`, then enable it in your project. It stays off until **Enable Playtesting** is turned on; leave it out of projects that are not running playtests.\n\n' "$GITHUB_REF_NAME"

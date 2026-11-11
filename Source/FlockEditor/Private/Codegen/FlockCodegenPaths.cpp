@@ -76,7 +76,7 @@ bool FFlockCodegenPaths::TryResolveGeneratedRootFromSettings(FString& OutAbsolut
 bool FFlockCodegenPaths::TryResolveContentRoot(const FString& Configured, FString& OutRoot, FString& OutError)
 {
 	OutRoot.Reset();
-	const TCHAR* const Fix = TEXT("Set Generated Content Path in Project Settings > Flock SDK > Codegen to a folder of "
+	const TCHAR* const Fix = TEXT("Set Generated Content Path in Project Settings > Plugins > Flock SDK Settings > Codegen to a folder of "
 		"its own, such as /Game/Flock/Generated.");
 
 	FString Root = Configured.TrimStartAndEnd();

@@ -19,6 +19,21 @@ void FFlockCallOrigin::Set(const FString& Origin)
 	GCallOrigin = Origin;
 }
 
+namespace
+{
+	FString GExpectedAnswer;
+}
+
+const FString& FFlockExpectedAnswer::Get()
+{
+	return GExpectedAnswer;
+}
+
+void FFlockExpectedAnswer::Set(const FString& Code)
+{
+	GExpectedAnswer = Code;
+}
+
 void FFlockUnrealLogger::LogDebug(const FString& Message)
 {
 	if (bVerbose)

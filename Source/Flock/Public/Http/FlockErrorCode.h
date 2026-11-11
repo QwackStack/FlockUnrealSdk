@@ -76,6 +76,7 @@ enum class EFlockErrorCode : uint8
 	MatchmakingPartyTooLarge,
 	MatchmakingPlayerNotEligible,
 	MatchmakingQueueNotFound,
+	MatchmakingSearchInputRequired,
 	MatchmakingTicketNotCancelable,
 	MatchmakingTicketNotFound,
 	MatchmakingVersionMismatch,
@@ -110,6 +111,21 @@ enum class EFlockErrorCode : uint8
 	PartyNotFound,
 	PartyNotPartyLeader,
 	PartyTargetNotAMember,
+
+	// payment_provider.*
+	//
+	// Sent by redeeming a store purchase's receipt and by opening a web checkout. Several codes have more than one cause,
+	// which only the server's reason tells apart; each hint names every cause.
+	PaymentProviderCheckoutFailed,
+	PaymentProviderCredentialsUnreadable,
+	PaymentProviderProviderNotFound,
+	PaymentProviderProviderNotSupportedHere,
+	PaymentProviderReceiptBelongsToAnotherPlayer,
+	PaymentProviderReceiptInvalid,
+	PaymentProviderReceiptPending,
+	PaymentProviderReceiptProductMismatch,
+	PaymentProviderStoreCredentialsRejected,
+	PaymentProviderStoreUnavailable,
 
 	// player.* (MissingToken, ExpiredToken and InvalidToken come from the sign-in check of a route that acts as the player)
 	PlayerAccountAlreadyLinked,
@@ -168,18 +184,27 @@ enum class EFlockErrorCode : uint8
 	RequestUnauthorized,
 	RequestValidationFailed,
 
-	// shop.*
+	// shop.* (PlayerMismatch is a 403 that means "not allowed", never "signed out")
 	ShopCurrencyNotHeld,
 	ShopCurrencyTemplateNotFound,
+	ShopIdempotencyKeyReused,
 	ShopInsufficientFunds,
+	ShopInvalidPurchaseStatus,
+	ShopItemNotForSale,
 	ShopItemNotFound,
 	ShopMalformedReward,
+	ShopNotARealCurrencyItem,
 	ShopPackGrantsNothing,
+	ShopPlayerMismatch,
 	ShopPlayerNotFound,
+	ShopPlayerRequired,
+	ShopPurchaseNotFound,
 	ShopRealCurrencyNeedsCheckout,
+	ShopRealCurrencySettlementUnavailable,
 	ShopRewardCurrencyNotHeld,
 	ShopShopNotFound,
 	ShopWalletNotFound,
+	ShopWebhookProviderUnknown,
 
 	// shop_item.*
 	ShopItemShopItemNotFound,
