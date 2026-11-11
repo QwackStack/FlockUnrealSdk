@@ -43,6 +43,10 @@ A device id the SDK keeps; config read as the signed-in player sees it.
   it used the machine's login id. `Flock.LoginWithDevice <id>` is unchanged.
 - **The shop sample's device field starts empty**, and an empty field signs in with this device's own id; type an id to be
   another player.
+- **A passing store setup check no longer logs a warning and an error.** `UFlockStore::CheckSetup` (and *Flock Check Store
+  Setup*) sends a receipt no store issued, and its refusal (`payment_provider.receipt_invalid`) is what proves Flock's server
+  checks purchases; that refusal is now logged at Verbose. A game's own receipt refused the same way still logs its warning and
+  error.
 
 ### Documentation
 

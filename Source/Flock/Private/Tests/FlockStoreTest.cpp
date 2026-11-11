@@ -19,6 +19,7 @@
 #include "Store/FlockStore.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"
+#include "Tests/Support/FlockRecordingLogger.h"
 #include "Tests/Support/FlockTestSdk.h"
 #include "Tests/Support/FlockTestSpelling.h"
 #include "Tests/Support/FlockStoreNodeTestListener.h"
@@ -1137,8 +1138,7 @@ bool FFlockStoreRestoreFailsTest::RunTest(const FString& Parameters)
 FLOCK_STORE_TEST(FFlockStoreSetupCheckTest, "TheSetupCheckListsWhatTheStoreDidNotFindAndItemsWithoutAProductId")
 bool FFlockStoreSetupCheckTest::RunTest(const FString& Parameters)
 {
-	// The SDK logs each refusal the server sends.
-	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
+	// The made-up receipt's refusal is logged at debug: no error to expect (APassingSetupCheckLogsItsMadeUpReceiptsRefusalAtDebug...).
 	FFixture F(FFlockFakeTransport::Status(422, ReceiptInvalid));
 	FFlockStorePrice Found;
 	Found.bFoundInTheStore = true;
@@ -1185,8 +1185,7 @@ bool FFlockStoreSetupCheckKeysTest::RunTest(const FString& Parameters)
 FLOCK_STORE_TEST(FFlockStoreSetupReadyTest, "TheSetupCheckWithEveryProductFoundAndTheServerAbleToCheckIsReady")
 bool FFlockStoreSetupReadyTest::RunTest(const FString& Parameters)
 {
-	// The SDK logs each refusal the server sends.
-	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
+	// The made-up receipt's refusal is logged at debug: no error to expect (APassingSetupCheckLogsItsMadeUpReceiptsRefusalAtDebug...).
 	FFixture F(FFlockFakeTransport::Coded(422, TEXT("payment_provider.receipt_invalid")),
 		{ Item(TEXT("gems"), TEXT("currency_pack"), FString::Printf(TEXT("{\"google_play\":\"%s\"}"), *Gems)) });
 	FFlockStorePrice Found;
@@ -1197,6 +1196,36 @@ bool FFlockStoreSetupReadyTest::RunTest(const FString& Parameters)
 	const TAnswer<TFlockResult<FFlockStoreSetupCheck>> Answer;
 	F.Connected->CheckSetup(Answer.Into());
 	TestTrue(TEXT("Ready"), Answer.IsSet() && Answer->Value.IsReady());
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStoreSetupQuietTest, "APassingSetupCheckLogsItsMadeUpReceiptsRefusalAtDebugAndARealRefusalStillWarns")
+bool FFlockStoreSetupQuietTest::RunTest(const FString& Parameters)
+{
+	FFixture F(FFlockFakeTransport::Status(422, ReceiptInvalid),
+		{ Item(TEXT("gems"), TEXT("currency_pack"), FString::Printf(TEXT("{\"google_play\":\"%s\"}"), *Gems)) });
+	const TSharedRef<FFlockRecordingLogger> Log = MakeShared<FFlockRecordingLogger>();
+	F.Sdk->SetLogger(Log);
+	FFlockStorePrice Found;
+	Found.bFoundInTheStore = true;
+	F.Store->Prices.Add(Gems, Found);
+	F.SignIn(TEXT("player-a"));
+	F.Connect();
+	const TAnswer<TFlockResult<FFlockStoreSetupCheck>> Answer;
+	F.Connected->CheckSetup(Answer.Into());
+	TestTrue(TEXT("Ready"), Answer.IsSet() && Answer->Value.IsReady());
+	TestEqual(TEXT("No warning: the refusal is the answer the check asked for"), Log->Warnings.Num(), 0);
+	TestEqual(TEXT("No error"), Log->Errors.Num(), 0);
+	TestTrue(TEXT("The HTTP line is at debug"), FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("the answer the call asked for")));
+	TestTrue(TEXT("The provider's line is at debug"), FFlockRecordingLogger::AnyContains(Log->Debugs, TEXT("Redeem store receipt [C++] failed")));
+	TestTrue(TEXT("The scope closed with the check"), FFlockExpectedAnswer::Get().IsEmpty());
+
+	// Counter-case: a game's own receipt refused the same way is a failed purchase, and says so.
+	const TAnswer<TFlockResult<FFlockPurchaseResult>> Redeemed;
+	F.Sdk->GetShopProvider()->RedeemStoreReceipt(TEXT("gems"), FFlockStoreReceipt::FromGooglePlay(Gems, TEXT("token-1")), Redeemed.Into());
+	TestTrue(TEXT("Refused"), Redeemed.IsSet() && Redeemed->Error.ErrorCode == EFlockErrorCode::PaymentProviderReceiptInvalid);
+	TestTrue(TEXT("The HTTP line warns"), FFlockRecordingLogger::AnyContains(Log->Warnings, TEXT("<- 422 POST")));
+	TestTrue(TEXT("The provider's line is an error"), FFlockRecordingLogger::AnyContains(Log->Errors, TEXT("Redeem store receipt [C++] failed")));
 	return true;
 }
 

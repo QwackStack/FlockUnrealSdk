@@ -193,8 +193,10 @@ private:
 		const TSharedRef<IFlockLogger> Log = Logger;
 		// Resolved now, at dispatch, so the completion still reports the origin that made the call.
 		const FString LoggedContext = DecorateContext(Context);
+		// Read at dispatch too: the refusal the caller asked for on purpose (the setup check's made-up receipt) is no failure.
+		const FString ExpectedCode = FFlockExpectedAnswer::Get();
 		TFunction<void(TFlockResult<T>)> Finish =
-			[Log, Context, LoggedContext, OnComplete, IsExpectedFailure, SettleFailure](TFlockResult<T> Result)
+			[Log, Context, LoggedContext, OnComplete, IsExpectedFailure, SettleFailure, ExpectedCode](TFlockResult<T> Result)
 		{
 			if (!Result.bSuccess)
 			{
@@ -211,7 +213,8 @@ private:
 				// A cancel is the game's or the SDK's own choice (a handle cancelled, a sign-in ended), so it is no failure either.
 				// What went wrong and how to fix it, as the developer reads it everywhere else.
 				const FString Line = FString::Printf(TEXT("%s failed: %s"), *LoggedContext, *Result.Error.ReasonAndFix());
-				if (Result.Error.Type == EFlockErrorType::Cancelled || (IsExpectedFailure && IsExpectedFailure(Result.Error)))
+				if (Result.Error.Type == EFlockErrorType::Cancelled || (IsExpectedFailure && IsExpectedFailure(Result.Error))
+					|| (!ExpectedCode.IsEmpty() && Result.Error.Code.Equals(ExpectedCode, ESearchCase::CaseSensitive)))
 				{
 					Log->LogDebug(Line);
 				}
@@ -524,6 +527,29 @@ struct FLOCK_API FFlockCallOriginScope
 
 	FFlockCallOriginScope(const FFlockCallOriginScope&) = delete;
 	FFlockCallOriginScope& operator=(const FFlockCallOriginScope&) = delete;
+
+	FString Previous;
+};
+
+/**
+ * Marks the calls dispatched while it is open as asking for a refusal with this server code (FFlockExpectedAnswer), then
+ * restores the previous one. Only the store setup check opens one, around its made-up receipt.
+ */
+struct FLOCK_API FFlockExpectedAnswerScope
+{
+	explicit FFlockExpectedAnswerScope(const FString& Code)
+		: Previous(FFlockExpectedAnswer::Get())
+	{
+		FFlockExpectedAnswer::Set(Code);
+	}
+
+	~FFlockExpectedAnswerScope()
+	{
+		FFlockExpectedAnswer::Set(Previous);
+	}
+
+	FFlockExpectedAnswerScope(const FFlockExpectedAnswerScope&) = delete;
+	FFlockExpectedAnswerScope& operator=(const FFlockExpectedAnswerScope&) = delete;
 
 	FString Previous;
 };

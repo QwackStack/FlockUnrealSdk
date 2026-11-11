@@ -164,7 +164,7 @@ FString FFlockHttpClient::LogRequest(const FString& Method, const FString& Url) 
 }
 
 void FFlockHttpClient::LogResponse(const FString& Method, const FString& Url, const FFlockHttpResponse& Response,
-	double StartedAtSeconds, const FString& Origin) const
+	double StartedAtSeconds, const FString& Origin, const FString& ExpectedCode) const
 {
 	const double ElapsedMs = (FPlatformTime::Seconds() - StartedAtSeconds) * 1000.0;
 
@@ -218,6 +218,15 @@ void FFlockHttpClient::LogResponse(const FString& Method, const FString& Url, co
 	{
 		Logger->LogDebug(FString::Printf(TEXT("<- 400 %s %s (%.0f ms) [%s]: Flock did not vouch for the join token, so the host turns that player away"),
 			*Method, *Url, ElapsedMs, *Origin));
+		return;
+	}
+	// The refusal the caller asked for on purpose (the store setup check's made-up receipt, which the store does not know) is the
+	// answer it wanted: a warning there made a ready setup read as broken. Only that code, and only for that call.
+	if (!ExpectedCode.IsEmpty() && Response.StatusCode >= 400 && Response.StatusCode < 500
+		&& Response.Body.Contains(FString::Printf(TEXT("\"%s\""), *ExpectedCode), ESearchCase::CaseSensitive))
+	{
+		Logger->LogDebug(FString::Printf(TEXT("<- %d %s %s (%.0f ms) [%s]: the answer the call asked for: %s"),
+			Response.StatusCode, *Method, *Url, ElapsedMs, *Origin, *Detail));
 		return;
 	}
 	Logger->LogWarning(FString::Printf(TEXT("<- %d %s %s (%.0f ms) [%s]: %s"),

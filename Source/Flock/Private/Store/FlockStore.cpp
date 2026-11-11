@@ -1359,6 +1359,8 @@ void UFlockStore::CheckSetup(TFunction<void(TFlockResult<FFlockStoreSetupCheck>)
 	const FFlockStoreReceipt MadeUp = PaymentProvider.Equals(FlockPaymentProviders::AppleAppStore, ESearchCase::CaseSensitive)
 		? FFlockStoreReceipt::FromAppleAppStore(TEXT("0"))
 		: FFlockStoreReceipt::FromGooglePlay(AskedProduct, TEXT("flock-setup-check"));
+	// Its refusal is the answer that proves the server checks purchases, so it is logged at debug, not as a failed call.
+	const FFlockExpectedAnswerScope Expected(TEXT("payment_provider.receipt_invalid"));
 	Flock->GetShopProvider()->RedeemStoreReceipt(AskAbout->Id, MadeUp, [Check, OnComplete](TFlockResult<FFlockPurchaseResult> Answer) mutable
 	{
 		if (Answer.IsSuccess())

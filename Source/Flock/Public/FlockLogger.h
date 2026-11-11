@@ -40,6 +40,18 @@ struct FLOCK_API FFlockCallOrigin
 };
 
 /**
+ * The server's error code the call dispatched now asks for on purpose: empty for every call but the store setup check's made-up
+ * receipt, whose refusal (`payment_provider.receipt_invalid`) is the answer that proves the server checks purchases. A refusal
+ * with this code is logged at debug, by the HTTP client and the provider alike; any other answer is logged as always. Read at
+ * dispatch, as the origin is, and set only through FFlockExpectedAnswerScope. Game-thread only.
+ */
+struct FLOCK_API FFlockExpectedAnswer
+{
+	static const FString& Get();
+	static void Set(const FString& Code);
+};
+
+/**
  * Default logger: routes to the LogFlock category with a "[Flock SDK]" prefix. When not verbose
  * (Enable Debug Logs off) Debug/Info are suppressed, but Warning/Error still surface — a UE-native
  * adjustment so startup failures are never silently swallowed.

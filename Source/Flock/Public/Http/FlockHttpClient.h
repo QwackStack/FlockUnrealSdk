@@ -121,13 +121,14 @@ public:
 	{
 		FFlockHttpRequest Request = MakeRequest(TEXT("GET"), Url, Headers, FString(), /*bHasBody*/ false);
 		const FString Origin = LogRequest(TEXT("GET"), Url);
+		const FString ExpectedCode = FFlockExpectedAnswer::Get();
 
 		const TSharedRef<FFlockHttpClient> Self = AsShared();
 		const double StartedAt = FPlatformTime::Seconds();
-		return Adapter->SendAsync(Request, [Self, OnComplete, Url, StartedAt, Origin](FFlockHttpResponse Response)
+		return Adapter->SendAsync(Request, [Self, OnComplete, Url, StartedAt, Origin, ExpectedCode](FFlockHttpResponse Response)
 		{
 			Self->NoteReachability(Response);
-			Self->LogResponse(TEXT("GET"), Url, Response, StartedAt, Origin);
+			Self->LogResponse(TEXT("GET"), Url, Response, StartedAt, Origin, ExpectedCode);
 			if (!OnComplete)
 			{
 				return;
@@ -204,13 +205,14 @@ public:
 	{
 		FFlockHttpRequest Request = MakeRequest(TEXT("GET"), Url, Headers, FString(), /*bHasBody*/ false);
 		const FString Origin = LogRequest(TEXT("GET"), Url);
+		const FString ExpectedCode = FFlockExpectedAnswer::Get();
 
 		const TSharedRef<FFlockHttpClient> Self = AsShared();
 		const double StartedAt = FPlatformTime::Seconds();
-		return Adapter->SendAsync(Request, [Self, OnComplete, Url, StartedAt, Origin](FFlockHttpResponse Response)
+		return Adapter->SendAsync(Request, [Self, OnComplete, Url, StartedAt, Origin, ExpectedCode](FFlockHttpResponse Response)
 		{
 			Self->NoteReachability(Response);
-			Self->LogResponse(TEXT("GET"), Url, Response, StartedAt, Origin);
+			Self->LogResponse(TEXT("GET"), Url, Response, StartedAt, Origin, ExpectedCode);
 			if (!OnComplete)
 			{
 				return;
@@ -314,15 +316,16 @@ private:
 	{
 		FFlockHttpRequest Request = MakeRequest(Method, Url, Headers, Body, bHasBody);
 		const FString Origin = LogRequest(Method, Url);
+		const FString ExpectedCode = FFlockExpectedAnswer::Get();
 
 		const TSharedRef<FFlockHttpClient> Self = AsShared();
 		const double StartedAt = FPlatformTime::Seconds();
 		// Method, Url and Origin are captured by value: they are references into the caller's frame (and,
 		// for the origin, ambient state that moves on), while this completion runs long after both.
-		return Adapter->SendAsync(Request, [Self, Reading, OnComplete, Method, Url, StartedAt, Origin](FFlockHttpResponse Response)
+		return Adapter->SendAsync(Request, [Self, Reading, OnComplete, Method, Url, StartedAt, Origin, ExpectedCode](FFlockHttpResponse Response)
 		{
 			Self->NoteReachability(Response);
-			Self->LogResponse(Method, Url, Response, StartedAt, Origin);
+			Self->LogResponse(Method, Url, Response, StartedAt, Origin, ExpectedCode);
 			if (!OnComplete)
 			{
 				return;
@@ -367,10 +370,11 @@ private:
 	 * "<- 200 GET /v1/... (34 ms, 12 bytes) [Blueprint 'bpTest']" on the way back.
 	 *
 	 * Debug on success, **warning on failure** — a call that failed is worth seeing without having turned
-	 * debug logs on first, which is the situation someone is in precisely when they need it.
+	 * debug logs on first, which is the situation someone is in precisely when they need it. A refusal carrying ExpectedCode
+	 * (FFlockExpectedAnswer, read at dispatch) is the answer the caller asked for, so it stays at debug.
 	 */
 	void LogResponse(const FString& Method, const FString& Url, const FFlockHttpResponse& Response,
-		double StartedAtSeconds, const FString& Origin) const;
+		double StartedAtSeconds, const FString& Origin, const FString& ExpectedCode) const;
 
 	TSharedRef<IFlockHttpAdapter> Adapter;
 	TSharedRef<IFlockLogger> Logger;
