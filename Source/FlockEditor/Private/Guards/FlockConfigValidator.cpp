@@ -71,7 +71,7 @@ FString UFlockConfigValidator::GetBuildBlockReason(const TArray<FFlockSetupFindi
 		Lines.Add(FString::Printf(TEXT("  - %s. %s"), *Finding.Title.ToString(), *Finding.Detail.ToString()));
 	}
 	Lines.Add(TEXT("Fix these in the Flock panel (Tools > Flock > Flock Panel), or turn off "
-		"'Fail Build If Version Unresolved' in Project Settings > Flock SDK."));
+		"'Fail Build If Version Unresolved' in Project Settings > Plugins > Flock SDK Settings."));
 
 	return FString::Join(Lines, TEXT("\n"));
 }

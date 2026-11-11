@@ -482,7 +482,7 @@ void UFlockStore::RememberProducts(TArray<FFlockStoreProduct>& InOutProducts)
 	{
 		const FString Root = Sdk->TestSavedFilesFolder.IsEmpty()
 			? GetDefault<UFlockConfig>()->OfflineCacheDirectory : FPaths::Combine(Sdk->TestSavedFilesFolder, TEXT("snapshots"));
-		Store = MakeShared<FFlockSnapshotStore>(Root, Sdk->Logger.ToSharedRef(), UFlockSubsystem::SdkVersion);
+		Store = MakeShared<FFlockSnapshotStore>(Root, Sdk->SharedLogger(), UFlockSubsystem::SdkVersion);
 	}
 	FFlockSnapshotStore& Disk = *Store;
 	// Per game and store: another game's products never reach this one.

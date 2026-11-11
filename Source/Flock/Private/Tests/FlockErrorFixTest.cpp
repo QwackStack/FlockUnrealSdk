@@ -193,7 +193,7 @@ bool FFlockErrorFixMeasuredAnswersTest::RunTest(const FString& Parameters)
 
 	// A wrong API URL is named as such, wherever the route would have been.
 	TestTrue(TEXT("request.not_found says to check API URL"),
-		FFlockErrorHints::For(EFlockErrorCode::RequestNotFound).Contains(TEXT("API URL under Project Settings > Flock SDK"), ESearchCase::CaseSensitive));
+		FFlockErrorHints::For(EFlockErrorCode::RequestNotFound).Contains(TEXT("API URL under Project Settings > Plugins > Flock SDK Settings"), ESearchCase::CaseSensitive));
 
 	// An API URL without /v1 reaches the dashboard's routes, which answer with no Flock code: not the player's sign-in.
 	const FFlockError NoVersion = FailureFor(Answer(401, TEXT("{\"detail\":\"Invalid token.\"}")));

@@ -46,7 +46,7 @@ TArray<FFlockSetupFinding> FFlockSetupStatus::Evaluate(const FFlockSetupInput& I
 	{
 		Findings.Add(MakeFinding(TEXT("Flock.Config.ApiUrl"), EFlockSetupSeverity::Error,
 			LOCTEXT("ApiUrlMissingTitle", "API URL is empty"),
-			LOCTEXT("ApiUrlMissingDetail", "Set the API URL in Project Settings > Flock SDK."),
+			LOCTEXT("ApiUrlMissingDetail", "Set the API URL in Project Settings > Plugins > Flock SDK Settings."),
 			EFlockSetupFix::OpenSettings));
 	}
 	else if (!Input.ApiUrl.StartsWith(TEXT("http://")) && !Input.ApiUrl.StartsWith(TEXT("https://")))
@@ -63,7 +63,7 @@ TArray<FFlockSetupFinding> FFlockSetupStatus::Evaluate(const FFlockSetupInput& I
 	{
 		Findings.Add(MakeFinding(TEXT("Flock.Config.ApiKey"), EFlockSetupSeverity::Error,
 			LOCTEXT("ApiKeyMissingTitle", "API Key is empty"),
-			LOCTEXT("ApiKeyMissingDetail", "Paste your API key from the Flock dashboard into Project Settings > Flock SDK."),
+			LOCTEXT("ApiKeyMissingDetail", "Paste your API key from the Flock dashboard into Project Settings > Plugins > Flock SDK Settings."),
 			EFlockSetupFix::OpenSettings));
 	}
 

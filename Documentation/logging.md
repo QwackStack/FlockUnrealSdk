@@ -66,11 +66,13 @@ public:
 };
 ```
 
-**Set it before the SDK initializes.** Each part of the SDK takes the logger when initialization builds
-it, so a logger set afterwards receives only the subsystem's and the event hub's own lines, not the
-calls' or the network trace. With **Auto Initialize on Load** on, initialization runs as the game
-instance starts, before your code can reach the subsystem; so turn it off and initialize the SDK yourself
-from your game instance, logger first:
+**Set it whenever you like.** Every line from then on reaches it, the calls' and the network trace
+included, whether the SDK has initialized or not. Only the lines written before you set it went to the
+default logger. A few warnings come from places with no SDK to ask and go straight to the engine log
+instead: a key added twice to Metadata or command data, a join check given no game (`LogFlock`), and the
+phone store's module (`LogFlockPlatformStore`); so do the `Flock.*` console commands. With **Auto Initialize on Load** on, initialization runs as the game instance starts,
+before your code can reach the subsystem; to get initialization's own lines too, turn it off and
+initialize the SDK yourself from your game instance, logger first:
 
 ```cpp
 // MyGameInstance.cpp, with Auto Initialize on Load turned off.

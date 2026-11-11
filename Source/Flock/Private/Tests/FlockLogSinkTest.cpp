@@ -6,6 +6,7 @@
 
 #include "Analytics/FlockLogSink.h"
 #include "Flock.h"
+#include "FlockPassOnLogger.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Tests/Support/FlockTestSafeIndex.h"
 #include "UObject/Script.h"
@@ -95,6 +96,45 @@ bool FFlockLogSinkCategoryFilterTest::RunTest(const FString& Parameters)
 	Sink.AddExcludedCategory(Noisy);
 	Sink.Serialize(TEXT("after"), ELogVerbosity::Error, Noisy);
 	TestEqual(TEXT("ignored after exclusion"), Sink.PendingCount(), 1);
+	return true;
+}
+
+namespace
+{
+	/** A game's own logger that writes errors under the game's category: here it hands them straight to the sink under test. */
+	class FGameCategoryLogger : public IFlockLogger
+	{
+	public:
+		explicit FGameCategoryLogger(FFlockLogSink& InSink) : Sink(InSink) {}
+		virtual void LogDebug(const FString& Message) override {}
+		virtual void LogInfo(const FString& Message) override {}
+		virtual void LogWarning(const FString& Message) override {}
+		virtual void LogError(const FString& Message) override { Sink.Serialize(*Message, ELogVerbosity::Error, FName(TEXT("LogMyGame"))); }
+
+	private:
+		FFlockLogSink& Sink;
+	};
+}
+
+/**
+ * The same loop through a game's logger. An SDK error passed on to a logger that writes it under the game's own category is
+ * not captured, though the category is not Flock's; the game's own error, logged outside the SDK, still is.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockLogSinkGameLoggerTest, "Flock.Analytics.LogSink.AnSdkLineAGameLoggerWritesUnderItsOwnCategory_IsNotCaptured",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockLogSinkGameLoggerTest::RunTest(const FString& Parameters)
+{
+	FFlockLogSink Sink;
+	const TSharedRef<FGameCategoryLogger> Game = MakeShared<FGameCategoryLogger>(Sink);
+	FFlockPassOnLogger PassOn(MakeShared<FFlockNullLogger>());
+	PassOn.PassOnTo(Game);
+
+	PassOn.LogError(TEXT("an upload failed"));
+	TestFalse(TEXT("the SDK's line, passed on, is not captured"), DrainContains(Sink, TEXT("an upload failed")));
+	Game->LogError(TEXT("the game's own fault"));
+	TestTrue(TEXT("the game's own error still is"), DrainContains(Sink, TEXT("the game's own fault")));
+	TestFalse(TEXT("and the mark is gone once the line is passed on"), GFlockPassingOnAnSdkLine);
 	return true;
 }
 

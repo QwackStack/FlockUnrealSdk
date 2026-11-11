@@ -439,9 +439,9 @@ Two rules that are easy to miss:
 - **A chosen option must match letter for letter.** The server compares options exactly, so `crash` is not `Crash`.
 
 **In Blueprint the Set nodes have no execution pins and change nothing in place.** Each takes an Answers value and returns a new one with
-that answer added: wire its return into the next Set node's **Answers**. Feed the first one an **Answers** variable of type
-*Protokite Playtest Form Answers* (a new one is empty), set the variable to the last one's return, and give that variable to
-Find Feedback Form Problems and Send.
+that answer added: wire its return into the next Set node's **Answers**. Leave the first one's **Answers** unwired: it
+starts from no answers. Set an **Answers** variable (of type *Protokite Playtest Form Answers*) to the last one's return, and
+give that variable to Find Feedback Form Problems and Send.
 
 ![Custom event Send My Feedback, Protokite Get Feedback Form into a Branch, Set Feedback Rating Answer (fun, 4) feeding Set Feedback Text Answer (comments, The second level was too long), the result set into an Answers variable, Find Feedback Form Problems on Answers and the form, its Length compared with 0 into a Branch, and on True Protokite Send Feedback Form Answers](images/playtest-feedback-form-own.png)
 

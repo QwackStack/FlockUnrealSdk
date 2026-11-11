@@ -830,7 +830,7 @@ void FFlockAnalyticsProvider::StartSession(const FString& InPlayerIdOrEmpty,
 		if (OnComplete)
 		{
 			OnComplete(TFlockResult<FString>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
-				TEXT("Analytics is not collecting: it is turned off, or the player has not given consent"), TEXT("Turn on Analytics Enabled under Project Settings > Flock SDK. With Analytics Require Explicit Consent on, also record the player's consent with SetConsent(true) before starting a session."))));
+				TEXT("Analytics is not collecting: it is turned off, or the player has not given consent"), TEXT("Turn on Analytics Enabled under Project Settings > Plugins > Flock SDK Settings. With Analytics Require Explicit Consent on, also record the player's consent with SetConsent(true) before starting a session."))));
 		}
 		return;
 	}
@@ -891,7 +891,7 @@ void FFlockAnalyticsProvider::RegisterActiveSession(TFunction<void(TFlockResult<
 		if (OnComplete)
 		{
 			OnComplete(TFlockResult<FString>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
-				TEXT("No analytics session is open to register"), TEXT("Start one with StartSession, or leave Analytics Auto Start Session on under Project Settings > Flock SDK."))));
+				TEXT("No analytics session is open to register"), TEXT("Start one with StartSession, or leave Analytics Auto Start Session on under Project Settings > Plugins > Flock SDK Settings."))));
 		}
 		return;
 	}

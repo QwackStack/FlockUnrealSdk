@@ -69,11 +69,11 @@ FString FProtokiteClient::FixFor(const FFlockError& Error)
 	case 400:
 		return TEXT("Protokite refused the request; the reason above is its own. A playtest that is no longer collecting sessions has closed, and nothing in the build reopens it: start a new playtest in the Protokite dashboard if more sessions are needed.");
 	case 401:
-		return TEXT("Protokite did not accept this build's Flock API key. Set API Key under Project Settings > Flock SDK to the key, from the Flock dashboard, of the game the playtest belongs to.");
+		return TEXT("Protokite did not accept this build's Flock API key. Set API Key under Project Settings > Plugins > Flock SDK Settings to the key, from the Flock dashboard, of the game the playtest belongs to.");
 	case 403:
-		return TEXT("Protokite holds this playtest session for another game, so this build may not change it. Check API Key under Project Settings > Flock SDK is the key of the game the playtest belongs to; the next launch starts a session of its own.");
+		return TEXT("Protokite holds this playtest session for another game, so this build may not change it. Check API Key under Project Settings > Plugins > Flock SDK Settings is the key of the game the playtest belongs to; the next launch starts a session of its own.");
 	case 404:
-		return TEXT("Protokite has nothing for this request; the reason above says what. No playtest linked to this Flock SDK version: link the playtest in the Protokite dashboard to the Game Version this build runs (Game Version under Project Settings > Flock SDK), or build with the version the playtest names. No published feedback form: publish the playtest's form in the Protokite dashboard. Playtest session not found: the session this was for is gone, and the next launch starts another.");
+		return TEXT("Protokite has nothing for this request; the reason above says what. No playtest linked to this Flock SDK version: link the playtest in the Protokite dashboard to the Game Version this build runs (Game Version under Project Settings > Plugins > Flock SDK Settings), or build with the version the playtest names. No published feedback form: publish the playtest's form in the Protokite dashboard. Playtest session not found: the session this was for is gone, and the next launch starts another.");
 	case 422:
 		return TEXT("Protokite refused a value the plugin sent; the reason above names it. A form answer it names does not fit the form as published now: the next launch fetches the form again. A missing steam_id or device_id means this device gave the player no id to send.");
 	default:

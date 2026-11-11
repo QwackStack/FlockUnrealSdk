@@ -17,7 +17,7 @@ namespace
 		if (!Provider)
 		{
 			OutError = FFlockError::MakeWithFix(EFlockErrorType::Validation,
-				TEXT("Flock analytics is not available: Flock is not initialized, or analytics is turned off"), FString(TEXT("Turn on Analytics Enabled under Project Settings > Flock SDK. ")) + FFlockErrorHints::InitializeFlockFirst());
+				TEXT("Flock analytics is not available: Flock is not initialized, or analytics is turned off"), FString(TEXT("Turn on Analytics Enabled under Project Settings > Plugins > Flock SDK Settings. ")) + FFlockErrorHints::InitializeFlockFirst());
 		}
 		return Provider;
 	}

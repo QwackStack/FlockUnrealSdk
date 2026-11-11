@@ -27,8 +27,9 @@ name as the template declares it (**Key**), and a **Value** made by a *Command V
 
 To replace the whole row, build its values for `Flock Update Player Data` by dragging off the **Data** pin
 and chaining *Set Command Int / Float / String / Bool / String Array*, one per field the template
-declares. Each of those takes **and returns** an `FFlockCommandData`, so they chain left to right. There
-is also *Set Command Json* for a nested shape.
+declares. Each of those takes **and returns** an `FFlockCommandData`, so they chain left to right; leave
+the first one's **Data** unwired, and it starts from an empty bag. There is also *Set Command Json* for a
+nested shape.
 
 `Flock Get Pending Command Count` drives a "syncing…" indicator while offline writes wait to replay.
 

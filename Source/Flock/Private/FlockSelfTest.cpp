@@ -3,7 +3,7 @@
 // A dev-only console command that drives the Flock SDK surface and narrates each step to the log,
 // so you can watch boot/init, config/game, authentication, shop, commands, leaderboards, assets, and
 // analytics behavior against your configured Flock backend.
-// It initializes from Project Settings > Flock SDK (API URL, key, and the resolved Game Version),
+// It initializes from Project Settings > Plugins > Flock SDK Settings (API URL, key, and the resolved Game Version),
 // so it needs valid settings and a reachable backend to get past init. Run from the editor or
 // in-game console: `Flock.SelfTest` (also works via -ExecCmds in a development build).
 //
@@ -1966,12 +1966,12 @@ namespace
 		Sdk->AddToRoot();
 		Sdk->SetLogger(Logger);
 
-		Logger->LogInfo(TEXT("Self-test: initializing from Project Settings > Flock SDK."));
+		Logger->LogInfo(TEXT("Self-test: initializing from Project Settings > Plugins > Flock SDK Settings."));
 		Sdk->InitializeFromSettings();
 		if (!Sdk->IsInitialized())
 		{
 			Logger->LogError(FString::Printf(
-				TEXT("Self-test: init failed (%s). Fill in Project Settings > Flock SDK and resolve the Game Version, then retry."),
+				TEXT("Self-test: init failed (%s). Fill in Project Settings > Plugins > Flock SDK Settings and resolve the Game Version, then retry."),
 				*Sdk->GetInitializationError()));
 			Sdk->RemoveFromRoot();
 			GameInstance->RemoveFromRoot();
@@ -2047,7 +2047,7 @@ namespace
 		}
 		else
 		{
-			Logger->LogInfo(TEXT("Self-test: analytics is off in Project Settings > Flock SDK; skipping the analytics sweep."));
+			Logger->LogInfo(TEXT("Self-test: analytics is off in Project Settings > Plugins > Flock SDK Settings; skipping the analytics sweep."));
 		}
 
 		// ── Config & Game (signed out) ──

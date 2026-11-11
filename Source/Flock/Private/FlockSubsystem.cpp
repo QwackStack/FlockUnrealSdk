@@ -6,6 +6,7 @@
 #include "Analytics/FlockFileEventCache.h"
 #include "Flock.h"
 #include "FlockEvents.h"
+#include "FlockPassOnLogger.h"
 #include "Auth/FlockFileTokenStore.h"
 #include "Auth/FlockGameTokenStore.h"
 #include "Config/FlockGameKey.h"
@@ -74,7 +75,7 @@ void UFlockSubsystem::InitializeFromSettings()
 	if (!Config->IsValid(ValidationError))
 	{
 		InitializationError = FString::Printf(
-			TEXT("Flock config is incomplete: %s Open Project Settings > Flock SDK to fix it, or turn off Auto-Initialize On Load."),
+			TEXT("Flock config is incomplete: %s Open Project Settings > Plugins > Flock SDK Settings to fix it, or turn off Auto-Initialize On Load."),
 			*ValidationError);
 		GetLogger().LogError(InitializationError);
 		GetEvents()->InvokeInitializationFailed(InitializationError);
@@ -113,11 +114,7 @@ void UFlockSubsystem::InitializeWithConfig(const FFlockInitConfig& Config)
 	// something logged before initializing (Auto-Initialize On Load being off says so), which made it from the settings' flag.
 	if (!bLoggerSetByGame)
 	{
-		Logger = MakeShared<FFlockUnrealLogger>(Config.bEnableDebugLogs);
-		if (Events)
-		{
-			Events->SetLogger(Logger);
-		}
+		PassOnLogger().PassOnTo(MakeShared<FFlockUnrealLogger>(Config.bEnableDebugLogs));
 	}
 
 	GetLogger().LogInfo(TEXT("Initializing Flock SDK."));
@@ -161,7 +158,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	// The Game Version ID is baked at edit time; runtime init never contacts the server.
 	if (Config.GameVersionId.IsEmpty())
 	{
-		OutError = TEXT("Game Version not resolved. Open Tools > Flock > Resolve Game Version (or Project Settings > Flock SDK) ")
+		OutError = TEXT("Game Version not resolved. Open Tools > Flock > Resolve Game Version (or Project Settings > Plugins > Flock SDK Settings) ")
 			TEXT("while online to resolve your Game Version, then rebuild. The Game Version ID is baked at edit time; ")
 			TEXT("runtime init never contacts the server.");
 		return false;
@@ -172,7 +169,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	const FString ApiUrl = FFlockInitConfig::TrimApiUrl(Config.ApiUrl);
 	if (ApiUrl.IsEmpty())
 	{
-		OutError = TEXT("API URL is empty. Set it in Project Settings > Flock SDK (or in the config handed to InitializeWithConfig) ")
+		OutError = TEXT("API URL is empty. Set it in Project Settings > Plugins > Flock SDK Settings (or in the config handed to InitializeWithConfig) ")
 			TEXT("to your Flock server's address, such as https://api.example.com.");
 		return false;
 	}
@@ -180,7 +177,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	// is what an unquoted address in a config file becomes, so the fix names the quotes.
 	if (FFlockInitConfig::IsSchemeAlone(ApiUrl))
 	{
-		OutError = FString::Printf(TEXT("API URL \"%s\" has no server address after its scheme. Set it in Project Settings > Flock SDK ")
+		OutError = FString::Printf(TEXT("API URL \"%s\" has no server address after its scheme. Set it in Project Settings > Plugins > Flock SDK Settings ")
 			TEXT("(or in the config handed to InitializeWithConfig) to your Flock server's address, such as https://api.example.com. ")
 			TEXT("Written by hand in a config file, the address needs quotes, ApiUrl=\"https://api.example.com\": without them the ")
 			TEXT("engine reads everything from // on as a comment."), *ApiUrl);
@@ -195,8 +192,8 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	RetryPolicy.MaxRetries = Settings->RetryMaxRetries;
 	RetryPolicy.bUseJitter = Settings->bRetryUseJitter;
 
-	GetLogger(); // make sure the shared logger exists before wiring it into the auth stack
-	const TSharedRef<IFlockLogger> LoggerRef = Logger.ToSharedRef();
+	// Every part gets the logger that passes lines on, so one the game sets later reaches it too.
+	const TSharedRef<IFlockLogger> LoggerRef = SharedLogger();
 
 	HttpClient = TestHttpAdapter.IsValid()
 		? MakeShared<FFlockHttpClient>(TestHttpAdapter.ToSharedRef(), LoggerRef, Settings->HttpTimeoutSeconds)
@@ -609,19 +606,26 @@ UFlockEvents* UFlockSubsystem::GetEvents()
 
 void UFlockSubsystem::SetLogger(const TSharedRef<IFlockLogger>& InLogger)
 {
-	Logger = InLogger;
+	PassOnLogger().PassOnTo(InLogger);
 	bLoggerSetByGame = true;
-	if (Events)
-	{
-		Events->SetLogger(Logger);
-	}
 }
 
 IFlockLogger& UFlockSubsystem::GetLogger()
 {
+	return PassOnLogger();
+}
+
+TSharedRef<IFlockLogger> UFlockSubsystem::SharedLogger()
+{
+	PassOnLogger();
+	return Logger.ToSharedRef();
+}
+
+FFlockPassOnLogger& UFlockSubsystem::PassOnLogger()
+{
 	if (!Logger.IsValid())
 	{
-		Logger = MakeShared<FFlockUnrealLogger>(GetDefault<UFlockConfig>()->bEnableDebugLogs);
+		Logger = MakeShared<FFlockPassOnLogger>(MakeShared<FFlockUnrealLogger>(GetDefault<UFlockConfig>()->bEnableDebugLogs));
 		if (Events)
 		{
 			Events->SetLogger(Logger);

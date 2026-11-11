@@ -361,7 +361,7 @@ bool FFlockContentPathGuardTest::RunTest(const FString& Parameters)
 		TestTrue(FString::Printf(TEXT("'%s' says what is wrong (%s)"), Case.Path, *Error),
 			Error.Contains(Case.Cause));
 		TestTrue(FString::Printf(TEXT("'%s' says how to fix it"), Case.Path),
-			Error.Contains(TEXT("Project Settings > Flock SDK > Codegen")) && Error.Contains(TEXT("/Game/Flock/Generated")));
+			Error.Contains(TEXT("Project Settings > Plugins > Flock SDK Settings > Codegen")) && Error.Contains(TEXT("/Game/Flock/Generated")));
 	}
 	return true;
 }

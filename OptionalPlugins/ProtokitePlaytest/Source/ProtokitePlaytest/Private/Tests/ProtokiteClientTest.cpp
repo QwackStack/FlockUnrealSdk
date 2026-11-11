@@ -389,7 +389,7 @@ bool FProtokiteClientGivesProtokitesFixTest::RunTest(const FString& Parameters)
 			Error.Hint.Contains(Case.FixSays, ESearchCase::CaseSensitive));
 		TestFalse(FString::Printf(TEXT("%s: and never sends the developer to the Flock SDK's API URL"), Case.What),
 			Error.Hint.Contains(TEXT("Flock's game API"), ESearchCase::CaseSensitive)
-			|| Error.Hint.Contains(TEXT("API URL under Project Settings > Flock SDK"), ESearchCase::CaseSensitive));
+			|| Error.Hint.Contains(TEXT("API URL under Project Settings > Plugins > Flock SDK Settings"), ESearchCase::CaseSensitive));
 	}
 	return true;
 }
@@ -413,7 +413,7 @@ bool FProtokiteClientFixForEveryRefusalTest::RunTest(const FString& Parameters)
 	};
 	const FCase Cases[] = {
 		{ Refusal(400, TEXT("This playtest is no longer collecting SDK sessions")), TEXT("start a new playtest in the Protokite dashboard") },
-		{ Refusal(401, TEXT("Invalid API Key")), TEXT("Set API Key under Project Settings > Flock SDK") },
+		{ Refusal(401, TEXT("Invalid API Key")), TEXT("Set API Key under Project Settings > Plugins > Flock SDK Settings") },
 		{ Refusal(403, TEXT("Not your playtest session")), TEXT("Protokite holds this playtest session for another game") },
 		{ Refusal(404, TEXT("No published feedback form")), TEXT("publish the playtest's form in the Protokite dashboard") },
 		{ Refusal(404, TEXT("Playtest session not found")), TEXT("the next launch starts another") },

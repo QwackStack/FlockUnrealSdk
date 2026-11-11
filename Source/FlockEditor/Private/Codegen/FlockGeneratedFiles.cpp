@@ -66,7 +66,7 @@ bool FFlockGeneratedFiles::WriteIfChanged(const FString& Path, const FString& Co
 		{
 			OutError = FString::Printf(
 				TEXT("'%s' is a file Flock codegen did not write, so it was left as it is. Generated Code Path needs a "
-					"folder of its own: set it in Project Settings > Flock SDK > Codegen to one such as "
+					"folder of its own: set it in Project Settings > Plugins > Flock SDK Settings > Codegen to one such as "
 					"Source/FlockGenerated, or move that file out of it."), *Path);
 			return false;
 		}

@@ -61,7 +61,7 @@ private:
 	bool bVerbose;
 };
 
-/** Silences all SDK logging. Inject via SetLogger() to fully opt out. */
+/** Silences the SDK's logging. Inject via SetLogger(). The few lines Documentation/logging.md lists go to the engine log directly. */
 class FLOCK_API FFlockNullLogger : public IFlockLogger
 {
 public:

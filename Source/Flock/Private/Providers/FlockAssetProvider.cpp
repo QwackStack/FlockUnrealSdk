@@ -31,7 +31,7 @@ namespace
 		case EFlockHttpResult::Timeout:
 			return FFlockError::MakeWithFix(EFlockErrorType::Timeout,
 				FString::Printf(TEXT("Download of '%s' timed out"), *AssetName),
-				TEXT("Check the device's network connection and download it again; a large file may need a longer Asset Download Timeout Seconds under Project Settings > Flock SDK."));
+				TEXT("Check the device's network connection and download it again; a large file may need a longer Asset Download Timeout Seconds under Project Settings > Plugins > Flock SDK Settings."));
 		case EFlockHttpResult::ConnectionError:
 			return FFlockError::MakeWithFix(EFlockErrorType::Connection,
 				FString::Printf(TEXT("Could not reach the storage that serves '%s': %s"), *AssetName, *Outcome.ErrorDetail),

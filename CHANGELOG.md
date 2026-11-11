@@ -35,6 +35,19 @@ The shop sample, made of Blueprints only. No change to any call.
   no money. A phone's store is not connected: connecting one delivers the purchases the store still holds unfinished to whoever
   is signed in, here the self-test's player.
 
+### Changed
+
+- **A logger set at any time reaches every part of the SDK.** `UFlockSubsystem::SetLogger` called after initializing used
+  to reach only the subsystem's and the events hub's own lines; every line from then on now reaches it, the calls' and the
+  network trace's included. A logger set before initializing behaves as before. An SDK error a game's logger writes under its
+  own category is no longer captured as one of the game's exceptions (its failed send would log another).
+- **The first node of a Blueprint chain can be left unwired.** *Set Command Int / Float / String / Bool / String Array / Json*
+  (their *Data*), the four *Set Feedback ... Answer* nodes of the playtest plugin (their *Answers*), and the string-array values
+  (*Set Command String Array*, *Command Value (String Array)*, *Flock Event Property (String Array)*) start from an empty value
+  when nothing is wired in, instead of failing to compile.
+- **Every message names the settings page as the editor shows it**: Project Settings > Plugins > Flock SDK Settings (42
+  messages said "Project Settings > Flock SDK").
+
 ### Documentation
 
 - Every page has a C++ example or a Blueprint picture, each one built: the C++ examples compile in the harness, and the 16
