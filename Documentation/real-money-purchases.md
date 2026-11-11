@@ -24,7 +24,8 @@ without a phone.
      with billing code of its own redeems its purchases with `RedeemStoreReceipt` (see [Shop](shop.md#redeeming-a-store-purchase)).
      Google Play also requires a recent target SDK for new builds (36 at the time of writing).
    - **iOS:** in *Project Settings → Platforms → iOS*, turn on **Enable StoreKit Support**, and add the In-App Purchase capability to
-     the app.
+     the app. Flock's App Store support is written against the engine's own StoreKit code and has not yet run on an iPhone: buy in
+     the App Store's sandbox before you ship.
 3. **Set up the items in the Flock dashboard.** Price each item in a currency the game's currency config lists as real
    money, and enter its product id under **Store product IDs**, exactly as the store has it. In the store, make a
    `currency_pack` or `consumable` item a consumable product and a `standard` item a one-time product. Connect the store
