@@ -92,6 +92,10 @@ jobs:
           require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Multiplayer/FlockMultiplayerSample.umap
           require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Multiplayer/BP_FlockSampleGameInstance.uasset
           require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Multiplayer/WBP_FlockMultiplayerSample.uasset
+          # The Blueprint-only shop sample ships beside it (Content/Samples/Shop).
+          require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Shop/FlockShopSample.umap
+          require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Shop/WBP_FlockShopSample.uasset
+          require_entry flock-entries.txt FlockUnrealSdk/Content/Samples/Shop/WBP_FlockShopSampleItem.uasset
           # Real-money purchases through the platform's store are a module of Flock's own.
           require_entry flock-entries.txt FlockUnrealSdk/Source/FlockPlatformStore/FlockPlatformStore.Build.cs
           if grep -E '(^|/)OptionalPlugins/|ProtokitePlaytest' flock-entries.txt; then

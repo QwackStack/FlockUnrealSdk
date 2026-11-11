@@ -23,12 +23,19 @@ The nodes live under *Flock | Player*:
 | `Flock Get Wallet` | the signed-in player's balances by currency code (see [The wallet](#the-wallet)) |
 
 Each is an async node with `On Success` and `On Failure` execution pins. Read values off the returned
-row's **Data** pin with the *Get Data Int / Float / String / Bool / String Array* nodes, which take a
-dotted path and a fallback value.
+row's **Data** pin with the *Get Data Int / Float / String / Bool* nodes, which take a dotted path and a fallback value
+returned when the path cannot be read, and *Get Data String Array*, which takes the path alone and returns an empty array
+when it cannot be read.
 
-**You do not pass a player.** The signed-in one is used, and the `Player Id` pin lives in each node's
-advanced section for the admin-shaped reads. Note the exception: on `Flock Get All Player Data` an empty
-id means *every* player, not the signed-in one — in C++ use `GetMyData` when you want just theirs.
+**You do not pass a player.** The "my data" nodes and *Flock Get Wallet* read the signed-in player. Two nodes keep a
+`Player Id` pin in their advanced section (the little arrow), for admin-shaped reads:
+
+- `Flock Get Player Ban`: empty means the signed-in player.
+- `Flock Get All Player Data`: empty means **every player**, not the signed-in one.
+
+To page through only the signed-in player's rows, give *Flock Get All Player Data* their id (**Flock Get Player Id**), or in
+C++ call `GetMyData(Page, Limit, ...)`, which fails (`Validation`) rather than reading every player when nobody is signed
+in. For one template's row, `Flock Get My Data By Template` or `By Tag` is simpler.
 
 If you have run a schema sync, prefer the generated one-node reads instead — `Get Currencies` fetches,
 converts, and hands back a typed struct with real pins. See [Code generation](codegen.md).
@@ -38,6 +45,10 @@ converts, and hands back a typed struct with real pins. See [Code generation](co
 Everything lives on the player provider:
 
 ```cpp
+#include "FlockSubsystem.h"
+#include "Providers/FlockPlayerProvider.h"
+
+// From any actor, widget or the game instance.
 UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
 
 // The signed-in player's achievements, found by the template's tag:
@@ -59,6 +70,7 @@ balances of the game's own currencies (`GameCurrencies`) and of real currencies 
 as the game's currency config spells it.
 
 ```cpp
+// Sdk: UFlockSubsystem::Get(this), as above.
 Sdk->GetPlayerProvider()->GetWallet([](TFlockResult<FFlockWallet> Wallet)
 {
     if (!Wallet.bSuccess) { return; }

@@ -952,7 +952,9 @@ bool FFlockShopPurchaseStatusTest::RunTest(const FString& Parameters)
 		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(RewardItemBody(TEXT("item-1"), 100)));
 		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(Body));
 		FFlockPurchaseResult Purchased;
-		Fx.Provider->Purchase(TEXT("item-1"), FString(), [&Purchased](TFlockResult<FFlockPurchaseResult> R) { Purchased = R.Value; });
+		bool bBought = false;
+		Fx.Provider->Purchase(TEXT("item-1"), FString(), [&Purchased, &bBought](TFlockResult<FFlockPurchaseResult> R) { bBought = R.bSuccess; Purchased = R.Value; });
+		TestTrue(TEXT("Bought"), bBought);
 		return Purchased;
 	};
 
@@ -965,6 +967,55 @@ bool FFlockShopPurchaseStatusTest::RunTest(const FString& Parameters)
 	TestEqualSensitive(TEXT("A status left out reads as paid, the schema's default"), Unsaid.Status, FString(FlockPurchaseStatuses::Paid));
 	TestTrue(TEXT("And is paid"), Unsaid.IsPaid());
 	TestTrue(TEXT("To a graph too"), UFlockShopLibrary::IsPurchasePaid(Unsaid));
+
+	// The canonical suite's purchase answers, verbatim: a status left out of a bare result, and a null one, which reads as left out.
+	const FFlockPurchaseResult LeftOut = Purchase(TEXT("{\"purchase_id\":\"pur-3\",\"item_type\":\"standard\"}"));
+	TestEqualSensitive(TEXT("The answer read"), LeftOut.PurchaseId, FString(TEXT("pur-3")));
+	TestEqualSensitive(TEXT("A status left out of a bare result reads as paid"), LeftOut.Status, FString(FlockPurchaseStatuses::Paid));
+	const FFlockPurchaseResult Null = Purchase(TEXT("{\"purchase_id\":\"pur-4\",\"item_type\":\"standard\",\"status\":null}"));
+	TestEqualSensitive(TEXT("The answer read"), Null.PurchaseId, FString(TEXT("pur-4")));
+	TestEqualSensitive(TEXT("A null status reads as left out: paid"), Null.Status, FString(FlockPurchaseStatuses::Paid));
+	TestTrue(TEXT("And is paid"), Null.IsPaid());
+	return true;
+}
+
+// ── A purchase's and a consume's wallet, as the server nests it, read as balances; a purchase that moved no currency has none ──
+// The canonical suite's purchase and consume answers with their wallet (game currencies as an object field of a wallet),
+// verbatim, decoded off the wire.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockShopWalletAfterTest, "Flock.Shop.Provider.PurchaseAndConsumeGiveTheWalletAfterAsBalances",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockShopWalletAfterTest::RunTest(const FString& Parameters)
+{
+	const FString WalletAfter = TEXT("\"wallet\":{\"id\":\"pd-w\",\"player_id\":\"player-a\",\"data\":[{\"type\":\"object\",\"field_name\":\"game_currencies\",\"type_name\":\"wallet\",")
+		TEXT("\"value\":[{\"type\":\"integer\",\"field_name\":\"Gold\",\"type_name\":\"currency\",\"value\":480}]}]}");
+	auto Purchase = [this](const FString& Body)
+	{
+		FFixture Fx;
+		Fx.SignIn();
+		Fx.Fake->On(TEXT("shop_item/item-1"), FFlockFakeTransport::Ok(RewardItemBody(TEXT("item-1"), 100)));
+		Fx.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(Body));
+		FFlockPurchaseResult Purchased;
+		bool bBought = false;
+		Fx.Provider->Purchase(TEXT("item-1"), FString(), [&Purchased, &bBought](TFlockResult<FFlockPurchaseResult> R) { bBought = R.bSuccess; Purchased = R.Value; });
+		TestTrue(TEXT("Bought"), bBought);
+		return Purchased;
+	};
+	const FFlockPurchaseResult WithWallet = Purchase(TEXT("{\"purchase_id\":\"pur-1\",\"item_type\":\"currency_pack\",") + WalletAfter + TEXT("}"));
+	TestEqual(TEXT("The purchase's balances"), UFlockShopLibrary::PurchaseBalances(WithWallet).BalanceOf(TEXT("Gold")), static_cast<int64>(480));
+	const FFlockPurchaseResult WithoutWallet = Purchase(TEXT("{\"purchase_id\":\"pur-2\",\"item_type\":\"standard\"}"));
+	TestFalse(TEXT("No currency moved, so there is no wallet to read"), WithoutWallet.HasWallet());
+	TestEqual(TEXT("and no balances"), UFlockShopLibrary::PurchaseBalances(WithoutWallet).GameCurrencies.Num(), 0);
+
+	FFixture Fx;
+	Fx.SignIn();
+	Fx.Fake->On(TEXT("player_inventory/inv-1/consume"), FFlockFakeTransport::Ok(
+		TEXT("{\"inventory\":{\"id\":\"inv-1\",\"player_id\":\"player-a\",\"shop_item_id\":\"item-1\",\"status\":\"used\"},\"granted\":[],") + WalletAfter + TEXT("}")));
+	FFlockConsumeResult Consumed;
+	bool bConsumed = false;
+	Fx.Provider->Consume(TEXT("inv-1"), [&Consumed, &bConsumed](TFlockResult<FFlockConsumeResult> R) { bConsumed = R.bSuccess; Consumed = R.Value; });
+	TestTrue(TEXT("Used"), bConsumed);
+	TestEqual(TEXT("The consume's balances"), UFlockShopLibrary::ConsumeBalances(Consumed).BalanceOf(TEXT("Gold")), static_cast<int64>(480));
 	return true;
 }
 

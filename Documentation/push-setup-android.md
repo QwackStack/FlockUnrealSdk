@@ -91,38 +91,88 @@ file is missing or in the wrong place. No message means it loaded.
 
 ## 4. Hook the token to Flock
 
-One binding, once, after the player signs in. In C++:
+**Registering needs a signed-in player, and the token usually comes first**: the push plugin hands it over once, at
+start, often before your sign-in screen. So keep the token, and register it each time a player signs in:
+
+1. **When the token arrives** (the push plugin's token callback; with Firebase Features, its **On Token Received**), keep
+   it. If a player is already signed in, register it now.
+2. **On Flock's `OnAuthenticated`** (raised for a login, a register, and a saved sign-in that first had to be renewed over
+   the network), register the kept token for the player who just signed in.
+3. **When the OS issues a new token**, the callback runs again: keep the new one, and it is registered the same way.
+
+A saved sign-in whose token is still valid is restored while the game starts, inside the game instance's own startup
+(`Super::Init()`), before your code can bind `OnAuthenticated`, so that event is not heard for it. Step 1 covers it: the token
+arrives later, finds the player signed in, and registers at once.
+
+Registering the same token again is safe: the backend keys it by token.
+
+In Blueprint, on your game instance:
+
+- Add a string variable, such as *Push Token*.
+- On **Event Init**, drag off **Flock Get Events** and **Bind Event to On Authenticated**, with a custom event that calls
+  **Flock Register Device Token** with *Push Token* when it is not empty. This hears every later sign-in, not a saved one
+  restored while the game started, which the next bullet covers.
+- In the push plugin's **On Token Received**, set *Push Token*; then, when **Flock Is Authenticated** is true (a player is
+  signed in, a restored one included), call **Flock Register Device Token** with it.
+
+In C++, on your game instance. Call `HandlePushToken` from the push plugin's token callback; the plugin's own header and
+callback are in its documentation.
 
 ```cpp
-#include "FirebaseFeatures/Public/Messaging/FirebaseMessaging.h"   // plugin header
-#include "Providers/FlockNotificationProvider.h"
-#include "FlockSubsystem.h"
+// MyGameInstance.h
+UPROPERTY()
+FString PushToken;   // the latest token, kept for whoever signs in next
 
-FFirebaseMessagingLibrary::OnTokenReceived().AddLambda([this](const FString& Token)
+void HandlePushToken(const FString& Token);
+
+UFUNCTION()
+void HandleSignedIn(const FFlockAuthInfo& Info);
+
+// MyGameInstance.cpp
+#include "FlockSubsystem.h"
+#include "FlockEvents.h"
+#include "Providers/FlockNotificationProvider.h"
+
+static void RegisterPushToken(UFlockSubsystem* Sdk, const FString& Token)
 {
-    if (UFlockSubsystem* Sdk = UFlockSubsystem::Get(this))
+    Sdk->GetNotificationProvider()->RegisterDeviceToken(Token, [](TFlockResult<FFlockDeviceToken> Result)
     {
-        if (FFlockNotificationProvider* Notifications = Sdk->GetNotificationProvider())
-        {
-            Notifications->RegisterDeviceToken(Token, [](TFlockResult<FFlockDeviceToken> Result)
-            {
-                UE_LOG(LogTemp, Log, TEXT("Flock push registration: %s"),
-                    Result.bSuccess ? TEXT("ok") : *Result.Error.ToDisplayText());
-            });
-        }
+        UE_LOG(LogTemp, Log, TEXT("Flock push registration: %s"),
+            Result.bSuccess ? TEXT("ok") : *Result.Error.ToDisplayText());
+    });
+}
+
+void UMyGameInstance::Init()
+{
+    Super::Init();   // a saved sign-in still valid is restored in here, before the line below binds
+    // Every sign-in from now on. The restored one is covered by HandlePushToken: the token arrives later and finds the
+    // player signed in.
+    GetSubsystem<UFlockSubsystem>()->GetEvents()->OnAuthenticated.AddDynamic(this, &UMyGameInstance::HandleSignedIn);
+}
+
+void UMyGameInstance::HandlePushToken(const FString& Token)
+{
+    PushToken = Token;
+    UFlockSubsystem* Sdk = GetSubsystem<UFlockSubsystem>();
+    if (Sdk != nullptr && Sdk->IsAuthenticated())
+    {
+        RegisterPushToken(Sdk, PushToken);
     }
-});
+    // Otherwise HandleSignedIn registers it.
+}
+
+void UMyGameInstance::HandleSignedIn(const FFlockAuthInfo& Info)
+{
+    if (!PushToken.IsEmpty())
+    {
+        RegisterPushToken(GetSubsystem<UFlockSubsystem>(), PushToken);
+    }
+}
 ```
 
-In Blueprint: bind the plugin's **On Token Received** event, drag the token string into
-**Flock Register Device Token**.
-
-The platform is taken from the running build, so on an Android device it resolves to `android`
-automatically. Bind the delegate **before** the token can arrive — it fires once at startup — and
-re-register whenever the OS issues a new one.
-
-`Flock Register Device Token` requires a **signed-in player**. If your token arrives before sign-in, cache
-it and register after `OnAuthenticated`.
+The platform is taken from the running build, so on an Android device it resolves to `android` automatically. A
+registration made with nobody signed in fails with an `Auth` error; one made on desktop or in the editor fails with
+`Validation` (see [If nothing arrives](#if-nothing-arrives)).
 
 ## 5. Configure the Flock dashboard
 
@@ -186,33 +236,32 @@ will not accept production credentials, or the reverse.
 Project side: tick **Enable Remote Notifications Support** in **Project Settings → Platforms → iOS**.
 
 Then bind the engine's own delegate and hand the token to Flock. The engine gives you raw APNs bytes, so
-hex-encode them:
+hex-encode them. This goes in your game instance's `Init`, after `Super::Init()`, and hands the token to `HandlePushToken`
+from [step 4](#4-hook-the-token-to-flock), which keeps it and registers it for the player signed in now or next:
 
 ```cpp
 #include "Misc/CoreDelegates.h"
 
+const TWeakObjectPtr<UMyGameInstance> WeakGame = this;
 FCoreDelegates::ApplicationRegisteredForRemoteNotificationsDelegate.AddLambda(
-    [this](TArray<uint8> TokenBytes)
+    [WeakGame](TArray<uint8> TokenBytes)
     {
         FString Token;
         for (uint8 Byte : TokenBytes)
         {
             Token += FString::Printf(TEXT("%02x"), Byte);
         }
-
-        if (UFlockSubsystem* Sdk = UFlockSubsystem::Get(this))
+        if (WeakGame.IsValid())
         {
-            if (FFlockNotificationProvider* Notifications = Sdk->GetNotificationProvider())
-            {
-                Notifications->RegisterDeviceToken(Token, [](TFlockResult<FFlockDeviceToken>) {});
-            }
+            WeakGame->HandlePushToken(Token);
         }
     });
 
 FPlatformMisc::RegisterForRemoteNotifications();   // triggers the callback above
 ```
 
-Bind before calling `RegisterForRemoteNotifications`, and register after sign-in (the call needs a player).
+Bind before calling `RegisterForRemoteNotifications`. The registration itself needs a signed-in player, which is why the
+token goes through `HandlePushToken`.
 
 A built-in wrapper for this is coming so you will not have to write it — but it works today, on the free
 tier, with no purchase.

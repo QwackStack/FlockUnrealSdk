@@ -84,7 +84,7 @@ public:
 		const FString& Key, bool Value);
 
 	UFUNCTION(BlueprintPure, Category = "Flock|Analytics",
-		meta = (AutoCreateRefTerm = "Properties", DisplayName = "Flock Event Property (String Array)"))
+		meta = (AutoCreateRefTerm = "Properties, Value", DisplayName = "Flock Event Property (String Array)"))
 	static FFlockCommandData AddEventPropertyStringArray(const FFlockCommandData& Properties,
 		const FString& Key, const TArray<FString>& Value);
 };

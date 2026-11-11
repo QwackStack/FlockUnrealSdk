@@ -10,6 +10,11 @@ calls from the game thread. Every party, session and matchmaking call needs a si
 there is none, without a request. From Blueprint, every call is a node under *Flock | Multiplayer*, and a ready-made game
 mode lets in only the session's players: see [Blueprint](#blueprint).
 
+In the C++ samples, `Flock` is the Flock subsystem: `GetGameInstance()->GetSubsystem<UFlockSubsystem>()` from an actor or
+a widget, `GetSubsystem<UFlockSubsystem>()` inside your game instance. The SDK holds the party and the session it hands
+back, so a completion needs to capture nothing to use them; keep them in a `UPROPERTY` of your own (the game instance's,
+which outlives level changes) when you need them later.
+
 ## Parties
 
 A party is a group of players who will search for a match together. Its **leader** made it, or was handed the lead;
@@ -20,29 +25,60 @@ a time per game.
 out on the server. So call `GetMyParty` after the player signs in: it hands back the party the player is still in, or
 null.
 
+**Making a party**, which the player then leads:
+
 ```cpp
 #include "FlockSubsystem.h"
+#include "Providers/FlockMultiplayerProvider.h"
 #include "Multiplayer/FlockParty.h"
 
-UFlockSubsystem* Flock = GetGameInstance()->GetSubsystem<UFlockSubsystem>();
 FFlockMultiplayerProvider* Multiplayer = Flock->GetMultiplayerProvider();
 
-// Make a party of up to 4 (the server's default when the size is left unset), with a setting of the game's own.
+// A party of up to 4 (the server's default when the size is left unset), with a setting of the game's own.
 Multiplayer->CreateParty(4, FFlockCommandData().Set(TEXT("Mode"), TEXT("duo")),
-    [this](TFlockResult<UFlockParty*> Result)
+    [](TFlockResult<UFlockParty*> Result)
     {
-        if (Result.IsSuccess())
+        if (!Result.IsSuccess())
         {
-            Party = Result.Value;                  // a UPROPERTY, so the party outlives its end if you need it to
-            ShowInviteCode(Party->GetInviteCode());
+            // PartyAlreadyInParty: the player is in one already, and GetMyParty returns it.
+            UE_LOG(LogTemp, Warning, TEXT("%s"), *Result.Error.ToDisplayText());
+            return;
         }
+        // Show the code: the player reads it out or pastes it to a friend.
+        UE_LOG(LogTemp, Display, TEXT("Invite code: %s"), *Result.Value->GetInviteCode());
     });
+```
 
-// A friend joins with the code, in any letter case.
-Multiplayer->JoinParty(TypedCode, [this](TFlockResult<UFlockParty*> Result) { /* ... */ });
+**Joining one by its code**, which a friend typed in:
 
-// After signing in: the party the player is still in, or null.
-Multiplayer->GetMyParty([this](TFlockResult<UFlockParty*> Result) { /* Result.Value may be null */ });
+```cpp
+// InviteCode: the code the player typed, in any letter case.
+Flock->GetMultiplayerProvider()->JoinParty(InviteCode, [](TFlockResult<UFlockParty*> Result)
+{
+    if (!Result.IsSuccess())
+    {
+        if (Result.Error.ErrorCode == EFlockErrorCode::PartyInvalidInviteCode)
+        {
+            // No open party has that code: ask the player to check it.
+        }
+        UE_LOG(LogTemp, Warning, TEXT("%s"), *Result.Error.ToDisplayText());
+        return;
+    }
+    UFlockParty* Party = Result.Value;
+    UE_LOG(LogTemp, Display, TEXT("In %s's party, %d players"), *Party->GetLeaderPlayerId(), Party->GetMembers().Num());
+});
+```
+
+**After signing in**, the party the player is still in, or none:
+
+```cpp
+Flock->GetMultiplayerProvider()->GetMyParty([](TFlockResult<UFlockParty*> Result)
+{
+    if (Result.IsSuccess() && Result.Value != nullptr)
+    {
+        // Still in a party from an earlier launch: show its lobby again.
+    }
+});
 ```
 
 | Call | Does |
@@ -84,7 +120,7 @@ member who does not lead gets `PartyNotPartyLeader`, a 403 that means "not allow
 
 ### Keeping it current
 
-The SDK reads a held party again every **Party Refresh Seconds** (Project Settings > Plugins > Flock SDK Settings > Multiplayer; 10 by
+The SDK reads a held party again every **Party Refresh Seconds** (Project Settings → Plugins → Flock SDK Settings → Multiplayer; 10 by
 default, about 6 requests a minute per player; 0 turns it off), after each change the game makes, and on every
 `GetMyParty`. Only the newest reading changes the party: a reading sent before another one landed, or before one of
 the game's own changes finished, changes nothing, so the party never steps back to an older state.
@@ -135,26 +171,36 @@ holds one seat at a time per game: hosting or joining another session gives the 
 
 ```cpp
 #include "FlockSubsystem.h"
+#include "Providers/FlockMultiplayerProvider.h"
 #include "Multiplayer/FlockMultiplayerSession.h"
 
-FFlockMultiplayerProvider* Multiplayer = GetGameInstance()->GetSubsystem<UFlockSubsystem>()->GetMultiplayerProvider();
+FFlockMultiplayerProvider* Multiplayer = Flock->GetMultiplayerProvider();
 
 // Host a session of up to 4 with data of the game's own; only players on this build's Game Version can join.
 Multiplayer->HostSession(4, FFlockCommandData().Set(TEXT("map"), TEXT("dust")), /*bSameVersionOnly*/ true,
-    [this](TFlockResult<UFlockMultiplayerSession*> Result)
+    [](TFlockResult<UFlockMultiplayerSession*> Result)
     {
-        if (Result.IsSuccess())
+        if (!Result.IsSuccess())
         {
-            Session = Result.Value;                // a UPROPERTY, so the session outlives its end if you need it to
-            ShowJoinCode(Session->GetJoinCode());  // then bring the players in: see Connecting players
+            UE_LOG(LogTemp, Warning, TEXT("%s"), *Result.Error.ToDisplayText());
+            return;
         }
+        // Show the code, then bring the players in: see Connecting players.
+        UE_LOG(LogTemp, Display, TEXT("Join code: %s"), *Result.Value->GetJoinCode());
     });
 
-// A friend joins with the code, in any letter case.
-Multiplayer->JoinSession(TypedCode, [this](TFlockResult<UFlockMultiplayerSession*> Result) { /* ... */ });
+// A friend joins with the code, in any letter case. JoinCode: what the player typed.
+Multiplayer->JoinSession(JoinCode, [](TFlockResult<UFlockMultiplayerSession*> Result)
+{
+    if (!Result.IsSuccess())
+    {
+        // MultiplayerInvalidJoinCode, MultiplayerSessionFull, MultiplayerVersionMismatch: see Common refusals.
+        UE_LOG(LogTemp, Warning, TEXT("%s"), *Result.Error.ToDisplayText());
+    }
+});
 
 // After a restart: the session the player is still seated in, or null.
-Multiplayer->GetMySession([this](TFlockResult<UFlockMultiplayerSession*> Result) { /* Result.Value may be null */ });
+Multiplayer->GetMySession([](TFlockResult<UFlockMultiplayerSession*> Result) { /* Result.Value may be null */ });
 ```
 
 | Call | Does |
@@ -273,31 +319,32 @@ not a failure.
 
 ```cpp
 #include "FlockSubsystem.h"
+#include "Providers/FlockMultiplayerProvider.h"
 #include "Multiplayer/FlockParty.h"
 
-FFlockMultiplayerProvider* Multiplayer = GetGameInstance()->GetSubsystem<UFlockSubsystem>()->GetMultiplayerProvider();
-
-Searching = Multiplayer->FindMatch(TEXT("coop-4"), FFlockMatchmakingOptions(),
-    [this](TFlockResult<FFlockMatchmakingResult> Result)
+// Keep the handle (a member of yours) to cancel the search later.
+FFlockRequestHandle Searching = Flock->GetMultiplayerProvider()->FindMatch(TEXT("coop-4"), FFlockMatchmakingOptions(),
+    [](TFlockResult<FFlockMatchmakingResult> Result)
     {
         if (!Result.IsSuccess())
         {
             // Cancelled when the game cancelled the handle (the search is cancelled on the server too);
             // MatchmakingQueueNotFound when no queue has that name.
-            ShowLobby();
+            UE_LOG(LogTemp, Warning, TEXT("%s"), *Result.Error.ToDisplayText());
             return;
         }
         if (Result.Value.IsMatched() && Result.Value.Session != nullptr)
         {
-            Play(Result.Value.Session);            // held like any other session: heartbeats, events, Leave
+            // Result.Value.Session is held like any other session (heartbeats, events, Leave): connect to it,
+            // see Connecting players.
         }
-        else if (Result.Value.Outcome == FlockMatchmakingOutcomes::Expired)
+        else if (Result.Value.Outcome.Equals(FlockMatchmakingOutcomes::Expired, ESearchCase::CaseSensitive))
         {
-            ShowMessage(TEXT("Nobody found in 5 minutes. Search again?"));
+            UE_LOG(LogTemp, Display, TEXT("Nobody found in 5 minutes. Search again?"));
         }
         else
         {
-            ShowMessage(TEXT("The search stopped."));
+            UE_LOG(LogTemp, Display, TEXT("The search stopped: %s"), *Result.Value.Outcome);
         }
     });
 
@@ -305,17 +352,42 @@ Searching = Multiplayer->FindMatch(TEXT("coop-4"), FFlockMatchmakingOptions(),
 Searching.Cancel();
 ```
 
-Search as a party with the party's own `FindMatch`. The leader's game starts the search; another member's game hears it
-through the party, so handle the result in one place. `OnSearchEnded` is raised on every member's game, the leader's
-included, and before the `FindMatch` call waiting for that search completes.
+**Search as a party** with the party's own `FindMatch`. The leader's game starts the search; another member's game hears it
+through the party, so handle the result in one place: the party's `OnSearchEnded`, raised on every member's game, the
+leader's included, and before the `FindMatch` call waiting for that search completes. Its handlers are `UFUNCTION()`s of
+your lobby (a widget here):
 
 ```cpp
-Party->OnSearchStarted.AddDynamic(this, &AMyLobby::ShowSearching);
-Party->OnSearchEnded.AddDynamic(this, &AMyLobby::HandleSearchEnded);   // void HandleSearchEnded(const FFlockMatchmakingResult& Result)
+// MyLobbyWidget.h
+UFUNCTION()
+void HandleSearchStarted();
 
+UFUNCTION()
+void HandleSearchEnded(const FFlockMatchmakingResult& Result);
+
+// MyLobbyWidget.cpp, once the lobby shows the party (Party: the UFlockParty from CreateParty, JoinParty or GetMyParty).
+Party->OnSearchStarted.AddDynamic(this, &UMyLobbyWidget::HandleSearchStarted);
+Party->OnSearchEnded.AddDynamic(this, &UMyLobbyWidget::HandleSearchEnded);
+
+// Only the leader's game searches; the others hear it through the party.
 if (Party->IsLeader())
 {
     Party->FindMatch(TEXT("coop-4"), FFlockMatchmakingOptions(), nullptr);
+}
+
+void UMyLobbyWidget::HandleSearchStarted()
+{
+    UE_LOG(LogTemp, Display, TEXT("Searching..."));
+}
+
+void UMyLobbyWidget::HandleSearchEnded(const FFlockMatchmakingResult& Result)
+{
+    if (Result.IsMatched() && Result.Session != nullptr)
+    {
+        // Every member's game holds the same session: connect to it, see Connecting players.
+        return;
+    }
+    UE_LOG(LogTemp, Display, TEXT("The party's search ended: %s"), *Result.Outcome);
 }
 ```
 
@@ -404,11 +476,12 @@ Once the players hold a session (hosted, joined by code or matched), their games
 #include "FlockSubsystem.h"
 #include "Multiplayer/FlockMultiplayerSession.h"
 
-// Every player's game, host included, once it holds the session (a UPROPERTY on the game instance here).
+// Every player's game, host included, once it holds the session. GameInstance: your game instance (this, inside it);
+// Session: the UFlockMultiplayerSession it holds.
 FFlockTravelToSessionOptions Options;
 Options.HostLevel = TEXT("/Game/Maps/Arena");   // the level the host opens; players travel to whatever the host has open
-const TWeakObjectPtr<UMyGameInstance> Game = this;
-Session->TravelToSession(this, Options, [Game](TFlockResult<FFlockTravelToSessionResult> Result)
+const TWeakObjectPtr<UGameInstance> Game = GameInstance;
+Session->TravelToSession(GameInstance, Options, [Game](TFlockResult<FFlockTravelToSessionResult> Result)
 {
     // Runs in the level the game is in now: the level the call was made from is gone.
     if (!Result.IsSuccess() || !Game.IsValid())
@@ -416,13 +489,15 @@ Session->TravelToSession(this, Options, [Game](TFlockResult<FFlockTravelToSessio
         return;                                  // a mistake, a publish the server refused, or a cancel
     }
     const FString& Outcome = Result.Value.Outcome;
-    if (Outcome == FlockTravelToSessionOutcomes::StartedAsHost || Outcome == FlockTravelToSessionOutcomes::Connected)
+    if (Outcome.Equals(FlockTravelToSessionOutcomes::StartedAsHost, ESearchCase::CaseSensitive)
+        || Outcome.Equals(FlockTravelToSessionOutcomes::Connected, ESearchCase::CaseSensitive))
     {
-        Game->ShowMatchStarting();
+        UE_LOG(LogTemp, Display, TEXT("In the match"));
     }
     else
     {
-        Game->ShowCouldNotJoin(Outcome);         // compare with FlockTravelToSessionOutcomes and keep a default
+        // Compare with FlockTravelToSessionOutcomes and keep a default.
+        UE_LOG(LogTemp, Warning, TEXT("Could not join: %s %s"), *Outcome, *Result.Value.RefusedReason);
     }
 });
 ```
@@ -431,12 +506,19 @@ Pass anything in the game's world as the first argument, such as an actor or the
 the game is in the level it stays in, so capture what outlives a level change (the game instance, weak pointers), never an
 actor of the level the call was made from.
 
+> **Background, which you can skip.** From here to [Letting in only the session's players](#letting-in-only-the-sessions-players),
+> this page describes what Travel To Session does underneath: the steps on each side, the relay and how it is reached,
+> and direct paths. To get players playing you need only three tables in it: the [outcomes](#how-it-ended),
+> the [`Relay` option](#who-goes-through-the-relay) and the [relay failure reasons](#when-the-relay-fails).
+
 ### What Travel To Session does
 
 | Who | Does |
 |---|---|
 | host | Opens `HostLevel` (empty: the level it is in, again, or for a player of the session that has become its host, the level it played with the old host) with the engine's `?listen`; a host already listening for the session keeps its level and its players. Once the level listens, opens its address on Flock's relay (unless `Relay` is Never) and publishes how to reach it on the port its net driver bound: when the port asked for is taken (another game on the same machine), the engine takes the next free one, and that is the one published. Completes `started_as_host`. |
 | player | Waits for the host to publish (`WaitForHostSeconds`, 60 by default), reading the session every 2 s. Asks Flock for a join token (it lasts 60 s, so only once the host is known) and travels to the host's LAN address when this device shares the host's public address, through Flock's relay when the host offers it and this device is elsewhere (or the host did not answer on its network), and to the published address otherwise, with the token in the travel URL (`?FlockJoinToken=`). Completes `connected` once the host has let the player in: on a LAN, a few seconds after the host published (the next read of the session, then about two seconds of the engine's own connecting), and `refused` when the host turned the player away. |
+
+#### How it ended
 
 How it ended is the result's `Outcome`, a string because more can come; compare with `FlockTravelToSessionOutcomes`:
 
@@ -453,14 +535,20 @@ How it ended is the result's `Outcome`, a string because more can come; compare 
 | `relay_failed` | Flock's relay was needed and could not be used; the result's `RelayFailureReason` says why (see [Through Flock's relay](#through-flocks-relay)). A host with Relay Always stops listening |
 | `restarted` | the game called Travel To Session again before this one ended, and the newer one took over: nothing to do, its answer follows |
 
-It fails, rather than ending with an outcome, only for a mistake (no world, an ended session, this game connected to another
-session's host or to a server of its own, hosting another session, a level the engine is still opening 30 s on, a player's
-`WaitForHostSeconds` of zero or less), for a publish the server refused (a host stops listening on a level it opened for this travel:
-nobody can reach a host that did not say where it is), for a join token Flock would not give (nothing travels without one;
-the failure is Flock's, with its fix), and for a cancel. **Cancelling the handle** gives up a player's join token still
-being asked for or connection still being made (the game stays in its level) and stops a host listening on a level this
-travel opened, at once or as soon as it has opened; a host that kept the level it was listening on keeps it listening.
-**Calling it again** while one is under way ends that one `restarted` and begins once the engine has settled; a level the
+It **fails**, rather than ending with an outcome, only for:
+
+- **a mistake**: no world, an ended session, this game connected to another session's host or to a server of its own,
+  hosting another session, a level the engine is still opening 30 s on, a player's `WaitForHostSeconds` of zero or less;
+- **a publish the server refused**: a host stops listening on a level it opened for this travel, since nobody can reach a
+  host that did not say where it is;
+- **a join token Flock would not give**: nothing travels without one; the failure is Flock's, with its fix;
+- **a cancel.**
+
+**Cancelling the handle** gives up a player's join token still being asked for or connection still being made (the game
+stays in its level), and stops a host listening on a level this travel opened, at once or as soon as it has opened. A host
+that kept the level it was listening on keeps it listening.
+
+**Calling it again** while one is under way ends that one `restarted` and begins once the engine has settled. A level the
 engine is opening, a connection it is making, or a seamless travel is waited for (at most 30 s), and a level the restarted
 travel opened stays for the newer one.
 
@@ -477,6 +565,8 @@ net driver keeps its socket, its handshake and its level changes, and the SDK st
 loopback. A relayed player's game travels to 127.0.0.1 on a port of the SDK's; a host gets each relayed player from a loopback
 port of its own, so the engine sees one connection a player.
 
+#### Who goes through the relay
+
 `Options.Relay` (`EFlockRelayUse`) says who goes through it. Set it the same on every player of a game:
 
 | Relay | The host | A player |
@@ -488,8 +578,11 @@ port of its own, so the engine sees one connection a player.
 A player reserves its own address on the relay server the host is on, says it for its seat, and the host lets in each seated
 player's relay address, reading the session every 2 s while it takes players through the relay; a host's check then lets in
 only players whose join token checks out, exactly as directly, and `PlayerForConnection` says who each relayed connection is.
-The result's `bThroughRelay` says whether the travel went through the relay. When the relay was needed and could not be used,
-the travel ends `relay_failed`, and `RelayFailureReason` says why:
+The result's `bThroughRelay` says whether the travel went through the relay.
+
+#### When the relay fails
+
+When the relay was needed and could not be used, the travel ends `relay_failed`, and `RelayFailureReason` says why:
 
 | Relay Failure Reason | Means |
 |---|---|
@@ -500,7 +593,7 @@ the travel ends `relay_failed`, and `RelayFailureReason` says why:
 | `relay_too_many_logins` | more than 12 requests for relay logins a minute, or the seat drew the most logins one seat may (10) |
 | `relay_not_in_session` | Flock says the player has no seat in the session |
 | `flock_unreachable`, `relay_logins_refused` | Flock did not answer the request for relay logins, or refused it for another reason |
-| `relay_unreachable` | no way in to the relay worked: UDP, TCP and TLS, each way Flock lists, over IPv4 and IPv6 (see [Ways in to the relay](#ways-in-to-the-relay)); the reason names every way tried and why it failed. A network that blocks all of them, or inspects encrypted traffic, leaves none |
+| `relay_unreachable` | no way in to the relay worked: UDP, TCP and TLS, each way Flock lists, over IPv4 and IPv6 (see [Ways in to the relay](#ways-in-to-the-relay-background)); the reason names every way tried and why it failed. A network that blocks all of them, or inspects encrypted traffic, leaves none |
 | `relay_wrong_login`, `relay_full`, `relay_open_refused`, `relay_refused` | the relay server refused the login, had no room, would not let the host's packets in, or refused for another reason |
 | `relay_lost`, `relay_closed` | the relay let the address go or has answered nothing for 45 s (this device's packets no longer reach it), or it was closed (the session's end) |
 | `relay_no_thread` | the relay needs threads of its own, and this launch runs without threads (`-nothreading`) |
@@ -508,28 +601,36 @@ the travel ends `relay_failed`, and `RelayFailureReason` says why:
 Each reason carries its own fix in the warning the log shows. A host whose relay cannot be opened publishes directly under
 When Needed (saying why, unless the relay is switched off for the game) and stops hosting under Always (`relay_failed`).
 
-#### Ways in to the relay
+#### Ways in to the relay (background)
 
 The relay is reached over UDP. On a network that blocks UDP to it (some phone hotspots, offices, schools and hotels), the
-SDK reaches the same relay over UDP on IPv6, then TCP, then TLS, on every port Flock lists: each starts once the one before
-it has failed or had its time, half a second for another port of the same kind and 2 seconds otherwise, so a blocked way
-costs the player about that, and a network where UDP works opens nothing else. The first way to open is kept and every other
-is closed, giving back any relay address it reserved. The host and a player need not use the same way: a player reaches the
-host's relay server (told apart by its name) by whichever way its own network allows. Over TCP or TLS a lost packet holds back
-the ones after it until it is sent again, so play may stutter on a poor connection. With **Enable Debug Logs** on, the log
-says once, at Info, which way the relay is reached by when it is not UDP over IPv4, and why, and at Verbose each way as it is
-tried and how and when each ended, so a slow opening on a player's network can be read off their log. UDP is tried over IPv6
-too before any TCP or TLS (a phone hotspot
-that dropped UDP over IPv4 carried it over IPv6), and every way is tried over IPv6 for a network with IPv6 alone; the relay
-still gives an IPv4 relay address, so such a player plays with everyone else, and a direct path still offers IPv4 addresses
-only. The relay server's IPv6 address is asked of the platform's own resolver, since the engine's lookup drops IPv6 answers
-while `net.DisableIPv6` is 1 (its default); the game's setting is left as it is. TLS is checked against the certificates the engine trusts (the platform's own, as the engine's HTTP module uses, and any
-keys the game pins), so a network that inspects encrypted traffic is refused, and the reason says so. TLS is built where the
-engine builds its SSL module (Windows, Android, Mac, iOS, Linux). On Android the engine's sockets carry no IPv6 address, so
-an IPv6 way is refused at once there and the phone uses the IPv4 ways, which Android itself carries over a mobile network
-with IPv6 alone (its 464XLAT translation).
+SDK reaches the same relay another way:
 
-#### Direct paths for relayed players (When Needed)
+- **The order:** UDP on IPv6, then TCP, then TLS, on every port Flock lists. Each starts once the one before it has failed
+  or had its time: half a second for another port of the same kind, 2 seconds otherwise. A blocked way costs the player
+  about that, and a network where UDP works opens nothing else.
+- **One way is kept.** The first way to open is kept and every other is closed, giving back any relay address it reserved.
+- **The host and a player need not use the same way:** a player reaches the host's relay server (told apart by its name) by
+  whichever way its own network allows.
+- **Over TCP or TLS** a lost packet holds back the ones after it until it is sent again, so play may stutter on a poor
+  connection.
+- **IPv6.** UDP is tried over IPv6 before any TCP or TLS (a phone hotspot that dropped UDP over IPv4 carried it over IPv6),
+  and every way is tried over IPv6 for a network with IPv6 alone. The relay still gives an IPv4 relay address, so such a
+  player plays with everyone else, and a direct path still offers IPv4 addresses only. The relay server's IPv6 address is
+  asked of the platform's own resolver, since the engine's lookup drops IPv6 answers while `net.DisableIPv6` is 1 (its
+  default); the game's setting is left as it is.
+- **TLS** is checked against the certificates the engine trusts (the platform's own, as the engine's HTTP module uses, and
+  any keys the game pins), so a network that inspects encrypted traffic is refused, and the reason says so. TLS is built
+  where the engine builds its SSL module (Windows, Android, Mac, iOS, Linux).
+- **Android:** the engine's sockets carry no IPv6 address, so an IPv6 way is refused at once there and the phone uses the
+  IPv4 ways, which Android itself carries over a mobile network with IPv6 alone (its 464XLAT translation).
+- **Reading it off a log:** with **Enable Debug Logs** on, the log says once, at Info, which way the relay is reached by when
+  it is not UDP over IPv4, and why; at Verbose, each way as it is tried and how and when each ended, so a slow opening on a
+  player's network can be read off their log.
+
+#### Direct paths for relayed players (background)
+
+This applies with **When Needed** on both ends.
 
 A player that connects through the relay with When Needed, to a host with When Needed, moves off the relay once the two reach
 each other, so the game plays on a shorter path and the relay carries nothing for it. Nothing is asked of the game, and the
@@ -551,7 +652,7 @@ address this way; **Always** keeps every address hidden and never moves. A devic
 the relay: no message of the bridges' own is sent to a device whose connection does not say it reads them (`bridge_messages`),
 since the engine closes a connection that such a message reaches.
 
-What to know about relayed play:
+#### What to know about relayed play (background)
 
 - A host takes at most 64 relayed players. A relay address the host's check has not let in within 30 s gives its place back
   once a new one is heard, so nobody else on the relay can hold every place.
@@ -576,6 +677,8 @@ What to know about relayed play:
 | `relay_server` | the relay server it is on, `name:port` |
 | `bridge_messages` | `1`: this device's relay bridge reads the bridges' own messages (a player's seat says it too) |
 
+*End of the background.*
+
 ### Letting in only the session's players
 
 A host that travels to its session with `TravelToSession` lets in only players whose Flock join token checks out, one
@@ -593,7 +696,8 @@ virtual void PreLoginAsync(const FString& Options, const FString& Address, const
 void AMyGameMode::PreLoginAsync(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId,
     const FOnPreLoginCompleteDelegate& OnComplete)
 {
-    // Flock's check, then the engine's own (PreLogin, such as a full game), then the game's own below.
+    // Flock's check, then the engine's own (PreLogin, such as a full game), then the game's own below
+    // (IsBanned: a check of your own game mode's).
     const TWeakObjectPtr<AMyGameMode> Mode = this;
     FlockJoinChecks::CheckJoiningPlayer(this, Options, Address, UniqueId, OnComplete,
         [Mode](const FFlockJoiningPlayer& Player, FString& OutRefusedReason)
@@ -663,6 +767,17 @@ address (the host's own relay was lost), since the player's relay no longer reac
 Changed's alone.
 
 ```cpp
+// MyGameInstance.h
+UPROPERTY()
+TObjectPtr<UFlockMultiplayerSession> Session;   // the session the game plays
+FFlockTravelToSessionOptions TravelOptions;     // the options its first Travel To Session used
+
+UFUNCTION()
+void PlayAgain();
+
+UFUNCTION()
+void PlayAgainAfterRelayLost(const FString& Reason);
+
 // MyGameInstance.cpp: once the session is held.
 Session->OnHostChanged.AddDynamic(this, &UMyGameInstance::PlayAgain);
 Session->OnRelayLost.AddDynamic(this, &UMyGameInstance::PlayAgainAfterRelayLost);
@@ -735,6 +850,7 @@ only players on the same network can reach, with one warning per launch.
 
 ```cpp
 // Host: say how to reach it on Steam. The mode is the game's own word, 32 characters at most.
+// MySteamId: the host's own Steam id, from your Steam code.
 Session->PublishConnection(TEXT("steam"), FFlockCommandData().Set(TEXT("steam_id"), MySteamId), nullptr);
 
 // Players: TravelToSession ends not_direct holding it; or read it whenever OnConnectionChanged says it changed.
@@ -742,7 +858,7 @@ FString HostSteamId;
 if (Session->HasConnection() && Session->GetConnection().Mode.Equals(TEXT("steam"), ESearchCase::CaseSensitive)
     && Session->GetConnection().Values.TryGetString(TEXT("steam_id"), HostSteamId))
 {
-    ConnectThroughSteam(HostSteamId);
+    // Connect to HostSteamId through your Steam code.
 }
 ```
 
@@ -767,9 +883,9 @@ this guide:
 
 To try it:
 
-1. In **Project Settings > Maps & Modes**, set **Game Instance Class** to `BP_FlockSampleGameInstance`. Travel To Session runs in
+1. In **Project Settings → Maps & Modes**, set **Game Instance Class** to `BP_FlockSampleGameInstance`. Travel To Session runs in
    the Game Instance because its pins fire once the level has changed; until it is set, the widget says so.
-2. Open the `FlockMultiplayerSample` level and start two standalone games of it (**Play > Standalone Game**, twice), or run a
+2. Open the `FlockMultiplayerSample` level and start two standalone games of it (**Play → Standalone Game**, twice), or run a
    packaged build twice.
 3. In each game, type a different device name and press **Sign In**: two copies on one computer would otherwise be one player.
 4. Press **Host** in one; type the code its status shows into the other and press **Join**. Or press **Quick Match** in both, with
@@ -809,10 +925,10 @@ party and session objects' state and events are already Blueprint (a party's **O
 |---|---|
 | Flock Create Party, Flock Join Party | On Success (the party) · On Failure (the error) |
 | Flock Get My Party | On Party · On No Party · On Failure |
-| Flock Leave Party, Kick From Party, Make Party Leader, Update Party, Disband Party | On Success (the party as it stands, ended after a leave or disband) · On Failure |
+| Flock Leave Party, Flock Kick From Party, Flock Make Party Leader, Flock Update Party, Flock Disband Party | On Success (the party as it stands, ended after a leave or disband) · On Failure |
 | Flock Host Session, Flock Join Session, Flock Get Session | On Success (the session) · On Failure |
 | Flock Get My Session | On Session · On No Session · On Failure |
-| Flock Leave Session, End Session, Make Session Host, Publish Connection, Publish Direct Connection | On Success (the session) · On Failure |
+| Flock Leave Session, Flock End Session, Flock Make Session Host, Flock Publish Connection, Flock Publish Direct Connection | On Success (the session) · On Failure |
 | Flock Find Match, Flock Party Find Match | On Matched (the result: its Session is where the players play) · On No Match (the result: its Outcome says how the search ended) · On Failure |
 | Flock Request Join Token | On Success (the token) · On Failure |
 | Flock Verify Join Token | On Success (the player the token was given to) · On Failure |
@@ -837,7 +953,7 @@ the level, the node warns in the log, naming the caller. **When the host changes
 Relay Lost there too, each to Flock Travel To Session with the same Options (see [When the host changes](#when-the-host-changes)):
 the travel it replaces fires On Not Joined with the Outcome Restarted, which needs nothing done.
 
-**Spellings.** Every value a result can carry is a pure node, so a graph compares rather than types it: **Flock Travel Outcome**
+**Spellings.** Every value a result can carry is a node with no execution pins, so a graph compares rather than types it: **Flock Travel Outcome**
 (Started As Host, Connected, Host Never Published, Session Ended, Could Not Connect, Could Not Start, Not Direct, Refused,
 Relay Failed, Restarted), **Flock Refused Reason** (No Join Token, Join Token Invalid, Already Connected, Flock Unreachable, Session
 Ended, Not Host, Refused By The Game, Join Check Missing, Relay Only), **Flock Relay Failure** (Not Offered, Not Offered By

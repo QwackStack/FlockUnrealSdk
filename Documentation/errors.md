@@ -41,15 +41,21 @@ an error-tracker group every failure into its own bucket. Read `Error.Body` when
 | `Body` | The raw response body |
 | `bHasRetryAfter` / `RetryAfterSeconds` | The server's Retry-After hint, when it sent one |
 | `StoreFailureReason` | On an error of type Store: why the store did not take the payment, one of `FlockStoreFailureReasons` (`Cancelled` when the player closed the store's dialog). Empty otherwise |
-| `bOutcomeUnknown` | On a call that moves money or items (a purchase, a store redemption, a consume, a fund grant): no answer said whether it was done, so it may have been. Read the wallet and inventory before doing it again; `Hint` says what to read. Always false on a call that moves nothing |
+| `bOutcomeUnknown` | On a call that moves money or items (a purchase, a store redemption, a web checkout, a consume, a fund grant): no answer said whether it was done, so it may have been. Never offer it again on that answer alone: what to read first depends on how it was paid (see [After a money call whose outcome is unknown](#after-a-money-call-whose-outcome-is-unknown)), and `Hint` says it too. Always false on a call that moves nothing |
 
 ## Branch on the code, never on the text
 
 `ErrorCode` is the typed view of the backend's coded-error contract. Message wording is the server's to
 change; the code is a contract.
 
+Here in an actor buying a shop item, where `ItemId` is the item's id (from the shop's items, see
+[Shop](shop.md)) and `ShowTopUpScreen` is the actor's own function:
+
 ```cpp
-Shop->Purchase(ItemId, [](TFlockResult<FFlockPurchaseResult> Result)
+FFlockShopProvider* Shop = UFlockSubsystem::Get(this)->GetShopProvider();
+const TWeakObjectPtr<AMyActor> WeakThis(this);
+
+Shop->Purchase(ItemId, [WeakThis](TFlockResult<FFlockPurchaseResult> Result)
 {
     if (Result.bSuccess)
     {
@@ -57,15 +63,20 @@ Shop->Purchase(ItemId, [](TFlockResult<FFlockPurchaseResult> Result)
     }
     if (Result.Error.ErrorCode == EFlockErrorCode::ShopInsufficientFunds)
     {
-        ShowTopUpScreen();
+        if (AMyActor* Self = WeakThis.Get())
+        {
+            Self->ShowTopUpScreen();
+        }
         return;
     }
     UE_LOG(LogTemp, Warning, TEXT("%s"), *Result.Error.ToDisplayText());
 });
 ```
 
-In Blueprint the same branch is `Error Code` off the broken-out struct, compared against the
-`EFlockErrorCode` literal — no string typing involved.
+In Blueprint the same branch is `Error Code` off the broken-out struct (**Break Flock Error**), compared
+against the `EFlockErrorCode` literal — no string typing involved:
+
+![Flock Purchase's On Failure running into Break Flock Error, its Error Code compared to the Shop Insufficient Funds code and fed to a Branch, whose False prints the error through To String (Flock Error) and Print String; True is left for your own nodes](images/errors-branch-on-code.png)
 
 `EFlockErrorCode::Unknown` means the body had no code, or one this SDK version predates. The raw string
 is still on `Error.Code`, so a newer backend code is never lost, only untyped, and the fix names it.
@@ -94,9 +105,9 @@ layer produced it. When the code has no advice of its own, the fix is the one fo
 | A failure the SDK finds itself | Its own fix (an empty argument names what to pass; nobody signed in says to sign in) |
 
 Every failure Flock's game API sends carries a code. `request.not_found` with a bare `Not Found` is the server saying no
-route (with any other reason it names a record the route did not find)
-answers at that address: API URL under Project Settings > Flock SDK must be the server's address alone,
-such as `https://api.example.com`, with no `/v1` or other path after it.
+route answers at that address (with any other reason it names a record the route did not find): **API URL**
+(**Project Settings → Plugins → Flock SDK Settings**) must be the server's address alone, such as
+`https://api.example.com`, with no `/v1` or other path after it.
 
 One code is genuinely ambiguous and gets refined by the credential that hit it:
 `player.invalid_login_credentials` means *"this device has no account, register it"* for a device login
@@ -129,32 +140,59 @@ cannot flood a log line.
 Mostly none — the SDK already retries transient failures with backoff, honours `Retry-After`, and never
 retries Auth, Validation, Serialization, Cancelled or Store. What is left for you:
 
-- **`EFlockErrorType::Connection`** — the request never reached the server. Reads backed by the offline
-  cache serve their last good copy instead; a write that cannot be queued fails here.
-- **`EFlockErrorType::Auth` after a refresh** — the session is gone. Send the player back to sign-in. Check
-  `StatusCode` and `ErrorCode` first: the SDK refreshes only a 401, so a 403 reaches you as it came. A 403 carrying
-  `MatchmakingNotPartyLeader`, `MatchmakingPlayerNotEligible`, `MultiplayerNotHost` or `PartyNotPartyLeader` means the
-  player is not allowed to do that, and signing in again changes nothing. A 403 carrying `ShopPlayerMismatch` (a
-  purchase naming another player than the one signed in) or `PaymentProviderReceiptBelongsToAnotherPlayer` (a store
-  purchase that is another player's) leaves the player signed in; the fix says which player the call has to act for.
-- **`EFlockErrorType::Store`** — the platform's store (Google Play, the App Store) did not take a real-money payment, or a
-  web checkout's payment gateway declined it or let it expire, so nothing was charged; `StoreFailureReason` says why and `Hint` what to do. Offer the item again if the player wants it:
-  see [Real-money purchases](real-money-purchases.md).
-- **`EFlockErrorType::Cancelled`** — you cancelled the call, or it was made for a player who has since signed out
-  or been replaced by another sign-in, so its retry was not sent. Nothing to retry: make the call again for the
-  player now signed in, if it still applies. A cancelled call is never answered from the offline cache. Except on a
-  purchase, store redemption, consume or fund grant: one cancelled may have been sent before the cancel, so its cached
-  player data is dropped; read the wallet and inventory before making the call again.
-- **Money mutations** (a consume, a funds grant) — an ambiguous failure is surfaced rather than re-sent, because a
-  timed-out request may already have committed. A wallet purchase is the first exception: every attempt of one
-  `Purchase` call carries the same key and the server makes one purchase of them, so the SDK re-sends it itself.
-  Redeeming a store purchase (`RedeemStoreReceipt`) is the second: the server makes one purchase per store transaction,
-  so the SDK re-sends it, and you send the same receipt again later when it still fails. Whichever it is, check
-  `bOutcomeUnknown` first: when it is set, read the wallet and inventory before doing it again, since a new purchase,
-  consume or grant is a second one; your game re-sends only on a deliberate player action, never automatically.
-- **A 5xx naming a setting someone has to fix** is never retried: the game's payment keys the server cannot read
-  (`PaymentProviderCredentialsUnreadable`), or a Flock server with no address for a payment provider to confirm a payment
-  (`ShopRealCurrencySettlementUnavailable`). It stays the same until the setting is fixed.
+| Failure | What happened | What to do |
+|---|---|---|
+| `EFlockErrorType::Connection` | No answer came: the request could not reach the server, or the connection dropped after it went out, so the server may have done it | A read backed by the offline cache serves its last good copy instead. A money call that may have gone out ends with `bOutcomeUnknown` set: follow [After a money call whose outcome is unknown](#after-a-money-call-whose-outcome-is-unknown), never offer it again on this answer. `AddGameFunds` refused before sending (no connection, `bOutcomeUnknown` false) may be offered again once the device is online. Any other change that is not queued: make it again once the device is online, if it still applies |
+| `EFlockErrorType::Auth` after a refresh | The session is gone | Send the player back to sign-in, after checking `StatusCode` and `ErrorCode` (below) |
+| `EFlockErrorType::Store` | The platform's store (Google Play, the App Store) did not take a real-money payment, or a web checkout's payment gateway declined it or let it expire; nothing was charged | `StoreFailureReason` says why and `Hint` what to do. Offer the item again if the player wants it: see [Real-money purchases](real-money-purchases.md) |
+| `EFlockErrorType::Cancelled` | You cancelled the call, or it was made for a player who has since signed out or been replaced by another sign-in, so its retry was not sent | Nothing to retry: make the call again for the player now signed in, if it still applies. A cancelled call is never answered from the offline cache |
+| A money call that failed (a purchase, a store redemption, a web checkout, a consume, a funds grant) | It may have been done anyway | Check `bOutcomeUnknown`: when it is set, follow [After a money call whose outcome is unknown](#after-a-money-call-whose-outcome-is-unknown) |
+| A 5xx naming a setting someone has to fix | The game's payment keys the server cannot read (`PaymentProviderCredentialsUnreadable`), or a Flock server with no address for a payment provider to confirm a payment (`ShopRealCurrencySettlementUnavailable`) | Fix the setting: it is never retried, and it stays the same until the setting is fixed |
+
+**An Auth failure is not always a lost session.** The SDK refreshes only a 401, so a 403 reaches you as it
+came:
+
+- A 403 carrying `MatchmakingNotPartyLeader`, `MatchmakingPlayerNotEligible`, `MultiplayerNotHost` or
+  `PartyNotPartyLeader` means the player is not allowed to do that, and signing in again changes nothing.
+- A 403 carrying `ShopPlayerMismatch` (a purchase naming another player than the one signed in) or
+  `PaymentProviderReceiptBelongsToAnotherPlayer` (a store purchase that is another player's) leaves the
+  player signed in; the fix says which player the call has to act for.
+
+**A cancelled money call may have gone out.** A purchase, store redemption, consume or fund grant that was
+cancelled may have been sent before the cancel, so its cached player data is dropped: read the wallet and
+inventory before making the call again.
+
+**Money calls are re-sent only where the server makes it safe:**
+
+- A consume or a funds grant: an ambiguous failure is surfaced rather than re-sent, because a timed-out
+  request may already have committed.
+- A wallet purchase is the first exception: every attempt of one `Purchase` call carries the same key and
+  the server makes one purchase of them, so the SDK re-sends it itself.
+- Redeeming a store purchase (`RedeemStoreReceipt`) is the second: the server makes one purchase per store
+  transaction, so the SDK re-sends it, and you send the same receipt again later when it still fails.
+- Opening a web checkout is never sent again after an answer that did not come: a second one would be a second
+  payment page.
+- Whichever it is, your game makes the call again only on a deliberate player action, never automatically, and
+  only after the reads below.
+
+### After a money call whose outcome is unknown
+
+`bOutcomeUnknown` set (the Blueprint **Outcome Unknown** pin) means no answer said whether it was done. What to do
+depends on how the item was paid for:
+
+- **A wallet purchase, a consume, `AddGameFunds`:** the server may have done it. Read the wallet and the inventory
+  from the server before acting: the SDK dropped its cached copy of the player's data, so the next read asks the
+  server. A new `Purchase` call is a new purchase under a new key, and can charge twice. `AddGameFunds` may be offered
+  again only when it was refused before sending (no connection, `bOutcomeUnknown` false).
+- **A phone store (Google Play, the App Store):** the store already took the payment, since Flock delivers only
+  after the store has charged; only Flock's delivery is unknown. Tell the player it will arrive, then call
+  `UFlockStore::Restore` or wait for `OnPurchaseCompleted`. **Never offer the item again** on this answer: the store
+  keeps the purchase unfinished and hands it back, and Flock answers a repeat with what it delivered the first time.
+- **A web checkout (Windows, Mac and Linux):** the payment page may still be paid. Read the player's open checkouts
+  (`UFlockStore::Restore`, or `GetPurchases(FlockPurchaseStatuses::Pending, ...)`) before offering it again; a checkout
+  paid meanwhile is delivered by Flock, so read the wallet and inventory too.
+
+See [Real-money purchases](real-money-purchases.md#how-the-call-ends) for every way a store purchase ends.
 
 ## Where failures show up in the log
 

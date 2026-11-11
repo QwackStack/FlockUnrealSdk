@@ -8,16 +8,22 @@ Three things share one provider, and they are independent of each other:
 - **Push device tokens** — registering a device so the backend can reach it outside the game.
 
 Reach them from `UFlockSubsystem::GetNotificationProvider()`, or use the Blueprint nodes under
-**Flock | Notifications**.
+**Flock | Notifications** (see [Blueprint](#blueprint)). In the C++ samples below, `Notifications` is that provider:
 
-Every call except the two template reads requires a signed-in player and fails with `EFlockErrorType::Auth`
-without one — an inbox and a device token both belong to a player.
+```cpp
+#include "FlockSubsystem.h"
+#include "Providers/FlockNotificationProvider.h"
+
+// From any actor, widget or the game instance.
+FFlockNotificationProvider* Notifications = UFlockSubsystem::Get(this)->GetNotificationProvider();
+```
+
+Every call to the server except the two template reads requires a signed-in player and fails with
+`EFlockErrorType::Auth` without one — an inbox and a device token both belong to a player.
 
 ## The inbox
 
 ```cpp
-FFlockNotificationProvider* Notifications = UFlockSubsystem::Get(this)->GetNotificationProvider();
-
 Notifications->GetNotifications([](TFlockResult<FFlockNotificationPage> Result)
 {
     if (!Result.bSuccess) { return; }
@@ -42,8 +48,9 @@ Notifications->GetSummary([](TFlockResult<FFlockNotificationSummary> Result)
 Marking read:
 
 ```cpp
-Notifications->MarkRead(NotificationId, nullptr);   // one row; returns the updated row
-Notifications->MarkAllRead(nullptr);                // Updated is how many actually flipped
+// Notification: one row of an inbox page or a summary (FFlockNotification).
+Notifications->MarkRead(Notification.Id, nullptr);   // one row; returns the updated row
+Notifications->MarkAllRead(nullptr);                 // Updated is how many actually flipped
 ```
 
 Read state comes from `FFlockNotification::IsRead()` (`Is Read` in Blueprint), never from comparing
@@ -67,13 +74,50 @@ does nothing at all.
 
 ### Reacting to arrivals
 
-Two events on the hub save you diffing pages yourself:
+Two events on the hub save you diffing pages yourself. Each handler is a `UFUNCTION()` of your class with the event's
+parameters:
+
+| Event | Handler | Raised |
+|---|---|---|
+| `OnUnreadCountChanged` | `void HandleUnreadCount(int32 UnreadCount)` | with the count the server last reported |
+| `OnNotificationReceived` | `void HandleNotification(const FFlockNotification& Notification)` | once for each notification not seen before |
 
 ```cpp
-UFlockEvents* Events = UFlockSubsystem::Get(this)->GetEvents();
-Events->OnNotificationReceived.AddDynamic(this, &AMyActor::HandleNotification);  // UFUNCTION()
-Events->OnUnreadCountChanged.AddDynamic(this, &AMyActor::HandleUnreadCount);     // UFUNCTION()
+// MyActor.h
+UFUNCTION()
+void HandleUnreadCount(int32 UnreadCount);
+
+UFUNCTION()
+void HandleNotification(const FFlockNotification& Notification);
+
+// MyActor.cpp
+#include "FlockSubsystem.h"
+#include "FlockEvents.h"
+
+void AMyActor::BeginPlay()
+{
+    Super::BeginPlay();
+    UFlockEvents* Events = UFlockSubsystem::Get(this)->GetEvents();
+    Events->OnUnreadCountChanged.AddDynamic(this, &AMyActor::HandleUnreadCount);
+    Events->OnNotificationReceived.AddDynamic(this, &AMyActor::HandleNotification);
+}
+
+void AMyActor::HandleUnreadCount(int32 UnreadCount)
+{
+    UE_LOG(LogTemp, Display, TEXT("Unread: %d"), UnreadCount);   // the bell's badge
+}
+
+void AMyActor::HandleNotification(const FFlockNotification& Notification)
+{
+    UE_LOG(LogTemp, Display, TEXT("%s: %s"), *Notification.Title, *Notification.Body);
+}
 ```
+
+In Blueprint, drag off **Flock Get Events** and **Bind Event to On Unread Count Changed** (or On Notification Received):
+
+![Event BeginPlay runs into Bind Event to On Unread Count Changed, whose Target is Flock Get Events (a node with no execution pins), bound to the custom event Unread Changed, whose Unread Count is printed](images/notifications-unread-badge.png)
+
+Bind before the first read: the events ride the reads and are raised only to what is bound by then.
 
 `OnUnreadCountChanged` carries the count the **server** last reported — it fires on `GetUnreadCount`,
 `GetSummary`, and `MarkAllRead` (which reports `0`, since that call has exactly one possible outcome). It
@@ -116,6 +160,7 @@ nowhere".
 Cancel with the id from the scheduled row:
 
 ```cpp
+// Scheduled: the FFlockScheduledNotification that ScheduleByTemplateName completed with, or a row of GetScheduled.
 Notifications->CancelScheduled(Scheduled.Id, nullptr);
 ```
 
@@ -144,7 +189,8 @@ Notifications->GetScheduled([](TFlockResult<FFlockScheduledNotificationPage> Res
 });
 
 // Or filter explicitly. Status is a string, not an enum — the server owns the set.
-Notifications->GetScheduled(FlockScheduledNotificationStatuses::Delivered, /*Page*/ 1, /*Limit*/ 100, OnPage);
+Notifications->GetScheduled(FlockScheduledNotificationStatuses::Delivered, /*Page*/ 1, /*Limit*/ 100,
+    [](TFlockResult<FFlockScheduledNotificationPage> Result) { /* Result.Value.Items, as above */ });
 
 Notifications->CancelAllScheduled([](TFlockResult<int32> Result)
 {
@@ -215,8 +261,12 @@ since it is a different record.
 Messaging's `On Token Received`, or OneSignal — and pass the string in:
 
 ```cpp
+// Token: the string your push plugin handed over.
 Notifications->RegisterDeviceToken(Token, [](TFlockResult<FFlockDeviceToken> Result) {});
 ```
+
+Registering needs a signed-in player, and a push plugin usually hands the token over at start, before sign-in: keep it and
+register it on `OnAuthenticated` ([how](push-setup-android.md#4-hook-the-token-to-flock)).
 
 The platform comes from the running build. On desktop, console and in the editor this fails `Validation`
 rather than guessing one: the backend accepts `android`, `ios` and `web` only, and a token filed under the
@@ -274,18 +324,22 @@ Full walkthrough: **[Testing push notifications on Android](push-setup-android.m
 
 ## Blueprint
 
-Every call has a node under **Flock | Notifications**: `Flock Get Notifications`,
-`Flock Get Unread Notification Count`, `Flock Get Notification Summary`, `Flock Mark Notification Read`,
-`Flock Mark All Notifications Read`, `Flock Get Notification Templates`,
-`Flock Get Notification Template By Name`, `Flock Schedule Notification`,
-`Flock Cancel Scheduled Notification`, `Flock Register Device Token`,
-`Flock Register Device Token For Platform` and `Flock Unregister Device Token`.
+Every call has a node under **Flock | Notifications**. The async ones fire **On Success** or **On Failure** (with the
+error):
 
-Pure helpers: `Is Read`, `Is Pending`, `Is Delivered`, `Is Canceled`,
-`Flock Get Current Device Platform`, `Device Platform To String` and `Notification Channel To String`.
+| Area | Nodes |
+|---|---|
+| The inbox | `Flock Get Notifications`, `Flock Get Unread Notification Count`, `Flock Get Notification Summary`, `Flock Mark Notification Read`, `Flock Mark All Notifications Read` |
+| Scheduling | `Flock Schedule Notification`, `Flock Cancel Scheduled Notification`, `Flock Get Scheduled Notifications`, `Flock Cancel All Scheduled Notifications`, and `Flock Get Pending Schedules` (answers at once, from this install's own record) |
+| Templates | `Flock Get Notification Templates`, `Flock Get Notification Template By Name` |
+| Push device tokens | `Flock Register Device Token`, `Flock Register Device Token For Platform`, `Flock Unregister Device Token` |
 
-The two events need no node of their own — drag off `Flock Get Events` and *Assign* `On Unread Count
-Changed` or `On Notification Received`.
+Helpers with no execution pins: `Is Read`, `Is Pending`, `Is Delivered`, `Is Canceled`, `Flock Get Current Device Platform`,
+`Device Platform To String`, `Notification Channel To String`, and `Flock Schedule Status Pending / Delivered / Canceled`
+for Get Scheduled Notifications' `Status`.
+
+The two events need no node of their own — drag off `Flock Get Events` and bind `On Unread Count Changed` (its *Unread
+Count*) or `On Notification Received` (its *Notification*): see [Reacting to arrivals](#reacting-to-arrivals).
 
 Build a `Variables` bag with the chainable `Set Command …` nodes — it is the same flat typed value bag the
 game-command calls use.

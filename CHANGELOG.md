@@ -5,6 +5,53 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.48.0] - 2026-11-10
+
+The shop sample, made of Blueprints only. No change to any call.
+
+### Added
+
+- **`Content/Samples/Shop`** (turn on Show Plugin Content in the Content Browser): `WBP_FlockShopSample`, a shop screen that
+  logs a device in (registering a device that has no account yet), reads every page of the game's shops, and shows the wallet
+  and a row for each item; `WBP_FlockShopSampleItem`, the row: the item's price (the store's own for a real-money item on a
+  phone, Flock's through a web checkout), how many the player owns, **Buy** (or why it cannot be bought now: owned, not enough of
+  its currency, the store not connected or not selling it) and **Use** for a consumable the player holds; and `FlockShopSample`,
+  a level that shows the screen.
+  - When an item is sold for real money, the screen uses the store Flock already holds, or connects one with its *Payment
+    provider* field empty (Connect Store with its *Options* pin left unwired: the build's own way to pay) or naming the payment
+    gateway to use when the game has more than one. The rows show at once and again once the store answers. It disconnects only
+    a store it connected, when the screen is closed (its Destruct).
+  - Each outcome is a line in plain words followed by the SDK's own cause and fix: bought (with what it granted), waiting for its
+    payment, the store's common reasons, not enough currency, no answer from Flock (for a real-money item, which the player may
+    have paid for, its row reads **Waiting for delivery** and **Flock Restore Purchases** runs, so it is not offered again until
+    it is delivered or Restore succeeds); the wallet and what the player owns are then read again, and once more a second later (Refresh After Change), as Flock's server can answer a purchase, a use or a restore
+    just before it has saved it, and a read made at once can still show the item as not owned. While a purchase, a use, a restore or the shops' read is under way, the rows, **Restore purchases**, **Open
+    the shop** and **Log in** are off, so a second press cannot buy twice; **Log in** signs in only when nobody is.
+  - **Restore purchases** (on a phone) and **Check store setup** sit under the rows. Every graph is under comment boxes saying
+    what it does. See the shop guide's "The shop sample".
+- **`Flock.SelfTest` covers payments** (development builds): the wallet, the owned item counts and each real-money item with its
+  store product ids; on Windows, Mac and Linux, when the game sells a real-money item, the store connected (a web checkout), each
+  real-money price and the setup check, then the store disconnected; and the player's purchases. It opens no checkout and moves
+  no money. A phone's store is not connected: connecting one delivers the purchases the store still holds unfinished to whoever
+  is signed in, here the self-test's player.
+
+### Documentation
+
+- Every page has a C++ example or a Blueprint picture, each one built: the C++ examples compile in the harness, and the 16
+  Blueprint pictures are graphs the harness makes and compiles clean (Flock and the Protokite plugin: the feedback form, its
+  own-form answers, consent, the recording's upload, a playtest event; the store, the events hub, sign-in, player data,
+  diagnostics, analytics, leaderboards, config, errors, notifications, account linking).
+- Sign-in flows check *Flock Is Authenticated* first, register, and log in only when *Already Registered* is set: registering a
+  new identity signs the player in, and a second sign-in ends the first session. On Windows, Mac and Linux the device id is a
+  GUID the game keeps (`FPlatformMisc::GetDeviceId` is empty there).
+- Real-money pages say what to do when Flock's answer never came: on a phone, the player paid and the item is delivered at the
+  next launch or after Restore; on a web checkout, read the open checkouts before offering the item again. A purchase refused for
+  the sign-in raises no `OnPurchaseNotDelivered` and is sent at the next sign-in.
+- Node names match the editor (*Call or Register on Initialized*, *Make Flock Event Properties*); where the API key and Game Name
+  come from; each feature's success line in the log. Pictures that are no longer referenced were removed, and a key that one
+  picture showed is masked.
+- The Protokite playtest plugin's *Record Playtest Event* says to build its Properties with *Make Flock Event Properties*.
+
 ## [1.47.0] - 2026-11-10
 
 Real-money purchases from Blueprint. A Blueprint-only game can connect the store, show prices, buy, restore, check the store's

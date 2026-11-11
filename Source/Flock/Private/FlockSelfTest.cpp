@@ -44,6 +44,7 @@
 #include "Providers/FlockNotificationProvider.h"
 #include "Providers/FlockPlayerProvider.h"
 #include "Providers/FlockShopProvider.h"
+#include "Store/FlockStore.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
 
@@ -78,6 +79,10 @@ namespace
 	// name this backend does not stock, falls back to the first item and says so — a backend without this
 	// item still gets a working sweep.
 	const TCHAR* const DemoShopItemName = TEXT("RewardTest");
+
+	// Payment leg. The payment provider Connect Store names: empty is this build's own way to pay (a web checkout through the game's
+	// one payment gateway on a desktop); name one ("moyasar") when the game has more than one. The leg opens no checkout either way.
+	const TCHAR* const DemoPaymentProvider = TEXT("");
 
 	// Leaderboards sweep. The board NAME as it appears on the dashboard — the SDK takes names only, and
 	// resolves the id internally. Empty board name skips the whole block, so a backend without this board
@@ -163,6 +168,9 @@ namespace
 
 		/** The events hub, so the notification sweep can show the two events firing off its own reads. */
 		UFlockEvents* Events = nullptr;
+
+		/** The SDK itself, for the payment leg's store (UFlockStore::Connect takes it). */
+		UFlockSubsystem* Sdk = nullptr;
 	};
 
 	/**
@@ -518,6 +526,150 @@ namespace
 
 			Logger->LogInfo(TEXT("Self-test: pre-purchase grant -> skipped (no command provider, or the item has no price/currency)."));
 			DoPurchase();
+		});
+	}
+
+	/**
+	 * Payment, signed in. The wallet and what the player owns; every real-money item with its price and each store's product id; on
+	 * a desktop, the store connected (a web checkout), each real-money item's price as it gives it and its setup check (which on a
+	 * web checkout asks nothing of Flock's server), then the store disconnected; and the player's purchases. It opens no checkout
+	 * and moves no money: a purchase is the shop leg's, and a real-money one needs a person to pay. A phone's store is never
+	 * connected here: connecting one hands Flock every purchase the store still holds unfinished, and it would be delivered to the
+	 * self-test's player instead of the player who paid.
+	 */
+	void RunPaymentSweep(UFlockSubsystem* Sdk, FFlockPlayerProvider* Players, FFlockShopProvider* Shop, const TSharedRef<IFlockLogger>& Logger,
+		TFunction<void()> Next)
+	{
+		if (Sdk == nullptr || Players == nullptr || Shop == nullptr)
+		{
+			Logger->LogInfo(TEXT("Self-test: payment leg skipped (the player or shop feature is off)."));
+			Next();
+			return;
+		}
+		Players->GetWallet([Sdk, Shop, Logger, Next](TFlockResult<FFlockWallet> Wallet)
+		{
+			if (Wallet.bSuccess)
+			{
+				TArray<FString> Balances;
+				for (const FFlockCurrencyBalance& Balance : Wallet.Value.GameCurrencies)
+				{
+					Balances.Add(FString::Printf(TEXT("%lld %s"), Balance.Amount, *Balance.Code));
+				}
+				Logger->LogInfo(FString::Printf(TEXT("Self-test: wallet -> %s"), Balances.Num() > 0 ? *FString::Join(Balances, TEXT(", ")) : TEXT("(no game currency)")));
+			}
+			else
+			{
+				Logger->LogInfo(FString::Printf(TEXT("Self-test: wallet -> failed (%s)"), *Wallet.Error.ReasonAndFix()));
+			}
+			Shop->GetOwnedItemCounts([Sdk, Shop, Logger, Next](TFlockResult<FFlockOwnedItemCounts> Owned)
+			{
+				Logger->LogInfo(Owned.bSuccess
+					? FString::Printf(TEXT("Self-test: owned item counts -> %d item(s) held unused"), Owned.Value.Items.Num())
+					: FString::Printf(TEXT("Self-test: owned item counts -> failed (%s)"), *Owned.Error.ReasonAndFix()));
+				Shop->GetAll(1, 100, [Sdk, Shop, Logger, Next](TFlockResult<FFlockShopPage> Shops)
+				{
+					TArray<FString> RealMoney;
+					if (Shops.bSuccess)
+					{
+						for (const FFlockShop& EachShop : Shops.Value.Items)
+						{
+							for (const FFlockShopItem& Item : EachShop.ShopItems)
+							{
+								if (Item.IsRealMoney)
+								{
+									FlockNarrateRealMoneyItem(Item, *Logger);
+									RealMoney.Add(Item.Id);
+								}
+							}
+						}
+					}
+					Logger->LogInfo(Shops.bSuccess
+						? FString::Printf(TEXT("Self-test: real-money items -> %d"), RealMoney.Num())
+						: FString::Printf(TEXT("Self-test: real-money items -> the shops were not read (%s)"), *Shops.Error.ReasonAndFix()));
+
+					// The player's purchases (every status), then the leg is over.
+					TFunction<void()> ReadPurchases = [Shop, Logger, Next]()
+					{
+						Shop->GetPurchases(FString(), 1, 100, [Logger, Next](TFlockResult<FFlockPlayerPurchasePage> Purchases)
+						{
+							if (Purchases.bSuccess)
+							{
+								TMap<FString, int32> ByStatus;
+								for (const FFlockPlayerPurchase& Purchase : Purchases.Value.Items)
+								{
+									++ByStatus.FindOrAdd(Purchase.Status);
+								}
+								TArray<FString> Counts;
+								for (const TPair<FString, int32>& Status : ByStatus)
+								{
+									Counts.Add(FString::Printf(TEXT("%d %s"), Status.Value, *Status.Key));
+								}
+								Logger->LogInfo(FString::Printf(TEXT("Self-test: player purchases -> %d of %d on this page%s%s"), Purchases.Value.Items.Num(),
+									Purchases.Value.Total, Counts.Num() > 0 ? TEXT(": ") : TEXT(""), *FString::Join(Counts, TEXT(", "))));
+							}
+							else
+							{
+								Logger->LogInfo(FString::Printf(TEXT("Self-test: player purchases -> failed (%s)"), *Purchases.Error.ReasonAndFix()));
+							}
+							Next();
+						});
+					};
+					if (RealMoney.Num() == 0)
+					{
+						Logger->LogInfo(TEXT("Self-test: no real-money item, so no store to connect."));
+						ReadPurchases();
+						return;
+					}
+					if (!UFlockStore::IsADesktop())
+					{
+						Logger->LogInfo(TEXT("Self-test: the store is not connected on a phone: connecting it would deliver the purchases the store ")
+							TEXT("still holds unfinished to the self-test's player. Check a phone's store with the game signed in as its own player."));
+						ReadPurchases();
+						return;
+					}
+					FFlockStoreOptions Options;
+					Options.PaymentProvider = DemoPaymentProvider;
+					UFlockStore::Connect(Sdk, Options, [RealMoney, Logger, ReadPurchases](TFlockResult<UFlockStore*> Connected)
+					{
+						UFlockStore* Store = Connected.bSuccess ? Connected.Value : nullptr;
+						if (Store == nullptr)
+						{
+							Logger->LogInfo(FString::Printf(TEXT("Self-test: connect store -> failed (%s)"), *Connected.Error.ReasonAndFix()));
+							ReadPurchases();
+							return;
+						}
+						Logger->LogInfo(Store->IsWebCheckout()
+							? FString::Printf(TEXT("Self-test: connect store -> a web checkout through %s"),
+								Store->GetPaymentProvider().IsEmpty() ? TEXT("the game's payment gateway") : *Store->GetPaymentProvider())
+							: FString::Printf(TEXT("Self-test: connect store -> %s"), *Store->GetPaymentProvider()));
+						for (const FString& ItemId : RealMoney)
+						{
+							const TFlockResult<FFlockStorePrice> Price = Store->GetPrice(ItemId);
+							Logger->LogInfo(Price.bSuccess
+								? FString::Printf(TEXT("Self-test: store price of %s -> %s"), *ItemId, *Price.Value.Text)
+								: FString::Printf(TEXT("Self-test: store price of %s -> failed (%s)"), *ItemId, *Price.Error.ReasonAndFix()));
+						}
+						const TWeakObjectPtr<UFlockStore> Held(Store);
+						Store->CheckSetup([Held, Logger, ReadPurchases](TFlockResult<FFlockStoreSetupCheck> Check)
+						{
+							if (Check.bSuccess)
+							{
+								FlockNarrateStoreSetupCheck(Check.Value, *Logger);
+							}
+							else
+							{
+								Logger->LogInfo(FString::Printf(TEXT("Self-test: store setup check -> failed (%s)"), *Check.Error.ReasonAndFix()));
+							}
+							if (UFlockStore* Connection = Held.Get())
+							{
+								Connection->Disconnect();
+								Logger->LogInfo(TEXT("Self-test: store disconnected."));
+							}
+							ReadPurchases();
+						});
+					});
+				});
+			});
 		});
 	}
 
@@ -1620,9 +1772,15 @@ namespace
 											RunLeaderboardSweep(Sweeps.Leaderboards, Sweeps.Players, Sweeps.Commands,
 												Logger, AfterLeaderboards);
 										};
-										TFunction<void()> AfterShop = [Sweeps, Logger, AfterCommands]()
+										TFunction<void()> AfterPayment = [Sweeps, Logger, AfterCommands]()
 										{
 											RunCommandsSweep(Sweeps.Commands, Sweeps.Players, Logger, AfterCommands);
+										};
+										// The payment leg reads only (no checkout, no money), right after the shop leg's
+										// purchase, so the wallet and owned counts it reads include that purchase.
+										TFunction<void()> AfterShop = [Sweeps, Logger, AfterPayment]()
+										{
+											RunPaymentSweep(Sweeps.Sdk, Sweeps.Players, Sweeps.Shop, Logger, AfterPayment);
 										};
 										// The shop sweep now needs the command provider (to fund the wallet
 										// before buying) and the analytics provider (to narrate the purchase
@@ -1936,6 +2094,7 @@ namespace
 		Sweeps.Leaderboards = Sdk->GetLeaderboardProvider();
 		Sweeps.Notifications = Sdk->GetNotificationProvider();
 		Sweeps.Events = Sdk->GetEvents();
+		Sweeps.Sdk = Sdk;
 
 		RunAuthSweep(*Auth, Sweeps, Logger, Teardown);
 		Logger->LogInfo(TEXT("Self-test: auth sweep dispatched; the signed-in shop, commands, and analytics sweeps "
@@ -1944,7 +2103,7 @@ namespace
 
 	FAutoConsoleCommand GFlockSelfTestCommand(
 		TEXT("Flock.SelfTest"),
-		TEXT("Drives the Flock SDK surface (boot/init + config/game + auth + shop + commands + assets + analytics) and narrates each step to the log (development builds only)."),
+		TEXT("Drives the Flock SDK surface (boot/init + config/game + auth + shop + payment reads + commands + assets + analytics) and narrates each step to the log (development builds only)."),
 		FConsoleCommandDelegate::CreateStatic(&RunFlockSelfTest));
 }
 

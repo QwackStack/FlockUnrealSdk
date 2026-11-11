@@ -14,25 +14,30 @@ the wire, so a read is a single request and no read ever takes an id.
 
 The nodes live under *Flock | Leaderboard*:
 
-| Node | Returns |
-|---|---|
-| `Flock Get Leaderboard` | the board's configuration |
-| `Flock Get Leaderboard Standings` | a page of ranked entries (`Page`, `Limit`) |
-| `Flock Get My Rank` | the signed-in player's placement |
-| `Flock Get Standings Around Me` | the `Neighbours` entries either side of them |
+| Node | Inputs | Returns |
+|---|---|---|
+| `Flock Get Leaderboard` | Leaderboard Name | the board's configuration |
+| `Flock Get Leaderboard Standings` | Leaderboard Name, `Page` (1), `Limit` (50) | a page of ranked entries |
+| `Flock Get My Rank` | Leaderboard Name | the signed-in player's placement |
+| `Flock Get Standings Around Me` | Leaderboard Name, `Neighbours` (5) | the `Neighbours` entries either side of them |
+
+Each fires **On Success** or **On Failure** (with the error). The last three also take a **Window** and a **Country** in
+their advanced section (the little arrow).
 
 Reading a board and its standings works signed out. **My Rank** and **Standings Around Me** need a
 signed-in player and fail immediately when there is none.
 
-The pure helpers are on the same menu:
+The helpers, which have no execution pins, are on the same menu:
 
 | Node | Does |
 |---|---|
 | `Make Current Window` | the board's live window — all-time, this week, or this season |
 | `Make Season Window` | one finished season, from its id |
-| `Make Period Window` | a raw period key, e.g. `2026-W31` |
+| `Make Period Window` | a raw period key, such as `2026-W31` |
+| `Is Current Window` | true for the live window |
 | `Format Score` | renders a score the way the board measures it |
 | `Is Higher Better` | true when a bigger number wins |
+| `Flock Refusal Reason Score Bounds`, `Flock Refusal Reason Gain Limit` | why a board turned a score away (see [Submitting a score](#submitting-a-score)) |
 
 Leave the **Window** pin unconnected for the board's live window, which is what most screens want.
 
@@ -40,8 +45,13 @@ Leave the **Window** pin unconnected for the board's live window, which is what 
 
 `Flock Get My Rank` returns a **Player Rank** with a **Ranked** boolean. A player who has not scored yet
 is a *successful* read with `Ranked` false — not an error. Branch on `Ranked` before showing `Rank` or
-`Score`; `Format Score` already returns an empty string for an unranked player, so a text binding needs no
-branch of its own.
+`Score`; `Format Score` already returns an empty string for an unranked player (its **Ranked** pin, in the advanced
+section, takes the player rank's Ranked), so a text binding needs no branch of its own.
+
+![Custom event Show My Rank, Flock Get My Rank for weekly_high_score, On Success into a Branch on the Player Rank's Ranked, and on True Format Score into Print String](images/leaderboards-my-rank.png)
+
+`Format Score` needs the board's configuration (from `Flock Get Leaderboard`), so read the board once when the screen opens
+and keep it.
 
 ### Formatting scores
 
@@ -51,23 +61,26 @@ Do not print `Score` directly. A board can measure an integer, a float, or a **d
 
 ## C++
 
-Everything lives on the leaderboard provider:
+Everything lives on the leaderboard provider. `Sdk` is the Flock subsystem, `UFlockSubsystem::Get(this)` from any actor,
+widget or the game instance. A completion runs later, so it holds the subsystem weakly and asks for the provider again:
 
 ```cpp
-UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
-FFlockLeaderboardProvider* Boards = Sdk->GetLeaderboardProvider();
+#include "FlockSubsystem.h"
+#include "Providers/FlockLeaderboardProvider.h"
+
+const TWeakObjectPtr<UFlockSubsystem> WeakSdk = Sdk;
 
 // The board's configuration — needed for FormatScore and IsHigherBetter.
-Boards->GetByName(TEXT("HighScoreTest"),
-    [Boards](TFlockResult<FFlockLeaderboard> Board)
+Sdk->GetLeaderboardProvider()->GetByName(TEXT("HighScoreTest"),
+    [WeakSdk](TFlockResult<FFlockLeaderboard> Board)
     {
-        if (!Board.bSuccess)
+        if (!Board.bSuccess || !WeakSdk.IsValid())
         {
             return;
         }
 
         // Top of the board's live window.
-        Boards->GetStandings(TEXT("HighScoreTest"),
+        WeakSdk->GetLeaderboardProvider()->GetStandings(TEXT("HighScoreTest"),
             [Board](TFlockResult<FFlockStandings> Standings)
             {
                 if (!Standings.bSuccess)
@@ -87,24 +100,31 @@ Boards->GetByName(TEXT("HighScoreTest"),
 The signed-in player's own placement, and the players around them:
 
 ```cpp
-Boards->GetMyRank(TEXT("HighScoreTest"),
-    [](TFlockResult<FFlockPlayerRank> Rank)
+// Board: the FFlockLeaderboard read with GetByName above, kept by the screen.
+Sdk->GetLeaderboardProvider()->GetMyRank(TEXT("HighScoreTest"),
+    [Board](TFlockResult<FFlockPlayerRank> Rank)
     {
-        if (Rank.bSuccess && !Rank.Value.Ranked)
+        if (!Rank.bSuccess)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("%s"), *Rank.Error.ToDisplayText());
+            return;
+        }
+        if (!Rank.Value.Ranked)
         {
             // A valid answer: this player has no entry on the board yet.
             return;
         }
+        UE_LOG(LogTemp, Log, TEXT("You are #%d with %s"), Rank.Value.Rank, *Board.FormatScore(Rank.Value.Score));
     });
 
-Boards->GetAroundMe(TEXT("HighScoreTest"),
+Sdk->GetLeaderboardProvider()->GetAroundMe(TEXT("HighScoreTest"),
     [](TFlockResult<FFlockStandings> Around) { /* five either side by default */ });
 ```
 
-Both take an explicit window and country on their longer overloads:
+These reads, and `GetStandings`, take an explicit window and country on their longer overloads:
 
 ```cpp
-Boards->GetStandings(TEXT("HighScoreTest"), FFlockLeaderboardWindow::Season(TEXT("s7")),
+Sdk->GetLeaderboardProvider()->GetStandings(TEXT("HighScoreTest"), FFlockLeaderboardWindow::Season(TEXT("s7")),
     TEXT("SA"), /*Page*/ 1, /*Limit*/ 25, [](TFlockResult<FFlockStandings> Result) {});
 ```
 
@@ -116,16 +136,30 @@ read addresses the board by name, and the name is what goes on the wire.
 Write the field the board ranks:
 
 ```cpp
-// The board's source template, then the field it projects over.
-Sdk->GetPlayerProvider()->GetMyDataByTemplate(TEXT("gameplay"),
-    [Sdk](TFlockResult<FFlockPlayerData> Row)
+// PlayerTemplateId: the id of the player template the board ranks (its source template, in the dashboard).
+const TWeakObjectPtr<UFlockSubsystem> WeakSdk = Sdk;
+Sdk->GetPlayerProvider()->GetMyDataByTemplate(PlayerTemplateId,
+    [WeakSdk](TFlockResult<FFlockPlayerData> Row)
     {
-        if (!Row.bSuccess)
+        // An empty Id means the player has no row for that template yet: there is nothing to update.
+        if (!Row.bSuccess || Row.Value.Id.IsEmpty() || !WeakSdk.IsValid())
         {
             return;
         }
-        Sdk->GetCommandProvider()->UpdatePlayerDataField(Row.Value.Id, TEXT("Score"),
-            FFlockCommandValue(9001), [](TFlockResult<FFlockPlayerData> Written) {});
+        // The field the board projects over, named as the template declares it.
+        WeakSdk->GetCommandProvider()->UpdatePlayerDataField(Row.Value.Id, TEXT("Score"), FFlockCommandValue(9001),
+            [](TFlockResult<FFlockPlayerData> Written)
+            {
+                if (!Written.bSuccess)
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("%s"), *Written.Error.ToDisplayText());
+                    return;
+                }
+                for (const FFlockLeaderboardRefusal& Refusal : Written.Value.LeaderboardRefusals)
+                {
+                    UE_LOG(LogTemp, Display, TEXT("%s turned the score away: %s"), *Refusal.LeaderboardName, *Refusal.Reason);
+                }
+            });
     });
 ```
 

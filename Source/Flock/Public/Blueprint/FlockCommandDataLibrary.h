@@ -15,6 +15,8 @@
  *
  *     Set Command Int ("gold", 250) -> Set Command Bool ("prestige", true) -> Flock Update Player Data
  *
+ * The first node's Data pin is left unwired: it starts from an empty bag.
+ *
  * Returning the bag (rather than mutating a reference) is what makes the editor's context menu offer them
  * off a Data pin — the same reason the analytics metadata nodes are shaped this way. Every node delegates
  * to FFlockCommandData / FFlockCommandValue so Blueprint and C++ cannot drift.
@@ -29,24 +31,24 @@ class FLOCK_API UFlockCommandDataLibrary : public UBlueprintFunctionLibrary
 public:
 	// ── Command data (a bag of fields for Update Player Data) ──
 
-	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (DisplayName = "Set Command Int"))
+	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (AutoCreateRefTerm = "Data", DisplayName = "Set Command Int"))
 	static FFlockCommandData SetCommandInt(const FFlockCommandData& Data, const FString& Key, int32 Value);
 
-	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (DisplayName = "Set Command Float"))
+	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (AutoCreateRefTerm = "Data", DisplayName = "Set Command Float"))
 	static FFlockCommandData SetCommandFloat(const FFlockCommandData& Data, const FString& Key, float Value);
 
-	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (DisplayName = "Set Command String"))
+	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (AutoCreateRefTerm = "Data", DisplayName = "Set Command String"))
 	static FFlockCommandData SetCommandString(const FFlockCommandData& Data, const FString& Key, const FString& Value);
 
-	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (DisplayName = "Set Command Bool"))
+	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (AutoCreateRefTerm = "Data", DisplayName = "Set Command Bool"))
 	static FFlockCommandData SetCommandBool(const FFlockCommandData& Data, const FString& Key, bool bValue);
 
-	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (DisplayName = "Set Command String Array"))
+	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (AutoCreateRefTerm = "Data, Value", DisplayName = "Set Command String Array"))
 	static FFlockCommandData SetCommandStringArray(const FFlockCommandData& Data, const FString& Key,
 		const TArray<FString>& Value);
 
 	/** Sets a field from raw JSON — the escape hatch for a nested object or list. Invalid JSON writes null. */
-	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (DisplayName = "Set Command Json"))
+	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (AutoCreateRefTerm = "Data", DisplayName = "Set Command Json"))
 	static FFlockCommandData SetCommandJson(const FFlockCommandData& Data, const FString& Key, const FString& Json);
 
 	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (DisplayName = "Get Command Field Names"))
@@ -74,7 +76,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (DisplayName = "Command Value (Bool)"))
 	static FFlockCommandValue CommandValueBool(bool bValue);
 
-	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (DisplayName = "Command Value (String Array)"))
+	UFUNCTION(BlueprintPure, Category = "Flock|Commands", meta = (AutoCreateRefTerm = "Value", DisplayName = "Command Value (String Array)"))
 	static FFlockCommandValue CommandValueStringArray(const TArray<FString>& Value);
 
 	/** Wraps raw JSON as a value — the escape hatch for a nested shape. Invalid JSON yields null. */

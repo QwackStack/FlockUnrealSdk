@@ -161,6 +161,9 @@ namespace FlockStoreTesting
 	const FString Delivered =
 		TEXT("{\"purchase_id\":\"pur-1\",\"item_type\":\"currency_pack\",\"status\":\"paid\",\"granted\":[{\"type\":\"currency\",\"code\":\"gold\",\"amount\":100}]}");
 
+	const FString ReceiptInvalid =
+		TEXT("{\"detail\":{\"code\":\"payment_provider.receipt_invalid\",\"message\":\"Receipt rejected: Google returned 400\"}}");
+
 	const FString CredentialsRejected =
 		TEXT("{\"detail\":{\"code\":\"payment_provider.store_credentials_rejected\",\"message\":\"Google rejected this game's store credentials (service account refused (HTTP 400)); the studio's payment settings need fixing before receipts can be verified\"}}");
 
@@ -887,14 +890,18 @@ bool FFlockStoreSecondConnectTest::RunTest(const FString& Parameters)
 FLOCK_STORE_TEST(FFlockStoreWalletItemTest, "AWalletItemWithTheStoreConnectedIsBoughtFromTheWalletAndTheStoreIsNotAsked")
 bool FFlockStoreWalletItemTest::RunTest(const FString& Parameters)
 {
-	FFixture F;
-	F.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(TEXT("{\"purchase_id\":\"pur-w\",\"item_type\":\"standard\",\"status\":\"paid\"}")));
+	// The canonical suite's catalog and answer, verbatim: the gems and a potion priced in Gold.
+	FFixture F(FFlockFakeTransport::Ok(Delivered), {
+		Item(TEXT("gems"), TEXT("currency_pack"), FString::Printf(TEXT("{\"google_play\":\"%s\"}"), *Gems)),
+		TEXT("{\"id\":\"potion\",\"name\":\"potion\",\"type\":\"consumable\",\"price\":20,\"currency\":\"Gold\",\"is_real_money\":false,\"store_skus\":{}}") });
+	F.Fake->On(TEXT("shop/transaction"), FFlockFakeTransport::Ok(TEXT("{\"purchase_id\":\"pur-wallet\",\"item_type\":\"consumable\"}")));
 	F.SignIn(TEXT("player-a"));
 	F.Connect();
-	const TAnswer<TFlockResult<FFlockPurchaseResult>> Answer = F.Buy(TEXT("gold-item"));
-	TestTrue(TEXT("Bought"), Answer.IsSet() && Answer->IsSuccess());
+	const TAnswer<TFlockResult<FFlockPurchaseResult>> Answer = F.Buy(TEXT("potion"));
+	TestTrue(TEXT("Bought"), Answer.IsSet() && Answer->IsSuccess() && Answer->Value.PurchaseId == TEXT("pur-wallet"));
 	TestEqual(TEXT("From the wallet"), F.Fake->CountTo(TEXT("shop/transaction")), 1);
-	TestFalse(TEXT("Not through the store"), F.Store->AnyStartingWith(TEXT("buy:")));
+	TestFalse(TEXT("The store is never asked about a wallet item"), F.Store->AnyStartingWith(TEXT("buy:")));
+	TestEqual(TEXT("No receipt is redeemed"), F.RedemptionBodies().Num(), 0);
 	return true;
 }
 
@@ -1132,10 +1139,11 @@ bool FFlockStoreSetupCheckTest::RunTest(const FString& Parameters)
 {
 	// The SDK logs each refusal the server sends.
 	AddExpectedError(TEXT("] failed:"), EAutomationExpectedErrorFlags::Contains, 0);
-	FFixture F(FFlockFakeTransport::Coded(422, TEXT("payment_provider.receipt_invalid")));
+	FFixture F(FFlockFakeTransport::Status(422, ReceiptInvalid));
 	FFlockStorePrice Found;
 	Found.bFoundInTheStore = true;
 	F.Store->Prices.Add(Gems, Found);
+	F.Store->Prices.Add(Twin, Found);
 	F.SignIn(TEXT("player-a"));
 	F.Connect();
 	const TAnswer<TFlockResult<FFlockStoreSetupCheck>> Answer;
@@ -1146,12 +1154,15 @@ bool FFlockStoreSetupCheckTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	const FFlockStoreSetupCheck& Check = Answer->Value;
-	TestTrue(TEXT("The sword and the twins were not found"), Check.NotFoundInTheStore.Num() == 3);
-	TestTrue(TEXT("The shield has no product id"), Check.MissingProductId.Num() == 1 && Check.MissingProductId[0].Id == TEXT("shield"));
+	TestTrue(TEXT("The sword was not found"), Check.NotFoundInTheStore.Num() == 1 && Check.NotFoundInTheStore[0].Id == TEXT("sword"));
+	TestTrue(TEXT("The shield has no product id; a kind not sold through the store (the pass) is not listed"),
+		Check.MissingProductId.Num() == 1 && Check.MissingProductId[0].Id == TEXT("shield"));
 	TestTrue(TEXT("A receipt the store calls invalid means the keys work"), Check.bServerCanCheckPurchases);
 	TestFalse(TEXT("No server problem"), Check.bHasServerProblem);
 	TestFalse(TEXT("Not ready"), Check.IsReady());
-	TestEqual(TEXT("One made-up receipt asked about"), F.RedemptionBodies().Num(), 1);
+	const TArray<FString> Asked = F.RedemptionBodies();
+	TestTrue(TEXT("Only a made-up purchase is sent"), Asked.Num() == 1 && Asked[0].Contains(TEXT("\"purchase_token\":\"flock-setup-check\""), ESearchCase::CaseSensitive));
+	TestFalse(TEXT("Nothing is bought"), F.Store->AnyStartingWith(TEXT("buy:")));
 	return true;
 }
 
@@ -1332,8 +1343,12 @@ bool FFlockStoreSoldBeforeTest::RunTest(const FString& Parameters)
 	F.SignIn(TEXT("player-a"));
 	F.Connect();
 	TestTrue(TEXT("The product sold before is still registered, so the store hands its purchases back"), F.Store->Calls.Contains(TEXT("register:") + Gems + TEXT(":consumable")));
-	F.Store->Pay(Gems, TEXT("token-1"));
-	TestEqual(TEXT("Sent"), F.RedemptionBodies().Num(), 1);
+	F.Store->Pay(Gems, TEXT("token-paid"));
+	const TArray<FString> Sent = F.RedemptionBodies();
+	TestTrue(TEXT("Sent as the item it was bought as"), Sent.Num() == 1 && Sent[0].Equals(FString::Printf(
+		TEXT("{\"shop_item_id\":\"gems\",\"provider\":\"google_play\",\"receipt\":{\"product_id\":\"%s\",\"purchase_token\":\"token-paid\"}}"), *Gems),
+		ESearchCase::CaseSensitive));
+	TestTrue(TEXT("Finished once Flock delivered"), F.Store->Calls.Contains(TEXT("finish:token-paid")));
 	TestEqual(TEXT("Delivered"), F.Completed, TArray<FString>{ TEXT("gems:pur-1") });
 	return true;
 }

@@ -1,7 +1,8 @@
 # Shop
 
-A **shop** is a named collection of **shop items**. An item has a price, a currency, and free-form
-`data` / `stats` the game reads however it likes. Buying one credits it to a player's **inventory**.
+A **shop** is a named collection of **shop items**. An item has a price, a currency, and free-form `data` the game reads
+however it likes; the shop's own `data` holds its web shop addresses and free-form `stats`. Buying an item credits it to a
+player's **inventory**.
 
 Catalog reads are cached and served from the offline snapshot; purchases and inventory never are — see
 [Caching and money-safety](#caching-and-money-safety), which is the part of this guide worth reading even
@@ -35,32 +36,41 @@ same way.
 
 ![A graph showing Flock Get Shop By Name feeding Flock Get Shop Items, with the item list driving a ForEach loop](images/shop-browse.png)
 
-**You do not pass a player.** These act for the signed-in player, and the `Player Id` pin is tucked into
-each node's advanced section (the little arrow) for the rarer case of reading someone else's inventory.
+**You do not pass a player.** These act for the signed-in player. `Flock Purchase` and `Flock Get Player Inventory` keep
+a `Player Id` pin in their advanced section (the little arrow) for the rarer case of naming someone else; leave it empty.
 
-An item's free-form **Data** and **Stats** pins are `FFlockJsonData` handles, not strings. Read them with
-the *Get Json Int / Float / String / Bool / String Array* nodes, which take a dotted path and a fallback —
-no JSON parsing node needed.
+An item's free-form **Data**, and its shop's **Data → Stats**, are `FFlockJsonData` handles, not strings. Read them with
+the *Get Json Int / Float / String / Bool* nodes, which take a dotted path and a fallback, and *Get Json String Array*,
+which takes the path alone and returns an empty array when it cannot be read — no JSON parsing node needed.
 
 ![A Flock Purchase node with its Shop Item Id wired from a picked item, both exec pins handled, and the Purchase Result output feeding a UI update](images/shop-purchase.png)
 
-**Break the Purchase Result to see what actually happened.** It carries `Inventory` (the row the player
-now owns), `Granted` (what the purchase handed over immediately), `Wallet` (the balances afterwards) and
-`Status`. An item priced in a game currency is bought from the player's wallet, so the purchase is paid at once and
-*Is Purchase Paid* is true. An item priced in real money (`IsRealMoney`) is bought through the platform's store, or a web checkout on Windows, Mac and
-Linux, once `UFlockStore` is connected (see [Real-money purchases](real-money-purchases.md)): on a phone it can then also
-answer pending, while the store waits for the payment. With no store connected, or bought for another player named by id, it is refused before anything is sent; a server too old to say which
-items cost real money refuses one with `ShopRealCurrencyNeedsCheckout` instead. An item switched off (Inactive) in the
-dashboard, or one in a switched-off shop, is refused with `ShopItemNotForSale` and nothing is bought; the shop provider
-then clears the shops it kept, so reading the shop again shows the item gone from its items (*Flock Get Shop Item*,
-which reads one item by its id, still returns it, its `Status` inactive). A purchase refused with
-`ShopInsufficientFunds` or `ShopCurrencyNotHeld` drops the cached player data, so the next wallet read asks the server.
-While a player is signed in, a
-`Player Id` naming anyone else is refused with `ShopPlayerMismatch` (the server buys only for the player signed in): leave it empty.
-`Status` is still one of the
-server's purchase statuses (`FlockPurchaseStatuses`): compare it against the *Flock Purchase Status* nodes, never a
-typed-out string. A purchase or consume that reports a wallet also writes it into the cached
-player data, so the next read of that template shows the new balance.
+**Break the Purchase Result to see what actually happened.** It carries:
+
+| Member | Holds |
+|---|---|
+| `Inventory` | the row the player now owns (see below: it can be empty) |
+| `Granted` | what the purchase handed over immediately |
+| `Wallet` | the balances afterwards; a purchase or consume that reports one also writes it into the cached player data, so the next read of that template shows the new balance |
+| `Status` | one of the server's purchase statuses (`FlockPurchaseStatuses`): compare it against the *Flock Purchase Status* nodes, never a typed-out string |
+
+How an item is paid for:
+
+- **Priced in a game currency:** bought from the player's wallet, so the purchase is paid at once and *Is Purchase Paid* is
+  true.
+- **Priced in real money** (`IsRealMoney`): bought through the platform's store, or a web checkout on Windows, Mac and Linux,
+  once `UFlockStore` is connected (see [Real-money purchases](real-money-purchases.md)). On a phone it can then also answer
+  pending, while the store waits for the payment. With no store connected, or bought for another player named by id, it is
+  refused before anything is sent; a server too old to say which items cost real money refuses one with
+  `ShopRealCurrencyNeedsCheckout` instead.
+
+When a purchase is refused:
+
+| Code | Means | What else happens |
+|---|---|---|
+| `ShopItemNotForSale` | The item, or its shop, is switched off (Inactive) in the dashboard; nothing is bought | The shop provider clears the shops it kept, so reading the shop again shows the item gone from its items. *Flock Get Shop Item*, which reads one item by its id, still returns it, its `Status` inactive |
+| `ShopInsufficientFunds`, `ShopCurrencyNotHeld` | The wallet cannot pay | The cached player data is dropped, so the next wallet read asks the server |
+| `ShopPlayerMismatch` | While a player is signed in, the `Player Id` named anyone else (the server buys only for the player signed in) | Leave `Player Id` empty |
 
 `Inventory` can be **empty**, and that is not an error: an item that grants its contents outright — a
 currency pack — creates nothing to own and reports the grant instead. Use *Has Inventory Row* before
@@ -75,27 +85,29 @@ After a schema sync you can replace the id wiring entirely: the generated `Purch
 
 ## C++
 
-Everything lives on the shop provider:
+Everything lives on the shop provider. `Sdk` is the Flock subsystem, `UFlockSubsystem::Get(this)` from any actor, widget
+or the game instance.
 
 ```cpp
-UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+#include "FlockSubsystem.h"
+#include "Providers/FlockShopProvider.h"
 
 // Browse.
 Sdk->GetShopProvider()->GetByName(TEXT("Starter"),
-    [Sdk](TFlockResult<FFlockShop> Shop)
+    [](TFlockResult<FFlockShop> Shop)
     {
         if (!Shop.bSuccess) { return; }
 
         for (const FFlockShopItem& Item : Shop.Value.ShopItems)
         {
             int32 Damage = 0;
-            Item.Stats.TryGetInt(TEXT("damage"), Damage);   // free-form, read by dotted path
+            Item.Data.TryGetInt(TEXT("damage"), Damage);   // free-form, read by dotted path
         }
     });
 
-// Buy. ItemId is the shop item's Id from its shop (Item.Id above): not the item's name, and not the
+// Buy. ShopItemId is the shop item's Id from its shop (Item.Id above): not the item's name, and not the
 // shop's id. An empty player id resolves the signed-in player.
-Sdk->GetShopProvider()->Purchase(ItemId, FString(),
+Sdk->GetShopProvider()->Purchase(ShopItemId, FString(),
     [](TFlockResult<FFlockPurchaseResult> Bought)
     {
         if (!Bought.bSuccess)
@@ -114,17 +126,28 @@ Sdk->GetShopProvider()->Purchase(ItemId, FString(),
 
         for (const FFlockShopItemReward& Reward : Bought.Value.Granted)
         {
-            // Compare against the constant, never a literal — the server can add kinds.
-            if (Reward.Type == FlockShopItemRewardTypes::Currency) { /* Reward.Code, Reward.Amount */ }
+            // IsCurrency compares Type with the constant, letter for letter: the server can add kinds.
+            if (Reward.IsCurrency())
+            {
+                // Reward.Code, Reward.Amount
+            }
         }
     });
 
-// Use something up. Grants whatever the entry carries.
+// Use something up. Grants whatever the entry carries. InventoryId is a row of the player's inventory (below).
 Sdk->GetShopProvider()->Consume(InventoryId,
-    [](TFlockResult<FFlockConsumeResult> Consumed) { /* Consumed.Value.Granted, .Wallet */ });
+    [](TFlockResult<FFlockConsumeResult> Consumed) { /* Consumed.Value.Granted; .Wallet when HasWallet() */ });
 
 // What they own, a page at a time.
-Sdk->GetShopProvider()->GetPlayerInventory(FString(), /*Page*/ 1, /*Limit*/ 100, OnInventory);
+Sdk->GetShopProvider()->GetPlayerInventory(/*Page*/ 1, /*Limit*/ 100,
+    [](TFlockResult<FFlockPlayerInventoryPage> Owned)
+    {
+        if (!Owned.bSuccess) { return; }
+        for (const FFlockPlayerInventory& Row : Owned.Value.Items)
+        {
+            // Row.Id is what Consume takes.
+        }
+    });
 ```
 
 ### A shop screen
@@ -134,10 +157,11 @@ which purchases keep current; the inventory is read from the server on every cal
 
 ```cpp
 // Items: the TArray<FFlockShopItem> the screen shows, read from a shop as above.
-Sdk->GetPlayerProvider()->GetWallet([Sdk, Items](TFlockResult<FFlockWallet> Wallet)
+const TWeakObjectPtr<UFlockSubsystem> WeakSdk = Sdk;
+Sdk->GetPlayerProvider()->GetWallet([WeakSdk, Items](TFlockResult<FFlockWallet> Wallet)
 {
-    if (!Wallet.bSuccess) { return; }
-    Sdk->GetShopProvider()->GetOwnedItemCounts([Wallet = Wallet.Value, Items](TFlockResult<FFlockOwnedItemCounts> Owned)
+    if (!Wallet.bSuccess || !WeakSdk.IsValid()) { return; }
+    WeakSdk->GetShopProvider()->GetOwnedItemCounts([Wallet = Wallet.Value, Items](TFlockResult<FFlockOwnedItemCounts> Owned)
     {
         if (!Owned.bSuccess) { return; }
         for (const FFlockShopItem& Item : Items)
@@ -149,7 +173,7 @@ Sdk->GetPlayerProvider()->GetWallet([Sdk, Items](TFlockResult<FFlockWallet> Wall
     });
 });
 
-// Use one potion the player holds, without reading the inventory yourself.
+// Use one potion the player holds, without reading the inventory yourself. PotionItemId is the potion's shop item Id.
 Sdk->GetShopProvider()->ConsumeOne(PotionItemId,
     [](TFlockResult<FFlockConsumeResult> Used) { /* Used.Value.Granted */ });
 ```
@@ -169,6 +193,7 @@ an SDK older than 1.42.0 holds neither: read offline, its items say `IsRealMoney
 read reaches the server.
 
 ```cpp
+// ShopItemId: the item's Id, from its shop.
 Sdk->GetShopProvider()->GetItem(ShopItemId,
     [](TFlockResult<FFlockShopItem> Read)
     {
@@ -207,6 +232,7 @@ App Store's transaction id) or `FFlockStoreReceipt::FromGooglePlay` (Google Play
 exactly as the store gave it.
 
 ```cpp
+// ProductId and PurchaseToken: exactly as your Google Play billing code received them.
 // The store's purchase is left unfinished until Flock has handed the item over.
 Sdk->GetShopProvider()->RedeemStoreReceipt(ShopItemId,
     FFlockStoreReceipt::FromGooglePlay(ProductId, PurchaseToken),
@@ -214,7 +240,8 @@ Sdk->GetShopProvider()->RedeemStoreReceipt(ShopItemId,
     {
         if (Redeemed.bSuccess)
         {
-            // Finish the purchase in the store now. Redeemed.Value.Granted, .Inventory and .Wallet say what it handed over.
+            // Finish the purchase in the store now. Redeemed.Value.Granted says what it handed over; .Inventory is filled
+            // only when HasInventoryRow(), .Wallet only when HasWallet() (currency moved).
             return;
         }
         // Leave the store's purchase unfinished, and send the same receipt again later.
@@ -226,15 +253,23 @@ Sdk->GetShopProvider()->RedeemStoreReceipt(ShopItemId,
   fails with an `Auth` error before anything is sent, and a retry is never sent once that player signs out or another
   signs in.
 - **It is safe to send again.** One store purchase makes one Flock purchase, and a repeat answers with what the first
-  delivered, so the call itself re-sends after a timeout, a dropped connection or a 5xx, the store being unavailable
-  (`PaymentProviderStoreUnavailable`) included, under the retry policy. A 5xx naming a setting someone has to fix
-  (`PaymentProviderCredentialsUnreadable`) is not re-sent: it stays the same until the setting is fixed. An expired
-  token is renewed once and the redemption sent again. Every refusal
-  says why in its own code and fix: `PaymentProviderReceiptProductMismatch` (the receipt is for another product, or the
-  item has no product id in that store), `PaymentProviderReceiptPending` (Google is still waiting for the payment),
-  `PaymentProviderReceiptBelongsToAnotherPlayer`, `PaymentProviderProviderNotFound` (the store is not connected under
-  Monetization > Payments in the Flock dashboard), `PaymentProviderStoreCredentialsRejected` (the store refused the
-  game's own keys), and the rest in [Errors](errors.md).
+  delivered.
+  - The call itself re-sends, under the retry policy, after a timeout, a dropped connection or a 5xx, the store being
+    unavailable (`PaymentProviderStoreUnavailable`) included.
+  - A 5xx naming a setting someone has to fix (`PaymentProviderCredentialsUnreadable`) is not re-sent: it stays the same
+    until the setting is fixed.
+  - An expired token is renewed once and the redemption sent again.
+- **Every refusal says why** in its own code and fix; the common ones:
+
+  | Code | Means |
+  |---|---|
+  | `PaymentProviderReceiptProductMismatch` | the receipt is for another product, or the item has no product id in that store |
+  | `PaymentProviderReceiptPending` | Google is still waiting for the payment |
+  | `PaymentProviderReceiptBelongsToAnotherPlayer` | the purchase is another player's: started for another Flock player, or already redeemed by another player |
+  | `PaymentProviderProviderNotFound` | the store is not connected under Monetization → Payments in the Flock dashboard |
+  | `PaymentProviderStoreCredentialsRejected` | the store refused the game's own keys |
+
+  The rest are in [Errors](errors.md).
 - **Keep the store's purchase until it succeeds.** A failure, a setup fault in the dashboard included, keeps nothing on the
   server, so the same receipt redeems once the cause is fixed. A 2xx that names no purchase, or whose body cannot be
   read, is a failure too, and drops the cached player data. A failure after an attempt that got no answer has
@@ -287,14 +322,66 @@ Sdk->GetShopProvider()->RedeemStoreReceipt(ShopItemId,
 - **The wallet sells a standard item again on every purchase.** Only a store sells it once, so check ownership
   (`Owns`, or `GetOwnedItemCounts` for a screen) before offering a standard item the wallet pays for.
 
+## The shop sample
+
+The plugin's **Content/Samples/Shop** folder (turn on **Show Plugin Content** in the Content Browser's settings) holds a shop
+screen made of Blueprints only, with no C++ of its own. Every Flock call in it is a node:
+
+| Asset | What it is |
+|---|---|
+| `WBP_FlockShopSample` | The screen. It logs a device in (registering a device that has no account yet), reads every page of the game's shops, finds or connects the store when one of the items is sold for real money (**Flock Get Store**, **Flock Connect Store**), reads the wallet (**Flock Get Wallet**) and what the player owns (**Flock Get Owned Item Counts**), and shows a row for each item. **Buy** is **Flock Purchase** for every item; **Use** is **Flock Consume One**; **Restore purchases** and **Check store setup** are the store's nodes. Each outcome is a line under the buttons, newest first, and in the log. |
+| `WBP_FlockShopSampleItem` | One item's row: its name and price (**Flock Get Store Price** for a real-money item: the store's own on a phone, Flock's through a web checkout), how many the player owns, **Buy** or why it cannot be bought now, and **Use** for a consumable the player holds. |
+| `FlockShopSample` | The level. Its Level Blueprint shows the screen and the mouse cursor. |
+
+To try it:
+
+1. Fill in **Project Settings → Plugins → Flock SDK Settings** (API URL, API Key, Game Name and Game Version).
+2. Make a shop in the Flock dashboard, under Shops, and give the player template that holds the wallet the tag `currency`.
+3. For real-money items on a phone, create each item's product in Google Play Console or App Store Connect and enter its product
+   id on the shop item in the Flock dashboard (see [Real-money purchases](real-money-purchases.md)). On Windows, Mac and Linux,
+   connect Stripe, Tap or Moyasar under Monetization → Payments.
+4. Open the `FlockShopSample` level and play it. Type a device name and press **Log in (device)** (once a player is signed in,
+   pressing it again only says so: a second sign-in would end the first). With more than one payment
+   gateway connected, type the one to use in the *Payment provider* field (`stripe`, `tap` or `moyasar`) before opening the
+   shop; leave it empty for the build's own way to pay. Then press **Open the shop**.
+
+When an item is sold for real money, **Open the shop** uses the store Flock already holds, or connects one; the rows show at
+once, and again once the store answers. A connect that fails is said, and the next **Open the shop** tries again. The screen
+disconnects a store it connected when it is closed (its Destruct), and leaves alone one the game connected.
+
+A row's **Buy** reads **Owned** for a standard item the player holds, **Not enough** and the currency when the wallet cannot pay,
+**Store not connected** when no store is connected, and **Not in the store** for a real-money item the store does not sell here
+(no product id for it, or the store did not find the product), and **Waiting for delivery** for a real-money item Flock gave
+no answer for (below); those rows cannot be pressed. While a purchase, a use, a restore or the shops' read is under way, the
+rows, **Restore purchases**, **Open the shop** and **Log in (device)** are off, so a second press cannot buy twice.
+
+Each outcome is a line in plain words followed by the SDK's own cause and fix, then the wallet and what the player owns are read
+again: bought (with what it granted), waiting for its payment, the store's common reasons (the rest show the SDK's words alone),
+not enough currency, and no answer from Flock (*Outcome Unknown*). What the screen does on *Outcome Unknown* depends on how the
+item was paid for:
+
+- **From the wallet:** it may have been bought, and the reads of the wallet and the inventory show whether it was.
+- **For real money** (a phone's store, which has already taken the payment, or a web checkout, whose page may still be paid):
+  the line says the item arrives if it was paid for, with the SDK's fix; the screen keeps the item in its *Delivery Unknown*
+  list, so its row reads **Waiting for delivery**, and runs **Flock Restore Purchases** (on a phone the store hands the
+  purchase back and Flock delivers it; on a web checkout it reads the player's open checkouts and watches them until they end).
+  The item leaves the list when **On Store Purchase Completed** reports it, or when Restore succeeds: the store and Flock's
+  server then refuse a second purchase of one still unfinished. When Restore fails, the item stays waiting for this run.
+
+After a purchase, a use or a restore the screen reads them once more a second later (its *Refresh After Change* event): Flock's
+server can answer just before it has saved the change, so a read made at once can still show the item as not owned. A game that
+shows what the player owns right after buying does the same, or counts the item it just bought.
+Once a store is connected, **On Store Purchase Completed** from Flock's events hub reads them again too, for a purchase paid
+elsewhere. To build on it, copy the folder into your project's Content and change the copies.
+
 ## Things worth knowing
 
 - **`Get Shop Items` takes an optional patch id.** Leaving it empty reads the current items; supplying one
   reads the catalog as of that patch, which is how a limited-time or A/B store front is served.
 - **Paged reads return a page struct**, not a bare array — `Items`, `Total`, `Page`, `Limit`. Ask for the
   next page by incrementing `Page`; there is no cursor to carry.
-- **`data` and `stats` are author data.** The SDK never transforms their keys, so they read back exactly
-  as the dashboard declares them.
+- **An item's `data` and a shop's `stats` are author data.** The SDK never transforms their keys, so they read back
+  exactly as the dashboard declares them.
 
 ---
 

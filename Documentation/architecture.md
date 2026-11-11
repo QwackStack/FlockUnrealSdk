@@ -45,11 +45,16 @@ Two consequences worth stating because they are easy to violate:
 
 ## Modules
 
-| Module | Type | Depends on | Contains |
+| Module | Type | Depends on (public; private) | Contains |
 |---|---|---|---|
-| `Flock` | Runtime | Core, CoreUObject, Engine, HTTP, Json, JsonUtilities, Projects, DeveloperSettings | The entire client surface |
-| `FlockEditor` | Editor (`PostEngineInit`) | `Flock`, UnrealEd, Slate, ToolMenus, AssetRegistry, DataValidation | Setup panel, validators, version bake, codegen |
-| `FlockPlatformStore` | Runtime | `Flock`, OnlineSubsystem, Json | The platform's store reached through the engine's online subsystem; registers itself with `UFlockStore::SetStoreLibrary`, so the `Flock` module never depends on the online subsystem |
+| `Flock` | Runtime | Core, CoreUObject, Engine, DeveloperSettings, Json, JsonUtilities; Projects, HTTP, Sockets, NetCore, and SSL with the engine's OpenSSL on Windows, Mac, iOS, Android and Linux | The entire client surface, the relay client included |
+| `FlockEditor` | Editor (`PostEngineInit`) | Core, CoreUObject, Engine, `Flock`, DeveloperSettings; UnrealEd, Slate, SlateCore, ToolMenus, MessageLog, AssetRegistry, DataValidation, Json, JsonUtilities, HTTP, BlueprintGraph, Projects, PropertyEditor, WorkspaceMenuStructure, Settings | Setup panel, validators, version bake, codegen |
+| `FlockPlatformStore` | Runtime | Core, CoreUObject, Engine, `Flock`; Json, OnlineSubsystem | The platform's store reached through the engine's online subsystem; registers itself with `UFlockStore::SetStoreLibrary`, so the `Flock` module never depends on the online subsystem |
+
+`Flock.uplugin` also turns on two engine plugins: **OnlineSubsystem**, for `FlockPlatformStore`, and
+**DataValidation**, for `FlockEditor`'s validators. Json and JsonUtilities are public dependencies of `Flock` so
+a module including its HTTP headers finds theirs; a game calling the SDK needs only `"Flock"` in its own
+`Build.cs`.
 
 The split is one-directional and enforced by the build rules: `FlockEditor` depends on `Flock`, never the
 reverse. Nothing in the runtime module includes an editor header, so a packaged game contains no editor
@@ -75,7 +80,7 @@ area names on both sides:
 | `Models/` | Wire structs, one file per feature |
 | `Analytics/` | The independently-testable analytics parts: consent, spool, session, lifecycle pump, termination tracker |
 | `Assets/` | The binary half: the download seam and the on-disk cache |
-| `Blueprint/` | Async action nodes and pure function libraries — the Blueprint face of each provider |
+| `Blueprint/` | Async action nodes and function libraries of nodes with no execution pins — the Blueprint face of each provider |
 | `Codegen/` | The runtime half of code generation: the struct binder and the content catalog |
 | `Config/` | `UFlockConfig`, the project settings object |
 | `Misc/` | `FlockEngineCompat.h` — **the only file allowed to contain engine-version guards** |
@@ -83,9 +88,21 @@ area names on both sides:
 
 `Source/FlockEditor/` mirrors the same convention under `Setup/`, `Codegen/`, `Guards/` and `Version/`.
 
-Outside `Source/`: `Documentation/` ships (these guides), `Resources/` holds the plugin icon, `Config/`
-holds default settings, and `Tooling/` holds the multi-engine build script. The last is excluded from the
-release archive along with `.github/` — both verify claims about the plugin rather than being part of it.
+Outside `Source/`:
+
+| Folder | Holds | In the release zip |
+|---|---|---|
+| `Documentation/` | These guides and their pictures | Yes |
+| `Content/` | The plugin's content: the Blueprint-only samples (`Samples/Multiplayer`, `Samples/Shop`) | Yes |
+| `Resources/` | The plugin icon | Yes |
+| `Config/` | Default settings | Yes |
+| `OptionalPlugins/` | The optional Protokite Playtest plugin, released as its own zip | No |
+| `Tooling/` | The multi-engine build and packaging scripts | No |
+| `.github/` | The CI and release workflows | No |
+
+`Tooling/` and `.github/` are left out because they verify claims about the plugin rather than being part of
+it; `OptionalPlugins/` because a project that wants only Flock must not get a second plugin nested where
+Unreal never looks.
 
 ## Cross-cutting rules
 
@@ -99,8 +116,10 @@ backend. Test fixtures therefore mirror the real wire shape.
 **Money is never queued, and is re-sent only where the server makes it safe.** A wallet purchase carries one key per
 `Purchase` call and is sent again under the retry policy, the server answering a repeat with the first purchase; redeeming
 a store purchase is sent again too, since the server makes one purchase per store transaction. A funds grant and a
-consume post non-idempotently, so an ambiguous failure surfaces rather than risking a double credit. A money call that
-failed with no answer saying whether it was done has `bOutcomeUnknown` set. All of them fail outright when the server is
+consume post non-idempotently, so an ambiguous failure surfaces rather than risking a double credit, and opening a web
+checkout is never sent again, as a second would be a second payment page. A money call that failed with no answer saying
+whether it was done has `bOutcomeUnknown` set; what the game reads before offering it again depends on how it was paid
+(see [Errors](errors.md#after-a-money-call-whose-outcome-is-unknown)). All of them fail outright when the server is
 unreachable rather than replaying later; everything else in the commands surface does queue offline.
 
 **Cache and state are different things, and they live in different places.** Read caches are disposable —
@@ -162,7 +181,7 @@ another engine.
 | Callback + `TFlockResult<T>` | Exceptions are off | Whatever the language's idiomatic async + error type is |
 | `USTRUCT` wire models, reflection-driven JSON | UE reflection is the serialization story | The host's serialization story |
 | `UObject`s only at the edge | Reflection has a cost and a lifetime model | Where the managed/native boundary sits |
-| Async nodes + pure libraries for Blueprint | Blueprint is a first-class consumer | Whether a visual-scripting face exists at all |
+| Async nodes + libraries of nodes with no execution pins for Blueprint | Blueprint is a first-class consumer | Whether a visual-scripting face exists at all |
 | Downloads stream to disk | A CDN payload must not sit whole in memory | Same constraint, different file API |
 | Opaque JSON behind a reflected string | UE cannot express free-form or recursive data in a struct | Whether the host can hold a dynamic value directly |
 | A pending queue rather than a semaphore | The game thread owns provider state | The host's concurrency model |

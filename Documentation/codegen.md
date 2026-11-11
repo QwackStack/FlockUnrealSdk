@@ -1,6 +1,6 @@
 # Code generation
 
-**Tools > Flock > Sync Schemas** fetches this game version's player templates, game configs, and shops and
+**Tools → Flock → Sync Schemas** fetches this game version's player templates, game configs, and shops and
 generates typed assets from them, into `Content/Flock/Generated`. By default there is no C++ involved: no
 toolchain, no compile, no editor restart. (`Flock.SyncSchemas` does the same from the console, and a
 **Codegen Target** setting switches the whole thing to generated C++ — see below.)
@@ -22,22 +22,17 @@ What you get:
   SDK would otherwise do at runtime.
 - **A function library**: each template's and config's id as a constant, `Read …` / `Make … Update`
   conversions between a fetched row and its typed struct, and lookups turning a picked enum member into
-  the id the SDK sends. Grouped under `Flock > Generated > Ids / Structs / Lookups`.
+  the id the SDK sends. Grouped in the node menu under **Flock → Generated → Ids / Structs / Lookups**.
 - **A content catalog asset** listing everything the backend declares — select it in the Content Browser
   to browse your content model with no code and no dashboard login.
 
 ## Blueprint
 
-Reading a game config is **one node** — the fetch, its id, and the conversion are all inside it:
+Reading a game config is **one node** — the fetch, its id, and the conversion are all inside it. For a
+config named Gameplay the node is `Get Gameplay`; its **Completed** pin runs with the typed **Struct**, its
+**Failed** pin with the **Error**. Break that struct for typed pins. Here, for a config named Test Config:
 
-```
-Get Gameplay  ─exec─►  Completed ──►  Struct (typed)
-                       Failed ──►     Error
-```
-
-![A Get Gameplay macro node in an event graph, its Struct pin feeding a Break node with typed pins](images/codegen-get-config.png)
-
-Break that struct for typed pins.
+![A Get Test Config macro node in an event graph, its Struct pin feeding Break Test Config Config, which has a typed Test Name pin](images/codegen-get-config.png)
 
 ### Changing a player's data
 
@@ -50,7 +45,10 @@ A read-modify-write is `Get <Template>` → the engine's **Set members in struct
 4. Run execution through all three, wire the modified struct into `Save`'s **Struct**, and wire `Get`'s
    **Row Id** into `Save`'s **Row Id**.
 
-![Get Player Level → Set members in Player Level Template → Save Player Level, with Row Id carried across and one member ticked](images/codegen-get-save.png)
+The picture shows the three nodes before the last wire of step 4: `Save`'s **Struct** is still empty there, and takes **Set
+members**' *Struct Out*.
+
+![Get Player Level → Set members in Player Level Template → Save Player Level, with Get's Struct into Set members' Struct Ref, Row Id carried across to Save, and two members ticked: Level, fed by Make Player Level Template Level, and Test, typed in. Save Player Level's Struct pin is not wired yet](images/codegen-get-save.png)
 
 ![The Details panel for a Set members in struct node, showing the member checkboxes — the thing you tick to expose a pin](images/codegen-set-members-details.png)
 
@@ -70,38 +68,62 @@ rather than working around — the tick is the difference between "don't change 
 nothing".
 
 Every generated node is built from pieces you can also use directly, if you want to assemble a chain by
-hand:
+hand: `Flock Resolve Config Data`, its **Config Id** pin fed by the library's `Gameplay Config Id`
+constant, then `Read Gameplay Config` on its data, then `Break Gameplay Config`.
 
-```
-Flock Resolve Config Data (Config Id ← Gameplay Config Id)
-  → Read Gameplay Config  →  Break Gameplay Config
-```
+The command nodes work the same way: `Purchase` takes a `FlockShopItemId`, `Unlock Achievement` a
+`FlockAchievementId`, and `Add Funds` a `FlockCurrencyId` and an amount, each picked from a dropdown, each
+with `Completed` / `Failed` pins.
 
 ## C++ — generating a module instead
 
-![Project Settings → Plugins → Flock SDK, Codegen section, showing the Codegen Target dropdown](images/codegen-target-setting.png)
+![Project Settings → Plugins → Flock SDK Settings, its Codegen section, showing the Codegen Target dropdown](images/codegen-target-setting.png)
 
 **Codegen Target** in settings picks what a sync emits — `Blueprint` (the default, everything above) or
 `C++`. A project gets one or the other, because the two would otherwise put two entries for every entity
 in the action menu; switching clears the other's output on the next sync (only what codegen made: see
 [What codegen deletes](#what-codegen-deletes)).
 
-The C++ target writes a module under `Source/FlockGenerated`, registers it in your `.uproject`, and emits
-a `USTRUCT` per template and config, a `UENUM` per id set, and a typed call surface:
+The C++ target writes a module under `Source/FlockGenerated` (named after the folder, so `FlockGenerated`
+by default), registers it in your `.uproject`, and emits a `USTRUCT` per template and config, a `UENUM` per
+id set, and a typed call surface, `FFlockGenerated`, in `FlockGeneratedAccessors.h`.
+
+To call it from your game module, add both modules to its `Build.cs`:
+
+```csharp
+PrivateDependencyModuleNames.AddRange(new string[] { "Flock", "FlockGenerated" });
+```
+
+Then, for a template named Player Level (an object field `level` holding an int `stage`), a shop item named
+Gem Pack, a currency Gold and an achievement First Win:
 
 ```cpp
+#include "FlockGeneratedAccessors.h"
+
+const TWeakObjectPtr<AMyActor> WeakThis(this);
 FFlockGenerated::GetPlayerLevel(this,
-    [this](TFlockResult<FPlayerLevelTemplate> Result, const FString& RowId)
+    [WeakThis](TFlockResult<FPlayerLevelTemplate> Result, const FString& RowId)
     {
-        if (!Result.bSuccess) { return; }
+        AMyActor* Self = WeakThis.Get();
+        if (!Self || !Result.bSuccess)
+        {
+            return;
+        }
         FPlayerLevelTemplate Level = Result.Value;
         Level.Level.Stage = 5;
-        FFlockGenerated::SavePlayerLevel(this, RowId, Level, nullptr);
+        FFlockGenerated::SavePlayerLevel(Self, RowId, Level, nullptr);
     });
 
-FFlockGenerated::Purchase(this, EFlockShopItemId::GemPack, OnBought);
-FFlockGenerated::AddFunds(this, EFlockCurrencyId::Gold, 100, OnCredited);
+auto OnDone = [](TFlockResult<FFlockPlayerData> Result) { /* Result.Value is the updated row */ };
+FFlockGenerated::UnlockAchievement(this, EFlockAchievementId::FirstWin, OnDone);
+FFlockGenerated::AddFunds(this, EFlockCurrencyId::Gold, 100, OnDone);
+FFlockGenerated::Purchase(this, EFlockShopItemId::GemPack, [](TFlockResult<FFlockPurchaseResult> Result) {});
 ```
+
+Each call takes a world context (any object in the game world) and fails through its callback, rather than
+crashing, before the SDK has initialized. A template gets `Get<Name>` and `Save<Name>`, a config `Get<Name>`;
+`Purchase`, `UnlockAchievement` and `AddFunds` appear when the backend declares shop items, achievements and
+currencies.
 
 Things worth knowing about this target:
 
@@ -118,7 +140,7 @@ Things worth knowing about this target:
 - **A Blueprint-only project is refused**, not converted. Add a C++ class first, or stay on the Blueprint
   target — which is exactly why it is the default.
 
-**Tools > Flock > Clean Generated** removes everything a sync wrote, on either target. Any Blueprint still
+**Tools → Flock → Clean Generated** removes everything a sync wrote, on either target. Any Blueprint still
 referencing a generated struct or enum is listed before anything is deleted. The generated C++ module's
 skeleton is kept, so a cleaned project still builds.
 
@@ -127,7 +149,7 @@ skeleton is kept, so a cleaned project still builds.
 Only what it made. Every asset a sync generates carries a mark, and every generated C++ file opens with a
 `Generated by Flock` banner; a Clean and a switch of target delete those and nothing else. Assets and files
 of your own in the generated folders are kept, and the summary names the kept assets. Still, give each
-setting a folder of its own (**Project Settings > Flock SDK > Codegen**):
+setting a folder of its own (**Project Settings → Plugins → Flock SDK Settings**, its **Codegen** section):
 
 - **Generated Content Path** (`/Game/Flock/Generated` by default) must be a folder below a content folder.
   A whole content folder such as `/Game`, a path with `.` or `..`, and content outside the project (the

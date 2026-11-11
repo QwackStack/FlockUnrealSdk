@@ -41,7 +41,7 @@ The nodes live under *Flock | Diagnostics* and need no subsystem wired in. All a
 has initialized. The analytics nodes are in a drawer of their own, *Flock | Analytics*, so the two surfaces are
 no longer one list to pick the wrong entry from.
 
-![A graph showing Flock Log Diagnostic Event with an Event Name filled in and its Extra Data pin fed by two chained Flock Metadata builder nodes](images/analytics-log-event.png)
+![A custom event Level Loaded running into Flock Log Diagnostic Event, its Message filled in](images/diagnostics-log-event.png)
 
 Build the **Extra Data** map by dragging off that pin — the same builders the C++ side uses appear as
 chainable nodes: *Flock Metadata (Integer)*, *(Float)*, *(Boolean)*, *(String)*. Add one per field and chain
@@ -61,7 +61,12 @@ Expression, Error Code, Error Data and Extra Data as separate pins.
 
 ## C++
 
+The three calls live on the subsystem. `FFlockMetadata` needs its own include:
+
 ```cpp
+#include "Analytics/FlockMetadata.h"
+#include "FlockSubsystem.h"
+
 UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
 
 Sdk->LogDiagnosticEvent(TEXT("matchmaking started"),
@@ -72,8 +77,12 @@ Details.LogicalExpression = TEXT("ItemCount >= 0");
 Details.ErrorCode = TEXT("INV_DESYNC");
 Sdk->LogDiagnosticError(TEXT("Inventory desynced"), Details);
 
-Sdk->LogDiagnosticException(TEXT("Save failed"));   // callstack captured for you
+// An empty stack trace: the SDK captures the callstack for you. Details left at its default.
+Sdk->LogDiagnosticException(TEXT("Save failed"), FString(), FFlockLogDetails());
 ```
+
+`LogDiagnosticException` takes three arguments, all required: the message, a stack trace (empty to have it
+captured), and the details (default when you have nothing to add).
 
 ## Things worth knowing
 
@@ -87,8 +96,8 @@ ints, floats and bools directly.
 *what* was wrong) and `ExtraData` (context about *where* the player was). Leave it default when you have
 nothing to add.
 
-**You do not need a stack trace to report an exception.** Leave the trace argument off and the SDK walks the
-callstack itself. Pass one only when you genuinely have something better — a script's own stack, say.
+**You do not need a stack trace to report an exception.** Pass an empty trace (`FString()`, or leave the
+node's **Stack Trace** pin empty) and the SDK walks the callstack itself. Pass one only when you genuinely have something better — a script's own stack, say.
 
 > If an entry never reaches the backend, check consent first: logging is **silently dropped** without it.
 > Call `Flock Set Analytics Consent (true)` once, and use `Flock Flush Analytics` to send the queue now
@@ -96,7 +105,8 @@ callstack itself. Pass one only when you genuinely have something better — a s
 
 ## Automatic exception capture
 
-With **Analytics Capture Exceptions** on (the default), the SDK reports faults as exceptions with no wiring:
+With **Analytics Capture Exceptions** on (the default; **Project Settings → Plugins → Flock SDK Settings**,
+its **Analytics | Exceptions** section), the SDK reports faults as exceptions with no wiring:
 
 - **Engine `Error` and `Fatal` log lines**, each with the callstack from the point of capture. Frames read
   `Module+0xOffset` — measured from the module base rather than the raw address, so a frame reads the same
