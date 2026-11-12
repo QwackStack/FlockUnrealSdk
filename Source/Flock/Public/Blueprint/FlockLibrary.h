@@ -117,6 +117,138 @@ public:
 	static bool TrackEvent(const UObject* WorldContextObject, const FString& EventName, const FFlockCommandData& Properties,
 		const FString& EventCategory);
 
+	// ── The tracking plan's events ──
+	// Each node is a Flock Track Event with the plan's event, category and property names, and returns the same; Analytics
+	// Send Default Events does not turn them off. Every pin is optional: a number pin left at its default, the lowest
+	// integer (-2147483648), is not sent, and neither is an empty text; zero is a value and is sent. Extra Properties adds
+	// more; a pin wins over the same key in it, in any letter case.
+
+	/**
+	 * A player begins a level or chapter, after loading finishes: sends level_start (category gameplay) with level and
+	 * difficulty. A number pin left at -2147483648 is not sent.
+	 * Extra Properties adds more properties; a pin that is set wins over the same key there. Returns false when the
+	 * event was refused or dropped (analytics off, no consent, nobody signed in with no queue).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "Difficulty, ExtraProperties", AdvancedDisplay = "ExtraProperties",
+		CPP_Default_Level = "-2147483648", DisplayName = "Flock Track Level Start"))
+	static bool TrackLevelStart(const UObject* WorldContextObject, int32 Level, const FString& Difficulty,
+		const FFlockCommandData& ExtraProperties);
+
+	/**
+	 * A player finishes a level, before the results screen: sends level_complete (category gameplay) with level, score,
+	 * duration_seconds and stars. A number pin left at -2147483648 is not sent; zero stars is sent.
+	 * Extra Properties adds more properties; a pin that is set wins over the same key there. Returns false when the
+	 * event was refused or dropped (analytics off, no consent, nobody signed in with no queue).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "ExtraProperties", AdvancedDisplay = "ExtraProperties",
+		CPP_Default_Level = "-2147483648", CPP_Default_Score = "-2147483648", CPP_Default_DurationSeconds = "-2147483648",
+		CPP_Default_Stars = "-2147483648", DisplayName = "Flock Track Level Complete"))
+	static bool TrackLevelComplete(const UObject* WorldContextObject, int32 Level, int32 Score, int32 DurationSeconds,
+		int32 Stars, const FFlockCommandData& ExtraProperties);
+
+	/**
+	 * A player loses or leaves a level unfinished (death, timeout or quitting): sends level_fail (category gameplay) with
+	 * level, reason and duration_seconds. A number pin left at -2147483648 is not sent.
+	 * Extra Properties adds more properties; a pin that is set wins over the same key there. Returns false when the
+	 * event was refused or dropped (analytics off, no consent, nobody signed in with no queue).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "Reason, ExtraProperties", AdvancedDisplay = "ExtraProperties",
+		CPP_Default_Level = "-2147483648", CPP_Default_DurationSeconds = "-2147483648", DisplayName = "Flock Track Level Fail"))
+	static bool TrackLevelFail(const UObject* WorldContextObject, int32 Level, const FString& Reason, int32 DurationSeconds,
+		const FFlockCommandData& ExtraProperties);
+
+	/**
+	 * A checkpoint or save point inside a level activates: sends checkpoint_start (category gameplay) with level and
+	 * checkpoint. A number pin left at -2147483648 is not sent.
+	 * Extra Properties adds more properties; a pin that is set wins over the same key there. Returns false when the
+	 * event was refused or dropped (analytics off, no consent, nobody signed in with no queue).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "Checkpoint, ExtraProperties", AdvancedDisplay = "ExtraProperties",
+		CPP_Default_Level = "-2147483648", DisplayName = "Flock Track Checkpoint"))
+	static bool TrackCheckpoint(const UObject* WorldContextObject, int32 Level, const FString& Checkpoint,
+		const FFlockCommandData& ExtraProperties);
+
+	/**
+	 * The player completes a tutorial step: sends tutorial_step (category ui) with step and step_name. A number pin left at
+	 * -2147483648 is not sent.
+	 * Extra Properties adds more properties; a pin that is set wins over the same key there. Returns false when the
+	 * event was refused or dropped (analytics off, no consent, nobody signed in with no queue).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "StepName, ExtraProperties", AdvancedDisplay = "ExtraProperties",
+		CPP_Default_Step = "-2147483648", DisplayName = "Flock Track Tutorial Step"))
+	static bool TrackTutorialStep(const UObject* WorldContextObject, int32 Step, const FString& StepName,
+		const FFlockCommandData& ExtraProperties);
+
+	/**
+	 * The player saves a setting, not every slider tick: sends settings_change (category ui) with setting and value.
+	 * Extra Properties adds more properties; a pin that is set wins over the same key there. Returns false when the
+	 * event was refused or dropped (analytics off, no consent, nobody signed in with no queue).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "Setting, Value, ExtraProperties", AdvancedDisplay = "ExtraProperties",
+		DisplayName = "Flock Track Settings Change"))
+	static bool TrackSettingsChange(const UObject* WorldContextObject, const FString& Setting, const FString& Value,
+		const FFlockCommandData& ExtraProperties);
+
+	/**
+	 * A match goes live, when players can act: sends match_start (category gameplay) with mode, map and team_size. A
+	 * number pin left at -2147483648 is not sent.
+	 * Extra Properties adds more properties; a pin that is set wins over the same key there. Returns false when the
+	 * event was refused or dropped (analytics off, no consent, nobody signed in with no queue).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "Mode, Map, ExtraProperties", AdvancedDisplay = "ExtraProperties",
+		CPP_Default_TeamSize = "-2147483648", DisplayName = "Flock Track Match Start"))
+	static bool TrackMatchStart(const UObject* WorldContextObject, const FString& Mode, const FString& Map, int32 TeamSize,
+		const FFlockCommandData& ExtraProperties);
+
+	/**
+	 * A match ends with a final result, once per player: sends match_complete (category gameplay) with mode, result, score,
+	 * duration_seconds and kills. Result is a Flock Match Result node (win, loss, draw) or the game's own word. A number
+	 * pin left at -2147483648 is not sent.
+	 * Extra Properties adds more properties; a pin that is set wins over the same key there. Returns false when the
+	 * event was refused or dropped (analytics off, no consent, nobody signed in with no queue).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (WorldContext = "WorldContextObject",
+		AutoCreateRefTerm = "Mode, Result, ExtraProperties", AdvancedDisplay = "ExtraProperties",
+		CPP_Default_Score = "-2147483648", CPP_Default_DurationSeconds = "-2147483648", CPP_Default_Kills = "-2147483648",
+		DisplayName = "Flock Track Match Complete"))
+	static bool TrackMatchComplete(const UObject* WorldContextObject, const FString& Mode, const FString& Result, int32 Score,
+		int32 DurationSeconds, int32 Kills, const FFlockCommandData& ExtraProperties);
+
+	/** The tracking plan's word for a match won, for Flock Track Match Complete's Result: win. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Analytics", meta = (DisplayName = "Flock Match Result Win"))
+	static FString MatchResultWin();
+
+	/** The tracking plan's word for a match lost, for Flock Track Match Complete's Result: loss. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Analytics", meta = (DisplayName = "Flock Match Result Loss"))
+	static FString MatchResultLoss();
+
+	/** The tracking plan's word for a match drawn, for Flock Track Match Complete's Result: draw. */
+	UFUNCTION(BlueprintPure, Category = "Flock|Analytics", meta = (DisplayName = "Flock Match Result Draw"))
+	static FString MatchResultDraw();
+
 	/** What automatic exception capture can see in this build (Shipping and Test lose error log lines and ensures). */
 	UFUNCTION(BlueprintPure, Category = "Flock|Diagnostics", meta = (WorldContext = "WorldContextObject",
 		DisplayName = "Flock Get Exception Capture Coverage"))

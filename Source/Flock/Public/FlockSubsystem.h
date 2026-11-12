@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
+#include "Analytics/FlockMatchResult.h"
 #include "Auth/FlockAuthSession.h"
 #include "Auth/FlockTokenStore.h"
 #include "FlockInitConfig.h"
@@ -254,6 +255,80 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Analytics", meta = (AutoCreateRefTerm = "Properties"))
 	bool TrackAnalyticsEvent(const FString& EventName, const FFlockCommandData& Properties, const FString& EventCategory);
+
+	// ── The tracking plan's events ──
+	// Each is a TrackAnalyticsEvent with the plan's event, category and property names, so it is refused, queued and given
+	// the flock_ parameters as any other, and returns the same; Analytics Send Default Events does not turn these off, since
+	// they are the game's own events. Every argument is optional: an unset number or an empty text is not sent, and zero is
+	// a value. ExtraProperties adds more; a named argument wins over the same key in it (in any letter case, with a warning
+	// when the spelling differs), and the game's ExtraProperties is never changed. Blueprint: the Flock Track Level Start
+	// node and its siblings.
+
+	/**
+	 * A player begins a level or chapter, after loading finishes (level_start, category gameplay).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	bool TrackLevelStart(TOptional<int32> Level = {}, const FString& Difficulty = FString(),
+		const FFlockCommandData& ExtraProperties = FFlockCommandData());
+
+	/**
+	 * A player finishes a level, before the results screen (level_complete, category gameplay).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	bool TrackLevelComplete(TOptional<int32> Level = {}, TOptional<int32> Score = {}, TOptional<int32> DurationSeconds = {},
+		TOptional<int32> Stars = {}, const FFlockCommandData& ExtraProperties = FFlockCommandData());
+
+	/**
+	 * A player loses or leaves a level unfinished: death, timeout or quitting (level_fail, category gameplay).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	bool TrackLevelFail(TOptional<int32> Level = {}, const FString& Reason = FString(), TOptional<int32> DurationSeconds = {},
+		const FFlockCommandData& ExtraProperties = FFlockCommandData());
+
+	/**
+	 * A checkpoint or save point inside a level activates (checkpoint_start, category gameplay).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	bool TrackCheckpoint(TOptional<int32> Level = {}, const FString& Checkpoint = FString(),
+		const FFlockCommandData& ExtraProperties = FFlockCommandData());
+
+	/**
+	 * The player completes a tutorial step (tutorial_step, category ui).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	bool TrackTutorialStep(TOptional<int32> Step = {}, const FString& StepName = FString(),
+		const FFlockCommandData& ExtraProperties = FFlockCommandData());
+
+	/**
+	 * The player saves a setting, not every slider tick (settings_change, category ui).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	bool TrackSettingsChange(const FString& Setting = FString(), const FString& Value = FString(),
+		const FFlockCommandData& ExtraProperties = FFlockCommandData());
+
+	/**
+	 * A match goes live, when players can act (match_start, category gameplay).
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	bool TrackMatchStart(const FString& Mode = FString(), const FString& Map = FString(), TOptional<int32> TeamSize = {},
+		const FFlockCommandData& ExtraProperties = FFlockCommandData());
+
+	/**
+	 * A match ends with a final result, once per player (match_complete, category gameplay). Result is one of
+	 * FlockMatchResult (win, loss, draw) or the game's own word.
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	bool TrackMatchComplete(const FString& Mode = FString(), const FString& Result = FString(), TOptional<int32> Score = {},
+		TOptional<int32> DurationSeconds = {}, TOptional<int32> Kills = {},
+		const FFlockCommandData& ExtraProperties = FFlockCommandData());
 
 	/**
 	 * What automatic exception capture can see in this build. The engine compiles error log lines and ensures out

@@ -12,7 +12,7 @@ log files is a third thing again: see [Logging & debugging](logging.md).
 | Read by | Design, product, LiveOps | Engineering |
 | Routes | `/v1/analytics/*` | `/v1/log_event` |
 | Dashboard | **Dashboards → Game Metrics** | **Diagnostics → Events** / **Diagnostics → Errors** |
-| Calls | `Flock Track Event`, `Flock Record Screen View`, sessions, purchase transactions | `Flock Log Diagnostic Event`, `Flock Log Diagnostic Error`, `Flock Log Diagnostic Exception`, automatic exception capture |
+| Calls | `Flock Track Event`, the tracking plan's `Flock Track Level Start` and its siblings, `Flock Record Screen View`, sessions, purchase transactions | `Flock Log Diagnostic Event`, `Flock Log Diagnostic Error`, `Flock Log Diagnostic Exception`, automatic exception capture |
 | Blueprint category | *Flock \| Analytics* | *Flock \| Diagnostics* |
 | Custom data | **Event Properties** — a number stays a number | **Extra Data** — a map of strings |
 

@@ -2,6 +2,7 @@
 
 #include "Blueprint/FlockLibrary.h"
 
+#include "Analytics/FlockGameplayEvents.h"
 #include "FlockEvents.h"
 #include "FlockSubsystem.h"
 #include "Providers/FlockAuthProvider.h"
@@ -66,6 +67,77 @@ bool UFlockLibrary::TrackEvent(const UObject* WorldContextObject, const FString&
 {
 	UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
 	return Sdk && Sdk->TrackAnalyticsEvent(EventName, Properties, EventCategory);
+}
+
+bool UFlockLibrary::TrackLevelStart(const UObject* WorldContextObject, int32 Level, const FString& Difficulty,
+	const FFlockCommandData& ExtraProperties)
+{
+	return FlockGameplayEvents::TrackLevelStartFromBlueprint(UFlockSubsystem::Get(WorldContextObject), Level, Difficulty,
+		ExtraProperties);
+}
+
+bool UFlockLibrary::TrackLevelComplete(const UObject* WorldContextObject, int32 Level, int32 Score, int32 DurationSeconds,
+	int32 Stars, const FFlockCommandData& ExtraProperties)
+{
+	return FlockGameplayEvents::TrackLevelCompleteFromBlueprint(UFlockSubsystem::Get(WorldContextObject), Level, Score,
+		DurationSeconds, Stars, ExtraProperties);
+}
+
+bool UFlockLibrary::TrackLevelFail(const UObject* WorldContextObject, int32 Level, const FString& Reason, int32 DurationSeconds,
+	const FFlockCommandData& ExtraProperties)
+{
+	return FlockGameplayEvents::TrackLevelFailFromBlueprint(UFlockSubsystem::Get(WorldContextObject), Level, Reason,
+		DurationSeconds, ExtraProperties);
+}
+
+bool UFlockLibrary::TrackCheckpoint(const UObject* WorldContextObject, int32 Level, const FString& Checkpoint,
+	const FFlockCommandData& ExtraProperties)
+{
+	return FlockGameplayEvents::TrackCheckpointFromBlueprint(UFlockSubsystem::Get(WorldContextObject), Level, Checkpoint,
+		ExtraProperties);
+}
+
+bool UFlockLibrary::TrackTutorialStep(const UObject* WorldContextObject, int32 Step, const FString& StepName,
+	const FFlockCommandData& ExtraProperties)
+{
+	return FlockGameplayEvents::TrackTutorialStepFromBlueprint(UFlockSubsystem::Get(WorldContextObject), Step, StepName,
+		ExtraProperties);
+}
+
+bool UFlockLibrary::TrackSettingsChange(const UObject* WorldContextObject, const FString& Setting, const FString& Value,
+	const FFlockCommandData& ExtraProperties)
+{
+	return FlockGameplayEvents::TrackSettingsChangeFromBlueprint(UFlockSubsystem::Get(WorldContextObject), Setting, Value,
+		ExtraProperties);
+}
+
+bool UFlockLibrary::TrackMatchStart(const UObject* WorldContextObject, const FString& Mode, const FString& Map, int32 TeamSize,
+	const FFlockCommandData& ExtraProperties)
+{
+	return FlockGameplayEvents::TrackMatchStartFromBlueprint(UFlockSubsystem::Get(WorldContextObject), Mode, Map, TeamSize,
+		ExtraProperties);
+}
+
+bool UFlockLibrary::TrackMatchComplete(const UObject* WorldContextObject, const FString& Mode, const FString& Result,
+	int32 Score, int32 DurationSeconds, int32 Kills, const FFlockCommandData& ExtraProperties)
+{
+	return FlockGameplayEvents::TrackMatchCompleteFromBlueprint(UFlockSubsystem::Get(WorldContextObject), Mode, Result, Score,
+		DurationSeconds, Kills, ExtraProperties);
+}
+
+FString UFlockLibrary::MatchResultWin()
+{
+	return FlockMatchResult::Win;
+}
+
+FString UFlockLibrary::MatchResultLoss()
+{
+	return FlockMatchResult::Loss;
+}
+
+FString UFlockLibrary::MatchResultDraw()
+{
+	return FlockMatchResult::Draw;
 }
 
 FFlockExceptionCaptureCoverage UFlockLibrary::GetExceptionCaptureCoverage(const UObject* WorldContextObject)

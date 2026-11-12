@@ -14,7 +14,7 @@ somewhere else entirely.
 | Read by | Design, product, LiveOps | Engineering |
 | Routes | `/v1/analytics/*` | `/v1/log_event` |
 | Dashboard | **Dashboards → Game Metrics** | **Diagnostics → Events** / **Diagnostics → Errors** |
-| Calls | `Flock Track Event`, `Flock Record Screen View`, sessions, purchase transactions | `Flock Log Diagnostic Event`, `Flock Log Diagnostic Error`, `Flock Log Diagnostic Exception`, automatic exception capture |
+| Calls | `Flock Track Event`, the tracking plan's `Flock Track Level Start` and its siblings, `Flock Record Screen View`, sessions, purchase transactions | `Flock Log Diagnostic Event`, `Flock Log Diagnostic Error`, `Flock Log Diagnostic Exception`, automatic exception capture |
 | Blueprint category | *Flock \| Analytics* | *Flock \| Diagnostics* |
 | Custom data | **Event Properties** — a number stays a number | **Extra Data** — a map of strings |
 
@@ -25,7 +25,8 @@ the call by the question you want answered, not by which node name is closest to
 ## Blueprint
 
 The nodes live under *Flock | Analytics* and **none of them needs the subsystem wired in** — they resolve
-it from the calling graph: `Flock Track Event`, `Flock Record Screen View`, `Flock Set Analytics Consent`,
+it from the calling graph: `Flock Track Event`, the tracking plan's events (`Flock Track Level Start` and the
+rest, [below](#tracking-plan-events)), `Flock Record Screen View`, `Flock Set Analytics Consent`,
 `Flock Flush Analytics`, plus the session nodes (`Flock Start Analytics Session`, `Flock End Analytics
 Session`, `Flock Has Active Analytics Session`, `Flock Get Analytics Session Id`, `Flock Get Analytics
 Snapshot`). All are safe no-ops before the SDK has initialized.
@@ -61,7 +62,8 @@ Sdk->RecordAnalyticsScreenView(TEXT("MainMenu"));
 and properties.
 
 - **It never waits on the network.** The event is written to disk and delivered on the next flush, so it is
-  safe to call often and while offline. It returns false only when it refuses the event outright.
+  safe to call often and while offline. It returns false only when it refuses the event outright, or drops it because nobody is signed in and
+  **Analytics Cache Failed Events** is off, so there is no queue to hold it.
 - **It is refused on the spot** when analytics is off, when consent is withheld, when the name is empty or
   blank, when the name is longer than 200 characters or the category longer than 100 (the server cannot store
   either, and would fail every event sent alongside), and for the name `session_started` — the server records
@@ -78,6 +80,54 @@ and properties.
 - **An event the server refuses is dropped**, and the flush that met the refusal reports it — the rest of
   the queue is still delivered. An event the server merely could not take yet (an outage, a rate limit)
   stays queued.
+
+## Tracking plan events
+
+Your game's tracking plan, on the Flock dashboard, suggests the events worth sending. The most common ones each have a
+call that sends the plan's event name, category and property names, so you never type them and the plan counts them as
+sent:
+
+| Event | Category | Properties | Blueprint | C++ |
+|---|---|---|---|---|
+| `level_start` | `gameplay` | `level`, `difficulty` | **Flock Track Level Start** | `TrackLevelStart` |
+| `level_complete` | `gameplay` | `level`, `score`, `duration_seconds`, `stars` | **Flock Track Level Complete** | `TrackLevelComplete` |
+| `level_fail` | `gameplay` | `level`, `reason`, `duration_seconds` | **Flock Track Level Fail** | `TrackLevelFail` |
+| `checkpoint_start` | `gameplay` | `level`, `checkpoint` | **Flock Track Checkpoint** | `TrackCheckpoint` |
+| `tutorial_step` | `ui` | `step`, `step_name` | **Flock Track Tutorial Step** | `TrackTutorialStep` |
+| `settings_change` | `ui` | `setting`, `value` | **Flock Track Settings Change** | `TrackSettingsChange` |
+| `match_start` | `gameplay` | `mode`, `map`, `team_size` | **Flock Track Match Start** | `TrackMatchStart` |
+| `match_complete` | `gameplay` | `mode`, `result`, `score`, `duration_seconds`, `kills` | **Flock Track Match Complete** | `TrackMatchComplete` |
+
+```cpp
+#include "FlockSubsystem.h"
+
+UFlockSubsystem* Sdk = UFlockSubsystem::Get(this);
+
+Sdk->TrackLevelComplete(3, 1200, 95, 2); // level, score, duration_seconds, stars
+Sdk->TrackLevelComplete(4, {}, {}, 0);   // only level and stars: zero stars is sent
+
+// mode, result, no score, no duration, kills, and a property of the game's own
+Sdk->TrackMatchComplete(TEXT("ranked"), FlockMatchResult::Win, {}, {}, 7,
+    FFlockCommandData().Set(TEXT("weapon"), TEXT("bow")));
+```
+
+- **Every argument is optional, and one you leave out is not sent**, not even as a null or a zero. In C++ a number
+  is a `TOptional<int32>`: pass `{}` to leave it out. An empty text is not sent either. Zero is a value: `stars`
+  of 0 is sent.
+- **In Blueprint, a number pin left at its default, -2147483648 (the lowest integer), is not sent.** Wire or type
+  any other value, zero and negative numbers included, and it is sent. Leave a text pin empty to send nothing.
+- **Extra Properties** (`ExtraProperties` in C++, an advanced pin on each node) adds more properties, built with the
+  *Flock Event Property* nodes. An argument you set wins over the same key there, and your properties are not
+  changed. A key matches whatever its letter case (`Kills` and `kills` are one key here), because an event's properties
+  cannot hold two spellings of one key: if yours holds `Kills` and you pass `kills`, the call's `kills` is sent, `Kills`
+  is not, and a warning names it.
+- **The match result** takes **Flock Match Result Win**, **Loss** or **Draw** (`FlockMatchResult::Win`, `Loss`,
+  `Draw` in C++: `win`, `loss`, `draw`), or a word of your own: the server takes any.
+- **Each call is a `Flock Track Event` underneath**: the same consent, refusals, queue and `flock_` parameters, and
+  it returns false when the event was refused or dropped. **Analytics Send Default Events** does not turn these off: they are
+  your game's events, not the SDK's.
+
+Any other event in your plan goes through **Flock Track Event** with the plan's name and properties.
 
 ## The SDK's own events and parameters
 
