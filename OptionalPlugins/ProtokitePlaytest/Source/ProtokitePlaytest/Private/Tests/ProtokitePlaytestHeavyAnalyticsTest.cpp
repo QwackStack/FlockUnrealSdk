@@ -151,8 +151,15 @@ bool FProtokitePlaytestHeavyAnalyticsSixWindowsInAMinuteOfPlayTest::RunTest(cons
 		{
 			TestTrue(FString::Printf(TEXT("It carries %s as a number"), *Member), Properties->HasTypedField<EJson::Number>(Member));
 		}
-		// No world is loaded here, so there is no map: exactly those members, and nothing the Flock SDK already sends.
-		TestEqual(TEXT("It carries nothing else"), Properties->Values.Num(), NumberMembers.Num());
+		// No world is loaded here, so there is no map: exactly those members, and nothing the Flock SDK already sends. The
+		// Flock SDK's flock_ parameters ride on every event and are not the playtest's.
+		int32 PlaytestMembers = 0;
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Member : Properties->Values)
+		{
+			PlaytestMembers += Member.Key.StartsWith(TEXT("flock_"), ESearchCase::CaseSensitive) ? 0 : 1;
+		}
+		TestEqual(TEXT("It carries nothing else"), PlaytestMembers, NumberMembers.Num());
+		TestTrue(TEXT("The Flock SDK adds its flock_ parameters to every event"), Properties->HasField(TEXT("flock_sdk_version")));
 		for (const TCHAR* SessionMember : { TEXT("duration_seconds"), TEXT("pause_count"), TEXT("min_fps"), TEXT("max_fps"), TEXT("average_fps") })
 		{
 			TestFalse(FString::Printf(TEXT("It does not repeat the session's %s"), SessionMember), Properties->HasField(SessionMember));

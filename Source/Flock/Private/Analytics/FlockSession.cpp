@@ -16,6 +16,8 @@ namespace
 {
 	const TCHAR* SessionNumberField = TEXT("session_number");
 	const TCHAR* ActiveSessionField = TEXT("active_session");
+	/** Inside the open record: its session_end was recorded when it ended, so a later launch records none. */
+	const TCHAR* EndEventRecordedField = TEXT("end_event_recorded");
 
 	/** Empty rather than the epoch, so "never happened" is distinguishable on the wire. */
 	FString ToIsoOrEmpty(const FDateTime& Value)
@@ -84,7 +86,7 @@ void FFlockSession::EnsureStateDirectory() const
 	bStateDirectoryEnsured = true;
 }
 
-void FFlockSession::WriteState(const FFlockSessionSnapshot* ActiveSnapshot) const
+void FFlockSession::WriteState(const FFlockSessionSnapshot* ActiveSnapshot, bool bEndEventRecorded) const
 {
 	const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetNumberField(SessionNumberField, SessionNumber);
@@ -93,6 +95,10 @@ void FFlockSession::WriteState(const FFlockSessionSnapshot* ActiveSnapshot) cons
 	{
 		if (const TSharedPtr<FJsonObject> Active = FFlockAnalyticsJson::SnapshotToJson(*ActiveSnapshot))
 		{
+			if (bEndEventRecorded)
+			{
+				Active->SetBoolField(EndEventRecordedField, true);
+			}
 			Root->SetObjectField(ActiveSessionField, Active);
 		}
 	}
@@ -122,7 +128,47 @@ void FFlockSession::ClearPersistedSession() const
 	WriteState(nullptr);
 }
 
-bool FFlockSession::RecoverOrphanedSession(FFlockSessionSnapshot& OutSnapshot) const
+void FFlockSession::KeepEndedRecord(const FFlockSessionSnapshot& Ended, bool bEndEventRecorded) const
+{
+	if (!Config.bPersistSessionOnDisk || Ended.SessionId.IsEmpty())
+	{
+		return;
+	}
+	FFlockSessionSnapshot Record = Ended;
+	// Open, so a later launch finds it; its end time stays, so that launch ends it when it really ended.
+	Record.IsActive = true;
+	WriteState(&Record, bEndEventRecorded);
+}
+
+void FFlockSession::UpdateKeptRecord(const FString& InSessionId, const FString& InServerSessionId, bool bEndEventRecorded) const
+{
+	if (!Config.bPersistSessionOnDisk || InSessionId.IsEmpty() || bActive)
+	{
+		return;
+	}
+	FString Json;
+	TSharedPtr<FJsonObject> Root;
+	const TSharedPtr<FJsonObject>* Active = nullptr;
+	if (!FFileHelper::LoadFileToString(Json, *StateFilePath) || !FFlockJsonUtils::TryParseObject(Json, Root) || !Root.IsValid()
+		|| !Root->TryGetObjectField(ActiveSessionField, Active) || !Active->IsValid())
+	{
+		return;
+	}
+	FFlockSessionSnapshot Kept;
+	if (!FFlockAnalyticsJson::SnapshotFromJson(Active->ToSharedRef(), Kept) || !Kept.SessionId.Equals(InSessionId, ESearchCase::CaseSensitive))
+	{
+		return;
+	}
+	bool bWasRecorded = false;
+	(*Active)->TryGetBoolField(EndEventRecordedField, bWasRecorded);
+	if (!InServerSessionId.IsEmpty())
+	{
+		Kept.ServerSessionId = InServerSessionId;
+	}
+	WriteState(&Kept, bWasRecorded || bEndEventRecorded);
+}
+
+bool FFlockSession::RecoverOrphanedSession(FFlockSessionSnapshot& OutSnapshot, bool* bOutEndEventRecorded) const
 {
 	if (!Config.bPersistSessionOnDisk)
 	{
@@ -160,9 +206,21 @@ bool FFlockSession::RecoverOrphanedSession(FFlockSessionSnapshot& OutSnapshot) c
 	}
 
 	Recovered.IsActive = false;
-	Recovered.EndTimeUtc = Recovered.LastHeartbeatUtc.IsEmpty()
-		? Recovered.StartTimeUtc
-		: Recovered.LastHeartbeatUtc;
+	// A record kept for a session that ended holds its real end; a live one ends at its last sign of life.
+	if (Recovered.EndTimeUtc.IsEmpty())
+	{
+		Recovered.EndTimeUtc = Recovered.LastHeartbeatUtc.IsEmpty()
+			? Recovered.StartTimeUtc
+			: Recovered.LastHeartbeatUtc;
+	}
+	// Its length is what the last saved record held, so a bounce is judged on that.
+	Recovered.IsBounce = Config.BounceThresholdSeconds > 0.f && Recovered.DurationSeconds < Config.BounceThresholdSeconds;
+	if (bOutEndEventRecorded != nullptr)
+	{
+		bool bRecorded = false;
+		(*Active)->TryGetBoolField(EndEventRecordedField, bRecorded);
+		*bOutEndEventRecorded = bRecorded;
+	}
 	OutSnapshot = Recovered;
 	return true;
 }
@@ -184,6 +242,7 @@ void FFlockSession::ResetAccounting()
 	LastHeartbeatUtc = FDateTime::MinValue();
 	PauseStartUtc = FDateTime::MinValue();
 	bPaused = false;
+	bSavedPastBounceThreshold = false;
 }
 
 FString FFlockSession::Start(const FString& InPlayerId)
@@ -231,6 +290,14 @@ void FFlockSession::Tick(float DeltaSeconds)
 	}
 	DurationSeconds += DeltaSeconds;
 	SampleFps(DeltaSeconds);
+
+	// Saved once past the bounce threshold: a heartbeat may be a minute away, and a crash before it would leave a record that
+	// reads as a bounce.
+	if (!bSavedPastBounceThreshold && DurationSeconds >= Config.BounceThresholdSeconds)
+	{
+		bSavedPastBounceThreshold = true;
+		PersistState();
+	}
 }
 
 void FFlockSession::SampleFps(float DeltaSeconds)
@@ -286,7 +353,7 @@ bool FFlockSession::Resume()
 
 void FFlockSession::RecordScreenView(const FString& ScreenName)
 {
-	if (!bActive || ScreenName.IsEmpty())
+	if (!bActive || ScreenName.TrimStartAndEnd().IsEmpty())
 	{
 		return;
 	}
@@ -334,5 +401,6 @@ FFlockSessionSnapshot FFlockSession::TakeSnapshot() const
 	Snapshot.IsActive = bActive;
 	Snapshot.IsBounce = IsBounce();
 	Snapshot.IsFirstSession = SessionNumber == 1;
+	Snapshot.DeviceInfo = DeviceInfo;
 	return Snapshot;
 }

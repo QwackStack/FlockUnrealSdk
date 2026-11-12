@@ -53,6 +53,8 @@ public class Flock : ModuleRules
 			new string[]
 			{
 				"Projects",
+				// The game's Project Version, which analytics sends as its app version.
+				"EngineSettings",
 				"HTTP",
 				// UDP for the STUN request, Flock's relay and its loopback bridge, and the transport tests' stalling server; TCP for a
 				// relay reached over TCP or TLS.

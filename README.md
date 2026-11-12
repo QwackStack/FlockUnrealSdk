@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.49.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8 and a C++ compiler: the plugin
+> **1.50.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8 and a C++ compiler: the plugin
 > ships as source, so a Blueprint-only project is converted once into a C++ project (see
 > [Blueprint-only projects](#blueprint-only-projects)). Your game itself needs no C++: every feature has Blueprint nodes,
 > apart from the few calls listed under [Status](#status).
@@ -693,6 +693,7 @@ detail and the fixes):
 | 1.47.0 | **All of it in Blueprint**: nodes to connect the store, show prices, restore, check the setup and open a checkout, and the store's two events on Flock's events hub |
 | 1.48.0 | **The shop sample**, made of Blueprints only (`Content/Samples/Shop`): every item with its price and what the player owns, buying, using, restoring and the setup check |
 | 1.49.0 | **A device id the SDK keeps** (`ThisDeviceId`, used when a device id is left empty) and **config read as the signed-in player sees it**: gameplay and feature configs with the overrides of the player's segments and the player's own |
+| 1.50.0 | **The SDK's own analytics events and parameters**: `session_end` with why and how a session ended, `app_open`, `first_launch`, `app_update`, `screen_view` and `store_purchase`, and the `flock_` parameters (platform, operating system, device, versions, language, session number) on every event; **Analytics Send Default Events** turns the events off |
 
 Deliberate omissions and known gaps:
 

@@ -5,6 +5,70 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.50.0] - 2026-11-12
+
+The SDK's own analytics events and parameters: why and how each session ended, the launch, screens and the store's
+dialog, with the device and versions on every event.
+
+### Added
+
+- **`session_end` at every session end** (category `session`): `reason` (`quit`, `timeout`, `sign_out`,
+  `player_changed`, `restarted`, `ended_by_the_game`, or `unexpected_exit` for a session a launch that stopped
+  without ending it left open), `duration_seconds` in whole seconds, `screens_viewed`, `is_bounce`, `session_number`,
+  `is_first_session`, `pause_count`, and `average_fps` / `min_fps` when frames were sampled. One per session, credited
+  to the player whose session it was: the open session's record is marked once its event is recorded, so a launch that
+  finds that record again ends the session on the server without a second event.
+- **`app_open`** at each start of the SDK (or when consent is given later in that run), **`first_launch`** once for a
+  game on a device, and **`app_update`** with `previous_app_version` when the game starts on another **Project Version**
+  than it last did on that device (category `app`). Recorded with nobody signed in, they are credited to the next
+  sign-in; with **Analytics Cache Failed Events** off they wait in memory for it.
+- **`screen_view`** (category `screen`, `screen_name`) for each `RecordAnalyticsScreenView` (**Flock Record Screen
+  View**), also without a session; the view is still counted in the session.
+- **`store_purchase`** (category `store`) when the store's own dialog cancels, fails or defers a purchase: `outcome`
+  (`cancelled`, `failed`, `deferred`), `store`, `item_id`, `product_id`. A purchase that was paid is recorded by the
+  server.
+- **The `flock_` parameters on every analytics event**, the game's own included: `flock_platform`, `flock_os`,
+  `flock_device_model`, `flock_app_version`, `flock_sdk_version`, `flock_language`, and `flock_session_number` while a
+  session runs. A property the game set under one of these names (in any letter case) keeps the game's value.
+- **Analytics Send Default Events** (Project Settings → Plugins → Flock SDK Settings, **Analytics**, on by default):
+  off records none of the SDK's own events; the parameters stay on every event.
+
+### Changed
+
+- **`TrackAnalyticsEvent` (Flock Track Event) refuses the SDK's own event names** — `session_end`, `app_open`,
+  `first_launch`, `app_update`, `store_purchase`, `screen_view`, letter for letter — with a warning naming the event and
+  the setting, as it refuses `session_started`. A game recording one of these itself would count it twice.
+- **A screen view with an empty name, or one of only spaces, is not counted**, and a warning says a screen view needs
+  the screen's name. A name of spaces used to be counted.
+- **The app version is the game's Project Version** (Project Settings → Project → Description), on every event, on the
+  session's device info and in the crash report's `app_version`. It was the engine's build string, which changes only
+  with the engine.
+- **The crash report watches the whole run, from the SDK's start**, not from the first sign-in: a crash before anyone
+  signs in is reported too, and a session ending no longer stops it. A report from a run with no session running
+  leaves `previous_session_id` out.
+- **A session found open by the next launch is judged a bounce on its own length** (it carried whatever the last save
+  held), and the session's record is saved once it outlasts **Analytics Bounce Threshold**, so a crash before the first
+  heartbeat no longer reads as a bounce.
+- `GetAnalyticsSnapshot()`'s `DeviceInfo` is filled in; it was always empty.
+
+- `RecordAnalyticsScreenView` called off the game thread is forwarded there, as `TrackAnalyticsEvent` is.
+
+### Fixed
+
+- **A session end that could not be queued is no longer lost** (Analytics Cache Failed Events off, or the disk refused
+  the write): it is sent at once when someone is signed in, else at the next sign-in or session start, and is registered
+  first when the session never was. With the queue on, the session's record is also kept, as the session ended, for the
+  next launch, and the error says which folder could not be written and how to fix it. It used to be dropped when the
+  session had no server id, and sent with no sign-in when it had one.
+- **An ended session is registered on the server once.** A registration answered after its session ended, or one whose
+  close then failed, gives the end its id, so the close is tried again under it rather than opening a second server
+  session.
+- **With Analytics Cache Failed Events off, a session a stopped launch left open is ended once**, at the next sign-in.
+  That launch's files used to be kept and tried again at every launch, never ending the session.
+- **A session the next launch finds ended is closed at the time it really ended**, with its real length and screens,
+  not at its last heartbeat.
+- **Withdrawing consent removes a session record kept for the next launch** too.
+
 ## [1.49.0] - 2026-11-11
 
 A device id the SDK keeps; config read as the signed-in player sees it.

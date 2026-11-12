@@ -93,7 +93,8 @@ public:
 		const FFlockLogDetails& Details);
 
 	/**
-	 * Counts a screen/menu view against the current session.
+	 * Records a screen_view event (with Analytics Send Default Events on), also without a session, and counts the view in
+	 * the running session. A name that is empty or only spaces is neither recorded nor counted, and a warning says so.
 	 *
 	 * Surface: analytics — read on Dashboards → Game Metrics.
 	 */
@@ -105,7 +106,9 @@ public:
 	 * Records a gameplay event for the Game Metrics dashboards — not Flock Log Diagnostic Event, which writes an
 	 * engineering entry. Build Properties with the Flock Event Property nodes, which keep a number a number.
 	 * Returns false when refused (analytics off, no consent, an empty name, a name over 200 characters or a category
-	 * over 100, or the reserved session_started).
+	 * over 100, the reserved session_started, or one of the SDK's own events: session_end, app_open, first_launch,
+	 * app_update, store_purchase, screen_view). Every event carries the flock_ parameters (platform, device, versions,
+	 * language, session number).
 	 *
 	 * Surface: analytics — read on Dashboards → Game Metrics.
 	 */

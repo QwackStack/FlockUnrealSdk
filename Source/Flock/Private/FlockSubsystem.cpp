@@ -18,7 +18,7 @@
 #include "Store/FlockStore.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.49.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.50.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -299,9 +299,16 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		Deps.Pump = MakeShared<FFlockLifecyclePump>();
 		Deps.bEnableLogSink = true;
 		Deps.CoverageNoticeMarkerPath = FPaths::Combine(AnalyticsFolder, TEXT("coverage_notice.txt"));
+		// One per game: first_launch and app_update are each game's own, like its sign-in.
+		Deps.DefaultEventsRecordPath = FPaths::Combine(AnalyticsFolder, FFlockGameKey::Named(TEXT("default_events"), GameKey) + TEXT(".json"));
 
+		// The provider's queues keep nothing, and no record is kept for a later launch, when this launch holds no folder: what
+		// it promises (sent by the next launch) must be what happens.
+		FFlockAnalyticsConfig ProviderConfig = AnalyticsConfig;
+		ProviderConfig.bCacheFailedEvents = AnalyticsConfig.bCacheFailedEvents && bKeepsFiles;
+		ProviderConfig.bPersistSessionOnDisk = SessionConfig.bPersistSessionOnDisk;
 		AnalyticsProvider = MakeShared<FFlockAnalyticsProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
-			AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl(), AnalyticsConfig, Deps,
+			AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl(), ProviderConfig, Deps,
 			Config.GameVersionId, SdkVersion);
 
 		// The backend requires a player id on a session, so sessions follow sign-in rather than init.
@@ -387,7 +394,10 @@ void UFlockSubsystem::HandleAnalyticsAuthenticated(const FFlockAuthInfo& Info)
 	}
 	// Whatever the auto-start setting: events recorded before sign-in belong to this player either way.
 	AnalyticsProvider->HandleAuthenticated(Info.PlayerId);
-	if (GetDefault<UFlockConfig>()->bAnalyticsAutoStartSession)
+	// Not for a sign-in that ended while it was announced (a listener before this one signed out): nobody would own the session.
+	const bool bStillThisSignIn = AuthSession.IsValid() && AuthSession->IsAuthenticated()
+		&& AuthSession->GetPlayerId().Equals(Info.PlayerId, ESearchCase::CaseSensitive);
+	if (bStillThisSignIn && GetDefault<UFlockConfig>()->bAnalyticsAutoStartSession)
 	{
 		AnalyticsProvider->StartSession(Info.PlayerId);
 	}

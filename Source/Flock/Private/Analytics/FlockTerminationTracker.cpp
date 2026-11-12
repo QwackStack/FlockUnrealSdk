@@ -78,7 +78,7 @@ bool FFlockTerminationTracker::ReadSurvivingMarker(FFlockTerminationMarker& OutM
 
 	if (!Parsed.IsValid())
 	{
-		// Well-formed JSON but no session to attribute it to — same treatment as corrupt.
+		// Well-formed JSON with neither a session nor a time it was last alive: same treatment as corrupt.
 		ClearMarker();
 		return false;
 	}
@@ -100,6 +100,34 @@ void FFlockTerminationTracker::BeginTracking(const FFlockTerminationMarker& Seed
 	Marker.ExceptionCount = Seed.ExceptionCount;
 	PendingExceptionCount = 0;
 	bTracking = true;
+	WriteMarker();
+}
+
+void FFlockTerminationTracker::NoteSessionStarted(const FString& InSessionId, const FString& InPlayerId)
+{
+	if (!bTracking)
+	{
+		return;
+	}
+	Marker.SessionId = InSessionId;
+	Marker.ServerSessionId.Reset();
+	Marker.PlayerId = InPlayerId;
+	Marker.ExceptionCount += PendingExceptionCount;
+	PendingExceptionCount = 0;
+	WriteMarker();
+}
+
+void FFlockTerminationTracker::NoteSessionEnded()
+{
+	if (!bTracking)
+	{
+		return;
+	}
+	Marker.SessionId.Reset();
+	Marker.ServerSessionId.Reset();
+	Marker.PlayerId.Reset();
+	Marker.ExceptionCount += PendingExceptionCount;
+	PendingExceptionCount = 0;
 	WriteMarker();
 }
 

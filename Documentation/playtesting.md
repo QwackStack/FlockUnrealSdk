@@ -317,7 +317,10 @@ It returns false, and records nothing, when:
 - playtesting is not **Ready**, or the playtest does not turn `heavy_analytics` on, or the player did not allow play data;
 - the name is one the plugin sends itself (`performance_window`, `level_loaded`);
 - the Flock SDK refuses the event: its analytics off (**Analytics Enabled**), consent withheld, an empty name,
-  `session_started`, or a name over 200 characters.
+  `session_started`, one of the Flock SDK's own events (`session_end`, `app_open`, `first_launch`, `app_update`,
+  `store_purchase`, `screen_view`), or a name over 200 characters.
+
+Each event also carries the Flock SDK's `flock_` parameters (platform, device, versions, language, session number).
 
 It never waits on the network.
 

@@ -65,6 +65,7 @@ public:
 	 */
 	bool Resume();
 
+	/** Counts a screen view. A name that is empty or only spaces is not counted. */
 	void RecordScreenView(const FString& ScreenName);
 
 	/** Stamps LastHeartbeatUtc. The interval itself is the provider's business. */
@@ -89,6 +90,9 @@ public:
 
 	FFlockSessionSnapshot TakeSnapshot() const;
 
+	/** The device and build this launch runs on, carried by every snapshot so a recovered session reports its own build. */
+	void SetDeviceInfo(const FFlockDeviceInfo& InDeviceInfo) { DeviceInfo = InDeviceInfo; }
+
 	// ── Persistence ──
 	// The live session is written beside the counter so a run that dies without an End() leaves
 	// something to recover. When to refresh it is the caller's business, like everything else here —
@@ -111,14 +115,27 @@ public:
 	 *
 	 * Deliberately does not clear — see ClearPersistedSession().
 	 */
-	bool RecoverOrphanedSession(FFlockSessionSnapshot& OutSnapshot) const;
+	bool RecoverOrphanedSession(FFlockSessionSnapshot& OutSnapshot, bool* bOutEndEventRecorded = nullptr) const;
+
+	/**
+	 * Saves the session that just ended as the open record, as it ended, marked when its session_end was recorded. A record
+	 * that outlives the session (an end the queue could not save, or a failed drop) is then ended on the server by a later
+	 * launch with the session's real length, and without a second session_end.
+	 */
+	void KeepEndedRecord(const FFlockSessionSnapshot& Ended, bool bEndEventRecorded) const;
+
+	/**
+	 * Tells the open record of the session SessionId, when it is that one's, the server's id for it (when not empty) and
+	 * that its session_end was recorded (when true), so a later launch neither registers it again nor records it twice.
+	 */
+	void UpdateKeptRecord(const FString& InSessionId, const FString& InServerSessionId, bool bEndEventRecorded) const;
 
 private:
 	void LoadSessionNumber();
 	/** Creates the state directory once per instance rather than on every write. */
 	void EnsureStateDirectory() const;
 	/** Writes the whole state file; a null snapshot means "no live session". */
-	void WriteState(const FFlockSessionSnapshot* ActiveSnapshot) const;
+	void WriteState(const FFlockSessionSnapshot* ActiveSnapshot, bool bEndEventRecorded = false) const;
 	void ResetAccounting();
 	void SampleFps(float DeltaSeconds);
 
@@ -150,6 +167,11 @@ private:
 	int32 FpsSampleCount = 0;
 	float MinFps = 0.f;
 	float MaxFps = 0.f;
+
+	FFlockDeviceInfo DeviceInfo;
+
+	/** The live record is saved once the session outlasts the bounce threshold, so a recovered one is judged on that. */
+	bool bSavedPastBounceThreshold = false;
 
 	bool bActive = false;
 	bool bPaused = false;

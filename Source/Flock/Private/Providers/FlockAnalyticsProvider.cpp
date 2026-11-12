@@ -5,6 +5,7 @@
 
 #include "Analytics/FlockAnalyticsJson.h"
 #include "Analytics/FlockAnalyticsLaunches.h"
+#include "Analytics/FlockDefaultEvents.h"
 #include "Analytics/FlockLogSink.h"
 #include "Analytics/FlockStackTrace.h"
 #include "Async/Async.h"
@@ -80,7 +81,7 @@ namespace
 			Collected.OperatingSystem = FPlatformMisc::GetOSVersion();
 			Collected.DeviceModel = FPlatformMisc::GetDeviceMakeAndModel();
 			Collected.DeviceType = PlatformDeviceType();
-			Collected.AppVersion = FApp::GetBuildVersion();
+			Collected.AppVersion = FlockDefaultEvents::AppVersionOfThisGame();
 			Collected.SystemLanguage = FPlatformMisc::GetDefaultLanguage();
 			Collected.SystemMemoryMb = static_cast<int32>(FPlatformMemory::GetPhysicalGBRam()) * 1024;
 			Collected.SdkVersion = SdkVersion;
@@ -109,6 +110,14 @@ FFlockAnalyticsProvider::FFlockAnalyticsProvider(const TSharedRef<FFlockHttpClie
 	if (Deps.ConsentStore.IsValid())
 	{
 		bConsent = Deps.ConsentStore->ResolveEffective(Config.bRequireExplicitConsent);
+	}
+
+	// Read once: the game's version is a project setting, read again for each start of the SDK.
+	LaunchDevice = CollectDeviceInfo(SdkVersion);
+	LaunchDevice.AppVersion = FlockDefaultEvents::AppVersionOfThisGame();
+	if (Deps.Session.IsValid())
+	{
+		Deps.Session->SetDeviceInfo(LaunchDevice);
 	}
 }
 
@@ -188,6 +197,10 @@ void FFlockAnalyticsProvider::Initialize()
 
 	// Before this launch writes a marker or a live-session record of its own: what launches that have ended left behind.
 	ReportWhatEndedLaunchesLeft();
+
+	// From start-up, not sign-in: a crash before anyone signs in is a crash too.
+	StartLaunchMarker();
+	RecordLaunchEvents();
 
 	// Two switches with two owners: Deps.bEnableLogSink says whether this process may tap GLog at all (off inside
 	// the automation runner), Config.bCaptureExceptions is the project's own choice.
@@ -322,8 +335,12 @@ void FFlockAnalyticsProvider::ReportSurvivingTermination(const FString& MarkerPa
 	// Reported as `debug`, not `exception`: it is a record *about* a previous crash, and counting it
 	// as an exception would inflate the backend's exception statistics with non-exception entries.
 	FFlockLogEventRequest Event = MakeLogEvent(EFlockLogEventType::Debug, TerminationEventName);
-	Event.Data.ExtraData.Add(KeyPreviousSessionId,
-		Survivor.ServerSessionId.IsEmpty() ? Survivor.SessionId : Survivor.ServerSessionId);
+	// The server's id when the session registered, else the local one; left out when no session was running.
+	const FString PreviousSessionId = Survivor.ServerSessionId.IsEmpty() ? Survivor.SessionId : Survivor.ServerSessionId;
+	if (!PreviousSessionId.IsEmpty())
+	{
+		Event.Data.ExtraData.Add(KeyPreviousSessionId, PreviousSessionId);
+	}
 	Event.Data.ExtraData.Add(KeyClassification, FFlockTerminationTracker::Classify(Survivor));
 	Event.Data.ExtraData.Add(KeyLastAliveAt, Survivor.LastAliveUtc.ToIso8601());
 	Event.Data.ExtraData.Add(KeyExceptionCount, FString::FromInt(Survivor.ExceptionCount));
@@ -352,6 +369,11 @@ void FFlockAnalyticsProvider::SetConsent(bool bGranted)
 		// should not leave collected data sitting on disk waiting to be sent — and the session they
 		// were in must not be reported either, which is why this is a discard and not an end.
 		DiscardSession();
+		// With no session running there may still be a record kept for an end the queue could not save: it goes too.
+		if (Deps.Session.IsValid())
+		{
+			Deps.Session->ClearPersistedSession();
+		}
 		if (Deps.LogEventCache.IsValid())
 		{
 			Deps.LogEventCache->Clear();
@@ -364,12 +386,22 @@ void FFlockAnalyticsProvider::SetConsent(bool bGranted)
 		{
 			Deps.AnalyticsEventCache->Clear();
 		}
+		EventsWaitingForSignIn.Reset();
+		EndsTheQueueCouldNotSave.Reset();
 		if (Deps.TerminationTracker.IsValid())
 		{
 			Deps.TerminationTracker->StopTracking();
 		}
 	}
-	else if (Config.bAutoStartSession && !KnownPlayerId.IsEmpty() && !HasActiveSession())
+	else
+	{
+		// Nothing was collected before consent: the crash marker starts now, and this launch's app_open and first_launch are
+		// recorded now.
+		StartLaunchMarker();
+		RecordLaunchEvents();
+	}
+
+	if (bGranted && Config.bAutoStartSession && !KnownPlayerId.IsEmpty() && !HasActiveSession())
 	{
 		// The opt-in flow: the player signed in while collection was gated, so no session could open
 		// then. This is the moment it can.
@@ -526,11 +558,38 @@ FFlockLogEventRequest FFlockAnalyticsProvider::MakeExceptionEvent(const FString&
 
 void FFlockAnalyticsProvider::RecordScreenView(const FString& ScreenName)
 {
-	if (!IsCollecting() || !Deps.Session.IsValid())
+	// It writes the event queue, which belongs to the game thread, so a call from another thread is forwarded there.
+	if (!IsInGameThread())
+	{
+		const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
+		AsyncTask(ENamedThreads::GameThread, [WeakSelf, ScreenName]()
+		{
+			if (const TSharedPtr<FFlockAnalyticsProvider> Self = WeakSelf.Pin())
+			{
+				Self->RecordScreenView(ScreenName);
+			}
+		});
+		return;
+	}
+	if (!IsCollecting())
 	{
 		return;
 	}
-	Deps.Session->RecordScreenView(ScreenName);
+	// The session decides what counts; this only tells the developer why one did not.
+	if (ScreenName.TrimStartAndEnd().IsEmpty())
+	{
+		Logger->LogWarning(TEXT("Screen view not counted: a screen view needs the screen's name."));
+		return;
+	}
+
+	FFlockCommandData Properties;
+	Properties.Set(FlockDefaultEvents::ScreenName, ScreenName);
+	RecordDefaultEvent(FlockDefaultEvents::ScreenView, FlockDefaultEvents::ScreenCategory, Properties);
+
+	if (Deps.Session.IsValid())
+	{
+		Deps.Session->RecordScreenView(ScreenName);
+	}
 }
 
 bool FFlockAnalyticsProvider::IsEventTooLongToStore(const FString& EventName, const FString& EventCategory)
@@ -584,12 +643,28 @@ bool FFlockAnalyticsProvider::TrackEvent(const FString& EventName, const FFlockC
 			ReservedSessionStartedEvent));
 		return false;
 	}
+	// The SDK records these itself; the game's own would count each one twice.
+	if (FlockDefaultEvents::IsOneOfTheSdksOwnEvents(EventName))
+	{
+		Logger->LogWarning(FString::Printf(
+			TEXT("Track event refused: '%s' is reserved for the SDK's own event of that name (Analytics Send Default Events in Project Settings > Plugins > Flock SDK Settings), whether that setting is on or off. Give the game's own event another name."),
+			*EventName));
+		return false;
+	}
 
+	FFlockSpooledAnalyticsEvent Entry = MakeEventEntry(EventName, EventCategory, Properties);
+	return QueueOrSendOnce(Entry, CurrentSessionNumber());
+}
+
+FFlockSpooledAnalyticsEvent FFlockAnalyticsProvider::MakeEventEntry(const FString& EventName, const FString& EventCategory,
+	const FFlockCommandData& Properties) const
+{
 	FFlockSpooledAnalyticsEvent Entry;
 	Entry.Event.PlayerId = AuthSessionRef->IsAuthenticated() ? AuthSessionRef->GetPlayerId() : FString();
 	Entry.Event.EventName = EventName;
 	Entry.Event.EventCategory = EventCategory;
 	Entry.Event.Timestamp = FDateTime::UtcNow().ToIso8601();
+	// A copy: the flock_ parameters are added to it, never to the game's own.
 	Entry.Event.Properties = Properties;
 
 	// Only the session of this event's own player is attached. Its server id may not be known yet, so the local id
@@ -602,19 +677,46 @@ bool FFlockAnalyticsProvider::TrackEvent(const FString& EventName, const FFlockC
 		Entry.LocalSessionId = Deps.Session->GetSessionId();
 		Entry.Event.SessionId = Deps.Session->GetServerSessionId();
 	}
+	return Entry;
+}
 
+TOptional<int32> FFlockAnalyticsProvider::CurrentSessionNumber() const
+{
+	return HasActiveSession() ? TOptional<int32>(Deps.Session->GetSessionNumber()) : TOptional<int32>();
+}
+
+bool FFlockAnalyticsProvider::QueueOrSendOnce(FFlockSpooledAnalyticsEvent& Entry, const TOptional<int32>& SessionNumber,
+	const FFlockDeviceInfo* Device, bool bWaitForSignIn)
+{
+	FlockDefaultEvents::AddParameters(Entry.Event.Properties, Device != nullptr ? *Device : LaunchDevice, SessionNumber);
+	if (QueueAsItIsOrSendOnce(Entry))
+	{
+		return true;
+	}
+	// Not spooled, and nobody signed in to send it for. The SDK's launch events and session ends wait in memory for the sign-in;
+	// a game's event is dropped.
+	if (bWaitForSignIn)
+	{
+		EventsWaitingForSignIn.Add(Entry);
+		return false;
+	}
+	Logger->LogDebug(FString::Printf(
+		TEXT("Event '%s' dropped: nobody is signed in and there is no spool to hold it."), *Entry.Event.EventName));
+	return false;
+}
+
+bool FFlockAnalyticsProvider::QueueAsItIsOrSendOnce(FFlockSpooledAnalyticsEvent& Entry)
+{
 	if (Deps.AnalyticsEventCache.IsValid()
 		&& !Deps.AnalyticsEventCache->Enqueue(FFlockAnalyticsJson::SerializeSpooledAnalyticsEvent(Entry)).IsEmpty())
 	{
 		return true;
 	}
 
-	// Not spooled — caching is off, or the disk refused it. Without a spool an event with no player cannot be held,
-	// and sent it would only be refused.
-	if (Entry.Event.PlayerId.IsEmpty())
+	// Not spooled — caching is off, or the disk refused it. With nobody signed in it cannot be sent: the route refuses a
+	// request with no sign-in.
+	if (!AuthSessionRef->IsAuthenticated())
 	{
-		Logger->LogDebug(FString::Printf(
-			TEXT("Event '%s' dropped: nobody is signed in and there is no spool to hold it."), *EventName));
 		return false;
 	}
 
@@ -633,7 +735,14 @@ bool FFlockAnalyticsProvider::TrackEvent(const FString& EventName, const FFlockC
 
 void FFlockAnalyticsProvider::HandleAuthenticated(const FString& PlayerId)
 {
-	if (PlayerId.IsEmpty() || !Deps.AnalyticsEventCache.IsValid())
+	if (PlayerId.IsEmpty())
+	{
+		return;
+	}
+	SendEventsWaitingForSignIn(PlayerId);
+	// Ends that could not be queued, a session an ended launch left open among them, go now that someone is signed in.
+	DeliverEndsTheQueueCouldNotSave();
+	if (!Deps.AnalyticsEventCache.IsValid())
 	{
 		return;
 	}
@@ -842,20 +951,21 @@ void FFlockAnalyticsProvider::StartSession(const FString& InPlayerIdOrEmpty,
 	// silent data loss — that session's metrics never reached anyone.
 	if (Deps.Session->IsActive())
 	{
-		EndSession(EFlockSessionEndReason::Restarted);
+		const bool bAnotherPlayer = !Deps.Session->GetPlayerId().Equals(InPlayerId, ESearchCase::CaseSensitive);
+		EndSessionFor(EFlockSessionEndReason::Restarted,
+			bAnotherPlayer ? FlockDefaultEvents::PlayerChanged : FlockDefaultEvents::Restarted, nullptr);
 	}
+
+	// This session's record replaces the one an end the queue could not save was kept in, so that end goes out first.
+	DeliverEndsTheQueueCouldNotSave();
 
 	const FString LocalId = Deps.Session->Start(InPlayerId);
 
-	// Start tombstoning immediately: a crash before the server replies still counts as a dirty exit.
+	// The marker runs from start-up; it names this session now, so a crash before the server replies still names it.
+	StartLaunchMarker();
 	if (Deps.TerminationTracker.IsValid())
 	{
-		FFlockTerminationMarker Seed;
-		Seed.SessionId = LocalId;
-		Seed.PlayerId = InPlayerId;
-		Seed.AppVersion = FApp::GetBuildVersion();
-		Seed.SdkVersion = SdkVersion;
-		Deps.TerminationTracker->BeginTracking(Seed);
+		Deps.TerminationTracker->NoteSessionStarted(LocalId, InPlayerId);
 	}
 
 	if (UFlockEvents* EventsPtr = Events.Get())
@@ -906,6 +1016,8 @@ void FFlockAnalyticsProvider::RegisterActiveSession(TFunction<void(TFlockResult<
 
 	bRegistrationInFlight = true;
 	const FString LocalId = Deps.Session->GetSessionId();
+	// Its end is not registered again while this is on its way: the answer may still give the end its id.
+	RegisteringSessionId = LocalId;
 
 	FString Body;
 	FFlockJsonUtils::StructToWireJson(MakeStartRequest(Deps.Session->TakeSnapshot()), Body,
@@ -929,6 +1041,7 @@ void FFlockAnalyticsProvider::RegisterActiveSession(TFunction<void(TFlockResult<
 				return;
 			}
 			Self->bRegistrationInFlight = false;
+			Self->RegisteringSessionId.Reset();
 
 			// The local session keeps running either way; the server id only affects delivery, and a
 			// failure here is healed by the heartbeat or, failing that, from the spool. A 2xx with no
@@ -956,9 +1069,17 @@ void FFlockAnalyticsProvider::RegisterActiveSession(TFunction<void(TFlockResult<
 			}
 			else if (bRegistered)
 			{
-				Self->Logger->LogWarning(FString::Printf(
-					TEXT("Session '%s' ended before registration completed; server session '%s' will be closed from the spool"),
+				// The session ended while this was on its way: its end, queued or waiting, is closed under this id.
+				Self->Logger->LogDebug(FString::Printf(
+					TEXT("Session '%s' ended before its registration was answered; its end is closed under server session '%s'"),
 					*LocalId, *Result.Value.SessionId));
+				Self->GiveServerIdToEnd(LocalId, Result.Value.SessionId);
+			}
+			if (!bStillSameSession)
+			{
+				// Ends held back while this was on its way go now.
+				Self->FlushSessionEnds(nullptr);
+				Self->DeliverEndsTheQueueCouldNotSave();
 			}
 
 			if (OnComplete)
@@ -1016,10 +1137,15 @@ void FFlockAnalyticsProvider::StopSessionLocally()
 	}
 }
 
-FFlockSessionSnapshot FFlockAnalyticsProvider::FinishSession(EFlockSessionEndReason Reason, bool& bOutSpooled)
+FFlockSessionSnapshot FFlockAnalyticsProvider::FinishSession(EFlockSessionEndReason Reason, const FString& EventReason,
+	bool& bOutSpooled)
 {
 	Deps.Session->End();
 	const FFlockSessionSnapshot Snapshot = Deps.Session->TakeSnapshot();
+
+	// Recorded whatever happens to the end itself. The record is marked before it is dropped, so a record that outlives the
+	// drop is ended by a later launch without a second session_end.
+	const bool bEventRecorded = RecordSessionEndEvent(Snapshot, EventReason.IsEmpty() ? FlockDefaultEvents::ReasonName(Reason) : EventReason);
 
 	// Spooled before the live record is dropped: at no instant does this end exist only in memory.
 	bOutSpooled = false;
@@ -1027,7 +1153,34 @@ FFlockSessionSnapshot FFlockAnalyticsProvider::FinishSession(EFlockSessionEndRea
 	{
 		bOutSpooled = !Deps.SessionEndCache->Enqueue(FFlockAnalyticsJson::SerializeSnapshot(Snapshot)).IsEmpty();
 	}
-	StopSessionLocally();
+	// Not queued (the queue is off, or its write failed): the end waits in memory until it is delivered, sent now when someone
+	// is signed in, else at the next sign-in or session start. With the queue on the record is its copy on disk too, kept for
+	// the next launch; with the queue off there is nothing to keep it for.
+	const bool bKeepRecord = !bOutSpooled && Config.bCacheFailedEvents && Deps.SessionEndCache.IsValid();
+	if (!bOutSpooled)
+	{
+		EndsTheQueueCouldNotSave.Add(Snapshot);
+	}
+	// Before the drop: a record that outlives it holds the end as it ended, marked when its event was recorded.
+	if (bEventRecorded || bKeepRecord)
+	{
+		Deps.Session->KeepEndedRecord(Snapshot, bEventRecorded);
+	}
+	if (bKeepRecord)
+	{
+		Logger->LogError(FString::Printf(TEXT("Session end '%s' could not be written to the session-end queue in %s: the disk is full, or the game cannot write to that folder. Free some space or give the game write access to it. The end is sent at the next sign-in or session start%s."),
+			*Snapshot.SessionId, Deps.Launches.IsValid() ? *Deps.Launches->GetFolder() : TEXT("the game's analytics folder"),
+			Config.bPersistSessionOnDisk ? TEXT(", or by the next launch") : TEXT("")));
+	}
+	else
+	{
+		Deps.Session->ClearPersistedSession();
+	}
+	// The launch, and its crash marker, go on after a session ends; only a clean quit or shutdown clears the marker.
+	if (Deps.TerminationTracker.IsValid())
+	{
+		Deps.TerminationTracker->NoteSessionEnded();
+	}
 
 	if (UFlockEvents* EventsPtr = Events.Get())
 	{
@@ -1042,6 +1195,12 @@ FFlockSessionSnapshot FFlockAnalyticsProvider::FinishSession(EFlockSessionEndRea
 void FFlockAnalyticsProvider::EndSession(EFlockSessionEndReason Reason,
 	TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete)
 {
+	EndSessionFor(Reason, FString(), MoveTemp(OnComplete));
+}
+
+void FFlockAnalyticsProvider::EndSessionFor(EFlockSessionEndReason Reason, const FString& EventReason,
+	TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete)
+{
 	if (!Deps.Session.IsValid() || !Deps.Session->IsActive())
 	{
 		if (OnComplete)
@@ -1052,7 +1211,7 @@ void FFlockAnalyticsProvider::EndSession(EFlockSessionEndReason Reason,
 	}
 
 	bool bSpooled = false;
-	const FFlockSessionSnapshot Snapshot = FinishSession(Reason, bSpooled);
+	const FFlockSessionSnapshot Snapshot = FinishSession(Reason, EventReason, bSpooled);
 
 	if (bSpooled)
 	{
@@ -1061,9 +1220,8 @@ void FFlockAnalyticsProvider::EndSession(EFlockSessionEndReason Reason,
 		return;
 	}
 
-	// Spooling is off or the queue refused it, so now is the only chance. A session that never got a
-	// server id has nothing to close out remotely.
-	if (Snapshot.ServerSessionId.IsEmpty())
+	// Not queued, so it is sent now when someone is signed in; otherwise it waits in EndsTheQueueCouldNotSave for the next sign-in.
+	if (!AuthSessionRef->IsAuthenticated())
 	{
 		if (OnComplete)
 		{
@@ -1071,7 +1229,179 @@ void FFlockAnalyticsProvider::EndSession(EFlockSessionEndReason Reason,
 		}
 		return;
 	}
-	PatchSessionEnd(Snapshot.ServerSessionId, Snapshot, MoveTemp(OnComplete));
+	SendEndTheQueueCouldNotSave(Snapshot, MoveTemp(OnComplete));
+}
+
+void FFlockAnalyticsProvider::DeliverEndsTheQueueCouldNotSave()
+{
+	const TArray<FFlockSessionSnapshot> Ends = EndsTheQueueCouldNotSave;
+	for (const FFlockSessionSnapshot& End : Ends)
+	{
+		if (EndsBeingSent.Contains(End.SessionId)
+			|| (End.ServerSessionId.IsEmpty() && End.SessionId.Equals(RegisteringSessionId, ESearchCase::CaseSensitive)))
+		{
+			continue;
+		}
+		// Queued again when the queue is on and takes it now; the next flush of the session-end queue sends it.
+		if (Config.bCacheFailedEvents && Deps.SessionEndCache.IsValid()
+			&& !Deps.SessionEndCache->Enqueue(FFlockAnalyticsJson::SerializeSnapshot(End)).IsEmpty())
+		{
+			ForgetEndTheQueueCouldNotSave(End.SessionId);
+			continue;
+		}
+		// Nobody to send it for yet: it waits for the next sign-in or session start.
+		if (AuthSessionRef->IsAuthenticated())
+		{
+			SendEndTheQueueCouldNotSave(End, nullptr);
+		}
+	}
+}
+
+void FFlockAnalyticsProvider::SendEndTheQueueCouldNotSave(const FFlockSessionSnapshot& Snapshot,
+	TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete)
+{
+	// One send at a time for each end: a sign-in and the session start right after it must not register it twice.
+	const FString SessionId = Snapshot.SessionId;
+	EndsBeingSent.Add(SessionId);
+	const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
+	SendEndWithoutSpool(Snapshot, [WeakSelf, SessionId, OnComplete](TFlockResult<FFlockAnalyticsAck> Result)
+	{
+		if (const TSharedPtr<FFlockAnalyticsProvider> Self = WeakSelf.Pin())
+		{
+			Self->EndsBeingSent.Remove(SessionId);
+			if (Result.bSuccess || IsFinalEndFailure(Result.Error))
+			{
+				if (!Result.bSuccess)
+				{
+					Self->Logger->LogWarning(FString::Printf(TEXT("Session end for '%s' rejected (%s); dropping it"), *SessionId, *Result.Error.Message));
+				}
+				Self->ForgetEndTheQueueCouldNotSave(SessionId);
+			}
+		}
+		if (OnComplete)
+		{
+			OnComplete(Result);
+		}
+	});
+}
+
+void FFlockAnalyticsProvider::ForgetEndTheQueueCouldNotSave(const FString& SessionId)
+{
+	EndsTheQueueCouldNotSave.RemoveAll([&SessionId](const FFlockSessionSnapshot& Kept) { return Kept.SessionId == SessionId; });
+	// Delivered or queued: a record kept for it on disk is no longer needed, unless a session runs (its record is the new one)
+	// or another end still waits in it.
+	if (EndsTheQueueCouldNotSave.Num() == 0 && !HasActiveSession() && Deps.Session.IsValid())
+	{
+		Deps.Session->ClearPersistedSession();
+	}
+}
+
+void FFlockAnalyticsProvider::GiveServerIdToEnd(const FString& SessionId, const FString& ServerSessionId)
+{
+	for (FFlockSessionSnapshot& End : EndsTheQueueCouldNotSave)
+	{
+		if (End.SessionId.Equals(SessionId, ESearchCase::CaseSensitive) && End.ServerSessionId.IsEmpty())
+		{
+			End.ServerSessionId = ServerSessionId;
+		}
+	}
+	if (Deps.SessionEndCache.IsValid())
+	{
+		for (const FString& Handle : Deps.SessionEndCache->AllHandles())
+		{
+			FString Payload;
+			FFlockSessionSnapshot Queued;
+			if (Deps.SessionEndCache->Read(Handle, Payload) && FFlockAnalyticsJson::DeserializeSnapshot(Payload, Queued)
+				&& Queued.SessionId.Equals(SessionId, ESearchCase::CaseSensitive) && Queued.ServerSessionId.IsEmpty())
+			{
+				Queued.ServerSessionId = ServerSessionId;
+				Deps.SessionEndCache->Replace(Handle, FFlockAnalyticsJson::SerializeSnapshot(Queued));
+			}
+		}
+	}
+	if (Deps.Session.IsValid())
+	{
+		Deps.Session->UpdateKeptRecord(SessionId, ServerSessionId, /*bEndEventRecorded*/ false);
+	}
+}
+
+bool FFlockAnalyticsProvider::IsFinalEndFailure(const FFlockError& Error)
+{
+	// "The retry handler gave up" is the same question, so it is asked in one place rather than restated here — a permanence
+	// table that exists twice drifts the moment an error type is added. Three carve-outs, all meaning "we learned nothing, so
+	// keep the record": Auth is a wait for the next sign-in, Cancelled never reached the server at all, and a 2xx that could
+	// not be read was not the server's answer (a captive portal's page).
+	const bool bUnreadableSuccess = Error.Type == EFlockErrorType::Serialization
+		&& Error.StatusCode >= 200 && Error.StatusCode < 300;
+	return Error.Type != EFlockErrorType::Auth
+		&& Error.Type != EFlockErrorType::Cancelled
+		&& !bUnreadableSuccess
+		&& !FFlockRetryHandler::ShouldRetry(Error, /*bIdempotent*/ true);
+}
+
+void FFlockAnalyticsProvider::SendEndWithoutSpool(const FFlockSessionSnapshot& Snapshot,
+	TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete)
+{
+	if (!IsCollecting())
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Cancelled,
+				TEXT("The session end was not sent: the player withdrew consent"), TEXT("Nothing needs fixing."))));
+		}
+		return;
+	}
+	if (!Snapshot.ServerSessionId.IsEmpty())
+	{
+		PatchSessionEnd(Snapshot.ServerSessionId, Snapshot, MoveTemp(OnComplete));
+		return;
+	}
+
+	FString Body;
+	FFlockJsonUtils::StructToWireJson(MakeStartRequest(Snapshot), Body, /*bOmitEmptyStrings*/ true);
+	const TSharedRef<FFlockHttpClient> ClientRef = Client;
+	const TSharedRef<FFlockAuthSession> SessionRef = AuthSessionRef;
+	const FString Url = AnalyticsUrl(FlockEndpoints::AnalyticsSessions);
+	const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
+	Execute<FFlockSessionStartResponse>(
+		[ClientRef, SessionRef, Url, Body](TFunction<void(TFlockResult<FFlockSessionStartResponse>)> OnAttempt)
+		{
+			return ClientRef->PostJsonRaw<FFlockSessionStartResponse>(Url, SessionRef->GetAuthHeaders(), Body, MoveTemp(OnAttempt));
+		},
+		[WeakSelf, Snapshot, OnComplete](TFlockResult<FFlockSessionStartResponse> Result)
+		{
+			const TSharedPtr<FFlockAnalyticsProvider> Self = WeakSelf.Pin();
+			if (!Self.IsValid())
+			{
+				return;
+			}
+			if (!Result.bSuccess || Result.Value.SessionId.IsEmpty())
+			{
+				if (OnComplete)
+				{
+					OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(Result.bSuccess
+						? FFlockError::MakeWithFix(EFlockErrorType::Network,
+							TEXT("The server's answer to the session registration has no session id"), FFlockErrorHints::NotFlocksAnswer())
+						: Result.Error));
+				}
+				return;
+			}
+			if (!Self->IsCollecting())
+			{
+				if (OnComplete)
+				{
+					OnComplete(TFlockResult<FFlockAnalyticsAck>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Cancelled,
+						TEXT("The session end was not sent: the player withdrew consent"), TEXT("Nothing needs fixing."))));
+				}
+				return;
+			}
+			// Kept with the end before it is closed: a close that fails is tried again under this id, never registered twice.
+			Self->GiveServerIdToEnd(Snapshot.SessionId, Result.Value.SessionId);
+			FFlockSessionSnapshot Registered = Snapshot;
+			Registered.ServerSessionId = Result.Value.SessionId;
+			Self->PatchSessionEnd(Registered.ServerSessionId, Registered, OnComplete);
+		},
+		TEXT("Register an ended session"), /*bIdempotent*/ true);
 }
 
 void FFlockAnalyticsProvider::DiscardSession()
@@ -1111,7 +1441,8 @@ bool FFlockAnalyticsProvider::RecoverOrphanedSession(const FString& SessionState
 	Deps.Session->ContinueSessionNumbersFrom(EndedLaunchSession.GetSessionNumber());
 
 	FFlockSessionSnapshot Orphan;
-	if (!EndedLaunchSession.RecoverOrphanedSession(Orphan))
+	bool bEndEventRecorded = false;
+	if (!EndedLaunchSession.RecoverOrphanedSession(Orphan, &bEndEventRecorded))
 	{
 		return true;
 	}
@@ -1123,6 +1454,18 @@ bool FFlockAnalyticsProvider::RecoverOrphanedSession(const FString& SessionState
 		return true;
 	}
 
+	// With Analytics Cache Failed Events off the queue keeps nothing, so the end waits in memory for this launch's first
+	// session start, when someone is signed in. Kept for a later launch instead, it was tried and kept again at every launch.
+	if (!Config.bCacheFailedEvents)
+	{
+		if (!bEndEventRecorded)
+		{
+			RecordSessionEndEvent(Orphan, FlockDefaultEvents::UnexpectedExit);
+		}
+		EndsTheQueueCouldNotSave.Add(Orphan);
+		return true;
+	}
+
 	// Spooled before the ended launch is deleted — deleting first loses the session if the write fails.
 	if (Deps.SessionEndCache->Enqueue(FFlockAnalyticsJson::SerializeSnapshot(Orphan)).IsEmpty())
 	{
@@ -1131,10 +1474,166 @@ bool FFlockAnalyticsProvider::RecoverOrphanedSession(const FString& SessionState
 			*Orphan.SessionId));
 		return false;
 	}
+	// Once per session: a record whose session_end was recorded when it ended gets none now.
+	if (!bEndEventRecorded)
+	{
+		RecordSessionEndEvent(Orphan, FlockDefaultEvents::UnexpectedExit);
+	}
 	Logger->LogInfo(FString::Printf(
 		TEXT("Recovered a session a launch that ended left open: %s (ended at %s)"),
 		*Orphan.SessionId, *Orphan.EndTimeUtc));
 	return true;
+}
+
+bool FFlockAnalyticsProvider::RecordSessionEndEvent(const FFlockSessionSnapshot& Snapshot, const FString& Reason)
+{
+	// Collecting is the callers' to check: a session runs only while collecting, and a recovered one is dropped when not.
+	if (!Config.bSendDefaultEvents || Snapshot.SessionId.IsEmpty())
+	{
+		return false;
+	}
+	FFlockSpooledAnalyticsEvent Entry;
+	// The session it ends, so the record kept for it can be marked when an event that waited for a sign-in goes out.
+	Entry.LocalSessionId = Snapshot.SessionId;
+	// The session's own player, so an end found while another player is signed in, or nobody is, is credited to whoever played.
+	Entry.Event.PlayerId = !Snapshot.PlayerId.IsEmpty() ? Snapshot.PlayerId
+		: (AuthSessionRef->IsAuthenticated() ? AuthSessionRef->GetPlayerId() : FString());
+	Entry.Event.EventName = FlockDefaultEvents::SessionEnd;
+	Entry.Event.EventCategory = FlockDefaultEvents::SessionCategory;
+	// Empty while the session has not reached the server; the server keeps the event without one.
+	if (!Snapshot.ServerSessionId.IsEmpty() && !RefusedSessionIds.Contains(Snapshot.ServerSessionId))
+	{
+		Entry.Event.SessionId = Snapshot.ServerSessionId;
+	}
+	Entry.Event.Timestamp = Snapshot.EndTimeUtc.IsEmpty() ? FDateTime::UtcNow().ToIso8601() : Snapshot.EndTimeUtc;
+	Entry.Event.Properties = FlockDefaultEvents::SessionEndProperties(Snapshot, Reason);
+	// The session's own device and build: a session recovered after an update ran on the older one. A record from a build
+	// that kept no device has this launch's.
+	const bool bKeptItsDevice = !Snapshot.DeviceInfo.Platform.IsEmpty() || !Snapshot.DeviceInfo.SdkVersion.IsEmpty();
+	return QueueOrSendOnce(Entry, Snapshot.SessionNumber, bKeptItsDevice ? &Snapshot.DeviceInfo : nullptr, /*bWaitForSignIn*/ true);
+}
+
+bool FFlockAnalyticsProvider::RecordDefaultEvent(const FString& EventName, const FString& EventCategory, const FFlockCommandData& Properties)
+{
+	if (!IsCollecting() || !Config.bSendDefaultEvents)
+	{
+		return false;
+	}
+	FFlockSpooledAnalyticsEvent Entry = MakeEventEntry(EventName, EventCategory, Properties);
+	return QueueOrSendOnce(Entry, CurrentSessionNumber());
+}
+
+void FFlockAnalyticsProvider::RecordLaunchEvents()
+{
+	if (bLaunchEventsRecorded || !IsCollecting() || !Config.bSendDefaultEvents)
+	{
+		return;
+	}
+	bLaunchEventsRecorded = true;
+	RecordLaunchEvent(FlockDefaultEvents::AppOpen);
+
+	// Nowhere to remember them, so neither can be told apart from the launch before.
+	if (Deps.DefaultEventsRecordPath.IsEmpty())
+	{
+		return;
+	}
+	const FlockDefaultEvents::FLaunchRecord Record = FlockDefaultEvents::FLaunchRecord::Load(Deps.DefaultEventsRecordPath);
+	if (!Record.bFirstLaunchRecorded)
+	{
+		RecordLaunchEvent(FlockDefaultEvents::FirstLaunch);
+	}
+	// app_update when this game's version differs from the one it last started with here; the first start only remembers it.
+	if (Record.LastAppVersion.IsEmpty())
+	{
+		NoteLaunchEventRecorded(FlockDefaultEvents::AppUpdate);
+	}
+	else if (!Record.LastAppVersion.Equals(LaunchDevice.AppVersion, ESearchCase::CaseSensitive))
+	{
+		FFlockCommandData Properties;
+		Properties.Set(FlockDefaultEvents::PreviousAppVersion, Record.LastAppVersion);
+		RecordLaunchEvent(FlockDefaultEvents::AppUpdate, Properties);
+	}
+}
+
+void FFlockAnalyticsProvider::RecordLaunchEvent(const FString& EventName, const FFlockCommandData& Properties)
+{
+	FFlockSpooledAnalyticsEvent Entry = MakeEventEntry(EventName, FlockDefaultEvents::AppCategory, Properties);
+	// With no queue to hold it and nobody to send it for, it waits in memory for the sign-in, and is remembered then.
+	if (QueueOrSendOnce(Entry, CurrentSessionNumber(), nullptr, /*bWaitForSignIn*/ true))
+	{
+		NoteLaunchEventRecorded(EventName);
+	}
+}
+
+void FFlockAnalyticsProvider::SendEventsWaitingForSignIn(const FString& PlayerId)
+{
+	if (EventsWaitingForSignIn.Num() == 0)
+	{
+		return;
+	}
+	TArray<FFlockSpooledAnalyticsEvent> Waiting = MoveTemp(EventsWaitingForSignIn);
+	EventsWaitingForSignIn.Reset();
+	if (!IsCollecting())
+	{
+		return;
+	}
+	for (FFlockSpooledAnalyticsEvent Entry : Waiting)
+	{
+		// A session_end keeps the player whose session it was; a launch event belongs to whoever signed in.
+		const bool bHadNoPlayer = Entry.Event.PlayerId.IsEmpty();
+		if (bHadNoPlayer)
+		{
+			Entry.Event.PlayerId = PlayerId;
+		}
+		if (bHadNoPlayer && !AuthSessionRef->IsAuthenticated())
+		{
+			Entry.Event.PlayerId.Reset();
+		}
+		// The flock_ parameters were added when it was recorded, so they are not added again.
+		if (!QueueAsItIsOrSendOnce(Entry))
+		{
+			// The sign-in ended again before this ran: it waits for the next one, as it was.
+			EventsWaitingForSignIn.Add(Entry);
+			continue;
+		}
+		NoteLaunchEventRecorded(Entry.Event.EventName);
+		if (Entry.Event.EventName.Equals(FlockDefaultEvents::SessionEnd, ESearchCase::CaseSensitive) && Deps.Session.IsValid())
+		{
+			Deps.Session->UpdateKeptRecord(Entry.LocalSessionId, FString(), /*bEndEventRecorded*/ true);
+		}
+	}
+}
+
+void FFlockAnalyticsProvider::NoteLaunchEventRecorded(const FString& EventName)
+{
+	const bool bFirstLaunch = EventName.Equals(FlockDefaultEvents::FirstLaunch, ESearchCase::CaseSensitive);
+	const bool bAppUpdate = EventName.Equals(FlockDefaultEvents::AppUpdate, ESearchCase::CaseSensitive);
+	if ((!bFirstLaunch && !bAppUpdate) || Deps.DefaultEventsRecordPath.IsEmpty())
+	{
+		return;
+	}
+	FlockDefaultEvents::FLaunchRecord Record = FlockDefaultEvents::FLaunchRecord::Load(Deps.DefaultEventsRecordPath);
+	if (bFirstLaunch)
+	{
+		Record.bFirstLaunchRecorded = true;
+	}
+	else
+	{
+		Record.LastAppVersion = LaunchDevice.AppVersion;
+	}
+	Record.Save(Deps.DefaultEventsRecordPath);
+}
+
+void FFlockAnalyticsProvider::StartLaunchMarker()
+{
+	if (!IsCollecting() || !Deps.TerminationTracker.IsValid() || Deps.TerminationTracker->IsTracking())
+	{
+		return;
+	}
+	FFlockTerminationMarker Seed;
+	Seed.AppVersion = LaunchDevice.AppVersion;
+	Seed.SdkVersion = SdkVersion;
+	Deps.TerminationTracker->BeginTracking(Seed);
 }
 
 void FFlockAnalyticsProvider::PatchSessionEnd(const FString& ServerSessionId,
@@ -1246,6 +1745,16 @@ void FFlockAnalyticsProvider::SendSpooledEnd(const FString& Handle, const FFlock
 	const TSharedRef<FFlockAuthSession> SessionRef = AuthSessionRef;
 	const TWeakPtr<FFlockAnalyticsProvider> WeakSelf = AsShared();
 
+	if (Snapshot.ServerSessionId.IsEmpty() && Snapshot.SessionId.Equals(RegisteringSessionId, ESearchCase::CaseSensitive))
+	{
+		// Its registration is on its way: the answer gives this end its id and starts the queue again.
+		bEndFlushInFlight = false;
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockAnalyticsAck>::Ok(FFlockAnalyticsAck()));
+		}
+		return;
+	}
 	if (Snapshot.ServerSessionId.IsEmpty())
 	{
 		// Never registered — signed out or offline when it started, or recovered from a run that died
@@ -1320,17 +1829,7 @@ void FFlockAnalyticsProvider::HandleEndFailure(const FString& Handle, const FStr
 	const FFlockError& Error, const TSharedRef<TSet<FString>>& Delivered,
 	TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete)
 {
-	// "The retry handler gave up" is the same question, so it is asked in one place rather than
-	// restated here — a permanence table that exists twice drifts the moment an error type is added.
-	// Three carve-outs, all meaning "we learned nothing, so keep the record": Auth is a wait for the
-	// next sign-in, Cancelled never reached the server at all, and a 2xx that could not be read was not
-	// the server's answer (a captive portal's page).
-	const bool bUnreadableSuccess = Error.Type == EFlockErrorType::Serialization
-		&& Error.StatusCode >= 200 && Error.StatusCode < 300;
-	const bool bFinal = Error.Type != EFlockErrorType::Auth
-		&& Error.Type != EFlockErrorType::Cancelled
-		&& !bUnreadableSuccess
-		&& !FFlockRetryHandler::ShouldRetry(Error, /*bIdempotent*/ true);
+	const bool bFinal = IsFinalEndFailure(Error);
 
 	if (bFinal)
 	{
@@ -1756,6 +2255,8 @@ void FFlockAnalyticsProvider::HandleEventBatchFailure(const TSharedRef<FDelivery
 
 void FFlockAnalyticsProvider::EraseLocalData()
 {
+	EventsWaitingForSignIn.Reset();
+	EndsTheQueueCouldNotSave.Reset();
 	if (Deps.LogEventCache.IsValid())
 	{
 		Deps.LogEventCache->Clear();
