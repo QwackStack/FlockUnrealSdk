@@ -149,6 +149,13 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Analytics")
 	bool bAnalyticsTrackFps = true;
 
+	/**
+	 * Record the SDK's own analytics events: session_end, app_open, first_launch, app_update, screen_view and
+	 * store_purchase. Off records none of them; your own events still carry the flock_ parameters.
+	 */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Analytics")
+	bool bAnalyticsSendDefaultEvents = true;
+
 	/** FPS sample interval in seconds. */
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Analytics", meta = (ClampMin = "0.0", Units = "s"))
 	float AnalyticsFpsSampleInterval = 1.f;

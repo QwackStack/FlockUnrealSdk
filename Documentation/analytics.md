@@ -65,7 +65,11 @@ and properties.
 - **It is refused on the spot** when analytics is off, when consent is withheld, when the name is empty or
   blank, when the name is longer than 200 characters or the category longer than 100 (the server cannot store
   either, and would fail every event sent alongside), and for the name `session_started` — the server records
-  that one itself when a session starts, and a copy from the game would count every session twice.
+  that one itself when a session starts, and a copy from the game would count every session twice. The SDK's
+  own events (below) are refused too, letter for letter, with a warning: `session_end`, `app_open`,
+  `first_launch`, `app_update`, `store_purchase` and `screen_view`. `App_Open` is a different name, and yours.
+- **Every event carries the `flock_` parameters** (below). A property you set under one of those names keeps
+  your value.
 - **Every event belongs to a player.** An event recorded with nobody signed in is held, and credited to
   whoever signs in next. Events are delivered only while a player is signed in; one recorded earlier keeps
   the player it was recorded under.
@@ -74,6 +78,46 @@ and properties.
 - **An event the server refuses is dropped**, and the flush that met the refusal reports it — the rest of
   the queue is still delivered. An event the server merely could not take yet (an outage, a rate limit)
   stays queued.
+
+## The SDK's own events and parameters
+
+With **Analytics Send Default Events** on (the default, in the **Analytics** section), the SDK records these
+itself. They are queued and delivered like your own events, behind **Analytics Enabled** and consent, and each
+belongs to a player in the same way.
+
+| Event | Category | When | Properties |
+|---|---|---|---|
+| `app_open` | `app` | Each start of the SDK, or when the player gives consent later in that run | — |
+| `first_launch` | `app` | Once for this game on this device | — |
+| `app_update` | `app` | A start on another **Project Version** than this game last started with on this device | `previous_app_version` |
+| `session_end` | `session` | Each session's end | `reason`, `duration_seconds`, `screens_viewed`, `is_bounce`, `session_number`, `is_first_session`, `pause_count`, and `average_fps` / `min_fps` when frames were sampled |
+| `screen_view` | `screen` | Each `Flock Record Screen View`, with or without a session | `screen_name` |
+| `store_purchase` | `store` | The store's own dialog cancelled, failed or deferred a purchase ([Real-money purchases](real-money-purchases.md)) | `outcome` (`cancelled`, `failed`, `deferred`), `store`, `item_id`, `product_id` |
+
+A `session_end`'s `reason` is `quit`, `timeout`, `sign_out`, `player_changed` (another player signed in without
+signing out first), `restarted`, `ended_by_the_game`, or `unexpected_exit` (the game stopped with the session
+open, a crash say, and the next launch found it). Each session gets one, credited to the player whose session it
+was. `app_open` and `first_launch` recorded with nobody signed in are credited to whoever signs in next; with
+**Analytics Cache Failed Events** off they, and a `session_end` with nobody signed in, wait in memory for that sign-in.
+A purchase that was paid, sign-ins, achievements unlocked, multiplayer sessions and the player's country are recorded
+by the server itself, so the SDK sends none of them.
+
+**Every analytics event**, yours and the SDK's, carries these parameters among its properties:
+
+| Parameter | Value |
+|---|---|
+| `flock_platform` | The engine's platform name (`Windows`, `Android`, …) |
+| `flock_os` | The operating system and its version |
+| `flock_device_model` | The device's make and model, when the engine knows it |
+| `flock_app_version` | **Project Version** (**Project Settings → Project → Description**) |
+| `flock_sdk_version` | This plugin's version |
+| `flock_language` | The device's language (`en-US`, …) |
+| `flock_session_number` | The session's number on this device, while a session runs |
+
+A `session_end` found at the next launch carries the versions of the build its session ran on.
+
+Unticking **Analytics Send Default Events** stops every event in the first table; your own events still carry
+the parameters, and sessions are still recorded.
 
 ## Sessions
 
@@ -119,6 +163,9 @@ void AMyActor::ShowSession()
 
 `OnSessionEnded`'s `Args` carry the final snapshot and the reason (`Logout`, `Timeout`, `Quit`, `Restarted`,
 `Manual`). `GetEvents()` returns a `UFlockEvents`, from `#include "FlockEvents.h"`.
+
+`Flock Record Screen View` counts a view in the running session and records a `screen_view`. A name that is empty
+or only spaces is neither counted nor recorded, and a warning says so.
 
 A session reports the engine's platform name (Windows, Android and so on). Set **Session Platform** when the store
 matters more than the operating system, for example `steam` for a Steam build. A value that starts or ends with a

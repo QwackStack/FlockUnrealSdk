@@ -17,6 +17,7 @@ FFlockAnalyticsConfig FFlockAnalyticsConfig::FromSettings(const UFlockConfig& Se
 	Config.BounceThresholdSeconds = Settings.AnalyticsBounceThreshold;
 	Config.bPersistSessionOnDisk = Settings.bAnalyticsPersistSession;
 	Config.bTrackFps = Settings.bAnalyticsTrackFps;
+	Config.bSendDefaultEvents = Settings.bAnalyticsSendDefaultEvents;
 	Config.FpsSampleIntervalSeconds = Settings.AnalyticsFpsSampleInterval;
 	Config.bCacheFailedEvents = Settings.bAnalyticsCacheFailedEvents;
 	Config.MaxCachedEvents = Settings.AnalyticsMaxCachedEvents;

@@ -12,6 +12,7 @@
 #include "FlockSubsystem.h"
 #include "Misc/Base64.h"
 #include "Misc/ScopeExit.h"
+#include "Providers/FlockAnalyticsProvider.h"
 #include "Providers/FlockAuthProvider.h"
 #include "Providers/FlockShopProvider.h"
 #include "Serialization/JsonReader.h"
@@ -1713,6 +1714,158 @@ bool FFlockStoreNodeGetAndDisconnectTest::RunTest(const FString& Parameters)
 	FFlockError Error;
 	TestFalse(TEXT("And Get Store Price says none is connected"), UFlockStoreLibrary::GetStorePriceWithFlockForTesting(F.Sdk, TEXT("gems"), Price, Error));
 	TestEqualSensitive(TEXT("With how to connect one"), Error.Hint, FFlockErrorHints::ConnectAStoreFirst());
+	return true;
+}
+
+// ── store_purchase: what only the device sees of a purchase ──
+
+namespace FlockStoreTesting
+{
+	/** The store_purchase events recorded so far, flushed to the fake server and read off what it was sent. */
+	inline TArray<TSharedPtr<FJsonObject>> StorePurchases(FFixture& F)
+	{
+		F.Fake->On(TEXT("analytics/events"), FFlockFakeTransport::Ok(TEXT("{}")));
+		if (FFlockAnalyticsProvider* Analytics = F.Sdk->GetAnalyticsProvider())
+		{
+			Analytics->Flush(nullptr);
+		}
+		TArray<TSharedPtr<FJsonObject>> Out;
+		for (const FFlockHttpRequest& Request : F.Fake->Requests)
+		{
+			TSharedPtr<FJsonObject> Root;
+			const TArray<TSharedPtr<FJsonValue>>* Events = nullptr;
+			if (!Request.Url.Contains(TEXT("analytics/events")) || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Request.JsonBody), Root)
+				|| !Root.IsValid() || !Root->TryGetArrayField(TEXT("events"), Events))
+			{
+				continue;
+			}
+			for (const TSharedPtr<FJsonValue>& Event : *Events)
+			{
+				const TSharedPtr<FJsonObject> Object = Event->AsObject();
+				FString Name;
+				if (Object.IsValid() && Object->TryGetStringField(TEXT("event_name"), Name) && Name.Equals(TEXT("store_purchase"), ESearchCase::CaseSensitive))
+				{
+					Out.Add(Object);
+				}
+			}
+		}
+		return Out;
+	}
+
+	inline FString PropertyOf(const TSharedPtr<FJsonObject>& Event, const TCHAR* Key)
+	{
+		const TSharedPtr<FJsonObject>* Properties = nullptr;
+		FString Value;
+		return Event.IsValid() && Event->TryGetObjectField(TEXT("properties"), Properties) && (*Properties)->TryGetStringField(Key, Value)
+			? Value : FString(TEXT("<absent>"));
+	}
+
+	/** The SDK's own events on, whatever the project's settings say, for one test. */
+	struct FDefaultEventsOn
+	{
+		UFlockConfig* Settings = GetMutableDefault<UFlockConfig>();
+		bool bWere = Settings->bAnalyticsSendDefaultEvents;
+		explicit FDefaultEventsOn(bool bOn = true) { Settings->bAnalyticsSendDefaultEvents = bOn; }
+		~FDefaultEventsOn() { Settings->bAnalyticsSendDefaultEvents = bWere; }
+	};
+}
+
+FLOCK_STORE_TEST(FFlockStorePurchaseEventTest, "TheStoresDialogEndingItRecordsStorePurchaseWithItsOutcome")
+bool FFlockStorePurchaseEventTest::RunTest(const FString& Parameters)
+{
+	const FDefaultEventsOn On;
+	const TPair<FString, FString> Cases[] = {
+		{ FlockStoreFailureReasons::Cancelled, TEXT("cancelled") },
+		{ FlockStoreFailureReasons::PaymentDeclined, TEXT("failed") },
+		{ FlockStoreFailureReasons::StoreUnavailable, TEXT("failed") },
+	};
+	for (const TPair<FString, FString>& Case : Cases)
+	{
+		FFixture F;
+		F.Store->OnBuy = [&F, &Case](const FString& ProductId) { F.Store->Fail(ProductId, Case.Key, TEXT("the store's words")); };
+		F.SignIn(TEXT("player-a"));
+		F.Connect();
+		F.Buy(TEXT("gems"));
+
+		const TArray<TSharedPtr<FJsonObject>> Events = StorePurchases(F);
+		if (!TestEqual(Case.Key + TEXT(": one store_purchase"), Events.Num(), 1))
+		{
+			continue;
+		}
+		FString Category;
+		Events[0]->TryGetStringField(TEXT("event_category"), Category);
+		TestEqualSensitive(Case.Key + TEXT(": category store"), Category, FString(TEXT("store")));
+		FString Player;
+		Events[0]->TryGetStringField(TEXT("player_id"), Player);
+		TestEqualSensitive(Case.Key + TEXT(": the buyer's"), Player, FString(TEXT("player-a")));
+		TestEqualSensitive(Case.Key + TEXT(": outcome"), PropertyOf(Events[0], TEXT("outcome")), Case.Value);
+		TestEqualSensitive(Case.Key + TEXT(": store"), PropertyOf(Events[0], TEXT("store")), FString(FlockPaymentProviders::GooglePlay));
+		TestEqualSensitive(Case.Key + TEXT(": item_id"), PropertyOf(Events[0], TEXT("item_id")), FString(TEXT("gems")));
+		TestEqualSensitive(Case.Key + TEXT(": product_id"), PropertyOf(Events[0], TEXT("product_id")), Gems);
+	}
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStorePurchaseDeferredEventTest, "TheStoreDeferringItRecordsDeferredAndAPaidOneRecordsNothingSinceTheServerDoes")
+bool FFlockStorePurchaseDeferredEventTest::RunTest(const FString& Parameters)
+{
+	const FDefaultEventsOn On;
+	FFixture F;
+	F.Store->OnBuy = [&F](const FString& ProductId) { F.Store->Defer(ProductId); };
+	F.SignIn(TEXT("player-a"));
+	F.Connect();
+	F.Buy(TEXT("gems"));
+	F.Store->Pay(Gems, TEXT("token-late"));
+	TestEqual(TEXT("Precondition: delivered once paid"), F.Completed.Num(), 1);
+
+	const TArray<TSharedPtr<FJsonObject>> Events = StorePurchases(F);
+	TestEqual(TEXT("Only the deferral"), Events.Num(), 1);
+	TestEqualSensitive(TEXT("deferred"), Events.Num() == 1 ? PropertyOf(Events[0], TEXT("outcome")) : FString(), FString(TEXT("deferred")));
+
+	// A purchase paid straight from the dialog is recorded by the server, not here.
+	FFixture Paid;
+	Paid.Store->OnBuy = [&Paid](const FString& ProductId) { Paid.Store->PayFromTheDialog(ProductId, TEXT("token-now")); };
+	Paid.SignIn(TEXT("player-a"));
+	Paid.Connect();
+	Paid.Buy(TEXT("gems"));
+	TestEqual(TEXT("Precondition: delivered"), Paid.Completed.Num(), 1);
+	TestEqual(TEXT("No store_purchase for a paid one"), StorePurchases(Paid).Num(), 0);
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStorePurchaseEventAfterSignOutTest, "TheStoresAnswerAfterItsSignInEndedRecordsNoStorePurchase")
+bool FFlockStorePurchaseEventAfterSignOutTest::RunTest(const FString& Parameters)
+{
+	const FDefaultEventsOn On;
+	FFixture F;
+	F.SignIn(TEXT("player-a"));
+	F.Connect();
+	const TAnswer<TFlockResult<FFlockPurchaseResult>> Answer;
+	F.Sdk->GetShopProvider()->Purchase(TEXT("gems"), Answer.Into());
+	F.Sdk->Logout();
+	F.SignIn(TEXT("player-b"));
+	// The dialog the first sign-in opened is cancelled now: not this sign-in's attempt.
+	F.Store->Fail(Gems, FlockStoreFailureReasons::Cancelled, TEXT("UserCancelled: closed the dialog"));
+	TestEqual(TEXT("No store_purchase"), StorePurchases(F).Num(), 0);
+
+	// Control: this sign-in's own dialog is recorded.
+	F.Store->OnBuy = [&F](const FString& ProductId) { F.Store->Fail(ProductId, FlockStoreFailureReasons::Cancelled, TEXT("closed")); };
+	F.Buy(TEXT("sword"));
+	const TArray<TSharedPtr<FJsonObject>> Events = StorePurchases(F);
+	TestEqual(TEXT("Control: this sign-in's dialog is recorded"), Events.Num(), 1);
+	return true;
+}
+
+FLOCK_STORE_TEST(FFlockStorePurchaseEventOffTest, "WithSendDefaultEventsOffNoStorePurchaseIsRecorded")
+bool FFlockStorePurchaseEventOffTest::RunTest(const FString& Parameters)
+{
+	const FDefaultEventsOn Off(false);
+	FFixture F;
+	F.Store->OnBuy = [&F](const FString& ProductId) { F.Store->Fail(ProductId, FlockStoreFailureReasons::Cancelled, TEXT("closed")); };
+	F.SignIn(TEXT("player-a"));
+	F.Connect();
+	F.Buy(TEXT("gems"));
+	TestEqual(TEXT("None"), StorePurchases(F).Num(), 0);
 	return true;
 }
 

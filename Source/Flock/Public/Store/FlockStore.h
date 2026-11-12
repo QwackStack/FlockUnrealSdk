@@ -507,6 +507,8 @@ private:
 	void Hold(const FFlockStoreOrder& Order);
 	/** The purchase call the store's dialog answers, or null: Order's dialog answer, for the product the open dialog is for. */
 	const FBuying* CallAnsweredBy(const FString& ProductId, bool bAnswersThePurchaseDialog) const;
+	/** store_purchase: the store's own dialog cancelled, failed or deferred the purchase Entry is waiting for. */
+	void RecordStorePurchase(const TCHAR* Outcome, const FBuying& Entry, const FString& ProductId) const;
 	/** Closes the store's dialog for ProductId (it answered); returns the player it was opened for, or empty. */
 	FString CloseTheDialog(const FString& ProductId);
 	void Send(const FFlockStoreOrder& Order, const FFlockShopItem& Item, int32 Number);

@@ -7,9 +7,10 @@
 #include "FlockAnalyticsModels.generated.h"
 
 /**
- * Device facts captured once per session (the wire `device_info` object). Field names map from the
- * snake_case wire via FFlockJsonUtils (operating_system -> OperatingSystem). Populated by the
- * analytics feature when it lands; declared here so FFlockSessionSnapshot is complete.
+ * Device facts, read once a launch (the `device_info` object of a kept session record). Field names map from the
+ * snake_case wire via FFlockJsonUtils (operating_system -> OperatingSystem). Filled by analytics, which sends some of them
+ * as the flock_ parameters on every event; AppVersion is the game's Project Version. The screen and graphics fields are
+ * left empty.
  */
 USTRUCT(BlueprintType)
 struct FLOCK_API FFlockDeviceInfo

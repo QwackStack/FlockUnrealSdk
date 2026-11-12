@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Analytics/FlockAnalyticsConfig.h"
+#include "Analytics/FlockAnalyticsJson.h"
 #include "Analytics/FlockConsentStore.h"
 #include "Analytics/FlockEventCache.h"
 #include "Analytics/FlockRepeatedExceptionCounter.h"
@@ -19,7 +20,6 @@
 
 class FFlockAnalyticsLaunches;
 class FFlockLogSink;
-struct FFlockSpooledAnalyticsEvent;
 
 /**
  * The collaborators the provider drives. Supplied by the subsystem in production and substituted in
@@ -65,6 +65,12 @@ struct FLOCK_API FFlockAnalyticsDependencies
 	 * says so once rather than on every launch. Empty sends it once per initialization.
 	 */
 	FString CoverageNoticeMarkerPath;
+
+	/**
+	 * Where this game remembers, on this device, that first_launch was recorded and the version it last started with (for
+	 * app_update). Empty remembers nothing, and neither event is recorded.
+	 */
+	FString DefaultEventsRecordPath;
 };
 
 /**
@@ -181,7 +187,8 @@ public:
 		const FFlockLogDetails& Details = FFlockLogDetails());
 
 	/**
-	 * Counts a screen view against the current session.
+	 * Records a screen_view event (with Analytics Send Default Events on), also without a session, and counts the view in
+	 * the session when one runs. A name that is empty or only spaces is neither recorded nor counted, and a warning says so.
 	 *
 	 * Surface: analytics — read on Dashboards → Game Metrics.
 	 */
@@ -222,10 +229,14 @@ public:
 	 * is safe on a hot path and while offline. With nobody signed in it is held and credited to whoever signs in
 	 * next — the server refuses an event with no player. Properties keep their keys verbatim and their JSON types.
 	 *
+	 * Every event carries the flock_ parameters (platform, operating system, device model, app version, SDK version,
+	 * language, and the session number while a session runs); a property the game set under the same name keeps its value.
+	 *
 	 * Returns false when refused: analytics off, no consent, an empty name, a name longer than MaxEventNameLength or a
-	 * category longer than MaxEventCategoryLength (the server cannot store either), or `session_started`, which the
-	 * server writes itself and would otherwise count twice. Called off the game thread it is forwarded there
-	 * and answers true, since it cannot be judged from the calling thread.
+	 * category longer than MaxEventCategoryLength (the server cannot store either), `session_started`, which the
+	 * server writes itself and would otherwise count twice, or one of the SDK's own events (session_end, app_open,
+	 * first_launch, app_update, store_purchase, screen_view), each with a warning. Called off the game thread it is
+	 * forwarded there and answers true, since it cannot be judged from the calling thread.
 	 *
 	 * Surface: analytics — read on Dashboards → Game Metrics.
 	 */
@@ -310,6 +321,9 @@ public:
 	float GetFlushWaitSecondsForTesting() const { return FlushWaitSeconds; }
 
 private:
+	/** Records store_purchase for the store's own dialog. */
+	friend class UFlockStore;
+
 	/** One delivery pass over a spool: the log entries or the gameplay events. */
 	struct FDeliveryPass
 	{
@@ -399,7 +413,77 @@ private:
 		const TArray<FFlockSpooledAnalyticsEvent>& Entries, const FString& BatchPlayer, const FFlockError& Error,
 		TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete);
 
+	// ── The SDK's own events and the flock_ parameters ──
+
+	/** A gameplay event recorded now, for whoever is signed in, with the running session attached as TrackEvent does. */
+	FFlockSpooledAnalyticsEvent MakeEventEntry(const FString& EventName, const FString& EventCategory, const FFlockCommandData& Properties) const;
+
+	/**
+	 * Adds the flock_ parameters (from Device, or this launch's when null), then queues the event, or with no queue sends it
+	 * once while someone is signed in. True once queued or sent.
+	 */
+	bool QueueOrSendOnce(FFlockSpooledAnalyticsEvent& Entry, const TOptional<int32>& SessionNumber, const FFlockDeviceInfo* Device = nullptr,
+		bool bWaitForSignIn = false);
+
+	/** Queues the event as it is, or sends it once while someone is signed in; true once queued or sent. */
+	bool QueueAsItIsOrSendOnce(FFlockSpooledAnalyticsEvent& Entry);
+
+	/** The running session's number, unset while none runs. */
+	TOptional<int32> CurrentSessionNumber() const;
+
+	/**
+	 * One of the SDK's own events, behind consent and Analytics Send Default Events; true once queued or sent.
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	bool RecordDefaultEvent(const FString& EventName, const FString& EventCategory, const FFlockCommandData& Properties);
+
+	/**
+	 * app_open once a launch, first_launch once for this game on this device, app_update when its version changed.
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	void RecordLaunchEvents();
+	/** Surface: analytics — read on Dashboards → Game Metrics. */
+	void RecordLaunchEvent(const FString& EventName, const FFlockCommandData& Properties = FFlockCommandData());
+	/** At sign-in: the SDK's events that had nowhere to wait go out, a launch event for the player who signed in. */
+	void SendEventsWaitingForSignIn(const FString& PlayerId);
+	/** first_launch and app_update are remembered only once queued or sent, so a launch that lost one tries again. */
+	void NoteLaunchEventRecorded(const FString& EventName);
+
+	/**
+	 * session_end for the player whose session it was, with the session's own device and build; true once recorded.
+	 *
+	 * Surface: analytics — read on Dashboards → Game Metrics.
+	 */
+	bool RecordSessionEndEvent(const FFlockSessionSnapshot& Snapshot, const FString& Reason);
+
+	/** The crash marker, from start-up: a crash before sign-in is a crash too. Again while it runs does nothing. */
+	void StartLaunchMarker();
+
 	// ── Session internals ──
+
+	/** EndSession, with the reason session_end gives (player_changed is not one of the public reasons). */
+	void EndSessionFor(EFlockSessionEndReason Reason, const FString& EventReason,
+		TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete);
+
+	/** Ends the queue could not save: queued again, or sent straight away, before the next session's record replaces theirs. */
+	void DeliverEndsTheQueueCouldNotSave();
+
+	/** Sends an end that waits in EndsTheQueueCouldNotSave, one send at a time for it; delivered or finally refused, it is forgotten. */
+	void SendEndTheQueueCouldNotSave(const FFlockSessionSnapshot& Snapshot, TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete);
+
+	/** Gives an ended session the server's id, wherever its end waits (the queue, memory, the kept record). */
+	void GiveServerIdToEnd(const FString& SessionId, const FString& ServerSessionId);
+
+	/** Drops an end from EndsTheQueueCouldNotSave, and the record kept for it once nothing else needs that record. */
+	void ForgetEndTheQueueCouldNotSave(const FString& SessionId);
+
+	/** A session end's failure the server will give again: the end is dropped, not tried again. */
+	static bool IsFinalEndFailure(const FFlockError& Error);
+
+	/** Registers the ended session when it never was, then closes it. */
+	void SendEndWithoutSpool(const FFlockSessionSnapshot& Snapshot, TFunction<void(TFlockResult<FFlockAnalyticsAck>)> OnComplete);
 
 	/** Body for `POST analytics/sessions`, from a live or a spooled snapshot. */
 	FFlockSessionStartRequest MakeStartRequest(const FFlockSessionSnapshot& Snapshot) const;
@@ -430,7 +514,7 @@ private:
 	 * OnSessionEnded. bOutSpooled is false when there was no spool to take it, and the caller must
 	 * deliver the returned snapshot itself or lose it.
 	 */
-	FFlockSessionSnapshot FinishSession(EFlockSessionEndReason Reason, bool& bOutSpooled);
+	FFlockSessionSnapshot FinishSession(EFlockSessionEndReason Reason, const FString& EventReason, bool& bOutSpooled);
 
 	/** Consent-revoke path: stops the session locally with no spool, no send, and no OnSessionEnded. */
 	void DiscardSession();
@@ -502,7 +586,29 @@ private:
 	 * into another refusal.
 	 */
 	TSet<FString> RefusedSessionIds;
+
+	/** This launch's device and build, read once: every event's flock_ parameters come from it. */
+	FFlockDeviceInfo LaunchDevice;
+
+	/** app_open and first_launch are recorded once a launch, at start or when consent is given later. */
+	bool bLaunchEventsRecorded = false;
+
+	/** The SDK's launch events and session ends with no queue to wait in and nobody signed in yet: kept until someone signs in. */
+	TArray<FFlockSpooledAnalyticsEvent> EventsWaitingForSignIn;
+
+	/**
+	 * Ends the session-end queue could not save (it is off, or its write failed). Each is sent at once when someone is signed
+	 * in, else at the next sign-in or session start, and is forgotten once delivered or finally refused. With the queue on, the
+	 * last one is also in the session record for the next launch, until the next session's record replaces it.
+	 */
+	TArray<FFlockSessionSnapshot> EndsTheQueueCouldNotSave;
+
+	/** Session ids of ends in EndsTheQueueCouldNotSave being sent now. */
+	TSet<FString> EndsBeingSent;
 	/** A second POST while one is away would open a second server session for the same play session. */
 	bool bRegistrationInFlight = false;
+
+	/** The local id of the session whose registration is on its way; its end is not registered again meanwhile. */
+	FString RegisteringSessionId;
 	bool bConsent = false;
 };

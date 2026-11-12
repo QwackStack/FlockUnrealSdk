@@ -34,6 +34,13 @@ struct FLOCK_API FFlockAnalyticsConfig
 
 	bool bPersistSessionOnDisk = true;
 	bool bTrackFps = true;
+
+	/**
+	 * The SDK's own events (session_end, app_open, first_launch, app_update, screen_view, store_purchase). Off records none of
+	 * them; the flock_ parameters stay on every event.
+	 */
+	bool bSendDefaultEvents = true;
+
 	float FpsSampleIntervalSeconds = 1.f;
 
 	bool bCacheFailedEvents = true;

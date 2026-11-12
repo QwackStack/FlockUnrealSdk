@@ -24,8 +24,11 @@ struct FLOCK_API FFlockTerminationMarker
 	FString AppVersion;
 	FString SdkVersion;
 
-	/** A marker with no session id tells us nothing and is treated as absent. */
-	bool IsValid() const { return !SessionId.IsEmpty(); }
+	/**
+	 * A marker names the session that was running, or, when none was, carries its launch's last-alive time: the marker
+	 * starts with the launch, so a crash before sign-in is reported too. One with neither tells us nothing.
+	 */
+	bool IsValid() const { return !SessionId.IsEmpty() || LastAliveUtc != FDateTime::MinValue(); }
 };
 
 /**
@@ -76,8 +79,14 @@ public:
 	 */
 	bool ReadSurvivingMarker(FFlockTerminationMarker& OutMarker) const;
 
-	/** Starts leaving a tombstone for this run. No-op when disabled. */
+	/** Starts leaving a tombstone for this run, from its start-up. No-op when disabled. */
 	void BeginTracking(const FFlockTerminationMarker& Seed);
+
+	/** The marker names the session now running, so the next launch's report says which one ended badly. */
+	void NoteSessionStarted(const FString& InSessionId, const FString& InPlayerId);
+
+	/** A session ended cleanly; the launch, and its marker, go on without one. */
+	void NoteSessionEnded();
 
 	/** The server session id arrives after the start call returns. */
 	void SetServerSessionId(const FString& InServerSessionId);

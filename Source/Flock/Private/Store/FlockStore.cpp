@@ -5,6 +5,7 @@
 #include "Auth/FlockAuthSession.h"
 #include "Config/FlockConfig.h"
 #include "Misc/Paths.h"
+#include "Analytics/FlockDefaultEvents.h"
 #include "Config/FlockGameKey.h"
 #include "Dom/JsonObject.h"
 #include "FlockEvents.h"
@@ -1024,6 +1025,7 @@ void UFlockStore::HandleDeferred(const FFlockStoreOrder& Order)
 	CloseTheDialog(Order.ProductId);
 	if (Entry != nullptr)
 	{
+		RecordStorePurchase(FlockDefaultEvents::Deferred, *Entry, Order.ProductId);
 		FFlockPurchaseResult Pending;
 		Pending.ItemType = Entry->Item.Type;
 		Pending.Status = FlockPurchaseStatuses::Pending;
@@ -1041,6 +1043,7 @@ void UFlockStore::HandleFailed(const FFlockStoreFailure& Failure)
 	}
 	const FString Reason = Failure.Reason.IsEmpty() ? FString(FlockStoreFailureReasons::Unknown) : Failure.Reason;
 	const bool bCancelled = Reason.Equals(FlockStoreFailureReasons::Cancelled, ESearchCase::CaseSensitive);
+	RecordStorePurchase(bCancelled ? FlockDefaultEvents::Cancelled : FlockDefaultEvents::Failed, *Entry, Failure.ProductId);
 	FFlockError Error = Refusal(EFlockErrorType::Store,
 		bCancelled ? FString(TEXT("The player cancelled the purchase in the store's dialog")) : TEXT("The store did not take the payment: ") + Failure.Text,
 		FixFor(Reason));
@@ -1462,6 +1465,24 @@ FFlockError UFlockStore::SoldTwice(const FString& ProductId, const FString& Then
 	return Refusal(EFlockErrorType::Validation,
 		FString::Printf(TEXT("Two shop items sell the %s product '%s', so this purchase cannot be matched to one"), *PaymentProvider, *ProductId),
 		TEXT("Give each shop item its own store product id in the Flock dashboard.") + Then);
+}
+
+void UFlockStore::RecordStorePurchase(const TCHAR* Outcome, const FBuying& Entry, const FString& ProductId) const
+{
+	// What only the device sees: the store's dialog cancelled, failed or deferred a purchase. A paid one is the server's to
+	// record. Only for a dialog this sign-in opened: Entry is the call the dialog answers (CallAnsweredBy), and a call whose
+	// sign-in ended was ended with it (EndBuyingIfSignInEnded), so a late answer finds none.
+	UFlockSubsystem* Sdk = Flock.Get();
+	if (Sdk == nullptr || !Sdk->AnalyticsProvider.IsValid())
+	{
+		return;
+	}
+	FFlockCommandData Properties;
+	Properties.Set(TEXT("outcome"), Outcome);
+	Properties.Set(TEXT("store"), PaymentProvider);
+	Properties.Set(TEXT("item_id"), Entry.Item.Id);
+	Properties.Set(TEXT("product_id"), ProductId);
+	Sdk->AnalyticsProvider->RecordDefaultEvent(FlockDefaultEvents::StorePurchase, FlockDefaultEvents::StoreCategory, Properties);
 }
 
 int32 UFlockStore::CurrentSignIn() const

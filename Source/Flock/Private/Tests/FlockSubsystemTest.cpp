@@ -186,6 +186,37 @@ bool FFlockSubsystemAuthWiringTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/** Analytics Send Default Events, read from Project Settings by the running SDK: on, a start records app_open and first_launch. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlockAnalyticsDefaultEventsSettingTest, "Flock.Analytics.Subsystem.SendDefaultEventsIsReadFromTheProjectSettings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlockAnalyticsDefaultEventsSettingTest::RunTest(const FString& Parameters)
+{
+	using namespace FlockSubsystemAuthTestHelpers;
+
+	UFlockConfig* Settings = GetMutableDefault<UFlockConfig>();
+	const bool bAutoStartWas = Settings->bAnalyticsAutoStartSession;
+	const bool bDefaultEventsWere = Settings->bAnalyticsSendDefaultEvents;
+	Settings->bAnalyticsAutoStartSession = false;
+	ON_SCOPE_EXIT
+	{
+		Settings->bAnalyticsAutoStartSession = bAutoStartWas;
+		Settings->bAnalyticsSendDefaultEvents = bDefaultEventsWere;
+	};
+
+	for (const bool bOn : { true, false })
+	{
+		Settings->bAnalyticsSendDefaultEvents = bOn;
+		FSubsystemAuthFixture F;
+		F.Sdk->InitializeWithConfig(MakeValidConfig());
+		FFlockAnalyticsProvider* Analytics = F.Sdk->GetAnalyticsProvider();
+		TestEqual(bOn ? TEXT("On: app_open and first_launch wait for the sign-in") : TEXT("Off: none"),
+			Analytics != nullptr ? Analytics->GetPendingAnalyticsEventCount() : -1, bOn ? 2 : 0);
+		F.Sdk->ShutdownSdk();
+	}
+	return true;
+}
+
 /**
  * A sign-in hands analytics its player whatever the auto-start setting: events recorded before sign-in belong to that
  * player either way. Only opening a session waits on auto-start.
@@ -199,10 +230,14 @@ bool FFlockAnalyticsSubsystemWiringTest::RunTest(const FString& Parameters)
 
 	UFlockConfig* Settings = GetMutableDefault<UFlockConfig>();
 	const bool bAutoStartWas = Settings->bAnalyticsAutoStartSession;
+	const bool bDefaultEventsWere = Settings->bAnalyticsSendDefaultEvents;
 	Settings->bAnalyticsAutoStartSession = false;
+	// Only this test's own event is counted.
+	Settings->bAnalyticsSendDefaultEvents = false;
 	ON_SCOPE_EXIT
 	{
 		Settings->bAnalyticsAutoStartSession = bAutoStartWas;
+		Settings->bAnalyticsSendDefaultEvents = bDefaultEventsWere;
 	};
 
 	FSubsystemAuthFixture F;

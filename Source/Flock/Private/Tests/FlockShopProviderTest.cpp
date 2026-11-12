@@ -300,8 +300,11 @@ namespace FlockShopProviderTestHelpers
 			Deps.ConsentStore = MakeShared<FFlockConsentStore>(FPaths::Combine(Dir, TEXT("consent.json")));
 			Deps.Pump = MakeShared<FFlockLifecyclePump>();
 			Deps.bEnableLogSink = false;
+			// The SDK's own events stay out of the requests these tests count.
+			FFlockAnalyticsConfig WithoutDefaultEvents = Config;
+			WithoutDefaultEvents.bSendDefaultEvents = false;
 			Analytics = MakeShared<FFlockAnalyticsProvider>(Client, NoRetry(), MakeShared<FFlockNullLogger>(),
-				Session, Events, ApiUrl, Config, Deps, TEXT("ver-1"), TEXT("0.10.0"));
+				Session, Events, ApiUrl, WithoutDefaultEvents, Deps, TEXT("ver-1"), TEXT("0.10.0"));
 			Provider->SetAnalyticsProvider(Analytics);
 		}
 	};

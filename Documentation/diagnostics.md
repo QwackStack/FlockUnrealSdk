@@ -161,9 +161,11 @@ fault it can and cannot see.
 ## Crash reporting
 
 A run that ends without a clean quit is detected on the next launch and reported once, classified
-`background_kill` (OS eviction or swipe-close) or `abnormal` (died in the foreground), with the lost
-session's id, an approximate time of death, and how many exceptions preceded it. Disabled in the editor,
-where stopping Play-In-Editor is not an app death.
+`background_kill` (OS eviction or swipe-close) or `abnormal` (died in the foreground), with an approximate time
+of death, how many exceptions preceded it, the run's **Project Version** and plugin version, and the id of the
+session that was running (left out when none was). It watches the whole run from the moment the SDK starts, so a
+crash before anyone signs in is reported too. Disabled in the editor, where stopping Play-In-Editor is not an app
+death.
 
 ## Delivery
 
