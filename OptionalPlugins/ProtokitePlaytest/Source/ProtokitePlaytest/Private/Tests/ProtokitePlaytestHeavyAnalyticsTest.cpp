@@ -154,9 +154,9 @@ bool FProtokitePlaytestHeavyAnalyticsSixWindowsInAMinuteOfPlayTest::RunTest(cons
 		// No world is loaded here, so there is no map: exactly those members, and nothing the Flock SDK already sends. The
 		// Flock SDK's flock_ parameters ride on every event and are not the playtest's.
 		int32 PlaytestMembers = 0;
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Member : Properties->Values)
+		for (const auto& Member : Properties->Values)
 		{
-			PlaytestMembers += Member.Key.StartsWith(TEXT("flock_"), ESearchCase::CaseSensitive) ? 0 : 1;
+			PlaytestMembers += FString(*Member.Key).StartsWith(TEXT("flock_"), ESearchCase::CaseSensitive) ? 0 : 1;
 		}
 		TestEqual(TEXT("It carries nothing else"), PlaytestMembers, NumberMembers.Num());
 		TestTrue(TEXT("The Flock SDK adds its flock_ parameters to every event"), Properties->HasField(TEXT("flock_sdk_version")));
