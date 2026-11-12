@@ -5,6 +5,32 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.51.0] - 2026-11-12
+
+The tracking plan's common gameplay events in one call each, with the plan's event, category and property names.
+
+### Added
+
+- **Eight calls for the tracking plan's events**, on `UFlockSubsystem` and as Blueprint nodes under *Flock | Analytics*:
+  `TrackLevelStart` (**Flock Track Level Start**: `level_start`, `level`, `difficulty`), `TrackLevelComplete`
+  (`level_complete`: `level`, `score`, `duration_seconds`, `stars`), `TrackLevelFail` (`level_fail`: `level`, `reason`,
+  `duration_seconds`), `TrackCheckpoint` (`checkpoint_start`: `level`, `checkpoint`), `TrackTutorialStep`
+  (`tutorial_step`, category `ui`: `step`, `step_name`), `TrackSettingsChange` (`settings_change`, category `ui`:
+  `setting`, `value`), `TrackMatchStart` (`match_start`: `mode`, `map`, `team_size`) and `TrackMatchComplete`
+  (`match_complete`: `mode`, `result`, `score`, `duration_seconds`, `kills`); every other category is `gameplay`.
+  Numbers are sent as numbers and text as text.
+- **Every argument is optional, and one left out is not sent**: in C++ a number is a `TOptional<int32>`; on a node, a
+  number pin left at its default, -2147483648, is not sent; an empty text is not sent. Zero is a value and is sent.
+- **Extra Properties** adds more properties; an argument that is set wins over the same key there, in any letter case
+  (a warning names a key of yours a different spelling replaced), and your properties are never changed.
+- **The match result words** `win`, `loss` and `draw`: `FlockMatchResult::Win`, `Loss`, `Draw` in C++ and the
+  **Flock Match Result Win**, **Loss** and **Draw** nodes. The server takes any word, so a game may send its own.
+- Each call is a `TrackAnalyticsEvent` underneath (the same consent, refusals, queue, `flock_` parameters and return);
+  **Analytics Send Default Events** does not turn them off, since they are the game's own events.
+- Tests: `Flock.Analytics.GameplayEvents` (each call's and each node's wire shape, no arguments, only what is set with
+  zero as a value, a named argument winning, consent, Send Default Events on and off, analytics switched off, the match
+  result words, every number pin starting not set).
+
 ## [1.50.0] - 2026-11-12
 
 The SDK's own analytics events and parameters: why and how each session ended, the launch, screens and the store's

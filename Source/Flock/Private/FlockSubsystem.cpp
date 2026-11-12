@@ -2,6 +2,7 @@
 
 #include "FlockSubsystem.h"
 
+#include "Analytics/FlockGameplayEvents.h"
 #include "Analytics/FlockAnalyticsLaunches.h"
 #include "Analytics/FlockFileEventCache.h"
 #include "Flock.h"
@@ -18,7 +19,7 @@
 #include "Store/FlockStore.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.50.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.51.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -473,6 +474,69 @@ bool UFlockSubsystem::TrackAnalyticsEvent(const FString& EventName, const FFlock
 	const FString& EventCategory)
 {
 	return AnalyticsProvider.IsValid() && AnalyticsProvider->TrackEvent(EventName, Properties, EventCategory);
+}
+
+bool UFlockSubsystem::TrackLevelStart(TOptional<int32> Level, const FString& Difficulty, const FFlockCommandData& ExtraProperties)
+{
+	using namespace FlockGameplayEvents;
+	const FNamedProperty Named[] = { Number(TEXT("level"), Level), Text(TEXT("difficulty"), Difficulty) };
+	return TrackAnalyticsEvent(LevelStart, WithNamedProperties(ExtraProperties, Named), GameplayCategory);
+}
+
+bool UFlockSubsystem::TrackLevelComplete(TOptional<int32> Level, TOptional<int32> Score, TOptional<int32> DurationSeconds,
+	TOptional<int32> Stars, const FFlockCommandData& ExtraProperties)
+{
+	using namespace FlockGameplayEvents;
+	const FNamedProperty Named[] = { Number(TEXT("level"), Level), Number(TEXT("score"), Score),
+		Number(TEXT("duration_seconds"), DurationSeconds), Number(TEXT("stars"), Stars) };
+	return TrackAnalyticsEvent(LevelComplete, WithNamedProperties(ExtraProperties, Named), GameplayCategory);
+}
+
+bool UFlockSubsystem::TrackLevelFail(TOptional<int32> Level, const FString& Reason, TOptional<int32> DurationSeconds,
+	const FFlockCommandData& ExtraProperties)
+{
+	using namespace FlockGameplayEvents;
+	const FNamedProperty Named[] = { Number(TEXT("level"), Level), Text(TEXT("reason"), Reason),
+		Number(TEXT("duration_seconds"), DurationSeconds) };
+	return TrackAnalyticsEvent(LevelFail, WithNamedProperties(ExtraProperties, Named), GameplayCategory);
+}
+
+bool UFlockSubsystem::TrackCheckpoint(TOptional<int32> Level, const FString& Checkpoint, const FFlockCommandData& ExtraProperties)
+{
+	using namespace FlockGameplayEvents;
+	const FNamedProperty Named[] = { Number(TEXT("level"), Level), Text(TEXT("checkpoint"), Checkpoint) };
+	return TrackAnalyticsEvent(CheckpointStart, WithNamedProperties(ExtraProperties, Named), GameplayCategory);
+}
+
+bool UFlockSubsystem::TrackTutorialStep(TOptional<int32> Step, const FString& StepName, const FFlockCommandData& ExtraProperties)
+{
+	using namespace FlockGameplayEvents;
+	const FNamedProperty Named[] = { Number(TEXT("step"), Step), Text(TEXT("step_name"), StepName) };
+	return TrackAnalyticsEvent(TutorialStep, WithNamedProperties(ExtraProperties, Named), InterfaceCategory);
+}
+
+bool UFlockSubsystem::TrackSettingsChange(const FString& Setting, const FString& Value, const FFlockCommandData& ExtraProperties)
+{
+	using namespace FlockGameplayEvents;
+	const FNamedProperty Named[] = { Text(TEXT("setting"), Setting), Text(TEXT("value"), Value) };
+	return TrackAnalyticsEvent(SettingsChange, WithNamedProperties(ExtraProperties, Named), InterfaceCategory);
+}
+
+bool UFlockSubsystem::TrackMatchStart(const FString& Mode, const FString& Map, TOptional<int32> TeamSize,
+	const FFlockCommandData& ExtraProperties)
+{
+	using namespace FlockGameplayEvents;
+	const FNamedProperty Named[] = { Text(TEXT("mode"), Mode), Text(TEXT("map"), Map), Number(TEXT("team_size"), TeamSize) };
+	return TrackAnalyticsEvent(MatchStart, WithNamedProperties(ExtraProperties, Named), GameplayCategory);
+}
+
+bool UFlockSubsystem::TrackMatchComplete(const FString& Mode, const FString& Result, TOptional<int32> Score,
+	TOptional<int32> DurationSeconds, TOptional<int32> Kills, const FFlockCommandData& ExtraProperties)
+{
+	using namespace FlockGameplayEvents;
+	const FNamedProperty Named[] = { Text(TEXT("mode"), Mode), Text(TEXT("result"), Result), Number(TEXT("score"), Score),
+		Number(TEXT("duration_seconds"), DurationSeconds), Number(TEXT("kills"), Kills) };
+	return TrackAnalyticsEvent(MatchComplete, WithNamedProperties(ExtraProperties, Named), GameplayCategory);
 }
 
 FFlockExceptionCaptureCoverage UFlockSubsystem::GetExceptionCaptureCoverage() const
