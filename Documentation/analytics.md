@@ -98,8 +98,9 @@ A `session_end`'s `reason` is `quit`, `timeout`, `sign_out`, `player_changed` (a
 signing out first), `restarted`, `ended_by_the_game`, or `unexpected_exit` (the game stopped with the session
 open, a crash say, and the next launch found it). Each session gets one, credited to the player whose session it
 was. `app_open` and `first_launch` recorded with nobody signed in are credited to whoever signs in next; with
-**Analytics Cache Failed Events** off they wait in memory for that sign-in. A purchase that was paid, sign-ins,
-matches and the player's country are recorded by the server itself, so the SDK sends none of them.
+**Analytics Cache Failed Events** off they, and a `session_end` with nobody signed in, wait in memory for that sign-in.
+A purchase that was paid, sign-ins, achievements unlocked, multiplayer sessions and the player's country are recorded
+by the server itself, so the SDK sends none of them.
 
 **Every analytics event**, yours and the SDK's, carries these parameters among its properties:
 

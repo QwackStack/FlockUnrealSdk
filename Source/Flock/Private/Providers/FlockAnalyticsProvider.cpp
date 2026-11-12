@@ -112,9 +112,11 @@ FFlockAnalyticsProvider::FFlockAnalyticsProvider(const TSharedRef<FFlockHttpClie
 		bConsent = Deps.ConsentStore->ResolveEffective(Config.bRequireExplicitConsent);
 	}
 
-	// Read once: the game's version is a project setting, read again for each start of the SDK.
+	// The device's facts are read once a process; this start's own versions are set on top, since the facts are shared by
+	// every start of the SDK in the process (a game's, and a test's beside it).
 	LaunchDevice = CollectDeviceInfo(SdkVersion);
 	LaunchDevice.AppVersion = FlockDefaultEvents::AppVersionOfThisGame();
+	LaunchDevice.SdkVersion = SdkVersion;
 	if (Deps.Session.IsValid())
 	{
 		Deps.Session->SetDeviceInfo(LaunchDevice);
