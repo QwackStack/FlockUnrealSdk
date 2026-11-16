@@ -255,32 +255,29 @@ bool FProtokitePlaytestConsentUnreadableFileTest::RunTest(const FString& Paramet
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestConsentOptionsTest, "Protokite.Playtest.Consent.EveryAnswerIsOffered",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestConsentOptionsTest, "Protokite.Playtest.Consent.EverythingThenNothingIsOffered",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FProtokitePlaytestConsentOptionsTest::RunTest(const FString& Parameters)
 {
 	const TArrayView<const FProtokitePlaytestConsentOption> Offered = SProtokitePlaytestConsentWidget::GetOptions();
 
-	// Every answer a player can give is on the question, and only those: one they cannot pick would be a rule with no
-	// way to reach it, and a missing one would leave them unable to say it.
-	TArray<EProtokitePlaytestConsentChoice> Expected = { EProtokitePlaytestConsentChoice::VideoAndPlayData,
-		EProtokitePlaytestConsentChoice::VideoOnly, EProtokitePlaytestConsentChoice::PlayDataOnly, EProtokitePlaytestConsentChoice::Nothing };
-	if (TestEqual(TEXT("Four answers are offered"), Offered.Num(), Expected.Num()))
+	// Yes is everything and Not now is nothing; the two halves on their own stay reachable through Set Playtest Consent.
+	TArray<EProtokitePlaytestConsentChoice> Expected = { EProtokitePlaytestConsentChoice::VideoAndPlayData, EProtokitePlaytestConsentChoice::Nothing };
+	if (TestEqual(TEXT("Two answers are offered"), Offered.Num(), Expected.Num()))
 	{
 		for (int32 Index = 0; Index < Offered.Num(); ++Index)
 		{
 			TestEqual(*FString::Printf(TEXT("Answer %d"), Index), static_cast<int32>(Offered[Index].Choice),
 				static_cast<int32>(Expected[Index]));
-			TestTrue(*FString::Printf(TEXT("Answer %d has words of its own"), Index),
-				FCString::Strlen(Offered[Index].Title) > 0 && FCString::Strlen(Offered[Index].Explanation) > 0);
+			TestTrue(*FString::Printf(TEXT("Answer %d has words of its own"), Index), FCString::Strlen(Offered[Index].Title) > 0);
 		}
 	}
 	return true;
 }
 
 /**
- * The question is the playtest's own, and its words say so. A player who is told "we collect data" and is then recorded
+ * The question is the playtest's own, and its pop-up says so. A player who is told "we collect data" and is then recorded
  * has been misled, so the wording is pinned rather than left to be tidied away.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestConsentWordingTest, "Protokite.Playtest.Consent.ItsWordsKeepItSeparate",
@@ -288,21 +285,70 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestConsentWordingTest, "Protokit
 
 bool FProtokitePlaytestConsentWordingTest::RunTest(const FString& Parameters)
 {
-	const TArrayView<const FProtokitePlaytestConsentOption> Offered = SProtokitePlaytestConsentWidget::GetOptions();
-
-	const FProtokitePlaytestConsentOption* Nothing = Offered.FindByPredicate(
-		[](const FProtokitePlaytestConsentOption& Option) { return Option.Choice == EProtokitePlaytestConsentChoice::Nothing; });
-	if (TestNotNull(TEXT("Collecting nothing is offered"), Nothing))
+	FString Said;
+	for (const FProtokitePlaytestCollectedPart& Part : SProtokitePlaytestConsentWidget::GetWhatIsCollected())
 	{
-		// It has to say what it really does, which is everything a build with playtesting turned off does.
-		TestTrue(TEXT("And says it collects nothing at all"), FString(Nothing->Explanation).Contains(TEXT("nothing at all")));
+		Said += FString(Part.Title) + TEXT(" ") + Part.Explanation + TEXT(" ");
 	}
+	TestTrue(TEXT("Says it is separate from the game's own privacy choice"),
+		Said.Contains(TEXT("does not change any privacy choice the game asks you about")));
+	TestTrue(TEXT("Says the screen is recorded"), Said.Contains(TEXT("A video of your screen")));
+	TestTrue(TEXT("Says how the game runs is collected"), Said.Contains(TEXT("Frame rate, memory and the levels you load")));
+	TestTrue(TEXT("Says a feedback report still goes after Not now"), Said.Contains(TEXT("Feedback you choose to send still reaches the developers")));
+	return true;
+}
 
-	const FProtokitePlaytestConsentOption* Video = Offered.FindByPredicate(
-		[](const FProtokitePlaytestConsentOption& Option) { return Option.Choice == EProtokitePlaytestConsentChoice::VideoOnly; });
-	if (TestNotNull(TEXT("Recording the screen only is offered"), Video))
+/** The Qwacks logo at the top of the question is the plugin's own file, so it is packaged with the game and drawn. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestConsentLogoTest, "Protokite.Playtest.Consent.TheQwacksLogoIsDrawn",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestConsentLogoTest::RunTest(const FString& Parameters)
+{
+	const FString LogoPath = SProtokitePlaytestConsentWidget::GetQwacksLogoPath();
+	TestTrue(TEXT("The logo is in the plugin's Resources folder"), LogoPath.EndsWith(TEXT("Resources/QwacksLogo.png")));
+	TestTrue(TEXT("And the file is there"), FPaths::FileExists(LogoPath));
+	const TSharedRef<SProtokitePlaytestConsentWidget> Widget = SNew(SProtokitePlaytestConsentWidget);
+	const FSlateBrush* Brush = Widget->GetQwacksLogoBrushForTesting();
+	if (TestNotNull(TEXT("The question has the logo's brush"), Brush))
 	{
-		TestTrue(TEXT("And says the screen is recorded"), FString(Video->Explanation).Contains(TEXT("on screen")));
+		TestTrue(TEXT("At its own size"), FMath::IsNearlyEqual(Brush->ImageSize.X, 48.f) && FMath::IsNearlyEqual(Brush->ImageSize.Y, 48.f));
+	}
+	return true;
+}
+
+/** The link opens the pop-up over the question; nothing under it answers, nor a press straight after it shuts or the question appears. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestConsentPopUpTest, "Protokite.Playtest.Consent.WhatIsCollectedPopUpTakesNoAnswer",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestConsentPopUpTest::RunTest(const FString& Parameters)
+{
+	TArray<EProtokitePlaytestConsentChoice> Heard;
+	const TSharedRef<SProtokitePlaytestConsentWidget> Widget = SNew(SProtokitePlaytestConsentWidget)
+		.OnChosen_Lambda([&Heard](EProtokitePlaytestConsentChoice Choice) { Heard.Add(Choice); });
+
+	const FReply TooSoon = Widget->PressForTesting(EProtokitePlaytestConsentChoice::Nothing);
+	TestEqual(TEXT("A press the moment the question appears is not an answer"), Heard.Num(), 0);
+	TestTrue(TEXT("And takes focus off its button, so a Submit key cannot press it"),
+		TooSoon.GetUserFocusRecepient() == StaticCastSharedRef<SWidget>(Widget));
+
+	Widget->LetAnswersCountNowForTesting();
+	TestFalse(TEXT("The pop-up is shut until asked for"), Widget->IsWhatIsCollectedOpen());
+	Widget->OpenWhatIsCollectedForTesting();
+	TestTrue(TEXT("The link opens the pop-up"), Widget->IsWhatIsCollectedOpen());
+	Widget->PressForTesting(EProtokitePlaytestConsentChoice::VideoAndPlayData);
+	TestEqual(TEXT("An answer under the pop-up is not taken"), Heard.Num(), 0);
+
+	const FReply AfterBack = Widget->BackForTesting();
+	TestTrue(TEXT("Back gives focus to the question"), AfterBack.GetUserFocusRecepient() == StaticCastSharedRef<SWidget>(Widget));
+	TestFalse(TEXT("Back shuts the pop-up"), Widget->IsWhatIsCollectedOpen());
+	Widget->PressForTesting(EProtokitePlaytestConsentChoice::Nothing);
+	TestEqual(TEXT("A press the moment the pop-up shuts is not an answer"), Heard.Num(), 0);
+
+	Widget->LetAnswersCountNowForTesting();
+	Widget->PressForTesting(EProtokitePlaytestConsentChoice::Nothing);
+	if (TestEqual(TEXT("Once read, a press answers"), Heard.Num(), 1))
+	{
+		TestEqual(TEXT("With its own answer"), static_cast<int32>(Heard[0]), static_cast<int32>(EProtokitePlaytestConsentChoice::Nothing));
 	}
 	return true;
 }

@@ -71,7 +71,7 @@ namespace ProtokitePlaytestConsent
 	/** Reads a wire spelling. Anything else, a different letter case included, is NotAnswered: the player is asked again. */
 	PROTOKITEPLAYTEST_API EProtokitePlaytestConsentChoice FromWire(const FString& Wire);
 
-	/** One sentence saying what a choice allows, in the same words the player was shown. */
+	/** One sentence saying what a choice allows. */
 	PROTOKITEPLAYTEST_API FString Describe(EProtokitePlaytestConsentChoice Choice);
 }
 

@@ -80,16 +80,21 @@ A playtest build with no sign-in screen of its own can sign in from the console 
 ## 4. What the player is asked
 
 **A playtest build asks its player what it may collect, and collects nothing until they answer.** The question is drawn
-over the game as soon as this build's playtest is loaded, and offers four answers:
+over the game as soon as this build's playtest is loaded: *Help the developers improve this game?*, under the Qwacks logo,
+with two answers:
 
 | Answer | What the playtest then collects |
 |---|---|
-| Record my screen and collect play data | Everything the playtest turns on |
-| Record my screen only | The recording; no performance windows, level loads, playtest events or exceptions |
-| Collect play data only | Those; no recording |
-| Collect nothing | Nothing at all: no recording, nothing sent, and no session for the launch -- exactly what this build does with **Enable Playtesting** off |
+| Yes, help the developers | Everything the playtest turns on |
+| Not now | Nothing at all: no recording, nothing sent, and no session for the launch -- exactly what this build does with **Enable Playtesting** off. The answer is kept like any other, so the player is not asked again unless your game asks (below) |
 
-**It is the playtest's own question and its words say so.** The Flock SDK's **Analytics Require Explicit Consent** is a
+A **What's collected?** link under the question opens a pop-up over it that explains what is recorded and collected,
+who gets it, and what *Not now* means; **Back** shuts it. No answer is taken while the pop-up is open, nor in the half
+second after the question appears or the pop-up shuts, so a player still clicking never answers a question they did
+not read. Recording the screen only, or play data only, is not offered on the question: your own screen can still
+record either (below).
+
+**It is the playtest's own question and its pop-up says so.** The Flock SDK's **Analytics Require Explicit Consent** is a
 different question, asked by your game in your game's words about your game's analytics; neither answer moves the other.
 The playtest's answer is kept in `Saved/ProtokitePlaytest/playtest_consent.json` and used by every later launch of that
 build. Nothing an earlier launch left waiting is sent while the question is still on screen, and nothing is sent at all
@@ -106,16 +111,16 @@ Your game can take this question over. The answer is one of five values (`EProto
 | Answer | Means |
 |---|---|
 | Not Answered (`NotAnswered`) | No answer yet: nothing is collected. Recording it forgets the answer, so the question is put again |
-| Video And Play Data (`VideoAndPlayData`) | Record my screen and collect play data |
-| Video Only (`VideoOnly`) | Record my screen only |
-| Play Data Only (`PlayDataOnly`) | Collect play data only |
-| Nothing (`Nothing`) | Collect nothing |
+| Video And Play Data (`VideoAndPlayData`) | The screen and play data: the question's *Yes, help the developers* |
+| Video Only (`VideoOnly`) | The screen recording alone; no performance windows, level loads or playtest events |
+| Play Data Only (`PlayDataOnly`) | Those alone; no recording |
+| Nothing (`Nothing`) | Nothing at all: the question's *Not now* |
 
 | Node (C++ on `UProtokitePlaytestLibrary`) | Does |
 |---|---|
 | **Protokite Get Playtest Consent** (`GetPlaytestConsent`) | What the build collects under: the player's answer, everything in a build that does not ask, nothing while a build that asks waits for one |
 | **Protokite Get Players Consent Answer** (`GetPlayersConsentAnswer`) | What the player answered; Not Answered when they have not |
-| **Protokite Describe Playtest Consent** (`DescribePlaytestConsent`) | One sentence saying what an answer allows, in the words the player was shown |
+| **Protokite Describe Playtest Consent** (`DescribePlaytestConsent`) | One sentence saying what an answer allows |
 | **Protokite Set Playtest Consent** (`SetPlaytestConsent`) | Records an answer from your own screen. It is kept on this machine, used by every later launch and takes effect at once: Nothing stops a recording that is running. Returns whether the answer was saved |
 | **Protokite Ask For Playtest Consent** (`AskForPlaytestConsent`) | Puts the plugin's question again now: what a "change what this playtest collects" entry in your menu calls. False, changing nothing, when no playtest is loaded, the feedback form is open, or there is no viewport to draw in |
 | **Protokite Is Consent Question Open** (`IsConsentQuestionOpen`) | True while the question is on screen |
@@ -128,7 +133,7 @@ The same in C++ (the module must be in your Build.cs: see [Calling the plugin fr
 ```cpp
 #include "ProtokitePlaytestLibrary.h"
 
-// Your consent screen's "Record my screen and collect play data" button.
+// Your consent screen's "Yes" button: the screen and play data.
 if (!UProtokitePlaytestLibrary::SetPlaytestConsent(WorldContextObject, EProtokitePlaytestConsentChoice::VideoAndPlayData))
 {
     // Not saved: no playtest subsystem in this game, or the answer could not be written to disk.
