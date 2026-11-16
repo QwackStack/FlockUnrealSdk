@@ -19,7 +19,7 @@
 #include "Store/FlockStore.h"
 
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.51.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.52.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {

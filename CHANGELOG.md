@@ -5,6 +5,31 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.52.0] - 2026-11-16
+
+The playtest's consent question, shorter, with a "What's collected?" pop-up.
+
+### Changed
+
+- **The playtest's consent question is shorter**: *Help the developers improve this game?* with **Yes, help the developers**
+  (the screen and play data) and **Not now** (nothing, kept like any other answer). The screen alone and play data alone are
+  no longer offered on it; **Protokite Set Playtest Consent** still gives either from a game's own screen.
+
+### Added
+
+- **The Qwacks logo** at the top of the consent question, centred above its heading (`Resources/QwacksLogo.png`, packaged
+  with the game like the feedback form's icon).
+- **A "What's collected?" link** under the question opens a pop-up over it explaining what is recorded and collected, who
+  gets it, what **Not now** means, and that the question is separate from the game's own privacy choice. **Back** shuts it.
+
+### Fixed
+
+- **A press in the consent question's first half second is no longer an answer**, nor one in the half second after the
+  pop-up shuts: a player still clicking at the game, or clicking Back twice, answered a question they never read. A refused
+  press also takes focus off its button, so a Submit key cannot give that answer afterwards.
+- **The consent question's colours are the ones written for it**: they were given as linear colours, which Slate shows
+  paler, so the card was a lighter grey than intended. They are now given as the colours seen on screen.
+
 ## [1.51.0] - 2026-11-12
 
 The tracking plan's common gameplay events in one call each, with the plan's event, category and property names.

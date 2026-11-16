@@ -64,6 +64,7 @@ public class ProtokitePlaytest : ModuleRules
 
 		// The feedback form draws this icon from disk, so a packaged game has to carry the file.
 		RuntimeDependencies.Add("$(PluginDir)/Resources/FeedbackFormIcon.png", StagedFileType.UFS);
+		RuntimeDependencies.Add("$(PluginDir)/Resources/QwacksLogo.png", StagedFileType.UFS);
 
 		WarnAboutAPlaytestInAShippingBuild(Target);
 	}

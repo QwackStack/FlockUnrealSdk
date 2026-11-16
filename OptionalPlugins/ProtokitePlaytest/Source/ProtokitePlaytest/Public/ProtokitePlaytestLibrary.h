@@ -75,7 +75,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Protokite Get Players Consent Answer"))
 	static EProtokitePlaytestConsentChoice GetPlayersConsentAnswer(const UObject* WorldContextObject);
 
-	/** One sentence saying what an answer lets the playtest collect, in the words the player was shown. */
+	/** One sentence saying what an answer lets the playtest collect. */
 	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (DisplayName = "Protokite Describe Playtest Consent"))
 	static FString DescribePlaytestConsent(EProtokitePlaytestConsentChoice Choice);
 

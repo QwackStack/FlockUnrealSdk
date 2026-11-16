@@ -55,8 +55,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FProtokitePlaytestRecordingUploadFi
  * address and headers it started with. It ends when the game instance shuts down, or when EndPlaytestSession is
  * called.
  *
- * Before any of that, it asks the player what this playtest may collect, and collects nothing until they answer: the
- * screen and play data, either one on its own, or nothing at all, which leaves the build behaving exactly like one with
+ * Before any of that, it asks the player what this playtest may collect, and collects nothing until they answer: yes,
+ * the screen and play data, or not now, nothing at all, which leaves the build behaving exactly like one with
  * Enable Playtesting off. The question is the playtest's own and is worded to stay apart from whatever the game asks
  * its players about privacy or analytics. Their answer is kept on the machine and used by every later launch, a game
  * can ask it again or answer it itself, and the session start says which answer it was collected under. A build whose
