@@ -214,6 +214,11 @@ request.conflict
 request.payload_too_large
 request.failed
 
+[sdk]
+# Made by this SDK itself, never sent by the server, listed so the member is not read as dead code.
+# Each must have an EFlockErrorCode member and a hint, as above.
+flock.player_already_signed_in
+
 [waived]
 # Documented, but for features this SDK does not call — there is no surface for the error to reach.
 # Adding a member for one of these means the feature arrived, so move the code up to [documented] in the

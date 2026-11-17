@@ -4,13 +4,18 @@
 #include "Blueprint/FlockBlueprintCallOrigin.h"
 #include "Http/FlockErrorHints.h"
 
+#include "FlockLocalPlayer.h"
 #include "FlockSubsystem.h"
 #include "Providers/FlockPlayerProvider.h"
 
 namespace
 {
-	FFlockPlayerProvider* ResolvePlayer(UObject* WorldContextObject, FFlockError& OutError)
+	FFlockPlayerProvider* ResolvePlayer(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer, FFlockError& OutError)
 	{
+		if (LocalPlayer)
+		{
+			return LocalPlayer->GetPlayerProvider();
+		}
 		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
 		FFlockPlayerProvider* Provider = Sdk ? Sdk->GetPlayerProvider() : nullptr;
 		if (!Provider)
@@ -24,10 +29,11 @@ namespace
 
 // ─────────────────────────── Get Player Data By Id ──────────────────────────
 
-UFlockGetPlayerDataAction* UFlockGetPlayerDataAction::GetPlayerDataById(UObject* WorldContextObject, const FString& PlayerDataId)
+UFlockGetPlayerDataAction* UFlockGetPlayerDataAction::GetPlayerDataById(UObject* WorldContextObject, const FString& PlayerDataId, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetPlayerDataAction* Action = NewObject<UFlockGetPlayerDataAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->PlayerDataId = PlayerDataId;
 	return Action;
 }
@@ -35,7 +41,7 @@ UFlockGetPlayerDataAction* UFlockGetPlayerDataAction::GetPlayerDataById(UObject*
 void UFlockGetPlayerDataAction::Activate()
 {
 	FFlockError Error;
-	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, Error);
+	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerData>::Fail(Error));
@@ -69,10 +75,11 @@ void UFlockGetPlayerDataAction::Complete(const TFlockResult<FFlockPlayerData>& R
 // ─────────────────────────── Get All Player Data ────────────────────────────
 
 UFlockGetAllPlayerDataAction* UFlockGetAllPlayerDataAction::GetAllPlayerData(UObject* WorldContextObject,
-	const FString& PlayerId, int32 Page, int32 Limit)
+	const FString& PlayerId, int32 Page, int32 Limit, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetAllPlayerDataAction* Action = NewObject<UFlockGetAllPlayerDataAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->PlayerId = PlayerId;
 	Action->Page = Page;
 	Action->Limit = Limit;
@@ -82,7 +89,7 @@ UFlockGetAllPlayerDataAction* UFlockGetAllPlayerDataAction::GetAllPlayerData(UOb
 void UFlockGetAllPlayerDataAction::Activate()
 {
 	FFlockError Error;
-	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, Error);
+	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerDataPage>::Fail(Error));
@@ -115,19 +122,21 @@ void UFlockGetAllPlayerDataAction::Complete(const TFlockResult<FFlockPlayerDataP
 
 // ──────────────────────────── Get My Player Data ────────────────────────────
 
-UFlockGetMyPlayerDataAction* UFlockGetMyPlayerDataAction::GetMyDataByTemplate(UObject* WorldContextObject, const FString& PlayerTemplateId)
+UFlockGetMyPlayerDataAction* UFlockGetMyPlayerDataAction::GetMyDataByTemplate(UObject* WorldContextObject, const FString& PlayerTemplateId, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetMyPlayerDataAction* Action = NewObject<UFlockGetMyPlayerDataAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->bByTag = false;
 	Action->TemplateIdOrTag = PlayerTemplateId;
 	return Action;
 }
 
-UFlockGetMyPlayerDataAction* UFlockGetMyPlayerDataAction::GetMyDataByTag(UObject* WorldContextObject, const FString& Tag)
+UFlockGetMyPlayerDataAction* UFlockGetMyPlayerDataAction::GetMyDataByTag(UObject* WorldContextObject, const FString& Tag, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetMyPlayerDataAction* Action = NewObject<UFlockGetMyPlayerDataAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->bByTag = true;
 	Action->TemplateIdOrTag = Tag;
 	return Action;
@@ -136,7 +145,7 @@ UFlockGetMyPlayerDataAction* UFlockGetMyPlayerDataAction::GetMyDataByTag(UObject
 void UFlockGetMyPlayerDataAction::Activate()
 {
 	FFlockError Error;
-	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, Error);
+	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerData>::Fail(Error));
@@ -178,17 +187,18 @@ void UFlockGetMyPlayerDataAction::Complete(const TFlockResult<FFlockPlayerData>&
 
 // ─────────────────────────── Get Player Templates ───────────────────────────
 
-UFlockGetPlayerTemplatesAction* UFlockGetPlayerTemplatesAction::GetPlayerTemplates(UObject* WorldContextObject)
+UFlockGetPlayerTemplatesAction* UFlockGetPlayerTemplatesAction::GetPlayerTemplates(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetPlayerTemplatesAction* Action = NewObject<UFlockGetPlayerTemplatesAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	return Action;
 }
 
 void UFlockGetPlayerTemplatesAction::Activate()
 {
 	FFlockError Error;
-	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, Error);
+	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<TArray<FFlockPlayerTemplateSchema>>::Fail(Error));
@@ -221,28 +231,31 @@ void UFlockGetPlayerTemplatesAction::Complete(const TFlockResult<TArray<FFlockPl
 
 // ──────────────────────────── Get Player Template ───────────────────────────
 
-UFlockGetPlayerTemplateAction* UFlockGetPlayerTemplateAction::GetPlayerTemplateById(UObject* WorldContextObject, const FString& PlayerTemplateId)
+UFlockGetPlayerTemplateAction* UFlockGetPlayerTemplateAction::GetPlayerTemplateById(UObject* WorldContextObject, const FString& PlayerTemplateId, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetPlayerTemplateAction* Action = NewObject<UFlockGetPlayerTemplateAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->Mode = ELookup::ById;
 	Action->TemplateIdNameOrTag = PlayerTemplateId;
 	return Action;
 }
 
-UFlockGetPlayerTemplateAction* UFlockGetPlayerTemplateAction::GetPlayerTemplateByName(UObject* WorldContextObject, const FString& Name)
+UFlockGetPlayerTemplateAction* UFlockGetPlayerTemplateAction::GetPlayerTemplateByName(UObject* WorldContextObject, const FString& Name, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetPlayerTemplateAction* Action = NewObject<UFlockGetPlayerTemplateAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->Mode = ELookup::ByName;
 	Action->TemplateIdNameOrTag = Name;
 	return Action;
 }
 
-UFlockGetPlayerTemplateAction* UFlockGetPlayerTemplateAction::GetPlayerTemplateByTag(UObject* WorldContextObject, const FString& Tag)
+UFlockGetPlayerTemplateAction* UFlockGetPlayerTemplateAction::GetPlayerTemplateByTag(UObject* WorldContextObject, const FString& Tag, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetPlayerTemplateAction* Action = NewObject<UFlockGetPlayerTemplateAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->Mode = ELookup::ByTag;
 	Action->TemplateIdNameOrTag = Tag;
 	return Action;
@@ -251,7 +264,7 @@ UFlockGetPlayerTemplateAction* UFlockGetPlayerTemplateAction::GetPlayerTemplateB
 void UFlockGetPlayerTemplateAction::Activate()
 {
 	FFlockError Error;
-	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, Error);
+	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerTemplateSchema>::Fail(Error));
@@ -298,10 +311,11 @@ void UFlockGetPlayerTemplateAction::Complete(const TFlockResult<FFlockPlayerTemp
 
 // ───────────────────────── Get Template Player Data ─────────────────────────
 
-UFlockGetTemplatePlayerDataAction* UFlockGetTemplatePlayerDataAction::GetTemplatePlayerData(UObject* WorldContextObject, const FString& PlayerTemplateId)
+UFlockGetTemplatePlayerDataAction* UFlockGetTemplatePlayerDataAction::GetTemplatePlayerData(UObject* WorldContextObject, const FString& PlayerTemplateId, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetTemplatePlayerDataAction* Action = NewObject<UFlockGetTemplatePlayerDataAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->PlayerTemplateId = PlayerTemplateId;
 	return Action;
 }
@@ -309,7 +323,7 @@ UFlockGetTemplatePlayerDataAction* UFlockGetTemplatePlayerDataAction::GetTemplat
 void UFlockGetTemplatePlayerDataAction::Activate()
 {
 	FFlockError Error;
-	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, Error);
+	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<TArray<FFlockPlayerData>>::Fail(Error));
@@ -342,10 +356,11 @@ void UFlockGetTemplatePlayerDataAction::Complete(const TFlockResult<TArray<FFloc
 
 // ─────────────────────────────── Get Player Ban ─────────────────────────────
 
-UFlockGetPlayerBanAction* UFlockGetPlayerBanAction::GetPlayerBan(UObject* WorldContextObject, const FString& PlayerId)
+UFlockGetPlayerBanAction* UFlockGetPlayerBanAction::GetPlayerBan(UObject* WorldContextObject, const FString& PlayerId, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetPlayerBanAction* Action = NewObject<UFlockGetPlayerBanAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->PlayerId = PlayerId;
 	return Action;
 }
@@ -353,7 +368,7 @@ UFlockGetPlayerBanAction* UFlockGetPlayerBanAction::GetPlayerBan(UObject* WorldC
 void UFlockGetPlayerBanAction::Activate()
 {
 	FFlockError Error;
-	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, Error);
+	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerBan>::Fail(Error));
@@ -386,17 +401,18 @@ void UFlockGetPlayerBanAction::Complete(const TFlockResult<FFlockPlayerBan>& Res
 
 // ────────────────────────────── Get Wallet ──────────────────────────────
 
-UFlockGetWalletAction* UFlockGetWalletAction::GetWallet(UObject* WorldContextObject)
+UFlockGetWalletAction* UFlockGetWalletAction::GetWallet(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetWalletAction* Action = NewObject<UFlockGetWalletAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	return Action;
 }
 
 void UFlockGetWalletAction::Activate()
 {
 	FFlockError Error;
-	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, Error);
+	FFlockPlayerProvider* Provider = ResolvePlayer(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockWallet>::Fail(Error));

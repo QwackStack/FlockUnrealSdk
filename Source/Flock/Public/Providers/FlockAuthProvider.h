@@ -41,6 +41,16 @@ public:
 	 */
 	FString ThisDeviceId() const;
 
+	/**
+	 * For a local player's provider only: answers the session already signed in on this machine as a player id (the main
+	 * player's or another local player's), or null. A sign-in answered for such a player hands that session the new tokens and
+	 * is refused with flock.player_already_signed_in. Unset for the main player.
+	 */
+	void SetSessionSignedInAs(TFunction<TSharedPtr<FFlockAuthSession>(const FString& PlayerId)> InLookup)
+	{
+		SessionSignedInAs = MoveTemp(InLookup);
+	}
+
 	// ── Login ──
 
 	FFlockRequestHandle LoginWithEmail(const FString& Email, const FString& Password,
@@ -223,6 +233,7 @@ private:
 	TWeakObjectPtr<UFlockEvents> Events;
 	FString VersionedApiUrl;
 	TSharedRef<FFlockDeviceIdFile> DeviceIdFile;
+	TFunction<TSharedPtr<FFlockAuthSession>(const FString& PlayerId)> SessionSignedInAs;
 
 	/** Heap-shared (not a plain member) so async restore legs can clear it even if the provider is torn down mid-restore. */
 	TSharedRef<bool> bRestoringSession = MakeShared<bool>(false);
@@ -265,7 +276,7 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 	const TWeakObjectPtr<UFlockEvents> EventsWeak = Events;
 	const TSharedRef<IFlockLogger> Log = Logger;
 	return Execute<FFlockPlayerLoginResponse>(MoveTemp(Operation),
-		[SessionRef, EventsWeak, Log, Context, LoggedContext, Method, OnComplete](TFlockResult<FFlockPlayerLoginResponse> Result)
+		[SessionRef, EventsWeak, Log, Context, LoggedContext, Method, OnComplete, SignedInAs = SessionSignedInAs](TFlockResult<FFlockPlayerLoginResponse> Result)
 		{
 			if (!Result.bSuccess)
 			{
@@ -295,14 +306,52 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 				return;
 			}
 
+			// The server keeps one sign-in per player, and this answer has just replaced it: a player already signed in on this
+			// machine is handed the new tokens, so that sign-in keeps renewing, and this one is refused below.
+			FString AnsweredFor;
+			TSharedPtr<FFlockAuthSession> Holder;
+			if (SignedInAs)
+			{
+				FFlockJwtClaims Answered;
+				FString ParseError;
+				if (FFlockJwt::Parse(Result.Value.AccessToken, Answered, ParseError) && !Answered.PlayerId.IsEmpty())
+				{
+					AnsweredFor = Answered.PlayerId;
+					Holder = SignedInAs(AnsweredFor);
+				}
+			}
+			if (Holder.IsValid())
+			{
+				FString HandOverError;
+				if (!Holder->KeepSignInWithNewTokens(Result.Value.AccessToken, Result.Value.RefreshToken, HandOverError))
+				{
+					Log->LogWarning(FString::Printf(TEXT("%s: the sign-in already here could not take the new tokens: %s"),
+						*LoggedContext, *HandOverError));
+				}
+				if (SessionRef->TakesNewSignIns())
+				{
+					FFlockError Refused = FFlockError::Make(EFlockErrorType::Auth,
+						FString::Printf(TEXT("Player %s is already signed in on this machine, so this local player was not signed in"),
+							*AnsweredFor), 0, FString(), TEXT("flock.player_already_signed_in"));
+					Refused.Operation = Context;
+					Log->LogWarning(FString::Printf(TEXT("%s failed: %s"), *LoggedContext, *Refused.ReasonAndFix()));
+					if (OnComplete)
+					{
+						OnComplete(TFlockResult<FFlockPlayerLoginResponse>::Fail(Refused));
+					}
+					return;
+				}
+			}
+
 			FString SetError;
 			if (!SessionRef->SetTokens(Result.Value.AccessToken, Result.Value.RefreshToken, SetError))
 			{
 				if (OnComplete)
 				{
-					// Answered after Flock shut down: nothing is wrong with the answer, the sign-in came too late to keep.
-					OnComplete(TFlockResult<FFlockPlayerLoginResponse>::Fail(SessionRef->IsShutDown()
-						? FFlockError::MakeWithFix(EFlockErrorType::Cancelled, SetError, FFlockErrorHints::InitializeFlockFirst())
+					// Answered after Flock shut down, or after this session ended: nothing is wrong with the answer, the sign-in
+					// came too late to keep.
+					OnComplete(TFlockResult<FFlockPlayerLoginResponse>::Fail(!SessionRef->TakesNewSignIns()
+						? FFlockError::MakeWithFix(EFlockErrorType::Cancelled, SetError, SessionRef->GetEndedFix())
 						: FFlockError::MakeWithFix(EFlockErrorType::Auth, SetError, FFlockErrorHints::NotFlocksAnswer())));
 				}
 				return;
@@ -371,7 +420,7 @@ bool FFlockAuthProvider::RequireAuthenticated(const TFunction<void(TFlockResult<
 	{
 		if (OnComplete)
 		{
-			OnComplete(TFlockResult<T>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), FFlockErrorHints::SignInFirst())));
+			OnComplete(TFlockResult<T>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), Session->GetNotSignedInFix())));
 		}
 		return false;
 	}

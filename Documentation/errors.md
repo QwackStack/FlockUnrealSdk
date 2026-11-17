@@ -15,8 +15,8 @@ Fix: This device is not registered yet. Call Flock Register With Device once to 
 ```
 
 Every failure says what is wrong and how to fix it. A segment is dropped only when there is nothing to
-say: a failure that never reached the server has no status and no code, so it reads as its cause and
-its fix alone:
+say: a failure that never reached the server has no status and no code (except the SDK's own `flock.*` codes,
+such as `flock.player_already_signed_in`), so it reads as its cause and its fix alone:
 
 ```
 The server did not answer in time
@@ -34,7 +34,7 @@ an error-tracker group every failure into its own bucket. Read `Error.Body` when
 | `Type` | `EFlockErrorType` — Auth, Validation, Network, Connection, Timeout, Serialization, Cancelled, Store |
 | `Message` | What is wrong, in one sentence: the server's own reason when it gave one, otherwise the SDK's (`The server found nothing at this address`). Never the fix and never the status |
 | `ServerMessage` | The server's own wording of the failure, when the body carried one |
-| `Code` / `ErrorCode` | The backend's `detail.code` string, raw and as a typed `EFlockErrorCode` |
+| `Code` / `ErrorCode` | The backend's `detail.code` string, raw and as a typed `EFlockErrorCode`; a `flock.*` code is the SDK's own (`flock.player_already_signed_in`: a local player signed in as a player already signed in on this machine) |
 | `Hint` | How to fix it — the `Fix:` line above. Never empty |
 | `Operation` | Short label of the call that failed (`Device login`, `Purchase shop item`) |
 | `StatusCode` | HTTP status when the failure came from a response; `0` for transport and client-side failures |

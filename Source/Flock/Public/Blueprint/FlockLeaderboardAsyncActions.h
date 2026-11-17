@@ -9,6 +9,8 @@
 #include "Models/FlockLeaderboardModels.h"
 #include "FlockLeaderboardAsyncActions.generated.h"
 
+class UFlockLocalPlayer;
+
 /**
  * Blueprint async nodes for leaderboards. Each resolves the SDK from its world context on Activate and
  * fires exactly one pin; when the SDK is unavailable the failure pin fires with a Validation error.
@@ -19,6 +21,9 @@
  *
  * Build a Window pin with the Make Current / Season / Period Window nodes on UFlockLeaderboardLibrary;
  * leaving it unconnected means the board's live window, which is what most graphs want.
+ *
+ * The Local Player pin, left empty, acts for the main player; set, it acts for that local player
+ * (UFlockSubsystem::AddLocalPlayer).
  */
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockLeaderboardPin, const FFlockLeaderboard&, Leaderboard, const FFlockError&, Error);
@@ -39,8 +44,8 @@ public:
 	FFlockLeaderboardPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Leaderboard"), Category = "Flock|Leaderboard")
-	static UFlockGetLeaderboardAction* GetLeaderboard(UObject* WorldContextObject, const FString& LeaderboardName);
+		DisplayName = "Flock Get Leaderboard", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Leaderboard")
+	static UFlockGetLeaderboardAction* GetLeaderboard(UObject* WorldContextObject, const FString& LeaderboardName, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -49,6 +54,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	FString LeaderboardName;
 };
@@ -68,9 +76,9 @@ public:
 
 	/** An empty Country omits the filter; an unset Window means the board's live window. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Leaderboard Standings", AdvancedDisplay = "Window,Country"), Category = "Flock|Leaderboard")
+		DisplayName = "Flock Get Leaderboard Standings", AdvancedDisplay = "Window,Country,LocalPlayer"), Category = "Flock|Leaderboard")
 	static UFlockGetLeaderboardStandingsAction* GetStandings(UObject* WorldContextObject, const FString& LeaderboardName,
-		FFlockLeaderboardWindow Window, const FString& Country, int32 Page = 1, int32 Limit = 50);
+		FFlockLeaderboardWindow Window, const FString& Country, int32 Page = 1, int32 Limit = 50, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -79,6 +87,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	FString LeaderboardName;
 	FFlockLeaderboardWindow Window;
@@ -104,9 +115,9 @@ public:
 	FFlockPlayerRankPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get My Rank", AdvancedDisplay = "Window,Country"), Category = "Flock|Leaderboard")
+		DisplayName = "Flock Get My Rank", AdvancedDisplay = "Window,Country,LocalPlayer"), Category = "Flock|Leaderboard")
 	static UFlockGetMyRankAction* GetMyRank(UObject* WorldContextObject, const FString& LeaderboardName,
-		FFlockLeaderboardWindow Window, const FString& Country);
+		FFlockLeaderboardWindow Window, const FString& Country, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -115,6 +126,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	FString LeaderboardName;
 	FFlockLeaderboardWindow Window;
@@ -135,9 +149,9 @@ public:
 	FFlockStandingsPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Standings Around Me", AdvancedDisplay = "Window,Country"), Category = "Flock|Leaderboard")
+		DisplayName = "Flock Get Standings Around Me", AdvancedDisplay = "Window,Country,LocalPlayer"), Category = "Flock|Leaderboard")
 	static UFlockGetStandingsAroundMeAction* GetStandingsAroundMe(UObject* WorldContextObject,
-		const FString& LeaderboardName, FFlockLeaderboardWindow Window, const FString& Country, int32 Neighbours = 5);
+		const FString& LeaderboardName, FFlockLeaderboardWindow Window, const FString& Country, int32 Neighbours = 5, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -146,6 +160,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	FString LeaderboardName;
 	FFlockLeaderboardWindow Window;

@@ -148,7 +148,7 @@ void FFlockLeaderboardProvider::GetMyRank(const FString& LeaderboardName, const 
 		if (OnComplete)
 		{
 			OnComplete(TFlockResult<FFlockPlayerRank>::Fail(
-				FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), FFlockErrorHints::SignInFirst())));
+				FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), Session->GetNotSignedInFix())));
 		}
 		return;
 	}
@@ -187,7 +187,7 @@ void FFlockLeaderboardProvider::GetAroundMe(const FString& LeaderboardName, int3
 		if (OnComplete)
 		{
 			OnComplete(TFlockResult<FFlockStandings>::Fail(
-				FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), FFlockErrorHints::SignInFirst())));
+				FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in"), Session->GetNotSignedInFix())));
 		}
 		return;
 	}

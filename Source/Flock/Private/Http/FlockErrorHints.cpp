@@ -146,6 +146,7 @@ namespace
 			{ EFlockErrorCode::PaymentProviderStoreUnavailable, FString(TEXT("Flock could not ask the store about this receipt: the store was busy, down or out of reach. Nothing is known about the purchase yet and nothing was granted, and it is neither a fake receipt nor a setting, so ")) + SendTheReceiptAgainLater },
 
 			// Auth — signing in never creates an account, which is the most common first-run mistake.
+			{ EFlockErrorCode::FlockPlayerAlreadySignedIn, TEXT("Sign each player in once on a machine: play them through the main player or the local player already signed in as them, or remove that local player first (RemoveLocalPlayer; Blueprint: Flock Remove Local Player). A player the main player is signed in as cannot also be a local player. The sign-in already here keeps working.") },
 			{ EFlockErrorCode::PlayerAccountAlreadyLinked, TEXT("That credential already belongs to an account. Call Flock Get Linked Accounts to see what this player is already linked to.") },
 			{ EFlockErrorCode::PlayerAccountNotLinked, TEXT("That credential is not linked to this player. Attach it with the matching Flock Link node first.") },
 			{ EFlockErrorCode::PlayerAppleAccountAlreadyRegistered, TEXT("That Apple account is already registered. Call Flock Login With Apple instead.") },

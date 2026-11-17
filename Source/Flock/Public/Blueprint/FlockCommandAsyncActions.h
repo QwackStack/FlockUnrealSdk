@@ -10,6 +10,8 @@
 #include "Models/FlockPlayerModels.h"
 #include "FlockCommandAsyncActions.generated.h"
 
+class UFlockLocalPlayer;
+
 /**
  * Blueprint async nodes for game commands. Each resolves the SDK from its world context on Activate and
  * fires exactly one pin; when the SDK is unavailable the failure pin fires with a Validation error.
@@ -22,6 +24,9 @@
  * Unlock Achievement queue and succeed with the optimistically-updated row, replaying when connectivity
  * returns. **Add Game Funds fails instead**: a money grant is never queued and never re-sent after an
  * ambiguous failure, so it can't double-credit.
+ *
+ * The Local Player pin, left empty, acts for the main player; set, it acts for that local player
+ * (UFlockSubsystem::AddLocalPlayer).
  */
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockCommandResultPin, const FFlockPlayerData&, Data, const FFlockError&, Error);
@@ -45,15 +50,15 @@ public:
 	 * change one field, use Flock Update Player Data Field.
 	 */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Update Player Data"), Category = "Flock|Commands")
+		DisplayName = "Flock Update Player Data", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Commands")
 	static UFlockUpdatePlayerDataAction* UpdatePlayerData(UObject* WorldContextObject, const FString& PlayerDataId,
-		const FFlockCommandData& Data);
+		const FFlockCommandData& Data, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	/** Writes one field of the row, leaving the others as they are. */
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Update Player Data Field"), Category = "Flock|Commands")
+		DisplayName = "Flock Update Player Data Field", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Commands")
 	static UFlockUpdatePlayerDataAction* UpdatePlayerDataField(UObject* WorldContextObject, const FString& PlayerDataId,
-		const FString& Key, const FFlockCommandValue& Value);
+		const FString& Key, const FFlockCommandValue& Value, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -62,6 +67,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	// A single-field write is the whole-bag write with a key set; the empty key is what selects the route.
 	FString PlayerDataId;
@@ -84,8 +92,8 @@ public:
 	FFlockCommandResultPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Unlock Achievement"), Category = "Flock|Commands")
-	static UFlockUnlockAchievementAction* UnlockAchievement(UObject* WorldContextObject, const FString& AchievementName);
+		DisplayName = "Flock Unlock Achievement", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Commands")
+	static UFlockUnlockAchievementAction* UnlockAchievement(UObject* WorldContextObject, const FString& AchievementName, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -94,6 +102,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	FString AchievementName;
 };
@@ -117,9 +128,9 @@ public:
 	FFlockCommandResultPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Add Game Funds"), Category = "Flock|Commands")
+		DisplayName = "Flock Add Game Funds", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Commands")
 	static UFlockAddGameFundsAction* AddGameFunds(UObject* WorldContextObject, const FString& Currency, int32 Amount,
-		const FString& CurrencyTemplateId);
+		const FString& CurrencyTemplateId, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -128,6 +139,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	FString Currency;
 	int32 Amount = 0;
@@ -152,8 +166,8 @@ public:
 	FFlockCommandFlushPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Flush Pending Commands"), Category = "Flock|Commands")
-	static UFlockFlushPendingCommandsAction* FlushPendingCommands(UObject* WorldContextObject);
+		DisplayName = "Flock Flush Pending Commands", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Commands")
+	static UFlockFlushPendingCommandsAction* FlushPendingCommands(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -162,4 +176,7 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 };

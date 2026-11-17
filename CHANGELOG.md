@@ -5,6 +5,42 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.53.0] - 2026-11-17
+
+Several players signed in at once on one machine, for couch and booth games.
+
+### Added
+
+- **Local players**: `UFlockSubsystem::AddLocalPlayer` (Blueprint: **Add Local Player**) returns a `UFlockLocalPlayer` with
+  its own auth, player, command and leaderboard providers over an HTTP client and an in-memory sign-in of its own, so one
+  player signing in never changes who another's calls act for. Its sign-ins are raised on its own `GetEvents()`, so analytics
+  stays with the main player. Every Flock auth, player, command and leaderboard node has a **Local Player** pin under its
+  advanced arrow; left empty, it acts for the main player as before.
+- **`RemoveLocalPlayer`** (Blueprint: **Flock Remove Local Player**) signs the player out on the server and here, and ends
+  them: a sign-in of theirs is refused from the call on, and
+  once the sign-out answers every later call, a retry already scheduled included, fails without being sent, with the cause
+  and a fix naming `AddLocalPlayer`. A removed player nothing holds is freed. `ShutdownSdk` ends every local player with its
+  own cause.
+- **`flock.player_already_signed_in`** (`EFlockErrorCode::FlockPlayerAlreadySignedIn`, with its fix): a local player signing
+  in as a player already signed in on this machine is refused, and the sign-in already here is handed the new tokens, since
+  the server keeps one sign-in per player. A token renewal answered after such a handover keeps the handed-over pair, and
+  tokens issued before the ones a sign-in holds are not handed to it.
+- **The main player signing in as a player a local player holds ends that local player**, without signing them out on the
+  server (the server's one sign-in for that player is now the main player's): its later calls fail with the cause and a fix
+  naming the main player's auth. A local player signed in as someone else is untouched. A local player ended while signed
+  in, by this or by `ShutdownSdk`, raises Logged Out on its own events, as a removal does.
+
+### Changed
+
+- **A local player not signed in yet** is told to sign in through their own auth, both before a call is sent and when the
+  server refuses one for want of a sign-in.
+
+### Fixed
+
+- **A data write with nobody signed in is no longer queued**: offline (or behind writes still waiting), it was queued for no
+  player and answered as done, and no later flush ever sent it. It now fails with the fix to sign in; online it still
+  reaches the server, which refuses it as before.
+
 ## [1.52.0] - 2026-11-16
 
 The playtest's consent question, shorter, with a "What's collected?" pop-up.
