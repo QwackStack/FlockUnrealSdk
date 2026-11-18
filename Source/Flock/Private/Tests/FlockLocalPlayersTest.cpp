@@ -19,6 +19,7 @@
 #include "Engine/World.h"
 #include "FlockLogger.h"
 #include "Misc/Base64.h"
+#include "Misc/FlockEngineCompat.h"
 #include "Tests/Support/FlockEventTestListener.h"
 #include "Tests/Support/FlockFakeTransport.h"
 #include "Tests/Support/FlockMemoryTokenStore.h"

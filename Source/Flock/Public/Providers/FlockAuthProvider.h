@@ -330,9 +330,11 @@ FFlockRequestHandle FFlockAuthProvider::ExecuteAuth(const TReq& Request, const F
 				}
 				if (SessionRef->TakesNewSignIns())
 				{
-					FFlockError Refused = FFlockError::Make(EFlockErrorType::Auth,
+					FFlockError Refused = FFlockError::MakeWithFix(EFlockErrorType::Auth,
 						FString::Printf(TEXT("Player %s is already signed in on this machine, so this local player was not signed in"),
-							*AnsweredFor), 0, FString(), TEXT("flock.player_already_signed_in"));
+							*AnsweredFor), FFlockErrorHints::For(EFlockErrorCode::FlockPlayerAlreadySignedIn));
+					Refused.Code = TEXT("flock.player_already_signed_in");
+					Refused.ErrorCode = EFlockErrorCode::FlockPlayerAlreadySignedIn;
 					Refused.Operation = Context;
 					Log->LogWarning(FString::Printf(TEXT("%s failed: %s"), *LoggedContext, *Refused.ReasonAndFix()));
 					if (OnComplete)
