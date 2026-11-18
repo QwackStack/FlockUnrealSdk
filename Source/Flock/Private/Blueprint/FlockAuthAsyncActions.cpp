@@ -3,13 +3,18 @@
 #include "Blueprint/FlockAuthAsyncActions.h"
 #include "Blueprint/FlockBlueprintCallOrigin.h"
 #include "Http/FlockErrorHints.h"
+#include "FlockLocalPlayer.h"
 #include "FlockSubsystem.h"
 #include "Providers/FlockAuthProvider.h"
 
 namespace
 {
-	FFlockAuthProvider* ResolveProvider(UObject* WorldContextObject, FFlockError& OutError)
+	FFlockAuthProvider* ResolveProvider(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer, FFlockError& OutError)
 	{
+		if (LocalPlayer)
+		{
+			return LocalPlayer->GetAuthProvider();
+		}
 		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
 		FFlockAuthProvider* Provider = Sdk ? Sdk->GetAuthProvider() : nullptr;
 		if (!Provider)
@@ -23,73 +28,74 @@ namespace
 
 // ── UFlockLoginAction ──
 
-UFlockLoginAction* UFlockLoginAction::Make(UObject* InWorldContextObject,
+UFlockLoginAction* UFlockLoginAction::Make(UObject* InWorldContextObject, UFlockLocalPlayer* InLocalPlayer,
 	TFunction<FFlockRequestHandle(FFlockAuthProvider&, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)>)> InStart)
 {
 	UFlockLoginAction* Action = NewObject<UFlockLoginAction>();
 	Action->WorldContextObject = InWorldContextObject;
+	Action->LocalPlayer = InLocalPlayer;
 	Action->Start = MoveTemp(InStart);
 	Action->RegisterWithGameInstance(InWorldContextObject);
 	return Action;
 }
 
-UFlockLoginAction* UFlockLoginAction::LoginWithEmail(UObject* WorldContextObject, const FString& Email, const FString& Password)
+UFlockLoginAction* UFlockLoginAction::LoginWithEmail(UObject* WorldContextObject, const FString& Email, const FString& Password, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[Email, Password](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete)
 		{
 			return Provider.LoginWithEmail(Email, Password, MoveTemp(OnComplete));
 		});
 }
 
-UFlockLoginAction* UFlockLoginAction::LoginWithDevice(UObject* WorldContextObject, const FString& DeviceId)
+UFlockLoginAction* UFlockLoginAction::LoginWithDevice(UObject* WorldContextObject, const FString& DeviceId, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[DeviceId](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete)
 		{
 			return Provider.LoginWithDevice(DeviceId, MoveTemp(OnComplete));
 		});
 }
 
-UFlockLoginAction* UFlockLoginAction::LoginWithGoogle(UObject* WorldContextObject, const FString& IdToken)
+UFlockLoginAction* UFlockLoginAction::LoginWithGoogle(UObject* WorldContextObject, const FString& IdToken, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[IdToken](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete)
 		{
 			return Provider.LoginWithGoogle(IdToken, MoveTemp(OnComplete));
 		});
 }
 
-UFlockLoginAction* UFlockLoginAction::LoginWithApple(UObject* WorldContextObject, const FString& IdentityToken)
+UFlockLoginAction* UFlockLoginAction::LoginWithApple(UObject* WorldContextObject, const FString& IdentityToken, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[IdentityToken](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete)
 		{
 			return Provider.LoginWithApple(IdentityToken, MoveTemp(OnComplete));
 		});
 }
 
-UFlockLoginAction* UFlockLoginAction::LoginWithSteam(UObject* WorldContextObject, const FString& SessionTicket)
+UFlockLoginAction* UFlockLoginAction::LoginWithSteam(UObject* WorldContextObject, const FString& SessionTicket, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[SessionTicket](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete)
 		{
 			return Provider.LoginWithSteam(SessionTicket, MoveTemp(OnComplete));
 		});
 }
 
-UFlockLoginAction* UFlockLoginAction::LoginWithFacebook(UObject* WorldContextObject, const FString& FacebookId)
+UFlockLoginAction* UFlockLoginAction::LoginWithFacebook(UObject* WorldContextObject, const FString& FacebookId, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[FacebookId](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete)
 		{
 			return Provider.LoginWithFacebook(FacebookId, MoveTemp(OnComplete));
 		});
 }
 
-UFlockLoginAction* UFlockLoginAction::LoginWithDiscord(UObject* WorldContextObject, const FString& DiscordId)
+UFlockLoginAction* UFlockLoginAction::LoginWithDiscord(UObject* WorldContextObject, const FString& DiscordId, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[DiscordId](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerLoginResponse>)> OnComplete)
 		{
 			return Provider.LoginWithDiscord(DiscordId, MoveTemp(OnComplete));
@@ -99,7 +105,7 @@ UFlockLoginAction* UFlockLoginAction::LoginWithDiscord(UObject* WorldContextObje
 void UFlockLoginAction::Activate()
 {
 	FFlockError Error;
-	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), Error);
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerLoginResponse>::Fail(Error));
@@ -131,55 +137,56 @@ void UFlockLoginAction::Complete(const TFlockResult<FFlockPlayerLoginResponse>& 
 
 // ── UFlockRegisterAction ──
 
-UFlockRegisterAction* UFlockRegisterAction::Make(UObject* InWorldContextObject,
+UFlockRegisterAction* UFlockRegisterAction::Make(UObject* InWorldContextObject, UFlockLocalPlayer* InLocalPlayer,
 	TFunction<FFlockRequestHandle(FFlockAuthProvider&, TFunction<void(TFlockResult<FFlockRegisterResult>)>)> InStart)
 {
 	UFlockRegisterAction* Action = NewObject<UFlockRegisterAction>();
 	Action->WorldContextObject = InWorldContextObject;
+	Action->LocalPlayer = InLocalPlayer;
 	Action->Start = MoveTemp(InStart);
 	Action->RegisterWithGameInstance(InWorldContextObject);
 	return Action;
 }
 
-UFlockRegisterAction* UFlockRegisterAction::RegisterWithEmail(UObject* WorldContextObject, const FString& Email, const FString& Password, const FString& Name)
+UFlockRegisterAction* UFlockRegisterAction::RegisterWithEmail(UObject* WorldContextObject, const FString& Email, const FString& Password, const FString& Name, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[Email, Password, Name](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockRegisterResult>)> OnComplete)
 		{
 			return Provider.RegisterWithEmail(Email, Password, Name, MoveTemp(OnComplete));
 		});
 }
 
-UFlockRegisterAction* UFlockRegisterAction::RegisterWithDevice(UObject* WorldContextObject, const FString& DeviceId, const FString& Name)
+UFlockRegisterAction* UFlockRegisterAction::RegisterWithDevice(UObject* WorldContextObject, const FString& DeviceId, const FString& Name, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[DeviceId, Name](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockRegisterResult>)> OnComplete)
 		{
 			return Provider.RegisterWithDevice(DeviceId, Name, MoveTemp(OnComplete));
 		});
 }
 
-UFlockRegisterAction* UFlockRegisterAction::RegisterWithGoogle(UObject* WorldContextObject, const FString& IdToken, const FString& Name)
+UFlockRegisterAction* UFlockRegisterAction::RegisterWithGoogle(UObject* WorldContextObject, const FString& IdToken, const FString& Name, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[IdToken, Name](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockRegisterResult>)> OnComplete)
 		{
 			return Provider.RegisterWithGoogle(IdToken, Name, MoveTemp(OnComplete));
 		});
 }
 
-UFlockRegisterAction* UFlockRegisterAction::RegisterWithApple(UObject* WorldContextObject, const FString& IdentityToken, const FString& Name)
+UFlockRegisterAction* UFlockRegisterAction::RegisterWithApple(UObject* WorldContextObject, const FString& IdentityToken, const FString& Name, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[IdentityToken, Name](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockRegisterResult>)> OnComplete)
 		{
 			return Provider.RegisterWithApple(IdentityToken, Name, MoveTemp(OnComplete));
 		});
 }
 
-UFlockRegisterAction* UFlockRegisterAction::RegisterWithSteam(UObject* WorldContextObject, const FString& SessionTicket, const FString& Name)
+UFlockRegisterAction* UFlockRegisterAction::RegisterWithSteam(UObject* WorldContextObject, const FString& SessionTicket, const FString& Name, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[SessionTicket, Name](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockRegisterResult>)> OnComplete)
 		{
 			return Provider.RegisterWithSteam(SessionTicket, Name, MoveTemp(OnComplete));
@@ -189,7 +196,7 @@ UFlockRegisterAction* UFlockRegisterAction::RegisterWithSteam(UObject* WorldCont
 void UFlockRegisterAction::Activate()
 {
 	FFlockError Error;
-	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), Error);
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockRegisterResult>::Fail(Error));
@@ -221,10 +228,11 @@ void UFlockRegisterAction::Complete(const TFlockResult<FFlockRegisterResult>& Re
 
 // ── UFlockRestoreSessionAction ──
 
-UFlockRestoreSessionAction* UFlockRestoreSessionAction::RestoreSession(UObject* WorldContextObject)
+UFlockRestoreSessionAction* UFlockRestoreSessionAction::RestoreSession(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockRestoreSessionAction* Action = NewObject<UFlockRestoreSessionAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
 }
@@ -232,7 +240,7 @@ UFlockRestoreSessionAction* UFlockRestoreSessionAction::RestoreSession(UObject* 
 void UFlockRestoreSessionAction::Activate()
 {
 	FFlockError Error;
-	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), Error);
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), LocalPlayer, Error);
 	if (!Provider)
 	{
 		OnNoSession.Broadcast();
@@ -260,19 +268,20 @@ void UFlockRestoreSessionAction::Activate()
 
 // ── UFlockAuthAccountAction ──
 
-UFlockAuthAccountAction* UFlockAuthAccountAction::Make(UObject* InWorldContextObject,
+UFlockAuthAccountAction* UFlockAuthAccountAction::Make(UObject* InWorldContextObject, UFlockLocalPlayer* InLocalPlayer,
 	TFunction<void(FFlockAuthProvider&, TFunction<void(bool, const FFlockError&)>)> InStart)
 {
 	UFlockAuthAccountAction* Action = NewObject<UFlockAuthAccountAction>();
 	Action->WorldContextObject = InWorldContextObject;
+	Action->LocalPlayer = InLocalPlayer;
 	Action->Start = MoveTemp(InStart);
 	Action->RegisterWithGameInstance(InWorldContextObject);
 	return Action;
 }
 
-UFlockAuthAccountAction* UFlockAuthAccountAction::ForgotPassword(UObject* WorldContextObject, const FString& Email)
+UFlockAuthAccountAction* UFlockAuthAccountAction::ForgotPassword(UObject* WorldContextObject, const FString& Email, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[Email](FFlockAuthProvider& Provider, TFunction<void(bool, const FFlockError&)> OnDone)
 		{
 			// The backend always reports success here; surface its flag so a false is visible.
@@ -283,9 +292,9 @@ UFlockAuthAccountAction* UFlockAuthAccountAction::ForgotPassword(UObject* WorldC
 		});
 }
 
-UFlockAuthAccountAction* UFlockAuthAccountAction::ResetPassword(UObject* WorldContextObject, const FString& Email, const FString& Code, const FString& NewPassword)
+UFlockAuthAccountAction* UFlockAuthAccountAction::ResetPassword(UObject* WorldContextObject, const FString& Email, const FString& Code, const FString& NewPassword, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[Email, Code, NewPassword](FFlockAuthProvider& Provider, TFunction<void(bool, const FFlockError&)> OnDone)
 		{
 			Provider.ResetPassword(Email, Code, NewPassword, [OnDone](TFlockResult<FFlockAuthActionResponse> R)
@@ -295,9 +304,9 @@ UFlockAuthAccountAction* UFlockAuthAccountAction::ResetPassword(UObject* WorldCo
 		});
 }
 
-UFlockAuthAccountAction* UFlockAuthAccountAction::SendEmailVerification(UObject* WorldContextObject)
+UFlockAuthAccountAction* UFlockAuthAccountAction::SendEmailVerification(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[](FFlockAuthProvider& Provider, TFunction<void(bool, const FFlockError&)> OnDone)
 		{
 			Provider.SendEmailVerification([OnDone](TFlockResult<FFlockAuthActionResponse> R)
@@ -307,9 +316,9 @@ UFlockAuthAccountAction* UFlockAuthAccountAction::SendEmailVerification(UObject*
 		});
 }
 
-UFlockAuthAccountAction* UFlockAuthAccountAction::VerifyEmail(UObject* WorldContextObject, const FString& Code)
+UFlockAuthAccountAction* UFlockAuthAccountAction::VerifyEmail(UObject* WorldContextObject, const FString& Code, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[Code](FFlockAuthProvider& Provider, TFunction<void(bool, const FFlockError&)> OnDone)
 		{
 			Provider.VerifyEmail(Code, [OnDone](TFlockResult<FFlockAuthActionResponse> R)
@@ -319,9 +328,9 @@ UFlockAuthAccountAction* UFlockAuthAccountAction::VerifyEmail(UObject* WorldCont
 		});
 }
 
-UFlockAuthAccountAction* UFlockAuthAccountAction::RevokeToken(UObject* WorldContextObject)
+UFlockAuthAccountAction* UFlockAuthAccountAction::RevokeToken(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[](FFlockAuthProvider& Provider, TFunction<void(bool, const FFlockError&)> OnDone)
 		{
 			Provider.RevokeToken([OnDone](TFlockResult<FFlockTokenRevokeResponse> R)
@@ -331,9 +340,9 @@ UFlockAuthAccountAction* UFlockAuthAccountAction::RevokeToken(UObject* WorldCont
 		});
 }
 
-UFlockAuthAccountAction* UFlockAuthAccountAction::RefreshToken(UObject* WorldContextObject)
+UFlockAuthAccountAction* UFlockAuthAccountAction::RefreshToken(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[](FFlockAuthProvider& Provider, TFunction<void(bool, const FFlockError&)> OnDone)
 		{
 			Provider.RefreshToken([OnDone](bool bRefreshed)
@@ -348,7 +357,7 @@ UFlockAuthAccountAction* UFlockAuthAccountAction::RefreshToken(UObject* WorldCon
 void UFlockAuthAccountAction::Activate()
 {
 	FFlockError Error;
-	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), Error);
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(false, Error);
@@ -380,91 +389,92 @@ void UFlockAuthAccountAction::Complete(bool bSuccess, const FFlockError& Error)
 
 // ── UFlockAccountLinkAction ──
 
-UFlockAccountLinkAction* UFlockAccountLinkAction::Make(UObject* InWorldContextObject,
+UFlockAccountLinkAction* UFlockAccountLinkAction::Make(UObject* InWorldContextObject, UFlockLocalPlayer* InLocalPlayer,
 	TFunction<FFlockRequestHandle(FFlockAuthProvider&, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)>)> InStart)
 {
 	UFlockAccountLinkAction* Action = NewObject<UFlockAccountLinkAction>();
 	Action->WorldContextObject = InWorldContextObject;
+	Action->LocalPlayer = InLocalPlayer;
 	Action->Start = MoveTemp(InStart);
 	Action->RegisterWithGameInstance(InWorldContextObject);
 	return Action;
 }
 
-UFlockAccountLinkAction* UFlockAccountLinkAction::GetLinkedAccounts(UObject* WorldContextObject)
+UFlockAccountLinkAction* UFlockAccountLinkAction::GetLinkedAccounts(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
 		{
 			return Provider.GetLinkedAccounts(MoveTemp(OnDone));
 		});
 }
 
-UFlockAccountLinkAction* UFlockAccountLinkAction::LinkEmail(UObject* WorldContextObject, const FString& Email, const FString& Password)
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkEmail(UObject* WorldContextObject, const FString& Email, const FString& Password, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[Email, Password](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
 		{
 			return Provider.LinkEmail(Email, Password, MoveTemp(OnDone));
 		});
 }
 
-UFlockAccountLinkAction* UFlockAccountLinkAction::LinkDevice(UObject* WorldContextObject, const FString& DeviceId)
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkDevice(UObject* WorldContextObject, const FString& DeviceId, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[DeviceId](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
 		{
 			return Provider.LinkDevice(DeviceId, MoveTemp(OnDone));
 		});
 }
 
-UFlockAccountLinkAction* UFlockAccountLinkAction::LinkGoogle(UObject* WorldContextObject, const FString& IdToken)
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkGoogle(UObject* WorldContextObject, const FString& IdToken, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[IdToken](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
 		{
 			return Provider.LinkGoogle(IdToken, MoveTemp(OnDone));
 		});
 }
 
-UFlockAccountLinkAction* UFlockAccountLinkAction::LinkApple(UObject* WorldContextObject, const FString& IdentityToken)
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkApple(UObject* WorldContextObject, const FString& IdentityToken, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[IdentityToken](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
 		{
 			return Provider.LinkApple(IdentityToken, MoveTemp(OnDone));
 		});
 }
 
-UFlockAccountLinkAction* UFlockAccountLinkAction::LinkSteam(UObject* WorldContextObject, const FString& SessionTicket)
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkSteam(UObject* WorldContextObject, const FString& SessionTicket, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[SessionTicket](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
 		{
 			return Provider.LinkSteam(SessionTicket, MoveTemp(OnDone));
 		});
 }
 
-UFlockAccountLinkAction* UFlockAccountLinkAction::LinkFacebook(UObject* WorldContextObject, const FString& FacebookToken)
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkFacebook(UObject* WorldContextObject, const FString& FacebookToken, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[FacebookToken](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
 		{
 			return Provider.LinkFacebook(FacebookToken, MoveTemp(OnDone));
 		});
 }
 
-UFlockAccountLinkAction* UFlockAccountLinkAction::LinkDiscord(UObject* WorldContextObject, const FString& DiscordToken)
+UFlockAccountLinkAction* UFlockAccountLinkAction::LinkDiscord(UObject* WorldContextObject, const FString& DiscordToken, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[DiscordToken](FFlockAuthProvider& Provider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
 		{
 			return Provider.LinkDiscord(DiscordToken, MoveTemp(OnDone));
 		});
 }
 
-UFlockAccountLinkAction* UFlockAccountLinkAction::Unlink(UObject* WorldContextObject, EFlockCredentialProvider Provider)
+UFlockAccountLinkAction* UFlockAccountLinkAction::Unlink(UObject* WorldContextObject, EFlockCredentialProvider Provider, UFlockLocalPlayer* LocalPlayer)
 {
-	return Make(WorldContextObject,
+	return Make(WorldContextObject, LocalPlayer,
 		[Provider](FFlockAuthProvider& AuthProvider, TFunction<void(TFlockResult<FFlockPlayerAccountsResponse>)> OnDone)
 		{
 			return AuthProvider.Unlink(Provider, MoveTemp(OnDone));
@@ -474,7 +484,7 @@ UFlockAccountLinkAction* UFlockAccountLinkAction::Unlink(UObject* WorldContextOb
 void UFlockAccountLinkAction::Activate()
 {
 	FFlockError Error;
-	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), Error);
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerAccountsResponse>::Fail(Error));
@@ -507,10 +517,11 @@ void UFlockAccountLinkAction::Complete(const TFlockResult<FFlockPlayerAccountsRe
 
 // ── UFlockNameAvailableAction ──
 
-UFlockNameAvailableAction* UFlockNameAvailableAction::IsNameAvailable(UObject* WorldContextObject, const FString& Name)
+UFlockNameAvailableAction* UFlockNameAvailableAction::IsNameAvailable(UObject* WorldContextObject, const FString& Name, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockNameAvailableAction* Action = NewObject<UFlockNameAvailableAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->Name = Name;
 	Action->RegisterWithGameInstance(WorldContextObject);
 	return Action;
@@ -519,7 +530,7 @@ UFlockNameAvailableAction* UFlockNameAvailableAction::IsNameAvailable(UObject* W
 void UFlockNameAvailableAction::Activate()
 {
 	FFlockError Error;
-	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), Error);
+	FFlockAuthProvider* Provider = ResolveProvider(WorldContextObject.Get(), LocalPlayer, Error);
 	if (!Provider)
 	{
 		OnFailure.Broadcast(false, Error);
@@ -543,4 +554,48 @@ void UFlockNameAvailableAction::Activate()
 			Self->SetReadyToDestroy();
 		}
 	});
+}
+
+// ── UFlockRemoveLocalPlayerAction ──
+
+UFlockRemoveLocalPlayerAction* UFlockRemoveLocalPlayerAction::RemoveLocalPlayer(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer)
+{
+	UFlockRemoveLocalPlayerAction* Action = NewObject<UFlockRemoveLocalPlayerAction>();
+	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+void UFlockRemoveLocalPlayerAction::Activate()
+{
+	UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject.Get());
+	if (!Sdk || !Sdk->IsInitialized())
+	{
+		Complete(TFlockResult<FFlockTokenRevokeResponse>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+			TEXT("Flock is not initialized, so a local player cannot be removed"), FFlockErrorHints::InitializeFlockFirst())));
+		return;
+	}
+	TWeakObjectPtr<UFlockRemoveLocalPlayerAction> WeakThis(this);
+	const FFlockCallOriginScope OriginScope(FlockBlueprintCallOrigin::Of(WorldContextObject.Get()));
+	Sdk->RemoveLocalPlayer(LocalPlayer, [WeakThis](TFlockResult<FFlockTokenRevokeResponse> Result)
+	{
+		if (UFlockRemoveLocalPlayerAction* Self = WeakThis.Get())
+		{
+			Self->Complete(Result);
+		}
+	});
+}
+
+void UFlockRemoveLocalPlayerAction::Complete(const TFlockResult<FFlockTokenRevokeResponse>& Result)
+{
+	if (Result.bSuccess)
+	{
+		OnSuccess.Broadcast(Result.Value, Result.Error);
+	}
+	else
+	{
+		OnFailure.Broadcast(Result.Value, Result.Error);
+	}
+	SetReadyToDestroy();
 }

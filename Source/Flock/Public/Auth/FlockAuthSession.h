@@ -59,8 +59,40 @@ public:
 	 */
 	void EndSignInForShutdown();
 
-	/** Whether Flock was shut down under this session: it then keeps no sign-in. */
+	/**
+	 * Ends this session for good, as EndSignInForShutdown does, with the cause and fix a sign-in answered later is given (a
+	 * removed local player). The saved sign-in, if any, is left alone.
+	 */
+	void EndSignIn(const FString& Reason, const FString& Fix);
+
+	/**
+	 * Refuses every sign-in answered from now on with Reason and Fix, while the current one carries on (it renews, and calls
+	 * act as it) until EndSignIn: a local player being removed, whose sign-out is on its way.
+	 */
+	void RefuseNewSignIns(const FString& Reason, const FString& Fix);
+
+	/** False once RefuseNewSignIns or EndSignIn was called, or Flock shut down under this session. */
+	bool TakesNewSignIns() const { return !bNewSignInsRefused; }
+
+	/** Whether Flock was shut down under this session, or it was ended: it then keeps no sign-in. */
 	bool IsShutDown() const { return bShutDown; }
+
+	/** The fix for a sign-in answered after new sign-ins were refused. */
+	const FString& GetEndedFix() const { return EndedFix; }
+
+	/** The fix a call needing a signed-in player gives when there is none: SetNotSignedInFix's, else the general advice. */
+	FString GetNotSignedInFix() const;
+
+	/** For a session that cannot be signed in the usual ways (a local player has no saved sign-in to restore). */
+	void SetNotSignedInFix(const FString& InFix) { NotSignedInFix = InFix; }
+
+	/**
+	 * Carries the current sign-in on with a pair the server issued for the same player elsewhere on this machine: the server
+	 * keeps one refresh token per player, so the one this session holds no longer renews. Its number stays, as for a renewal.
+	 * False with OutError (state untouched) when the session has ended, the token cannot be read, or it was issued before the
+	 * one this session holds (two answers landing out of order: the later one issued is the one the server keeps).
+	 */
+	bool KeepSignInWithNewTokens(const FString& InAccessToken, const FString& InRefreshToken, FString& OutError);
 
 	/**
 	 * Called by the subsystem for the session of each initialization. A renewal answered after Flock shut down saves its
@@ -167,6 +199,10 @@ private:
 
 	int32 SignInNumber = 0;
 	bool bShutDown = false;
+	bool bNewSignInsRefused = false;
+	FString EndedReason;
+	FString EndedFix;
+	FString NotSignedInFix;
 	/** The refresh on its way for the current sign-in; one sent for an earlier sign-in is let go when the number moves. */
 	TSharedPtr<FRefreshInFlight> RefreshInFlight;
 };

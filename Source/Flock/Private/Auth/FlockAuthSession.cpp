@@ -3,6 +3,7 @@
 #include "Auth/FlockAuthSession.h"
 #include "FlockEvents.h"
 #include "Http/FlockEndpoints.h"
+#include "Http/FlockErrorHints.h"
 #include "Http/FlockHttpClient.h"
 #include "Misc/ScopeExit.h"
 #include "Models/FlockAuthModels.h"
@@ -20,6 +21,11 @@ FFlockAuthSession::FFlockAuthSession(const TSharedRef<FFlockHttpClient>& InClien
 
 bool FFlockAuthSession::SetTokens(const FString& InAccessToken, const FString& InRefreshToken, FString& OutError)
 {
+	if (bNewSignInsRefused)
+	{
+		OutError = EndedReason;
+		return false;
+	}
 	if (!AdoptTokens(InAccessToken, InRefreshToken, OutError))
 	{
 		return false;
@@ -33,7 +39,7 @@ bool FFlockAuthSession::AdoptTokens(const FString& InAccessToken, const FString&
 	// A sign-in answered after Flock shut down belongs to no initialization: the saved sign-in is the next one's.
 	if (bShutDown)
 	{
-		OutError = TEXT("Flock was shut down before the server answered this sign-in, so it was not kept");
+		OutError = EndedReason;
 		return false;
 	}
 	TOptional<FFlockJwtClaims> NewClaims;
@@ -82,8 +88,40 @@ void FFlockAuthSession::ClearTokens()
 void FFlockAuthSession::EndSignInForShutdown()
 {
 	Logger->LogDebug(TEXT("Letting go of this initialization's tokens; the saved sign-in stays"));
+	EndSignIn(TEXT("Flock was shut down before the server answered this sign-in, so it was not kept"),
+		FFlockErrorHints::InitializeFlockFirst());
+}
+
+void FFlockAuthSession::EndSignIn(const FString& Reason, const FString& Fix)
+{
+	RefuseNewSignIns(Reason, Fix);
 	ForgetTokensInMemory();
 	bShutDown = true;
+}
+
+void FFlockAuthSession::RefuseNewSignIns(const FString& Reason, const FString& Fix)
+{
+	bNewSignInsRefused = true;
+	EndedReason = Reason;
+	EndedFix = Fix;
+}
+
+FString FFlockAuthSession::GetNotSignedInFix() const
+{
+	return NotSignedInFix.IsEmpty() ? FFlockErrorHints::SignInFirst() : NotSignedInFix;
+}
+
+bool FFlockAuthSession::KeepSignInWithNewTokens(const FString& InAccessToken, const FString& InRefreshToken, FString& OutError)
+{
+	FFlockJwtClaims Offered;
+	FString ParseError;
+	if (Claims.IsSet() && Claims.GetValue().IssuedAt.IsSet() && FFlockJwt::Parse(InAccessToken, Offered, ParseError)
+		&& Offered.IssuedAt.IsSet() && Offered.IssuedAt.GetValue() < Claims.GetValue().IssuedAt.GetValue())
+	{
+		OutError = TEXT("The tokens offered were issued before the ones this sign-in holds, so it keeps its own");
+		return false;
+	}
+	return AdoptTokens(InAccessToken, InRefreshToken, OutError);
 }
 
 void FFlockAuthSession::BecomeTheRunningSession()
@@ -262,6 +300,14 @@ void FFlockAuthSession::SendRefresh(const TSharedRef<FRefreshInFlight>& Refresh)
 					Self->SaveNewPairWhereTheSentOneIsStillSaved(*Refresh, Result.Value.AccessToken, Result.Value.RefreshToken);
 				}
 				Self->FinishRefresh(Refresh, false);
+				return;
+			}
+
+			// Another sign-in as this player on this machine handed this one a newer pair while the refresh was out
+			// (KeepSignInWithNewTokens): whatever the server answered for the older token, the newer pair carries on.
+			if (!Self->RefreshToken.Equals(Sent, ESearchCase::CaseSensitive))
+			{
+				Self->FinishRefresh(Refresh, true);
 				return;
 			}
 

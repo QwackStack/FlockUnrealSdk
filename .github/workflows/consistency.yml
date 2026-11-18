@@ -50,7 +50,7 @@ jobs:
           # written; Unknown carries "= 0" and is deliberately not matched, since no wire code maps to it.
           grep -oE '^[[:space:]]+[A-Z][A-Za-z]+,[[:space:]]*$' "$HEADER" | tr -d ' \t,\r' | sort -u > /tmp/members.txt
 
-          # Section-aware read of the snapshot: [documented] and [undocumented] must have members,
+          # Section-aware read of the snapshot: every section but [waived] ([documented], [undocumented], [sdk]) must have members,
           # [waived] must not.
           awk '
             /^\[.*\]$/ { section = $0; next }

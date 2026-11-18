@@ -195,14 +195,27 @@ private:
 		const FString LoggedContext = DecorateContext(Context);
 		// Read at dispatch too: the refusal the caller asked for on purpose (the setup check's made-up receipt) is no failure.
 		const FString ExpectedCode = FFlockExpectedAnswer::Get();
+		const TSharedPtr<FFlockAuthSession> SessionForFix = AuthSession;
 		TFunction<void(TFlockResult<T>)> Finish =
-			[Log, Context, LoggedContext, OnComplete, IsExpectedFailure, SettleFailure, ExpectedCode](TFlockResult<T> Result)
+			[Log, Context, LoggedContext, OnComplete, IsExpectedFailure, SettleFailure, ExpectedCode, SessionForFix](TFlockResult<T> Result)
 		{
 			if (!Result.bSuccess)
 			{
 				if (SettleFailure)
 				{
 					SettleFailure(Result.Error);
+				}
+				// A call refused for want of a sign-in (the server's player.missing_token, or the SDK's own) made with nobody
+				// signed in: a session with a sign-in of its own to name (a local player's) gives that fix, not the general one.
+				if (SessionForFix.IsValid() && !SessionForFix->IsAuthenticated() && Result.Error.Type == EFlockErrorType::Auth
+					&& (Result.Error.ErrorCode == EFlockErrorCode::PlayerMissingToken
+						|| Result.Error.Hint.Equals(FFlockErrorHints::SignInFirst(), ESearchCase::CaseSensitive)))
+				{
+					const FString OwnFix = SessionForFix->GetNotSignedInFix();
+					if (!OwnFix.Equals(FFlockErrorHints::SignInFirst(), ESearchCase::CaseSensitive))
+					{
+						Result.Error.Hint = OwnFix;
+					}
 				}
 				// The label each call site already declares, so a failure names the call that produced
 				// it. Stamped here rather than per provider: every call funnels through this one place.
@@ -477,8 +490,9 @@ private:
 
 				// A non-permanent failure with a cache to fall back on serves the cache; a permanent 4xx
 				// (an authoritative answer, e.g. the config was deleted) propagates regardless, and so does a
-				// cancelled call, whose caller gave up or whose sign-in ended.
-				if (bHasCache && Result.Error.Type != EFlockErrorType::Cancelled
+				// cancelled call, whose caller gave up or whose sign-in ended, and so does a sign-in refusal (a client whose
+				// owner ended, as a removed local player's, refuses every call without sending it).
+				if (bHasCache && Result.Error.Type != EFlockErrorType::Cancelled && Result.Error.Type != EFlockErrorType::Auth
 					&& !FFlockError::IsPermanentStatus(Result.Error.StatusCode))
 				{
 					TValue Value;

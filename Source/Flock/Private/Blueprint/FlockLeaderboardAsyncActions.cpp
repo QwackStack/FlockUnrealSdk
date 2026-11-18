@@ -4,13 +4,18 @@
 #include "Blueprint/FlockBlueprintCallOrigin.h"
 #include "Http/FlockErrorHints.h"
 
+#include "FlockLocalPlayer.h"
 #include "FlockSubsystem.h"
 #include "Providers/FlockLeaderboardProvider.h"
 
 namespace
 {
-	FFlockLeaderboardProvider* ResolveLeaderboard(UObject* WorldContextObject, FFlockError& OutError)
+	FFlockLeaderboardProvider* ResolveLeaderboard(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer, FFlockError& OutError)
 	{
+		if (LocalPlayer)
+		{
+			return LocalPlayer->GetLeaderboardProvider();
+		}
 		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
 		FFlockLeaderboardProvider* Provider = Sdk ? Sdk->GetLeaderboardProvider() : nullptr;
 		if (!Provider)
@@ -25,10 +30,11 @@ namespace
 // ───────────────────────────── Get Leaderboard ─────────────────────────────
 
 UFlockGetLeaderboardAction* UFlockGetLeaderboardAction::GetLeaderboard(UObject* WorldContextObject,
-	const FString& LeaderboardName)
+	const FString& LeaderboardName, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetLeaderboardAction* Action = NewObject<UFlockGetLeaderboardAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->LeaderboardName = LeaderboardName;
 	return Action;
 }
@@ -36,7 +42,7 @@ UFlockGetLeaderboardAction* UFlockGetLeaderboardAction::GetLeaderboard(UObject* 
 void UFlockGetLeaderboardAction::Activate()
 {
 	FFlockError Error;
-	FFlockLeaderboardProvider* Provider = ResolveLeaderboard(WorldContextObject, Error);
+	FFlockLeaderboardProvider* Provider = ResolveLeaderboard(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockLeaderboard>::Fail(Error));
@@ -70,10 +76,11 @@ void UFlockGetLeaderboardAction::Complete(const TFlockResult<FFlockLeaderboard>&
 // ────────────────────────── Get Leaderboard Standings ──────────────────────
 
 UFlockGetLeaderboardStandingsAction* UFlockGetLeaderboardStandingsAction::GetStandings(UObject* WorldContextObject,
-	const FString& LeaderboardName, FFlockLeaderboardWindow Window, const FString& Country, int32 Page, int32 Limit)
+	const FString& LeaderboardName, FFlockLeaderboardWindow Window, const FString& Country, int32 Page, int32 Limit, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetLeaderboardStandingsAction* Action = NewObject<UFlockGetLeaderboardStandingsAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->LeaderboardName = LeaderboardName;
 	Action->Window = Window;
 	Action->Country = Country;
@@ -85,7 +92,7 @@ UFlockGetLeaderboardStandingsAction* UFlockGetLeaderboardStandingsAction::GetSta
 void UFlockGetLeaderboardStandingsAction::Activate()
 {
 	FFlockError Error;
-	FFlockLeaderboardProvider* Provider = ResolveLeaderboard(WorldContextObject, Error);
+	FFlockLeaderboardProvider* Provider = ResolveLeaderboard(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockStandings>::Fail(Error));
@@ -120,10 +127,11 @@ void UFlockGetLeaderboardStandingsAction::Complete(const TFlockResult<FFlockStan
 // ─────────────────────────────── Get My Rank ───────────────────────────────
 
 UFlockGetMyRankAction* UFlockGetMyRankAction::GetMyRank(UObject* WorldContextObject, const FString& LeaderboardName,
-	FFlockLeaderboardWindow Window, const FString& Country)
+	FFlockLeaderboardWindow Window, const FString& Country, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetMyRankAction* Action = NewObject<UFlockGetMyRankAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->LeaderboardName = LeaderboardName;
 	Action->Window = Window;
 	Action->Country = Country;
@@ -133,7 +141,7 @@ UFlockGetMyRankAction* UFlockGetMyRankAction::GetMyRank(UObject* WorldContextObj
 void UFlockGetMyRankAction::Activate()
 {
 	FFlockError Error;
-	FFlockLeaderboardProvider* Provider = ResolveLeaderboard(WorldContextObject, Error);
+	FFlockLeaderboardProvider* Provider = ResolveLeaderboard(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerRank>::Fail(Error));
@@ -167,10 +175,11 @@ void UFlockGetMyRankAction::Complete(const TFlockResult<FFlockPlayerRank>& Resul
 // ───────────────────────── Get Standings Around Me ─────────────────────────
 
 UFlockGetStandingsAroundMeAction* UFlockGetStandingsAroundMeAction::GetStandingsAroundMe(UObject* WorldContextObject,
-	const FString& LeaderboardName, FFlockLeaderboardWindow Window, const FString& Country, int32 Neighbours)
+	const FString& LeaderboardName, FFlockLeaderboardWindow Window, const FString& Country, int32 Neighbours, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockGetStandingsAroundMeAction* Action = NewObject<UFlockGetStandingsAroundMeAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->LeaderboardName = LeaderboardName;
 	Action->Window = Window;
 	Action->Country = Country;
@@ -181,7 +190,7 @@ UFlockGetStandingsAroundMeAction* UFlockGetStandingsAroundMeAction::GetStandings
 void UFlockGetStandingsAroundMeAction::Activate()
 {
 	FFlockError Error;
-	FFlockLeaderboardProvider* Provider = ResolveLeaderboard(WorldContextObject, Error);
+	FFlockLeaderboardProvider* Provider = ResolveLeaderboard(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockStandings>::Fail(Error));

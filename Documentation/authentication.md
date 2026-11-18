@@ -62,7 +62,8 @@ Pass an id of your own only in two cases:
 
 ## Blueprint
 
-Every call is an async node under *Flock | Auth*, with no Target pin. Each has `On Success` and `On Failure` execution
+Every call is an async node under *Flock | Auth*, with no Target pin; a **Local Player** pin under the advanced arrow
+makes it act for a local player ([Local players](#local-players)). Each has `On Success` and `On Failure` execution
 pins, except **Flock Restore Session** (*On Restored* and *On No Session*) and **Flock Is Name Available** (*On Result* and
 *On Failure*).
 
@@ -351,6 +352,75 @@ player must sign in again: send them to your sign-in screen. In Blueprint, the s
 `Flock Is Restoring Session` → Branch, then either bind `On Session Restored` or read
 `Flock Is Authenticated`; `Flock Restore Session` runs a restore yourself, with **On Restored** and
 **On No Session** pins.
+
+## Local players
+
+For couch and booth games, several players can be signed in at once on one machine. Each **local player** has a sign-in
+and an HTTP client of their own, and the same auth, player, command and leaderboard providers the subsystem has. A Flock
+local player is a sign-in, not the engine's `ULocalPlayer` (a split-screen viewport): the two are unrelated.
+
+Each local player signs in with a device id of their own. Left empty, a device call uses the one id the SDK keeps for this
+install, which is one player: a second local player signing in with it is refused (see below). A booth game can make an id
+from the name a player types, as below; the first time a name is used, register it.
+
+```cpp
+#include "FlockSubsystem.h"
+
+UFlockSubsystem* Flock = UFlockSubsystem::Get(this);
+UFlockLocalPlayer* Sara = Flock->AddLocalPlayer();
+Sara->GetAuthProvider()->RegisterWithDevice(TEXT("typed-name:sara"), TEXT("Sara"), [Sara](TFlockResult<FFlockRegisterResult> Signed)
+{
+    // A name used before comes back with bAlreadyRegistered and nobody signed in: log in with the same id instead.
+    if (!Signed.bSuccess || Signed.Value.bAlreadyRegistered)
+    {
+        return; // Signed.Error.Hint says what to do; LoginWithDevice(TEXT("typed-name:sara"), ...) for a returning name
+    }
+    Sara->GetPlayerProvider()->GetMyDataByTemplate(TEXT("<template id>"), [Sara](TFlockResult<FFlockPlayerData> Row)
+    {
+        if (!Row.bSuccess)
+        {
+            return; // Row.Error.Hint says what to do
+        }
+        Sara->GetCommandProvider()->UpdatePlayerDataField(Row.Value.Id, TEXT("Score"), FFlockCommandValue(1200), nullptr);
+    });
+});
+
+// When the match is over:
+Flock->RemoveLocalPlayer(Sara, [](TFlockResult<FFlockTokenRevokeResponse> Result) {});
+```
+
+In Blueprint, **Add Local Player** returns the player; every Flock auth, player, command and leaderboard node has a
+**Local Player** pin under its advanced arrow (left empty, the node acts for the main player as before), and **Flock
+Remove Local Player** ends them. Keep the returned object in a variable for as long as the player plays.
+
+- **What a local player can do:** sign in, register and link (auth), read and write their own data (player and commands),
+  and read boards (leaderboard). Everything else (the shop and store, config read for a player, notifications, analytics,
+  multiplayer) acts for the main player only.
+- **One player never changes who another's calls act for**, however their calls interleave. The player signed in
+  through the subsystem is a separate player again, and is not affected.
+- **Kept in memory only.** A local player's sign-in is not saved; sign them in again on the next launch. **Flock Restore
+  Session** with the Local Player pin set always answers **On No Session**.
+- **Their events are their own.** Sign-ins and sign-outs are raised on the local player's `GetEvents()`, not on the
+  subsystem's, and analytics stays with the player signed in through the subsystem.
+- **Who they are.** `GetPlayerId()` and `IsAuthenticated()` on the local player.
+- **A local player cannot sign in as a player already signed in here.** A local player signing in as the main player, or
+  as another local player, is refused with `flock.player_already_signed_in` (`EFlockErrorCode::FlockPlayerAlreadySignedIn`),
+  and the sign-in already here keeps working: the server keeps one sign-in per player, so the refused attempt has replaced
+  it, and the SDK hands its new tokens to the sign-in already here. The other way round, the main player signing in as a
+  player a local player holds goes through and **ends that local player** (not signed out on the server, whose one sign-in
+  for the player is now the main player's): its later calls fail with the cause and a fix naming the main player's auth.
+- **Removing ends them.** `RemoveLocalPlayer` signs the player out on the server (which ends their sign-in on every
+  machine) and here, and completes with
+  the sign-out's result; the player is removed either way. From the call on, a sign-in of theirs is refused; their other
+  calls go out as usual until the sign-out answers. From then on, every call through them fails without being sent, with
+  the cause and a fix saying to add a new one, except a board's configuration already read, which is answered from memory.
+  Removing a player twice, or none, is refused with a Validation error. `ShutdownSdk` ends every local player, with its
+  own cause.
+- **Signing a local player out** is removing them: add a new one for the next player. **Flock Revoke Token** with the
+  Local Player pin set ends the sign-in on the server only, and leaves the local player signed in here until it fails.
+- **Calls before they sign in** fail with a fix naming their own sign-in; offline, a write is refused rather than queued.
+- **Logged Out on their own events** is raised whenever a signed-in local player ends: removed, ended by the main
+  player's sign-in, or by `ShutdownSdk`.
 
 ## Things worth knowing
 

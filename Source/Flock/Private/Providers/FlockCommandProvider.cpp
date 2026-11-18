@@ -548,6 +548,18 @@ void FFlockCommandProvider::SendQueueable(const FString& Path, const FString& Pa
 	const bool bReachable = IsServerReachable();
 	if (!bReachable || PendingWrites.Num() > 0)
 	{
+		// With nobody signed in it would be queued for no player, answered as done and never sent: refused instead, as the
+		// server refuses it online.
+		if (!Session->IsAuthenticated())
+		{
+			if (OnComplete)
+			{
+				OnComplete(TFlockResult<FFlockPlayerData>::Fail(
+					FFlockError::MakeWithFix(EFlockErrorType::Auth, TEXT("No player is signed in, so the write was not queued"),
+						Session->GetNotSignedInFix())));
+			}
+			return;
+		}
 		const FFlockPlayerData Optimistic = EnqueueWrite(Path, PayloadJson, Context, PlayerDataId, OptimisticFields, bReachable);
 		if (bReachable)
 		{

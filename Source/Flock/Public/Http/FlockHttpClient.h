@@ -61,6 +61,23 @@ public:
 	/** Shortens the re-probe window so a test needn't wait it out. */
 	void SetOfflineLatchSecondsForTesting(float InSeconds) { OfflineLatchSeconds = InSeconds; }
 
+	// ── Closing ──
+
+	/**
+	 * Ends this client for good, for an owner that has ended (a removed local player): every later request, a retry
+	 * included, fails at once with Reason and Fix and is not sent. Requests already sent finish normally.
+	 */
+	void Close(const FString& Reason, const FString& Fix)
+	{
+		ClosedReason = Reason;
+		ClosedFix = Fix;
+	}
+
+	bool IsClosed() const { return !ClosedReason.IsEmpty(); }
+
+	/** The failure every request gets once closed: Auth, as for a call made with nobody signed in, which is never retried. */
+	FFlockError ClosedFailure() const { return FFlockError::MakeWithFix(EFlockErrorType::Auth, ClosedReason, ClosedFix); }
+
 	// ── Enveloped verbs (unwrap `result` into T) ──
 
 	template <typename T>
@@ -119,6 +136,10 @@ public:
 	template <typename T>
 	FFlockRequestHandle GetList(const FString& Url, const TMap<FString, FString>& Headers, TFunction<void(TFlockResult<TArray<T>>)> OnComplete)
 	{
+		if (RefuseWhenClosed(OnComplete))
+		{
+			return FFlockRequestHandle();
+		}
 		FFlockHttpRequest Request = MakeRequest(TEXT("GET"), Url, Headers, FString(), /*bHasBody*/ false);
 		const FString Origin = LogRequest(TEXT("GET"), Url);
 		const FString ExpectedCode = FFlockExpectedAnswer::Get();
@@ -203,6 +224,10 @@ public:
 	template <typename T>
 	FFlockRequestHandle GetPaged(const FString& Url, const TMap<FString, FString>& Headers, TFunction<void(TFlockResult<TFlockPage<T>>)> OnComplete)
 	{
+		if (RefuseWhenClosed(OnComplete))
+		{
+			return FFlockRequestHandle();
+		}
 		FFlockHttpRequest Request = MakeRequest(TEXT("GET"), Url, Headers, FString(), /*bHasBody*/ false);
 		const FString Origin = LogRequest(TEXT("GET"), Url);
 		const FString ExpectedCode = FFlockExpectedAnswer::Get();
@@ -236,6 +261,21 @@ public:
 	}
 
 private:
+	/** Once closed, hands OnComplete the closed failure and returns true: the request is not sent. */
+	template <typename TValue>
+	bool RefuseWhenClosed(const TFunction<void(TFlockResult<TValue>)>& OnComplete) const
+	{
+		if (!IsClosed())
+		{
+			return false;
+		}
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<TValue>::Fail(ClosedFailure()));
+		}
+		return true;
+	}
+
 	FFlockHttpRequest MakeRequest(const FString& Method, const FString& Url, const TMap<FString, FString>& Headers,
 		const FString& Body, bool bHasBody) const
 	{
@@ -314,6 +354,10 @@ private:
 	FFlockRequestHandle Send(const FString& Method, const FString& Url, const TMap<FString, FString>& Headers,
 		const FString& Body, bool bHasBody, EBodyReading Reading, TFunction<void(TFlockResult<T>)> OnComplete)
 	{
+		if (RefuseWhenClosed(OnComplete))
+		{
+			return FFlockRequestHandle();
+		}
 		FFlockHttpRequest Request = MakeRequest(Method, Url, Headers, Body, bHasBody);
 		const FString Origin = LogRequest(Method, Url);
 		const FString ExpectedCode = FFlockExpectedAnswer::Get();
@@ -394,4 +438,8 @@ private:
 	 * lapses on its own, so it can never stick permanently even if nothing ever succeeds again.
 	 */
 	float OfflineLatchSeconds = 30.f;
+
+	/** Set by Close: why this client ended and what to do instead. Empty while open. */
+	FString ClosedReason;
+	FString ClosedFix;
 };

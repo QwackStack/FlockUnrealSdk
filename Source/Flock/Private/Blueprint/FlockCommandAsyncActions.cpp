@@ -4,13 +4,18 @@
 #include "Blueprint/FlockBlueprintCallOrigin.h"
 #include "Http/FlockErrorHints.h"
 
+#include "FlockLocalPlayer.h"
 #include "FlockSubsystem.h"
 #include "Providers/FlockCommandProvider.h"
 
 namespace
 {
-	FFlockCommandProvider* ResolveCommands(UObject* WorldContextObject, FFlockError& OutError)
+	FFlockCommandProvider* ResolveCommands(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer, FFlockError& OutError)
 	{
+		if (LocalPlayer)
+		{
+			return LocalPlayer->GetCommandProvider();
+		}
 		UFlockSubsystem* Sdk = UFlockSubsystem::Get(WorldContextObject);
 		FFlockCommandProvider* Provider = Sdk ? Sdk->GetCommandProvider() : nullptr;
 		if (!Provider)
@@ -25,20 +30,22 @@ namespace
 // ───────────────────────────── Update Player Data ───────────────────────────
 
 UFlockUpdatePlayerDataAction* UFlockUpdatePlayerDataAction::UpdatePlayerData(UObject* WorldContextObject,
-	const FString& PlayerDataId, const FFlockCommandData& Data)
+	const FString& PlayerDataId, const FFlockCommandData& Data, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockUpdatePlayerDataAction* Action = NewObject<UFlockUpdatePlayerDataAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->PlayerDataId = PlayerDataId;
 	Action->Data = Data;
 	return Action;
 }
 
 UFlockUpdatePlayerDataAction* UFlockUpdatePlayerDataAction::UpdatePlayerDataField(UObject* WorldContextObject,
-	const FString& PlayerDataId, const FString& Key, const FFlockCommandValue& Value)
+	const FString& PlayerDataId, const FString& Key, const FFlockCommandValue& Value, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockUpdatePlayerDataAction* Action = NewObject<UFlockUpdatePlayerDataAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->PlayerDataId = PlayerDataId;
 	Action->Key = Key;
 	Action->Value = Value;
@@ -48,7 +55,7 @@ UFlockUpdatePlayerDataAction* UFlockUpdatePlayerDataAction::UpdatePlayerDataFiel
 void UFlockUpdatePlayerDataAction::Activate()
 {
 	FFlockError Error;
-	FFlockCommandProvider* Provider = ResolveCommands(WorldContextObject, Error);
+	FFlockCommandProvider* Provider = ResolveCommands(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerData>::Fail(Error));
@@ -91,10 +98,11 @@ void UFlockUpdatePlayerDataAction::Complete(const TFlockResult<FFlockPlayerData>
 // ───────────────────────────── Unlock Achievement ───────────────────────────
 
 UFlockUnlockAchievementAction* UFlockUnlockAchievementAction::UnlockAchievement(UObject* WorldContextObject,
-	const FString& AchievementName)
+	const FString& AchievementName, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockUnlockAchievementAction* Action = NewObject<UFlockUnlockAchievementAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->AchievementName = AchievementName;
 	return Action;
 }
@@ -102,7 +110,7 @@ UFlockUnlockAchievementAction* UFlockUnlockAchievementAction::UnlockAchievement(
 void UFlockUnlockAchievementAction::Activate()
 {
 	FFlockError Error;
-	FFlockCommandProvider* Provider = ResolveCommands(WorldContextObject, Error);
+	FFlockCommandProvider* Provider = ResolveCommands(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerData>::Fail(Error));
@@ -136,10 +144,11 @@ void UFlockUnlockAchievementAction::Complete(const TFlockResult<FFlockPlayerData
 // ─────────────────────────────── Add Game Funds ─────────────────────────────
 
 UFlockAddGameFundsAction* UFlockAddGameFundsAction::AddGameFunds(UObject* WorldContextObject, const FString& Currency,
-	int32 Amount, const FString& CurrencyTemplateId)
+	int32 Amount, const FString& CurrencyTemplateId, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockAddGameFundsAction* Action = NewObject<UFlockAddGameFundsAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	Action->Currency = Currency;
 	Action->Amount = Amount;
 	Action->CurrencyTemplateId = CurrencyTemplateId;
@@ -149,7 +158,7 @@ UFlockAddGameFundsAction* UFlockAddGameFundsAction::AddGameFunds(UObject* WorldC
 void UFlockAddGameFundsAction::Activate()
 {
 	FFlockError Error;
-	FFlockCommandProvider* Provider = ResolveCommands(WorldContextObject, Error);
+	FFlockCommandProvider* Provider = ResolveCommands(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<FFlockPlayerData>::Fail(Error));
@@ -191,17 +200,18 @@ void UFlockAddGameFundsAction::Complete(const TFlockResult<FFlockPlayerData>& Re
 
 // ───────────────────────── Flush Pending Commands ───────────────────────────
 
-UFlockFlushPendingCommandsAction* UFlockFlushPendingCommandsAction::FlushPendingCommands(UObject* WorldContextObject)
+UFlockFlushPendingCommandsAction* UFlockFlushPendingCommandsAction::FlushPendingCommands(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer)
 {
 	UFlockFlushPendingCommandsAction* Action = NewObject<UFlockFlushPendingCommandsAction>();
 	Action->WorldContextObject = WorldContextObject;
+	Action->LocalPlayer = LocalPlayer;
 	return Action;
 }
 
 void UFlockFlushPendingCommandsAction::Activate()
 {
 	FFlockError Error;
-	FFlockCommandProvider* Provider = ResolveCommands(WorldContextObject, Error);
+	FFlockCommandProvider* Provider = ResolveCommands(WorldContextObject, LocalPlayer, Error);
 	if (!Provider)
 	{
 		Complete(TFlockResult<int32>::Fail(Error));

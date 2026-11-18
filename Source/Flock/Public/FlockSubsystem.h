@@ -8,6 +8,7 @@
 #include "Auth/FlockAuthSession.h"
 #include "Auth/FlockTokenStore.h"
 #include "FlockInitConfig.h"
+#include "FlockLocalPlayer.h"
 #include "FlockLogger.h"
 #include "Http/FlockHttpAdapter.h"
 #include "Http/FlockHttpClient.h"
@@ -160,6 +161,32 @@ public:
 	/** Logs the current player out locally; safe when signed out. Server-side revocation is separate (RevokeToken). */
 	UFUNCTION(BlueprintCallable, Category = "Flock|Auth")
 	void Logout();
+
+	// ── Local players ──
+
+	/**
+	 * Adds a player who signs in beside the others on this machine, for couch and booth games. Returns the player at once,
+	 * signed out: sign them in through its GetAuthProvider() (Blueprint: the Flock auth nodes with this on their Local Player
+	 * pin), then use its player, command and leaderboard providers the way you use the subsystem's.
+	 *
+	 * Each local player has their own sign-in and HTTP client, so they can sign in and play at the same time without one
+	 * changing who another's calls act for. Kept in memory only. A local player signing in as a player already signed in here
+	 * (the main player or another local player) is refused with flock.player_already_signed_in, and the sign-in already here
+	 * keeps working. The main player signing in as a player a local player holds ends that local player instead, since the
+	 * server keeps one sign-in per player. Before Flock is initialized it returns null and
+	 * logs an error saying so: add local players from CallOrRegister_OnInitialized on the events.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flock|Local Players")
+	UFlockLocalPlayer* AddLocalPlayer();
+
+	/**
+	 * Signs LocalPlayer out on the server and here, and ends them; OnComplete gets the sign-out's result, and the player is
+	 * removed either way. From this call on, a sign-in of theirs is refused; their other calls go out until the sign-out
+	 * answers. Requests already on the wire then finish; every later call through them fails, without being sent, with the cause and a fix
+	 * (a board's configuration already read is still answered from memory). A player already removed, or added before the
+	 * last ShutdownSdk, is refused with a Validation error. Blueprint: Flock Remove Local Player.
+	 */
+	void RemoveLocalPlayer(UFlockLocalPlayer* LocalPlayer, TFunction<void(TFlockResult<FFlockTokenRevokeResponse>)> OnComplete = nullptr);
 
 	// ── Analytics ──
 
@@ -505,6 +532,25 @@ private:
 	UFUNCTION()
 	void HandleCommandsAuthenticated(const FFlockAuthInfo& Info);
 
+	/**
+	 * The main player signed in as a player a local player holds: that local player is ended, not signed out on the server,
+	 * since the server's one sign-in for the player is now the main player's.
+	 */
+	UFUNCTION()
+	void EndLocalPlayersSignedInAsMainPlayer(const FFlockAuthInfo& Info);
+
+	/** An HTTP client over the test adapter when one is set, else the engine's, with the project's timeout. */
+	TSharedRef<FFlockHttpClient> MakeHttpClient(const TSharedRef<IFlockLogger>& InLogger) const;
+
+	/**
+	 * The session signed in on this machine as PlayerId (the main player's or a local player's), or null. Asking is the session
+	 * asking, left out.
+	 */
+	TSharedPtr<FFlockAuthSession> SessionSignedInAs(const FString& PlayerId, const FFlockAuthSession* Asking) const;
+
+	/** The local players added and not yet ended, those being removed included. */
+	TArray<UFlockLocalPlayer*> EveryLocalPlayer() const;
+
 	/** The active logger, lazily defaulted from the project's Enable Debug Logs setting when unset. */
 	IFlockLogger& GetLogger();
 
@@ -553,6 +599,18 @@ private:
 	TSharedPtr<FFlockLeaderboardProvider> LeaderboardProvider;
 	TSharedPtr<FFlockNotificationProvider> NotificationProvider;
 	TSharedPtr<FFlockMultiplayerProvider> MultiplayerProvider;
+
+	/** The local players added since the last initialization and not removed; held here from garbage collection. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UFlockLocalPlayer>> LocalPlayers;
+
+	/** Local players whose sign-out is on its way; ended once it answers, or by ShutdownSdk. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UFlockLocalPlayer>> LocalPlayersBeingRemoved;
+
+	/** Kept from initialization for the parts each local player gets. */
+	FFlockRetryPolicy RetryPolicy;
+	TSharedPtr<FFlockDeviceIdFile> DeviceIdFile;
 
 	TSharedPtr<IFlockHttpAdapter> TestHttpAdapter;
 	TSharedPtr<IFlockTokenStore> TestTokenStore;

@@ -93,7 +93,7 @@ void FFlockPlayerProvider::GetMyData(int32 Page, int32 Limit,
 	// call — the opposite of what this overload promises. Signed out is a Validation failure, not a
 	// silent whole-game read.
 	const FString PlayerId = Session->GetPlayerId();
-	if (!RequireNotEmpty(PlayerId, TEXT("Signed-in player's id"), OnComplete, FFlockErrorHints::SignInFirst()))
+	if (!RequireNotEmpty(PlayerId, TEXT("Signed-in player's id"), OnComplete, Session->GetNotSignedInFix()))
 	{
 		return;
 	}
@@ -107,7 +107,7 @@ void FFlockPlayerProvider::GetMyDataByTemplate(const FString& PlayerTemplateId, 
 		return;
 	}
 	const FString PlayerId = Session->GetPlayerId();
-	if (!RequireNotEmpty(PlayerId, TEXT("Signed-in player's id"), OnComplete, FFlockErrorHints::SignInFirst()))
+	if (!RequireNotEmpty(PlayerId, TEXT("Signed-in player's id"), OnComplete, Session->GetNotSignedInFix()))
 	{
 		return;
 	}
@@ -390,7 +390,7 @@ void FFlockPlayerProvider::GetTemplatePlayerData(const FString& PlayerTemplateId
 void FFlockPlayerProvider::GetBan(const FString& PlayerId, TFunction<void(TFlockResult<FFlockPlayerBan>)> OnComplete)
 {
 	const FString ResolvedPlayerId = PlayerId.IsEmpty() ? Session->GetPlayerId() : PlayerId;
-	if (!RequireNotEmpty(ResolvedPlayerId, TEXT("Player ID"), OnComplete, FFlockErrorHints::SignInFirst()))
+	if (!RequireNotEmpty(ResolvedPlayerId, TEXT("Player ID"), OnComplete, Session->GetNotSignedInFix()))
 	{
 		return;
 	}

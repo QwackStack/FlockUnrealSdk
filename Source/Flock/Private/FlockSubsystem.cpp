@@ -18,8 +18,23 @@
 #include "Http/FlockHttpShutdown.h"
 #include "Store/FlockStore.h"
 
+namespace
+{
+	const TCHAR* const LocalPlayerNotSignedInFix = TEXT("Sign this local player in first, through their own auth provider (GetAuthProvider ")
+		TEXT("on the local player, or the Flock auth nodes with it on their Local Player pin). A local player has no saved sign-in to restore.");
+	const TCHAR* const LocalPlayerRemovedReason = TEXT("This local player was removed with RemoveLocalPlayer (Blueprint: Flock Remove Local Player).");
+	const TCHAR* const LocalPlayerShutDownReason = TEXT("Flock was shut down, which ended this local player.");
+	const TCHAR* const LocalPlayerEndedFix = TEXT("Add a new one with AddLocalPlayer (Blueprint: Add Local Player) and sign them in again.");
+	const TCHAR* const LocalPlayerSignedInAsMainPlayerReason = TEXT("This local player was ended because the main player signed in as the same player.");
+	const TCHAR* const LocalPlayerSignedInAsMainPlayerFix = TEXT("Sign each player in once on a machine: play them through the main player (the ")
+		TEXT("subsystem's GetAuthProvider, or the Flock auth nodes with Local Player left empty), or add a new local player and sign them in ")
+		TEXT("as someone else.");
+	const TCHAR* const LocalPlayerAfterShutdownFix = TEXT("After initializing Flock again, add a new one with AddLocalPlayer (Blueprint: Add ")
+		TEXT("Local Player) and sign them in again.");
+}
+
 const FString UFlockSubsystem::ApiVersion = TEXT("v1");
-const FString UFlockSubsystem::SdkVersion = TEXT("1.52.0");
+const FString UFlockSubsystem::SdkVersion = TEXT("1.53.0");
 
 UFlockSubsystem* UFlockSubsystem::Get(const UObject* WorldContextObject)
 {
@@ -189,16 +204,14 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	ActiveConfig.ApiUrl = ApiUrl;
 
 	const UFlockConfig* Settings = GetDefault<UFlockConfig>();
-	FFlockRetryPolicy RetryPolicy;
+	RetryPolicy = FFlockRetryPolicy();
 	RetryPolicy.MaxRetries = Settings->RetryMaxRetries;
 	RetryPolicy.bUseJitter = Settings->bRetryUseJitter;
 
 	// Every part gets the logger that passes lines on, so one the game sets later reaches it too.
 	const TSharedRef<IFlockLogger> LoggerRef = SharedLogger();
 
-	HttpClient = TestHttpAdapter.IsValid()
-		? MakeShared<FFlockHttpClient>(TestHttpAdapter.ToSharedRef(), LoggerRef, Settings->HttpTimeoutSeconds)
-		: FFlockHttpClient::CreateDefault(Settings->HttpTimeoutSeconds, LoggerRef);
+	HttpClient = MakeHttpClient(LoggerRef);
 
 	// Only a test names a folder for every file this SDK saves, so that it is never one more launch of the game.
 	const bool bSavesInTestFolder = !TestSavedFilesFolder.IsEmpty();
@@ -232,9 +245,9 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		}
 	});
 	// This install's device id is kept beside the saved sign-in, and read again by each start of the SDK.
+	DeviceIdFile = MakeShared<FFlockDeviceIdFile>(bSavesInTestFolder ? TestSavedFilesFolder : FFlockFileTokenStore::DefaultFolder());
 	AuthProvider = MakeUnique<FFlockAuthProvider>(HttpClient.ToSharedRef(), RetryPolicy, LoggerRef,
-		AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl(),
-		MakeShared<FFlockDeviceIdFile>(bSavesInTestFolder ? TestSavedFilesFolder : FFlockFileTokenStore::DefaultFolder()));
+		AuthSession.ToSharedRef(), GetEvents(), GetVersionedApiUrl(), DeviceIdFile);
 
 	// Read-side offline cache, shared by config and game. Built before them and pruned to the current game
 	// version so switching versions doesn't accumulate stale trees. Null when disabled in settings, in
@@ -333,6 +346,7 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 		AuthSession.ToSharedRef(), GetVersionedApiUrl(), SnapshotStore, Config.GameVersionId);
 	CommandProvider->SetPlayerProvider(PlayerProvider);
 	GetEvents()->OnAuthenticated.AddDynamic(this, &UFlockSubsystem::HandleCommandsAuthenticated);
+	GetEvents()->OnAuthenticated.AddDynamic(this, &UFlockSubsystem::EndLocalPlayersSignedInAsMainPlayer);
 
 	// Assets are game-version scoped rather than player scoped, so nothing here is cleared on logout — the
 	// snapshot store's PruneOtherVersions above already parks a previous version's index. The binary cache
@@ -387,6 +401,163 @@ bool UFlockSubsystem::TryInitialize(const FFlockInitConfig& Config, FString& Out
 	return true;
 }
 
+TSharedRef<FFlockHttpClient> UFlockSubsystem::MakeHttpClient(const TSharedRef<IFlockLogger>& InLogger) const
+{
+	const float TimeoutSeconds = GetDefault<UFlockConfig>()->HttpTimeoutSeconds;
+	return TestHttpAdapter.IsValid()
+		? MakeShared<FFlockHttpClient>(TestHttpAdapter.ToSharedRef(), InLogger, TimeoutSeconds)
+		: FFlockHttpClient::CreateDefault(TimeoutSeconds, InLogger);
+}
+
+UFlockLocalPlayer* UFlockSubsystem::AddLocalPlayer()
+{
+	if (!bInitialized)
+	{
+		GetLogger().LogError(TEXT("AddLocalPlayer needs Flock initialized first, so no local player was added. Fix: add them from ")
+			TEXT("Flock's events' CallOrRegister_OnInitialized, or once Is Initialized is true."));
+		return nullptr;
+	}
+	const TSharedRef<IFlockLogger> LoggerRef = SharedLogger();
+	// Not this subsystem as its outer: a game holding a local player after its game instance ended would keep both alive.
+	UFlockLocalPlayer* Local = NewObject<UFlockLocalPlayer>(GetTransientPackage());
+	Local->Events = NewObject<UFlockEvents>(Local);
+	Local->Events->SetLogger(Logger);
+
+	// Its own client: its own offline check, and closing it ends this player alone.
+	const TSharedRef<FFlockHttpClient> Client = MakeHttpClient(LoggerRef);
+	Local->HttpClient = Client;
+	// No token store: kept in memory only.
+	const TSharedRef<FFlockAuthSession> Session = MakeShared<FFlockAuthSession>(Client, nullptr, LoggerRef,
+		GetVersionedApiUrl(), ActiveConfig.GetBaseHeaders());
+	Session->SetEvents(Local->Events);
+	Session->SetNotSignedInFix(LocalPlayerNotSignedInFix);
+	Local->AuthSession = Session;
+
+	Local->AuthProvider = MakeUnique<FFlockAuthProvider>(Client, RetryPolicy, LoggerRef, Session, Local->Events,
+		GetVersionedApiUrl(), DeviceIdFile);
+	// Weak both ways: the lookup lives in this player's provider, and must keep neither the subsystem nor the player alive.
+	Local->AuthProvider->SetSessionSignedInAs(
+		[WeakThis = TWeakObjectPtr<UFlockSubsystem>(this), WeakAsking = TWeakPtr<FFlockAuthSession>(Session)](const FString& PlayerId)
+		{
+			const UFlockSubsystem* Self = WeakThis.Get();
+			const TSharedPtr<FFlockAuthSession> Asking = WeakAsking.Pin();
+			return Self != nullptr && Asking.IsValid() ? Self->SessionSignedInAs(PlayerId, Asking.Get()) : TSharedPtr<FFlockAuthSession>();
+		});
+
+	// The same saved answers on disk as the main player's (each player's own keyed by their id), with the server's
+	// reachability asked of this player's own client.
+	Local->PlayerProvider = MakeShared<FFlockPlayerProvider>(Client, RetryPolicy, LoggerRef, Session, GetVersionedApiUrl(),
+		SnapshotStore, ActiveConfig.GameVersionId);
+	Local->CommandProvider = MakeShared<FFlockCommandProvider>(Client, RetryPolicy, LoggerRef, Session, GetVersionedApiUrl(),
+		SnapshotStore, ActiveConfig.GameVersionId);
+	Local->CommandProvider->SetPlayerProvider(Local->PlayerProvider);
+	Local->LeaderboardProvider = MakeShared<FFlockLeaderboardProvider>(Client, RetryPolicy, LoggerRef, Session,
+		GetVersionedApiUrl(), SnapshotStore, ActiveConfig.GameVersionId);
+	auto Probe = [Client]() { return !Client->IsLikelyOffline(); };
+	Local->PlayerProvider->SetReachabilityProbe(Probe);
+	Local->CommandProvider->SetReachabilityProbe(Probe);
+	Local->LeaderboardProvider->SetReachabilityProbe(Probe);
+	Local->CommandProvider->Initialize();
+	Local->Events->OnAuthenticated.AddDynamic(Local, &UFlockLocalPlayer::HandleAuthenticated);
+
+	LocalPlayers.Add(Local);
+	return Local;
+}
+
+void UFlockSubsystem::RemoveLocalPlayer(UFlockLocalPlayer* LocalPlayer, TFunction<void(TFlockResult<FFlockTokenRevokeResponse>)> OnComplete)
+{
+	if (LocalPlayer == nullptr)
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockTokenRevokeResponse>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("No local player was given to remove"),
+				TEXT("Pass the local player AddLocalPlayer (Blueprint: Add Local Player) returned, kept in a variable."))));
+		}
+		return;
+	}
+	if (!LocalPlayers.Contains(LocalPlayer))
+	{
+		if (OnComplete)
+		{
+			OnComplete(TFlockResult<FFlockTokenRevokeResponse>::Fail(FFlockError::MakeWithFix(EFlockErrorType::Validation,
+				TEXT("That local player is not one of this game's: it was already removed, it was ended because the main player signed in as the same player, or Flock was shut down since it was added"),
+				TEXT("Remove each local player once. After ShutdownSdk and initializing again, add and sign in the players again."))));
+		}
+		return;
+	}
+	LocalPlayers.Remove(LocalPlayer);
+	LocalPlayersBeingRemoved.Add(LocalPlayer);
+	// A sign-in of theirs answered while the sign-out is on its way would sign them in as someone the sign-out never ends.
+	LocalPlayer->AuthSession->RefuseNewSignIns(LocalPlayerRemovedReason, LocalPlayerEndedFix);
+
+	// Ended only once the sign-out has answered, then handed over: a caller carrying on from the answer finds them ended.
+	TFunction<void(TFlockResult<FFlockTokenRevokeResponse>)> Finish =
+		[WeakThis = TWeakObjectPtr<UFlockSubsystem>(this), WeakLocal = TWeakObjectPtr<UFlockLocalPlayer>(LocalPlayer), OnComplete]
+		(TFlockResult<FFlockTokenRevokeResponse> Result)
+		{
+			UFlockLocalPlayer* Local = WeakLocal.Get();
+			if (Local != nullptr && !Local->bReleased)
+			{
+				// Signed out here as well, which raises the player's own Logged Out.
+				Local->AuthProvider->Logout();
+				Local->Release(LocalPlayerRemovedReason, LocalPlayerEndedFix);
+			}
+			if (UFlockSubsystem* Self = WeakThis.Get())
+			{
+				Self->LocalPlayersBeingRemoved.Remove(Local);
+			}
+			if (OnComplete)
+			{
+				OnComplete(MoveTemp(Result));
+			}
+		};
+	if (!LocalPlayer->IsAuthenticated())
+	{
+		Finish(TFlockResult<FFlockTokenRevokeResponse>::Ok(FFlockTokenRevokeResponse()));
+		return;
+	}
+	LocalPlayer->AuthProvider->RevokeToken(MoveTemp(Finish));
+}
+
+TSharedPtr<FFlockAuthSession> UFlockSubsystem::SessionSignedInAs(const FString& PlayerId, const FFlockAuthSession* Asking) const
+{
+	auto IsSignedInAs = [&PlayerId, Asking](const TSharedPtr<FFlockAuthSession>& Session)
+	{
+		return Session.IsValid() && Session.Get() != Asking && Session->IsAuthenticated()
+			&& Session->GetPlayerId().Equals(PlayerId, ESearchCase::CaseSensitive);
+	};
+	if (IsSignedInAs(AuthSession))
+	{
+		return AuthSession;
+	}
+	// One being removed still holds the player until its sign-out answers.
+	for (const UFlockLocalPlayer* Local : EveryLocalPlayer())
+	{
+		if (IsSignedInAs(Local->AuthSession))
+		{
+			return Local->AuthSession;
+		}
+	}
+	return nullptr;
+}
+
+TArray<UFlockLocalPlayer*> UFlockSubsystem::EveryLocalPlayer() const
+{
+	TArray<UFlockLocalPlayer*> Every;
+	for (const TArray<TObjectPtr<UFlockLocalPlayer>>* Players : { &LocalPlayers, &LocalPlayersBeingRemoved })
+	{
+		for (UFlockLocalPlayer* Local : *Players)
+		{
+			if (Local != nullptr)
+			{
+				Every.Add(Local);
+			}
+		}
+	}
+	return Every;
+}
+
 void UFlockSubsystem::HandleAnalyticsAuthenticated(const FFlockAuthInfo& Info)
 {
 	if (!AnalyticsProvider.IsValid())
@@ -401,6 +572,20 @@ void UFlockSubsystem::HandleAnalyticsAuthenticated(const FFlockAuthInfo& Info)
 	if (bStillThisSignIn && GetDefault<UFlockConfig>()->bAnalyticsAutoStartSession)
 	{
 		AnalyticsProvider->StartSession(Info.PlayerId);
+	}
+}
+
+void UFlockSubsystem::EndLocalPlayersSignedInAsMainPlayer(const FFlockAuthInfo& Info)
+{
+	// Not signed out on the server: the server keeps one sign-in per player, and that sign-in is now the main player's.
+	for (UFlockLocalPlayer* Local : EveryLocalPlayer())
+	{
+		if (Local->IsAuthenticated() && Local->GetPlayerId().Equals(Info.PlayerId, ESearchCase::CaseSensitive))
+		{
+			LocalPlayers.Remove(Local);
+			LocalPlayersBeingRemoved.Remove(Local);
+			Local->Release(LocalPlayerSignedInAsMainPlayerReason, LocalPlayerSignedInAsMainPlayerFix);
+		}
 	}
 }
 
@@ -599,6 +784,14 @@ void UFlockSubsystem::ShutdownSdkFor(bool bGameEnding)
 		MultiplayerProvider->LeaveForQuit();
 	}
 
+	// Each local player was set up from this initialization, so it ends with it, with its own cause.
+	for (UFlockLocalPlayer* Local : EveryLocalPlayer())
+	{
+		Local->Release(LocalPlayerShutDownReason, LocalPlayerAfterShutdownFix);
+	}
+	LocalPlayers.Reset();
+	LocalPlayersBeingRemoved.Reset();
+
 	// The store is disconnected first: a purchase it waits for ends Cancelled while the providers it calls still exist.
 	if (ConnectedStore != nullptr)
 	{
@@ -640,6 +833,7 @@ void UFlockSubsystem::ShutdownSdkFor(bool bGameEnding)
 		Events->OnLoggedOut.RemoveDynamic(this, &UFlockSubsystem::HandleAnalyticsLoggedOut);
 		Events->OnAuthExpired.RemoveDynamic(this, &UFlockSubsystem::HandleAnalyticsLoggedOut);
 		Events->OnAuthenticated.RemoveDynamic(this, &UFlockSubsystem::HandleCommandsAuthenticated);
+		Events->OnAuthenticated.RemoveDynamic(this, &UFlockSubsystem::EndLocalPlayersSignedInAsMainPlayer);
 	}
 
 	ConfigProvider.Reset();
@@ -659,6 +853,7 @@ void UFlockSubsystem::ShutdownSdkFor(bool bGameEnding)
 	AuthSession.Reset();
 	HttpClient.Reset();
 	TokenStore.Reset();
+	DeviceIdFile.Reset();
 	ActiveConfig = FFlockInitConfig();
 	bInitialized = false;
 	GetLogger().LogInfo(TEXT("SDK shut down."));

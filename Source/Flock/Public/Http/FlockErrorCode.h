@@ -209,6 +209,10 @@ enum class EFlockErrorCode : uint8
 	// shop_item.*
 	ShopItemShopItemNotFound,
 	ShopItemShopNotFound,
+
+	// flock.* — made by this SDK, never sent by the server
+	/** flock.player_already_signed_in: a local player signed in as a player already signed in on this machine. */
+	FlockPlayerAlreadySignedIn,
 };
 
 /** Parses the backend's coded-error string into EFlockErrorCode. */

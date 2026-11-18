@@ -10,6 +10,8 @@
 #include "Models/FlockShopModels.h"
 #include "FlockPlayerAsyncActions.generated.h"
 
+class UFlockLocalPlayer;
+
 /**
  * Blueprint async nodes for player data, templates, and bans. Each resolves the SDK from its world
  * context on Activate and fires exactly one pin; when the SDK is unavailable the failure pin fires with a
@@ -20,6 +22,9 @@
  * players" (no filter). Read a row/template's flattened data off its handle with the game-config-data
  * library nodes. Get My Data By Template/Tag returns an empty record (empty Id) when the player has no
  * row for that template.
+ *
+ * The Local Player pin, left empty, acts for the main player; set, it acts for that local player
+ * (UFlockSubsystem::AddLocalPlayer).
  */
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FFlockPlayerDataPin, const FFlockPlayerData&, Data, const FFlockError&, Error);
@@ -44,8 +49,8 @@ public:
 	FFlockPlayerDataPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Player Data By Id"), Category = "Flock|Player")
-	static UFlockGetPlayerDataAction* GetPlayerDataById(UObject* WorldContextObject, const FString& PlayerDataId);
+		DisplayName = "Flock Get Player Data By Id", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Player")
+	static UFlockGetPlayerDataAction* GetPlayerDataById(UObject* WorldContextObject, const FString& PlayerDataId, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -54,6 +59,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	FString PlayerDataId;
 };
@@ -72,9 +80,9 @@ public:
 	FFlockPlayerDataPagePin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get All Player Data", AdvancedDisplay = "PlayerId"), Category = "Flock|Player")
+		DisplayName = "Flock Get All Player Data", AdvancedDisplay = "PlayerId,LocalPlayer"), Category = "Flock|Player")
 	static UFlockGetAllPlayerDataAction* GetAllPlayerData(UObject* WorldContextObject, const FString& PlayerId,
-		int32 Page = 1, int32 Limit = 100);
+		int32 Page = 1, int32 Limit = 100, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -83,6 +91,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	FString PlayerId;
 	int32 Page = 1;
@@ -103,12 +114,12 @@ public:
 	FFlockPlayerDataPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get My Data By Template"), Category = "Flock|Player")
-	static UFlockGetMyPlayerDataAction* GetMyDataByTemplate(UObject* WorldContextObject, const FString& PlayerTemplateId);
+		DisplayName = "Flock Get My Data By Template", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Player")
+	static UFlockGetMyPlayerDataAction* GetMyDataByTemplate(UObject* WorldContextObject, const FString& PlayerTemplateId, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get My Data By Tag"), Category = "Flock|Player")
-	static UFlockGetMyPlayerDataAction* GetMyDataByTag(UObject* WorldContextObject, const FString& Tag);
+		DisplayName = "Flock Get My Data By Tag", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Player")
+	static UFlockGetMyPlayerDataAction* GetMyDataByTag(UObject* WorldContextObject, const FString& Tag, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -117,6 +128,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	bool bByTag = false;
 	FString TemplateIdOrTag;
@@ -136,8 +150,8 @@ public:
 	FFlockPlayerTemplateListPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Player Templates"), Category = "Flock|Player")
-	static UFlockGetPlayerTemplatesAction* GetPlayerTemplates(UObject* WorldContextObject);
+		DisplayName = "Flock Get Player Templates", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Player")
+	static UFlockGetPlayerTemplatesAction* GetPlayerTemplates(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -146,6 +160,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 };
 
 /** Fetches a single player template by id, by name, or by tag. */
@@ -162,16 +179,16 @@ public:
 	FFlockPlayerTemplatePin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Player Template By Id"), Category = "Flock|Player")
-	static UFlockGetPlayerTemplateAction* GetPlayerTemplateById(UObject* WorldContextObject, const FString& PlayerTemplateId);
+		DisplayName = "Flock Get Player Template By Id", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Player")
+	static UFlockGetPlayerTemplateAction* GetPlayerTemplateById(UObject* WorldContextObject, const FString& PlayerTemplateId, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Player Template By Name"), Category = "Flock|Player")
-	static UFlockGetPlayerTemplateAction* GetPlayerTemplateByName(UObject* WorldContextObject, const FString& Name);
+		DisplayName = "Flock Get Player Template By Name", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Player")
+	static UFlockGetPlayerTemplateAction* GetPlayerTemplateByName(UObject* WorldContextObject, const FString& Name, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Player Template By Tag"), Category = "Flock|Player")
-	static UFlockGetPlayerTemplateAction* GetPlayerTemplateByTag(UObject* WorldContextObject, const FString& Tag);
+		DisplayName = "Flock Get Player Template By Tag", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Player")
+	static UFlockGetPlayerTemplateAction* GetPlayerTemplateByTag(UObject* WorldContextObject, const FString& Tag, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -183,6 +200,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	ELookup Mode = ELookup::ById;
 	FString TemplateIdNameOrTag;
@@ -202,8 +222,8 @@ public:
 	FFlockPlayerDataListPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Template Player Data"), Category = "Flock|Player")
-	static UFlockGetTemplatePlayerDataAction* GetTemplatePlayerData(UObject* WorldContextObject, const FString& PlayerTemplateId);
+		DisplayName = "Flock Get Template Player Data", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Player")
+	static UFlockGetTemplatePlayerDataAction* GetTemplatePlayerData(UObject* WorldContextObject, const FString& PlayerTemplateId, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -212,6 +232,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	FString PlayerTemplateId;
 };
@@ -230,8 +253,8 @@ public:
 	FFlockPlayerBanPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Player Ban", AdvancedDisplay = "PlayerId"), Category = "Flock|Player")
-	static UFlockGetPlayerBanAction* GetPlayerBan(UObject* WorldContextObject, const FString& PlayerId);
+		DisplayName = "Flock Get Player Ban", AdvancedDisplay = "PlayerId,LocalPlayer"), Category = "Flock|Player")
+	static UFlockGetPlayerBanAction* GetPlayerBan(UObject* WorldContextObject, const FString& PlayerId, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -240,6 +263,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 
 	FString PlayerId;
 };
@@ -261,8 +287,8 @@ public:
 	FFlockWalletPin OnFailure;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
-		DisplayName = "Flock Get Wallet"), Category = "Flock|Player")
-	static UFlockGetWalletAction* GetWallet(UObject* WorldContextObject);
+		DisplayName = "Flock Get Wallet", AdvancedDisplay = "LocalPlayer"), Category = "Flock|Player")
+	static UFlockGetWalletAction* GetWallet(UObject* WorldContextObject, UFlockLocalPlayer* LocalPlayer = nullptr);
 
 	virtual void Activate() override;
 
@@ -271,4 +297,7 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UObject> WorldContextObject;
+
+	UPROPERTY()
+	TObjectPtr<UFlockLocalPlayer> LocalPlayer;
 };
