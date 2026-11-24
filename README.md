@@ -2,7 +2,7 @@
 
 The Flock Unreal SDK provides access to Flock's game backend services from Unreal Engine games.
 
-> **1.53.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8 and a C++ compiler: the plugin
+> **1.54.0.** Everything documented below ships today. Requires Unreal Engine 5.4 to 5.8 and a C++ compiler: the plugin
 > ships as source, so a Blueprint-only project is converted once into a C++ project (see
 > [Blueprint-only projects](#blueprint-only-projects)). Your game itself needs no C++: every feature has Blueprint nodes,
 > apart from the few calls listed under [Status](#status).
@@ -697,6 +697,7 @@ detail and the fixes):
 | 1.51.0 | **The tracking plan's events in one call each**: `level_start`, `level_complete`, `level_fail`, `checkpoint_start`, `tutorial_step`, `settings_change`, `match_start` and `match_complete` as Blueprint nodes (**Flock Track Level Start** and its siblings) and C++ calls, with the plan's names and every argument optional |
 | 1.52.0 | **A shorter consent question for the playtest**: *Help the developers improve this game?* with **Yes, help the developers** and **Not now**, and a **What's collected?** pop-up explaining what is recorded |
 | 1.53.0 | **Local players**: several players signed in at once on one machine (`AddLocalPlayer`), each with their own sign-in and the same auth, player, command and leaderboard calls; a player signed in twice on one machine is refused |
+| 1.54.0 | **Playtest sessions and recordings started and ended by the game**: Start Session And Recording Automatically, `StartPlaytestSession`, `StartVideoRecording`, an `EndPlaytestSession` that uploads the recording first, `OnRecordingUploadChanged` for every upload (it replaces `OnRecordingUploadFinished`) and `OnPlaytestSessionChanged` |
 
 Deliberate omissions and known gaps:
 

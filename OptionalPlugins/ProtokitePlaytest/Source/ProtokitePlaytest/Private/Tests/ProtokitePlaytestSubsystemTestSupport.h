@@ -16,6 +16,7 @@
 #include "FlockInitConfig.h"
 #include "ProtokitePlaytestConsent.h"
 #include "ProtokitePlaytestPerformanceTimeline.h"
+#include "ProtokitePlaytestSelfTest.h"
 #include "ProtokitePlaytestSettings.h"
 #include "ProtokitePlaytestSubsystem.h"
 #include "FlockSubsystem.h"
@@ -28,6 +29,7 @@
 #include "Providers/FlockAnalyticsProvider.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "UObject/StrongObjectPtr.h"
 #include "Tests/ProtokitePlaytestFakeTransport.h"
 #include "Tests/ProtokitePlaytestTestSupport.h"
 #include "UObject/Package.h"
@@ -450,6 +452,38 @@ namespace ProtokitePlaytestSubsystemTesting
 		bool bCaptureEveryCategory = false;
 		FCriticalSection LinesLock;
 		TArray<FLine> Lines;
+	};
+
+	/** Hears the recording's upload events for a test. */
+	struct FUploadUpdatesHeard
+	{
+		TStrongObjectPtr<UProtokitePlaytestSelfTestListener> Listener{ NewObject<UProtokitePlaytestSelfTestListener>() };
+		TSharedRef<TArray<FProtokitePlaytestUploadUpdate>> Heard = MakeShared<TArray<FProtokitePlaytestUploadUpdate>>();
+
+		explicit FUploadUpdatesHeard(UProtokitePlaytestSubsystem* Playtest)
+		{
+			const TSharedRef<TArray<FProtokitePlaytestUploadUpdate>> Into = Heard;
+			Listener->OnUploadChanged = [Into](const FProtokitePlaytestUploadUpdate& Update) { Into->Add(Update); };
+			Playtest->OnRecordingUploadChanged.AddDynamic(Listener.Get(), &UProtokitePlaytestSelfTestListener::HandleRecordingUploadChanged);
+		}
+
+		/** The answers heard: every update but Started. */
+		TArray<FProtokitePlaytestUploadUpdate> Answers() const
+		{
+			return Heard->FilterByPredicate([](const FProtokitePlaytestUploadUpdate& Update) { return Update.State != EProtokitePlaytestUploadState::Started; });
+		}
+
+		/** How many Started were heard. */
+		int32 Starts() const { return Heard->Num() - Answers().Num(); }
+
+		/** Ticks the engine's core ticker until an answer is heard or Seconds of ticks have passed. */
+		void TickUntilHeard(float Seconds) const
+		{
+			for (float Waited = 0.f; Answers().Num() == 0 && Waited < Seconds; Waited += 0.1f)
+			{
+				FTSTicker::GetCoreTicker().Tick(0.1f);
+			}
+		}
 	};
 }
 

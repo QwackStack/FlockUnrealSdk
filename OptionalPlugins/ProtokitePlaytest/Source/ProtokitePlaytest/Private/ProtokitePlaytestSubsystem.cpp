@@ -29,6 +29,7 @@
 #include "ProtokiteClient.h"
 #include "Http/FlockFileUploader.h"
 #include "FlockSubsystem.h"
+#include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
 #include "Http/FlockHttpClient.h"
@@ -86,11 +87,17 @@ void UProtokitePlaytestSubsystem::Initialize(FSubsystemCollectionBase& Collectio
 
 void UProtokitePlaytestSubsystem::Deinitialize()
 {
+	// Set before anything else: the requests finished below answer while this runs, and from here on nothing starts,
+	// nothing is raised into the closing game, and a finished recording is a later launch's to push.
+	bDeinitializing = true;
+
 	// The player is leaving, so the launch's session ends while the network is still there. A start still on its way
 	// is ended when its answer arrives.
 	if (SessionState == EProtokitePlaytestSessionState::Started)
 	{
-		EndPlaytestSession();
+		// Not EndPlaytestSession: an upload cannot finish inside a shutdown, so the end does not wait for one, and a game's
+		// end already waiting for one goes now, with its callback.
+		SendTheEndNow();
 		// Sending the end is not the same as it arriving. The game tears down around the request, and the engine's
 		// HTTP module then unbinds it part-way -- measured 2026-09-16, which left sessions showing in Protokite as
 		// still in progress with no duration and nothing logged, because the completion that would have logged it was
@@ -109,10 +116,6 @@ void UProtokitePlaytestSubsystem::Deinitialize()
 		Events->OnSessionRegistered.RemoveDynamic(this, &UProtokitePlaytestSubsystem::HandleFlockSessionRegistered);
 	}
 	Flock.Reset();
-
-	// Read by the upload paths: from here on a finished recording is a later launch's to push, never this one's to start
-	// sending into a shutdown.
-	bDeinitializing = true;
 
 	// Nothing this subsystem put on screen, or had listening to the keyboard, outlives it.
 	CloseFeedbackForm();
@@ -134,9 +137,11 @@ void UProtokitePlaytestSubsystem::Deinitialize()
 	// The file is finished before the subsystem goes, so what was recorded is kept.
 	FinishVideoRecordingNow(EProtokitePlaytestVideoStopReason::GameInstanceShutDown);
 
-	// The folder is let go of only now, not when the recording finished: until the game instance shuts down, a finished
-	// recording is still this launch's. From here on it belongs to a later launch.
+	// The folders are let go of only now, not when each recording finished: until the game instance shuts down, a finished
+	// recording is still this launch's. From here on they belong to a later launch.
 	VideoRecordingRun.Reset();
+	FinishedRecordingRuns.Reset();
+	RecordingRunsWaitingForASession.Reset();
 
 	// Nothing this subsystem started outlives it, going through earlier launches' recordings included. It holds up shutting
 	// down only when the game quits while that is still going.
@@ -234,16 +239,118 @@ bool UProtokitePlaytestSubsystem::AskForPlaytestConsent()
 	return IsConsentQuestionOpen();
 }
 
-bool UProtokitePlaytestSubsystem::EndPlaytestSession(TFunction<void(bool bEnded, const FString& WhyNot)> OnEnded)
+bool UProtokitePlaytestSubsystem::StartPlaytestSession()
 {
-	if (SessionState != EProtokitePlaytestSessionState::Started && SessionState != EProtokitePlaytestSessionState::Ended)
+	FString WhyNot;
+	if (bDeinitializing)
 	{
+		WhyNot = TEXT("the game is closing");
+	}
+	else if (bEndingPlaytestSession)
+	{
+		WhyNot = TEXT("the last one is still ending: its recording is being uploaded and the end follows. Start the next one once On Playtest Session Changed says it ended");
+	}
+	else if (SessionState == EProtokitePlaytestSessionState::Started)
+	{
+		WhyNot = TEXT("one is open. EndPlaytestSession ends it");
+	}
+	else if (Status != EProtokitePlaytestStatus::Ready)
+	{
+		WhyNot = DescribePlaytestStatus(Status);
+	}
+	else if (bPlaytestSessionAskedFor || SessionState == EProtokitePlaytestSessionState::Starting)
+	{
+		WhyNot = TEXT("one is already starting. It is sent once a player's Flock session reaches the server, and On Playtest Session Changed says when it has started");
+	}
+	if (!WhyNot.IsEmpty())
+	{
+		UE_LOG(LogProtokitePlaytest, Log, TEXT("No Protokite session is started: %s"), *WhyNot);
 		return false;
 	}
-	SessionState = EProtokitePlaytestSessionState::Ended;
-	SendPlaytestSessionEnd(GetOrCreateProtokiteClient(), PlaytestSessionApiUrl, PlaytestSessionHeaders, PlaytestSessionId,
-		MoveTemp(OnEnded));
+
+	bPlaytestSessionAskedFor = true;
+	SessionState = EProtokitePlaytestSessionState::NotStarted;
+	bLoggedWaitingForFlockSession = false;
+	// A new session may renew a sign-in an earlier one already renewed: its token has run on since.
+	PlayerTokenRenewedFor.Reset();
+	bLoggedWaitingForPlayerTokenRenewal = false;
+	// A session started by the game is recorded like the launch's first one while the setting is on. A recording still
+	// capturing goes to it instead; one still being saved does not, so a new one is asked for once it is.
+	if (GetDefault<UProtokitePlaytestSettings>()->bStartSessionAndRecordingAutomatically && !IsRecordingVideo())
+	{
+		bPlaytestRecordingAskedFor = true;
+		UpdateVideoRecording();
+	}
+	StartPlaytestSessionWhenAllowed();
 	return true;
+}
+
+bool UProtokitePlaytestSubsystem::EndPlaytestSession(TFunction<void(bool bEnded, const FString& WhyNot)> OnEnded)
+{
+	if (!IsPlaytestSessionOpen())
+	{
+		UE_LOG(LogProtokitePlaytest, Log, TEXT("No Protokite session is ended: %s"), bEndingPlaytestSession
+			? TEXT("this one is already ending, once its recording's upload has an answer.")
+			: (bPlaytestSessionAskedFor || SessionState == EProtokitePlaytestSessionState::Starting)
+				? TEXT("one is still starting. End it once On Playtest Session Changed says it has started.")
+				: TEXT("none is open. StartPlaytestSession starts one."));
+		return false;
+	}
+	bEndingPlaytestSession = true;
+	OnPlaytestSessionEnded = MoveTemp(OnEnded);
+	// The session's recording goes to it before it ends: finished here and now, which starts its upload.
+	if (VideoRecording.IsValid() && VideoRecordingRun.IsValid() && VideoRecordingRun->GetKind() == EProtokitePlaytestRecordingKind::Playtest)
+	{
+		FinishVideoRecordingNow(EProtokitePlaytestVideoStopReason::StoppedByGame);
+	}
+	SendTheEndOnceUploadsAnswer();
+	return true;
+}
+
+void UProtokitePlaytestSubsystem::SendTheEndOnceUploadsAnswer()
+{
+	if (bEndingPlaytestSession && UploadsToTheSessionUnanswered == 0)
+	{
+		SendTheEndNow();
+	}
+}
+
+void UProtokitePlaytestSubsystem::SendTheEndNow()
+{
+	bEndingPlaytestSession = false;
+	SessionState = EProtokitePlaytestSessionState::Ended;
+	const FString EndedSessionId = MoveTemp(PlaytestSessionId);
+	PlaytestSessionId.Empty();
+	SendPlaytestSessionEnd(GetOrCreateProtokiteClient(), PlaytestSessionApiUrl, PlaytestSessionHeaders, EndedSessionId,
+		MoveTemp(OnPlaytestSessionEnded));
+	if (!bDeinitializing)
+	{
+		OnPlaytestSessionChanged.Broadcast(EndedSessionId, false);
+	}
+}
+
+bool UProtokitePlaytestSubsystem::IsPlaytestSessionOpen() const
+{
+	return SessionState == EProtokitePlaytestSessionState::Started && !bEndingPlaytestSession;
+}
+
+void UProtokitePlaytestSubsystem::RaiseUploadChanged(EProtokitePlaytestUploadState State, const FString& SessionId,
+	bool bFromAnEarlierLaunch, int64 BytesSent, const FString& WhyNot)
+{
+	FProtokitePlaytestUploadUpdate Update;
+	Update.State = State;
+	Update.PlaytestSessionId = SessionId;
+	Update.bFromAnEarlierLaunch = bFromAnEarlierLaunch;
+	Update.BytesSent = BytesSent;
+	Update.WhyNot = WhyNot;
+	OnRecordingUploadChanged.Broadcast(Update);
+}
+
+void UProtokitePlaytestSubsystem::RaiseUploadAnswered(const FString& SessionId, bool bFromAnEarlierLaunch,
+	const FProtokitePlaytestRecordingUploadOutcome& Outcome)
+{
+	RaiseUploadChanged(Outcome.bUploaded ? EProtokitePlaytestUploadState::Uploaded : EProtokitePlaytestUploadState::Kept,
+		SessionId, bFromAnEarlierLaunch, Outcome.BytesSent, Outcome.bUploaded ? FString() : Outcome.Error);
 }
 
 UFlockSubsystem* UProtokitePlaytestSubsystem::GetFollowedFlockForTesting() const
@@ -255,6 +362,13 @@ void UProtokitePlaytestSubsystem::FollowFlockLifecycle(UFlockSubsystem* InFlock)
 {
 	// Before anything can record.
 	FinishWhatEndedRunsLeftInRecordingsFolder();
+
+	// The launch's own start, once: with the setting off, nothing starts until the game asks.
+	if (!Flock.IsValid())
+	{
+		bPlaytestSessionAskedFor = bPlaytestRecordingAskedFor = bLaunchsAutomaticStartWaiting
+			= GetDefault<UProtokitePlaytestSettings>()->bStartSessionAndRecordingAutomatically;
+	}
 
 	Flock = InFlock;
 	if (InFlock)
@@ -296,22 +410,22 @@ void UProtokitePlaytestSubsystem::HandleFlockSessionStarted(const FString& Sessi
 
 void UProtokitePlaytestSubsystem::HandleFlockSessionRegistered(const FString& SessionId, const FString& ServerSessionId)
 {
-	// The first one names the Protokite session. A later one comes from a new Flock session after time away or after
-	// a sign-in, and changes nothing: the launch keeps the session it has.
-	if (FirstFlockServerSessionId.IsEmpty())
+	// The first one names the launch's automatic Protokite session. Any other start names the latest -- a new Flock session
+	// after time away or after a sign-in (owner, 2026-11-19); the session already open keeps the one it has.
+	if (NamedFlockServerSessionId.IsEmpty() || !bLaunchsAutomaticStartWaiting)
 	{
-		FirstFlockServerSessionId = ServerSessionId;
+		NamedFlockServerSessionId = ServerSessionId;
 		if (const TPair<TWeakPtr<FFlockAuthSession>, int32>* StartedUnder = SignInsFlockSessionsStartedUnder.Find(SessionId))
 		{
-			FirstFlockSessionAuth = StartedUnder->Key;
-			FirstFlockSessionSignIn = StartedUnder->Value;
+			NamedFlockSessionAuth = StartedUnder->Key;
+			NamedFlockSessionSignIn = StartedUnder->Value;
 		}
 		else
 		{
 			// Not seen starting (the playtest followed Flock after it had): the sign-in current now is the best known.
 			const TSharedPtr<FFlockAuthSession> Auth = Flock.IsValid() ? Flock->AuthSession : nullptr;
-			FirstFlockSessionAuth = Auth;
-			FirstFlockSessionSignIn = Auth.IsValid() ? Auth->GetSignInNumber() : 0;
+			NamedFlockSessionAuth = Auth;
+			NamedFlockSessionSignIn = Auth.IsValid() ? Auth->GetSignInNumber() : 0;
 		}
 	}
 	StartPlaytestSessionWhenAllowed();
@@ -329,8 +443,8 @@ void UProtokitePlaytestSubsystem::RefreshStatus()
 		{
 			ForgetPlaytestConfig();
 		}
-		FirstFlockServerSessionId.Empty();
-		FirstFlockSessionAuth.Reset();
+		NamedFlockServerSessionId.Empty();
+		NamedFlockSessionAuth.Reset();
 		SignInsFlockSessionsStartedUnder.Reset();
 	}
 
@@ -448,12 +562,13 @@ void UProtokitePlaytestSubsystem::ForgetPlaytestConfig()
 
 bool UProtokitePlaytestSubsystem::IsReadyToStartPlaytestSession()
 {
-	// One start per launch, whatever became of it.
-	if (SessionState != EProtokitePlaytestSessionState::NotStarted || Status != EProtokitePlaytestStatus::Ready)
+	// One start each time a session is asked for, whatever became of it, and never while one is starting or open.
+	if (!bPlaytestSessionAskedFor || bDeinitializing || SessionState == EProtokitePlaytestSessionState::Starting
+		|| SessionState == EProtokitePlaytestSessionState::Started || Status != EProtokitePlaytestStatus::Ready)
 	{
 		return false;
 	}
-	if (FirstFlockServerSessionId.IsEmpty())
+	if (NamedFlockServerSessionId.IsEmpty())
 	{
 		if (!bLoggedWaitingForFlockSession)
 		{
@@ -474,25 +589,30 @@ void UProtokitePlaytestSubsystem::StartPlaytestSessionWhenAllowed()
 		return;
 	}
 
+	// Answered from here on, whatever becomes of this start: the next one is the game's to ask for.
+	bPlaytestSessionAskedFor = false;
+	bLaunchsAutomaticStartWaiting = false;
+	PlaytestSessionId.Empty();
+
 	FString WhyNoIdentity;
 	PlaytestIdentity = ResolvePlaytestIdentity(WhyNoIdentity);
 	if (PlaytestIdentity.IsEmpty())
 	{
 		SessionState = EProtokitePlaytestSessionState::NoPlayerIdentity;
-		UE_LOG(LogProtokitePlaytest, Warning, TEXT("No Protokite session is started this launch, and nothing is sent: %s"), *WhyNoIdentity);
+		UE_LOG(LogProtokitePlaytest, Warning, TEXT("No Protokite session is started, and nothing is sent: %s"), *WhyNoIdentity);
 		return;
 	}
 
 	FProtokitePlaytestSessionStartRequest Request;
 	Request.Identity = PlaytestIdentity;
-	if (IsUsablePlaytestId(FirstFlockServerSessionId, ProtokitePlaytestSessionLimits::FlockSessionIdLength))
+	if (IsUsablePlaytestId(NamedFlockServerSessionId, ProtokitePlaytestSessionLimits::FlockSessionIdLength))
 	{
-		Request.FlockSessionId = FirstFlockServerSessionId;
+		Request.FlockSessionId = NamedFlockServerSessionId;
 	}
 	else
 	{
 		UE_LOG(LogProtokitePlaytest, Warning, TEXT("Flock session id '%s' cannot be sent to Protokite (longer than %d characters, or containing whitespace), so the Protokite session starts without naming its Flock session."),
-			*FirstFlockServerSessionId, ProtokitePlaytestSessionLimits::FlockSessionIdLength);
+			*NamedFlockServerSessionId, ProtokitePlaytestSessionLimits::FlockSessionIdLength);
 	}
 	const UGameInstance* GameInstance = GetGameInstance();
 	// What the player allowed rides along as extra parameters, so the session says what it was collected under: a
@@ -519,14 +639,13 @@ void UProtokitePlaytestSubsystem::StartPlaytestSessionWhenAllowed()
 		[WeakThis, Client, ApiUrl, Headers, bSentSteamId, SentFlockSessionId](TFlockResult<FProtokitePlaytestSessionStartResult> Result)
 		{
 			UProtokitePlaytestSubsystem* Self = WeakThis.Get();
-			if (Self == nullptr || Self->Status == EProtokitePlaytestStatus::Stopped)
+			if (Self == nullptr || Self->bDeinitializing || Self->Status == EProtokitePlaytestStatus::Stopped)
 			{
 				// The game instance shut down while the start was on its way. The launch is over, so a session that was
-				// created is ended straight away rather than left in progress.
+				// created is ended straight away rather than left in progress, and nothing is raised into the closing game.
 				if (Self != nullptr)
 				{
 					Self->SessionState = Result.bSuccess ? EProtokitePlaytestSessionState::Ended : EProtokitePlaytestSessionState::StartFailed;
-					Self->PlaytestSessionId = Result.bSuccess ? Result.Value.SessionId : FString();
 				}
 				if (Result.bSuccess)
 				{
@@ -539,9 +658,11 @@ void UProtokitePlaytestSubsystem::StartPlaytestSessionWhenAllowed()
 			{
 				Self->SessionState = EProtokitePlaytestSessionState::Started;
 				Self->PlaytestSessionId = Result.Value.SessionId;
-				UE_LOG(LogProtokitePlaytest, Log, TEXT("Protokite session %s started for this launch, with the player's %s and Flock session %s."),
+				UE_LOG(LogProtokitePlaytest, Log, TEXT("Protokite session %s started, with the player's %s and Flock session %s."),
 					*Result.Value.SessionId, bSentSteamId ? TEXT("Steam id") : TEXT("device id"),
 					SentFlockSessionId.IsEmpty() ? TEXT("(none)") : *SentFlockSessionId);
+				Self->OnPlaytestSessionChanged.Broadcast(Self->PlaytestSessionId, true);
+				// A handler may have ended it already, which leaves the recordings for the next session.
 				Self->SaveVideoRecordingSession();
 				return;
 			}
@@ -554,7 +675,7 @@ void UProtokitePlaytestSubsystem::StartPlaytestSessionWhenAllowed()
 				Self->RefreshStatus();
 				return;
 			}
-			UE_LOG(LogProtokitePlaytest, Warning, TEXT("No Protokite session was started, and none is tried again this launch, because a start that reached Protokite may already have created one. %s"),
+			UE_LOG(LogProtokitePlaytest, Warning, TEXT("No Protokite session was started, and it is not tried again by itself, because a start that reached Protokite may already have created one. StartPlaytestSession tries again. %s"),
 				*Result.Error.ToDisplayText());
 		});
 }
@@ -566,7 +687,7 @@ bool UProtokitePlaytestSubsystem::RenewPlayerTokenOrWait()
 	// whose renewal failed is not tried again on every event).
 	const TSharedPtr<FFlockAuthSession> Auth = Flock.IsValid() ? Flock->AuthSession : nullptr;
 	// A token the start will not carry is not worth waiting for.
-	if (!Auth.IsValid() || !IsTheFirstFlockSessionsSignIn(*Auth))
+	if (!Auth.IsValid() || !IsTheNamedFlockSessionsSignIn(*Auth))
 	{
 		return false;
 	}
@@ -584,7 +705,7 @@ bool UProtokitePlaytestSubsystem::RenewPlayerTokenOrWait()
 		const TWeakObjectPtr<UProtokitePlaytestSubsystem> WeakThis(this);
 		// Answered on the game thread. Whatever the answer, the start goes: with the renewed token, or without one when
 		// the renewal failed or Flock refused it (which signs the player out; the start still names the Flock session it
-		// was ready under, kept in FirstFlockServerSessionId).
+		// was ready under, kept in NamedFlockServerSessionId).
 		Auth->RefreshAccessToken(PlayerTokenRenewedSignIn, [WeakThis, Unfinished](bool /*bRenewed*/)
 		{
 			*Unfinished = false;
@@ -610,7 +731,7 @@ TMap<FString, FString> UProtokitePlaytestSubsystem::WithPlayerToken(const TMap<F
 {
 	TMap<FString, FString> StartHeaders = Headers;
 	const TSharedPtr<FFlockAuthSession> Auth = Flock.IsValid() ? Flock->AuthSession : nullptr;
-	if (Auth.IsValid() && Auth->IsAuthenticated() && !Auth->IsTokenExpired() && IsTheFirstFlockSessionsSignIn(*Auth))
+	if (Auth.IsValid() && Auth->IsAuthenticated() && !Auth->IsTokenExpired() && IsTheNamedFlockSessionsSignIn(*Auth))
 	{
 		// Never logged.
 		StartHeaders.Add(ProtokitePlaytestSessionHeaders::PlayerToken, Auth->GetAccessToken());
@@ -618,10 +739,10 @@ TMap<FString, FString> UProtokitePlaytestSubsystem::WithPlayerToken(const TMap<F
 	return StartHeaders;
 }
 
-bool UProtokitePlaytestSubsystem::IsTheFirstFlockSessionsSignIn(const FFlockAuthSession& Auth) const
+bool UProtokitePlaytestSubsystem::IsTheNamedFlockSessionsSignIn(const FFlockAuthSession& Auth) const
 {
 	// A renewal keeps the sign-in number; a sign-out, another player's sign-in or a new initialization moves on from it.
-	return FirstFlockSessionAuth.HasSameObject(&Auth) && FirstFlockSessionSignIn == Auth.GetSignInNumber();
+	return NamedFlockSessionAuth.HasSameObject(&Auth) && NamedFlockSessionSignIn == Auth.GetSignInNumber();
 }
 
 FProtokitePlaytestIdentity UProtokitePlaytestSubsystem::ResolvePlaytestIdentity(FString& OutWhyNone) const
@@ -933,6 +1054,55 @@ bool UProtokitePlaytestSubsystem::IsRecordingVideo() const
 	return VideoRecording.IsValid() && VideoRecording->IsCapturing();
 }
 
+bool UProtokitePlaytestSubsystem::StartVideoRecording()
+{
+	FString WhyNot;
+	if (bDeinitializing)
+	{
+		WhyNot = TEXT("the game is closing");
+	}
+	else if (VideoRecording.IsValid())
+	{
+		WhyNot = IsRecordingVideo() ? TEXT("one is already recording. StopVideoRecording stops it")
+			: TEXT("the last one is still being saved. Try again on a later frame");
+	}
+	else if (Status != EProtokitePlaytestStatus::Ready)
+	{
+		WhyNot = DescribePlaytestStatus(Status);
+	}
+	else if (!ProtokitePlaytestConsent::AllowsVideoRecording(GetPlaytestConsent()))
+	{
+		WhyNot = TEXT("the player's answer does not allow recording the screen");
+	}
+	else if (!PlaytestConfig.IsFeatureEnabled(ProtokitePlaytestFeatures::VideoRecording))
+	{
+		WhyNot = TEXT("this playtest does not record video. Turn video recording on for it on the Protokite dashboard");
+	}
+	else if (!VideoRecordingUnavailableReason.IsEmpty())
+	{
+		WhyNot = VideoRecordingUnavailableReason;
+	}
+	if (!WhyNot.IsEmpty())
+	{
+		UE_LOG(LogProtokitePlaytest, Log, TEXT("No video recording is started: %s."), *WhyNot);
+		return false;
+	}
+
+	bPlaytestRecordingAskedFor = true;
+	UpdateVideoRecording();
+	if (VideoRecording.IsValid())
+	{
+		return true;
+	}
+	if (IsWaitingToStartVideoRecording())
+	{
+		UE_LOG(LogProtokitePlaytest, Log, TEXT("The video recording starts once this game instance has a viewport to record."));
+		return true;
+	}
+	// The attempt logged why it did not start: no room in Recordings Disk Budget, or the recording could not be opened.
+	return false;
+}
+
 bool UProtokitePlaytestSubsystem::StopVideoRecording()
 {
 	if (!IsRecordingVideo())
@@ -951,7 +1121,7 @@ bool UProtokitePlaytestSubsystem::CanSendTheRecording() const
 	return IsRecordingVideo()
 		&& VideoRecordingRun.IsValid()
 		&& VideoRecordingRun->GetKind() == EProtokitePlaytestRecordingKind::Playtest
-		&& !PlaytestSessionId.IsEmpty();
+		&& IsPlaytestSessionOpen();
 }
 
 bool UProtokitePlaytestSubsystem::StopVideoRecordingAndUploadIt()
@@ -982,7 +1152,7 @@ bool UProtokitePlaytestSubsystem::StartTestVideoRecording(double Seconds)
 		UE_LOG(LogProtokitePlaytest, Log, TEXT("No test video is recorded: this launch records video for its playtest."));
 		return false;
 	}
-	if (VideoRecording.IsValid() || bVideoRecordingStartedThisLaunch)
+	if (VideoRecording.IsValid() || bTestVideoStartedThisLaunch)
 	{
 		UE_LOG(LogProtokitePlaytest, Log, TEXT("No test video is recorded: %s, and a launch records one video."),
 			IsRecordingVideo() ? TEXT("a video is already being recorded") : TEXT("this launch has already recorded one"));
@@ -1050,7 +1220,17 @@ bool UProtokitePlaytestSubsystem::IsRecordVideoInPlayInEditorOn() const
 
 bool UProtokitePlaytestSubsystem::IsWaitingToStartVideoRecording() const
 {
-	return IsVideoRecordingWanted() && !bVideoRecordingStartedThisLaunch && VideoRecordingUnavailableReason.IsEmpty();
+	// One recording at a time, a saving one included.
+	if (VideoRecording.IsValid() || !VideoRecordingUnavailableReason.IsEmpty() || Status == EProtokitePlaytestStatus::Stopped)
+	{
+		return false;
+	}
+	// A playtest that records video has the screen to itself: a test video or Record Video In Play In Editor never takes its place.
+	if (IsPlaytestFeatureEnabled(ProtokitePlaytestFeatures::VideoRecording))
+	{
+		return bPlaytestRecordingAskedFor;
+	}
+	return !bTestVideoStartedThisLaunch && (bTestVideoRequested || IsRecordVideoInPlayInEditorOn());
 }
 
 void UProtokitePlaytestSubsystem::UpdateVideoRecording()
@@ -1099,8 +1279,15 @@ void UProtokitePlaytestSubsystem::StartVideoRecordingWhenPossible()
 		: bTestVideoRequested ? TEXT("as a test video") : TEXT("because Record Video In Play In Editor is on");
 	const FString RecordingsFolder = GetVideoRecordingsFolder();
 
-	// One attempt per launch, whether or not it starts: a second recording would replace the first when uploaded.
-	bVideoRecordingStartedThisLaunch = true;
+	// One attempt each time a recording is asked for, whether or not it starts; a test video gets one a launch.
+	if (bForThePlaytest)
+	{
+		bPlaytestRecordingAskedFor = false;
+	}
+	else
+	{
+		bTestVideoStartedThisLaunch = true;
+	}
 
 	const EProtokitePlaytestRecordingKind NewKind = bForThePlaytest ? EProtokitePlaytestRecordingKind::Playtest : EProtokitePlaytestRecordingKind::TestVideo;
 	const FProtokitePlaytestRecordingsRoom Room = FProtokitePlaytestRecordingsFolder::MakeRoom(RecordingsFolder, Settings.DiskBudgetBytes,
@@ -1118,7 +1305,7 @@ void UProtokitePlaytestSubsystem::StartVideoRecordingWhenPossible()
 	}
 	if (Room.BytesLeftInBudget < FProtokitePlaytestRecordingsFolder::SmallestRoomForARecording)
 	{
-		UE_LOG(LogProtokitePlaytest, Warning, TEXT("No video is recorded this launch: the recordings in %s take %.1f MB of Recordings Disk Budget (MB), %lld MB, and none of them can be deleted now, because their games are still running or another program is using them. The budget is in Project Settings > Plugins > Protokite Playtest Settings."),
+		UE_LOG(LogProtokitePlaytest, Warning, TEXT("No video is recorded: the recordings in %s take %.1f MB of Recordings Disk Budget (MB), %lld MB, and none of them can be deleted now, because their games are still running, they are this launch's own not yet uploaded, or another program is using them. The budget is in Project Settings > Plugins > Protokite Playtest Settings."),
 			*RecordingsFolder, Room.BytesUsed / (1024.0 * 1024.0), BudgetMb);
 		return;
 	}
@@ -1136,7 +1323,7 @@ void UProtokitePlaytestSubsystem::StartVideoRecordingWhenPossible()
 	}
 	if (!VideoRecording.IsValid())
 	{
-		UE_LOG(LogProtokitePlaytest, Warning, TEXT("No video is recorded this launch: the recording could not start, because %s."), *StartError);
+		UE_LOG(LogProtokitePlaytest, Warning, TEXT("No video is recorded: the recording could not start, because %s."), *StartError);
 		return;
 	}
 
@@ -1144,7 +1331,7 @@ void UProtokitePlaytestSubsystem::StartVideoRecordingWhenPossible()
 	const FString CutShorter = Settings.MaxBytes < SizeLimitBytes
 		? FString::Printf(TEXT(" (Recording Size Limit (MB) is %lld MB, but Recordings Disk Budget (MB) has only this much left)"), SizeLimitBytes / (1024 * 1024))
 		: FString();
-	UE_LOG(LogProtokitePlaytest, Log, TEXT("Recording video %s to %s, at %dx%d and %d frames a second. It stops for good after %.0f seconds of play, before the file passes %.1f MB%s, or when the game stops it."),
+	UE_LOG(LogProtokitePlaytest, Log, TEXT("Recording video %s to %s, at %dx%d and %d frames a second. It stops after %.0f seconds of play, before the file passes %.1f MB%s, or when the game stops it."),
 		*WhyRecording, *VideoRecordingRun->GetVideoFilePath(), FrameSize.X, FrameSize.Y, Settings.FramesPerSecond, Settings.MaxSeconds,
 		Settings.MaxBytes / (1024.0 * 1024.0), *CutShorter);
 
@@ -1193,10 +1380,9 @@ void UProtokitePlaytestSubsystem::WaitUntilRecordingsFolderFinishedForTesting()
 
 void UProtokitePlaytestSubsystem::SaveVideoRecordingSession()
 {
-	// Only a playtest recording is uploaded, and only to a session that was started; one the game has ended since still counts.
-	const bool bSessionWasStarted = SessionState == EProtokitePlaytestSessionState::Started || SessionState == EProtokitePlaytestSessionState::Ended;
-	if (!VideoRecordingRun.IsValid() || VideoRecordingRun->GetKind() != EProtokitePlaytestRecordingKind::Playtest || !bSessionWasStarted
-		|| PlaytestSessionId.IsEmpty())
+	// Only a playtest recording is uploaded, and only to a session open while it records: one recorded after an end goes
+	// to the next session.
+	if (!IsPlaytestSessionOpen() || PlaytestSessionId.IsEmpty())
 	{
 		return;
 	}
@@ -1207,11 +1393,34 @@ void UProtokitePlaytestSubsystem::SaveVideoRecordingSession()
 	Session.ProtokiteSessionId = PlaytestSessionId;
 	Session.ProtokiteApiUrl = PlaytestSessionApiUrl;
 	Session.FlockGameVersionId = PlaytestSessionHeaders.FindRef(TEXT("X-Game-Version-ID"));
-	FString Error;
-	if (!VideoRecordingRun->SaveSession(Session, Error))
+	const auto SaveSessionBeside = [&Session](FProtokitePlaytestRecordingRun& Run)
 	{
-		UE_LOG(LogProtokitePlaytest, Warning, TEXT("The Protokite session this launch's recording belongs to could not be saved beside it, so a later launch cannot upload the recording: %s."),
-			*Error);
+		FString Error;
+		if (!Run.SaveSession(Session, Error))
+		{
+			UE_LOG(LogProtokitePlaytest, Warning, TEXT("The Protokite session a recording belongs to could not be saved beside it, so it cannot be uploaded: %s."),
+				*Error);
+			return false;
+		}
+		return true;
+	};
+	if (VideoRecordingRun.IsValid() && VideoRecordingRun->GetKind() == EProtokitePlaytestRecordingKind::Playtest)
+	{
+		SaveSessionBeside(*VideoRecordingRun);
+	}
+
+	// Recordings that finished while no session was open go to this one (owner, 2026-11-19).
+	const TArray<TSharedRef<FProtokitePlaytestRecordingRun>> Waiting = MoveTemp(RecordingRunsWaitingForASession);
+	for (const TSharedRef<FProtokitePlaytestRecordingRun>& Run : Waiting)
+	{
+		if (SaveSessionBeside(*Run))
+		{
+			UploadThisLaunchsRecording(Run);
+		}
+		else
+		{
+			RecordingRunsWaitingForASession.Add(Run);
+		}
 	}
 }
 
@@ -1295,9 +1504,24 @@ void UProtokitePlaytestSubsystem::ApplyFinishedVideoRecording()
 			Summary.LongestWaitToEncodeMs, Summary.LongestWriteMs, Summary.FramesDroppedBecauseEncodingFellBehind,
 			Summary.FramesDroppedBecauseWritingFellBehind, Summary.FramesNotReadyInTime);
 	}
+	// Finished, it counts at the size it is: this launch may hold several finished recordings until it ends.
+	if (VideoRecordingRun.IsValid())
+	{
+		VideoRecordingRun->ReleaseReservation();
+	}
 	// The ticker is settled first, so whoever hears how the upload went finds the recording fully put away.
 	UpdateVideoPump();
-	UploadThisLaunchsRecording();
+	if (!VideoRecordingRun.IsValid() || VideoRecordingRun->GetKind() != EProtokitePlaytestRecordingKind::Playtest)
+	{
+		// Not raised: there was no playtest recording, so nobody is waiting to hear about one.
+		UE_LOG(LogProtokitePlaytest, Verbose, TEXT("There is no playtest recording to upload; a test video is never uploaded."));
+		return;
+	}
+	// Held until shutdown, but no longer the recording in progress: the next one gets a run of its own.
+	const TSharedRef<FProtokitePlaytestRecordingRun> Run = VideoRecordingRun.ToSharedRef();
+	FinishedRecordingRuns.Add(Run);
+	VideoRecordingRun.Reset();
+	UploadThisLaunchsRecording(Run);
 }
 
 TSharedRef<FProtokitePlaytestRecordingUploads> UProtokitePlaytestSubsystem::GetOrCreateRecordingUploads()
@@ -1316,46 +1540,28 @@ TSharedRef<FProtokitePlaytestRecordingUploads> UProtokitePlaytestSubsystem::GetO
 	return RecordingUploads.ToSharedRef();
 }
 
-void UProtokitePlaytestSubsystem::UploadThisLaunchsRecording()
+void UProtokitePlaytestSubsystem::UploadThisLaunchsRecording(const TSharedRef<FProtokitePlaytestRecordingRun>& Run)
 {
-	// Every way out of here says why. They were all silent once, and a player who had asked for their recording was
-	// told it was on its way while nothing happened and the log held no reason -- which is worse than either.
-	if (!VideoRecordingRun.IsValid() || VideoRecordingRun->GetKind() != EProtokitePlaytestRecordingKind::Playtest)
-	{
-		// Not raised: there was no playtest recording, so nobody is waiting to hear about one.
-		UE_LOG(LogProtokitePlaytest, Verbose, TEXT("There is no playtest recording to upload; a test video is never uploaded."));
-		return;
-	}
-
-	// Each way out below also raises OnRecordingUploadFinished, so whoever is waiting on this recording hears the answer
-	// instead of waiting for one that never comes.
-	const auto NotUploadedNow = [this](const FString& WhyNot)
-	{
-		OnRecordingUploadFinished.Broadcast(false, WhyNot);
-	};
+	// Every way out of here says why, in the log and, where an upload was waited for, on OnRecordingUploadChanged. They were
+	// all silent once, and a player who had asked for their recording was told it was on its way while nothing happened and
+	// the log held no reason -- which is worse than either.
 
 	// Checked before the game is closing, not after: a recording kept through a shutdown is one a later launch sends,
-	// and the session saved beside it is what tells that launch where. Only deleting it now honours the answer.
+	// and the session saved beside it is what tells that launch where. Only deleting it now honours the answer. Not
+	// raised (owner, 2026-11-19): no upload began, and the answer is the player's or the game's own doing.
 	if (!ProtokitePlaytestConsent::AllowsVideoRecording(GetPlaytestConsent()))
 	{
 		TArray<FString> FilesLeft;
-		const bool bDeleted = VideoRecordingRun->DeleteEverything(FilesLeft);
+		const bool bDeleted = Run->DeleteEverything(FilesLeft);
 		FinishedVideoRecordingPath.Empty();
 		if (bDeleted)
 		{
-			VideoRecordingRun.Reset();
 			UE_LOG(LogProtokitePlaytest, Log, TEXT("The player asked for the screen not to be recorded, so what had been recorded this launch was deleted instead of uploaded."));
 		}
 		else
 		{
 			UE_LOG(LogProtokitePlaytest, Warning, TEXT("The player asked for the screen not to be recorded, and what had been recorded this launch could not all be deleted: %s. It is not uploaded."),
 				*FString::Join(FilesLeft, TEXT(", ")));
-		}
-		if (!bDeinitializing)
-		{
-			// Same rule as every other way out: not raised while the game is closing, because its handlers would run
-			// against objects being torn down.
-			NotUploadedNow(TEXT("The player asked for the screen not to be recorded, so the recording was deleted."));
 		}
 		return;
 	}
@@ -1369,35 +1575,46 @@ void UProtokitePlaytestSubsystem::UploadThisLaunchsRecording()
 		UE_LOG(LogProtokitePlaytest, Log, TEXT("The recording is not being uploaded now, because the game is closing. A later launch sends it."));
 		return;
 	}
-	if (FinishedVideoRecordingPath.IsEmpty())
+	// Nothing is on disk to keep or send, so nothing is raised: no upload began.
+	if (!IFileManager::Get().FileExists(*Run->GetVideoFilePath()))
 	{
 		UE_LOG(LogProtokitePlaytest, Warning, TEXT("The recording cannot be uploaded: no finished file was kept."));
-		NotUploadedNow(TEXT("No finished recording file was kept."));
 		return;
 	}
 
-	const FProtokitePlaytestRecordingSession Session = VideoRecordingRun->LoadSession();
+	const FProtokitePlaytestRecordingSession Session = Run->LoadSession();
 	if (Session.IsEmpty())
 	{
-		UE_LOG(LogProtokitePlaytest, Warning, TEXT("The recording cannot be uploaded yet: no Protokite session has started for it, "
+		RecordingRunsWaitingForASession.AddUnique(Run);
+		UE_LOG(LogProtokitePlaytest, Warning, TEXT("The recording cannot be uploaded yet: no Protokite session is open for it, "
 			"so it has nowhere to go. A Protokite session starts once a player signs in and their Flock session reaches the "
-			"server. The recording is kept: if a session starts this launch it is saved for it and a later launch uploads it; "
-			"if none does, the next launch deletes it."));
-		NotUploadedNow(TEXT("No Protokite session has started for the recording yet, so it has nowhere to go."));
+			"server, and StartPlaytestSession starts one when Start Session And Recording Automatically is off or the last one "
+			"was ended. The recording is kept: it is uploaded to the next session started this launch, and if none is, the "
+			"next launch deletes it."));
+		RaiseUploadChanged(EProtokitePlaytestUploadState::Kept, FString(), false, 0,
+			TEXT("No Protokite session is open for the recording yet, so it waits for the next one started."));
 		return;
 	}
 	if (!Flock.IsValid() || !Flock->IsInitialized())
 	{
 		UE_LOG(LogProtokitePlaytest, Warning, TEXT("The recording cannot be uploaded while the Flock SDK is not running. It is kept "
 			"for a later launch."));
-		NotUploadedNow(TEXT("The Flock SDK is not running; the recording is kept for a later launch."));
+		RaiseUploadChanged(EProtokitePlaytestUploadState::Kept, Session.ProtokiteSessionId, false, 0,
+			TEXT("The Flock SDK is not running; the recording is kept for a later launch."));
 		return;
 	}
 
+	// An upload to the open session holds back the game's end of it until it has an answer.
+	const bool bToTheOpenSession = SessionState == EProtokitePlaytestSessionState::Started && Session.ProtokiteSessionId == PlaytestSessionId;
+	if (bToTheOpenSession)
+	{
+		++UploadsToTheSessionUnanswered;
+	}
 	UE_LOG(LogProtokitePlaytest, Log, TEXT("Uploading this launch's recording to Protokite session %s."), *Session.ProtokiteSessionId);
+	RaiseUploadChanged(EProtokitePlaytestUploadState::Started, Session.ProtokiteSessionId, false);
 	const TWeakObjectPtr<UProtokitePlaytestSubsystem> WeakThis(this);
-	GetOrCreateRecordingUploads()->UploadOne(VideoRecordingRun.ToSharedRef(), Session, Flock->GetRequestHeaders(),
-		[WeakThis](FProtokitePlaytestRecordingUploadOutcome Outcome)
+	GetOrCreateRecordingUploads()->UploadOne(Run, Session, Flock->GetRequestHeaders(),
+		[WeakThis, bToTheOpenSession, SessionId = Session.ProtokiteSessionId](FProtokitePlaytestRecordingUploadOutcome Outcome)
 		{
 			if (Outcome.bUploaded)
 			{
@@ -1408,10 +1625,19 @@ void UProtokitePlaytestSubsystem::UploadThisLaunchsRecording()
 				UE_LOG(LogProtokitePlaytest, Warning, TEXT("The recording was not uploaded, so it is kept for a later launch to push: %s"),
 					*Outcome.Error);
 			}
-			if (UProtokitePlaytestSubsystem* Self = WeakThis.Get())
+			// Nothing is raised into a game that is closing; its end has already gone.
+			UProtokitePlaytestSubsystem* Self = WeakThis.Get();
+			if (Self == nullptr || Self->bDeinitializing)
 			{
-				Self->OnRecordingUploadFinished.Broadcast(Outcome.bUploaded, Outcome.bUploaded ? FString() : Outcome.Error);
+				return;
 			}
+			if (bToTheOpenSession)
+			{
+				--Self->UploadsToTheSessionUnanswered;
+			}
+			// The end goes first, so a handler that starts the next session on this answer is not refused as still ending.
+			Self->SendTheEndOnceUploadsAnswer();
+			Self->RaiseUploadAnswered(SessionId, false, Outcome);
 		});
 }
 
@@ -1482,6 +1708,22 @@ void UProtokitePlaytestSubsystem::StartUploadingWhatEarlierLaunchesLeft()
 					{
 						UE_LOG(LogProtokitePlaytest, Log, TEXT("Recordings earlier launches left: %d uploaded, %d kept for a later launch."),
 							UploadedCount, LeftCount);
+					}
+				},
+				[WeakThis](const FString& SessionId)
+				{
+					UProtokitePlaytestSubsystem* SelfNow = WeakThis.Get();
+					if (SelfNow != nullptr && !SelfNow->bDeinitializing)
+					{
+						SelfNow->RaiseUploadChanged(EProtokitePlaytestUploadState::Started, SessionId, true);
+					}
+				},
+				[WeakThis](const FString& SessionId, const FProtokitePlaytestRecordingUploadOutcome& Outcome)
+				{
+					UProtokitePlaytestSubsystem* SelfNow = WeakThis.Get();
+					if (SelfNow != nullptr && !SelfNow->bDeinitializing)
+					{
+						SelfNow->RaiseUploadAnswered(SessionId, true, Outcome);
 					}
 				});
 			return false;
@@ -2071,7 +2313,7 @@ namespace
 
 	FAutoConsoleCommandWithWorldArgsAndOutputDevice StopVideoRecordingCommand(
 		TEXT("ProtokitePlaytest.StopVideoRecording"),
-		TEXT("Stops this game instance's video recording for good, and saves the file."),
+		TEXT("Stops this game instance's video recording and saves the file, which is then uploaded to its session."),
 		FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World, FOutputDevice& Output)
 		{
 			UProtokitePlaytestSubsystem* Playtest = FindPlaytestSubsystemOfWorld(World);

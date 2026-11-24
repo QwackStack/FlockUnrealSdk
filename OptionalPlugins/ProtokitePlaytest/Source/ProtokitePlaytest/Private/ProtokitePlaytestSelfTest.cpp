@@ -358,9 +358,9 @@ void FProtokitePlaytestSelfTest::StopListeningForTheUpload()
 	}
 	if (UProtokitePlaytestSubsystem* PlaytestNow = Playtest.Get())
 	{
-		PlaytestNow->OnRecordingUploadFinished.RemoveDynamic(Listener, &UProtokitePlaytestSelfTestListener::HandleRecordingUploadFinished);
+		PlaytestNow->OnRecordingUploadChanged.RemoveDynamic(Listener, &UProtokitePlaytestSelfTestListener::HandleRecordingUploadChanged);
 	}
-	Listener->OnUploadFinished = nullptr;
+	Listener->OnUploadChanged = nullptr;
 	if (UObjectInitialized())
 	{
 		Listener->RemoveFromRoot();
@@ -521,15 +521,16 @@ void FProtokitePlaytestSelfTest::CheckSessionStarted()
 			case EProtokitePlaytestSessionState::NotStarted:
 				Finish(EProtokitePlaytestSelfTestOutcome::Failed, FString::Printf(TEXT("no session started within %.0f seconds. A playtest "
 					"never signs a player in: the session starts once the game signs one in and their Flock session reaches the "
-					"server, so sign in first -- with Flock.LoginWithDevice from a harness."), Options.WaitSeconds));
+					"server, so sign in first -- with Flock.LoginWithDevice from a harness. With Start Session And Recording "
+					"Automatically off, the game also has to call StartPlaytestSession."), Options.WaitSeconds));
 				return;
 			case EProtokitePlaytestSessionState::Starting:
 				Finish(EProtokitePlaytestSelfTestOutcome::Failed, FString::Printf(TEXT("the session start was sent and not answered "
 					"within %.0f seconds"), Options.WaitSeconds));
 				return;
 			case EProtokitePlaytestSessionState::Ended:
-				Finish(EProtokitePlaytestSelfTestOutcome::Failed, TEXT("this launch's session had already ended, so there is none to "
-					"check. A launch has one session: start the game again to run the self-test."));
+				Finish(EProtokitePlaytestSelfTestOutcome::Failed, TEXT("the session had already ended, so there is none to "
+					"check. Start another with StartPlaytestSession, or start the game again, then run the self-test."));
 				return;
 			case EProtokitePlaytestSessionState::NoPlayerIdentity:
 				Finish(EProtokitePlaytestSelfTestOutcome::Failed, TEXT("no session was started, because there was neither a Steam id "
@@ -916,21 +917,31 @@ void FProtokitePlaytestSelfTest::CheckRecordingUploaded()
 	Listener->AddToRoot();
 	bUploadFinished = false;
 	const TWeakPtr<FProtokitePlaytestSelfTest> WeakSelf = AsShared();
-	Listener->OnUploadFinished = [WeakSelf](bool bInUploaded, const FString& WhyNot)
+	Listener->OnUploadChanged = [WeakSelf](const FProtokitePlaytestUploadUpdate& Update)
 	{
-		if (const TSharedPtr<FProtokitePlaytestSelfTest> Self = WeakSelf.Pin())
+		// Only this launch's recording has an answer to wait for: its Started is on the way, and an earlier launch's
+		// recording being sent meanwhile is not the one this step sent.
+		const TSharedPtr<FProtokitePlaytestSelfTest> Self = WeakSelf.Pin();
+		if (Self.IsValid() && !Update.bFromAnEarlierLaunch && Update.State != EProtokitePlaytestUploadState::Started)
 		{
 			Self->bUploadFinished = true;
-			Self->bUploaded = bInUploaded;
-			Self->UploadWhyNot = WhyNot;
+			Self->bUploaded = Update.State == EProtokitePlaytestUploadState::Uploaded;
+			Self->UploadWhyNot = Update.WhyNot;
 		}
 	};
-	PlaytestNow->OnRecordingUploadFinished.AddDynamic(Listener, &UProtokitePlaytestSelfTestListener::HandleRecordingUploadFinished);
+	PlaytestNow->OnRecordingUploadChanged.AddDynamic(Listener, &UProtokitePlaytestSelfTestListener::HandleRecordingUploadChanged);
 
 	if (!PlaytestNow->StopVideoRecordingAndUploadIt())
 	{
 		StopListeningForTheUpload();
 		Finish(EProtokitePlaytestSelfTestOutcome::Failed, TEXT("the recording could not be stopped to be sent"));
+		return;
+	}
+	if (PlaytestNow->GetFinishedVideoRecordingPath().IsEmpty())
+	{
+		// Nothing is raised for a recording that kept no file, so there is no answer to wait for.
+		StopListeningForTheUpload();
+		Finish(EProtokitePlaytestSelfTestOutcome::Failed, TEXT("the recording kept no finished file to send; the log above says why"));
 		return;
 	}
 

@@ -110,6 +110,12 @@ public:
 	/** The same path with .part added, which the video has while it is being written. */
 	FString GetUnfinishedVideoFilePath() const;
 
+	/**
+	 * Lets go of the room the run reserved for its video to grow into, once the video is finished: a launch making room then
+	 * counts it at the size it is. Without this a launch holding several finished recordings counts each at its size limit.
+	 */
+	void ReleaseReservation() const;
+
 	/** Saves the Protokite session the recording belongs to beside it, replacing one saved before. */
 	bool SaveSession(const FProtokitePlaytestRecordingSession& Session, FString& OutError) const;
 

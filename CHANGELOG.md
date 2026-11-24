@@ -5,6 +5,53 @@ All notable changes to this plugin will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.54.0] - 2026-11-19
+
+Protokite Playtest: the game starts and ends the playtest session and its recording, and hears every upload.
+
+### Added
+
+- **Start Session And Recording Automatically** (*Protokite Playtest Settings*, on by default, which keeps the behaviour so
+  far). Off, no session or recording starts until the game asks.
+- **`StartPlaytestSession`** (Blueprint: **Protokite Start Playtest Session**) starts a session once a player's Flock session
+  has reached the server, naming the latest one. False, with the reason in the log, while one is starting, open or ending,
+  when the playtest is not ready, or when the player chose to have nothing collected. With the setting on, each session it
+  starts is recorded too.
+- **`StartVideoRecording`** (Blueprint: **Protokite Start Video Recording**) records the screen for the open session, or for
+  the next one started. False, with the reason, while one records or is being saved, when the playtest is not ready, when the
+  player's answer or the playtest does not allow video, when video cannot be recorded here, or with no room left in
+  Recordings Disk Budget. Recordings made with no session open all go to the next session started.
+- **`OnRecordingUploadChanged`** with an **`FProtokitePlaytestUploadUpdate`**: `State` (`EProtokitePlaytestUploadState`:
+  `Started`, `Uploaded`, `Kept`; `WaitingForWiFi` is declared and never raised, since recording is 64-bit Windows only),
+  `PlaytestSessionId`, `bFromAnEarlierLaunch`, `BytesSent` and `WhyNot`. Raised on the game thread for this launch's
+  recordings and for those an earlier launch left.
+- **`OnPlaytestSessionChanged(PlaytestSessionId, bStarted)`** (Blueprint: **On Playtest Session Changed**, on the playtest
+  subsystem): true once Protokite has answered a start with an id, false when the session's end is sent, after its uploads
+  have answered. Not raised for a start that failed, or while the game is closing.
+
+### Changed
+
+- **`GetPlaytestSessionId`** (Blueprint: **Protokite Get Playtest Session Id**) is empty once the session's end is sent; it
+  used to keep the ended session's id. The id comes with `OnPlaytestSessionChanged`.
+- A finished recording counts at its own size against Recordings Disk Budget, not at the room it reserved to grow into, so
+  the several recordings a launch may now hold do not use the budget up.
+
+- **`EndPlaytestSession`** stops the running recording, uploads it to the session and sends the end once every upload to the
+  session has an answer, a failed one included (the recording is then kept on disk as before); a new session may then be
+  started. It returns false, and logs why, when no session is open or the session is already ending: ending twice sends one
+  end, where it sent two before. Closing the game while an end waits sends it at once.
+- One recording at a time instead of one per launch: a stopped recording no longer rules out another.
+- A later Protokite session names the latest Flock session to reach the server; a launch's first session still names the
+  first.
+
+### Removed
+
+- **Breaking: `OnRecordingUploadFinished(bUploaded, WhyNot)` is gone.** Bind `OnRecordingUploadChanged` instead (Blueprint:
+  **Bind Event to On Recording Upload Changed**): `State` `Uploaded` is the old `bUploaded` true, `Kept` with `WhyNot` is the old
+  false with its reason, and `Started` comes before either. A recording
+  deleted because the player no longer allows the screen to be recorded raises nothing (it raised "not uploaded" before), and
+  neither does a recording that kept no file.
+
 ## [1.53.0] - 2026-11-17
 
 Several players signed in at once on one machine, for couch and booth games.

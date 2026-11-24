@@ -10,6 +10,7 @@
 #include "ProtokitePlaytestFormSubmission.h"
 #include "ProtokitePlaytestIdentity.h"
 #include "ProtokitePlaytestPerformanceTimeline.h"
+#include "ProtokitePlaytestRecordingUpload.h"
 #include "ProtokitePlaytestSession.h"
 #include "ProtokitePlaytestStatus.h"
 #include "Http/FlockHttpAdapter.h"
@@ -23,6 +24,7 @@ class FProtokitePlaytestRecordingRun;
 class FProtokitePlaytestVideoRecording;
 class FProtokitePlaytestFormKeyWatcher;
 class FProtokitePlaytestRecordingUploads;
+struct FProtokitePlaytestRecordingUploadOutcome;
 class SProtokitePlaytestConsentWidget;
 class SProtokitePlaytestFormWidget;
 class FProtokiteClient;
@@ -35,8 +37,11 @@ class UGameInstance;
 class UWorld;
 struct FWorldContext;
 
-/** Raised when this launch's recording finishes: uploaded, or not, with the reason it did not go. */
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FProtokitePlaytestRecordingUploadFinished, bool, bUploaded, const FString&, WhyNot);
+/** Raised each time a playtest recording's upload changes: it started, it was uploaded, or it is kept for later. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FProtokitePlaytestRecordingUploadChanged, const FProtokitePlaytestUploadUpdate&, Update);
+
+/** Raised when a Protokite session opens (bStarted true) or its end is sent (bStarted false). */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FProtokitePlaytestSessionChanged, const FString&, PlaytestSessionId, bool, bStarted);
 
 /**
  * The playtest plugin's runtime home, one per game instance.
@@ -46,14 +51,16 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FProtokitePlaytestRecordingUploadFi
  * initialized, it fetches this build's playtest config from Protokite, once per Flock initialization, and
  * forgets it when the Flock SDK shuts down. It moves to Stopped when its game instance shuts down.
  *
- * It also runs the launch's one Protokite session. The session starts once the playtest config is loaded and the
- * current Flock initialization's first session has reached the server, whichever of the two happens last, and it
- * names that Flock session. A Flock session only exists after a player signs in, with the Flock SDK's analytics on,
+ * It also runs the Protokite session, one at a time. With Start Session And Recording Automatically on (the default) the
+ * launch's first session starts once the playtest config is loaded and the current Flock initialization's first session
+ * has reached the server, whichever of the two happens last, and it names that Flock session. With it off, or after the
+ * game ends a session, a session starts only when the game calls StartPlaytestSession, and it names the latest Flock
+ * session to reach the server. A Flock session only exists after a player signs in, with the Flock SDK's analytics on,
  * Analytics Auto Start Session on (or a Start Session call) and consent granted when Analytics Require Explicit
  * Consent is on. A later Flock session, a sign-out or the Flock SDK shutting down neither ends nor restarts it, and
  * neither does the Flock SDK initializing again with another API key or Game Version ID: the session keeps the
  * address and headers it started with. It ends when the game instance shuts down, or when EndPlaytestSession is
- * called.
+ * called, which uploads its recording first.
  *
  * Before any of that, it asks the player what this playtest may collect, and collects nothing until they answer: yes,
  * the screen and play data, or not now, nothing at all, which leaves the build behaving exactly like one with
@@ -67,10 +74,13 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FProtokitePlaytestRecordingUploadFi
  * own playtest events (RecordPlaytestEvent). None of it runs unless the status is Ready and the Flock SDK's analytics
  * is on, and it pauses while the game is in the background.
  *
- * When the playtest turns video recording on, it records the game's screen from the moment the config is loaded, to a
- * VP9 file under Saved/ProtokitePlaytest/Recordings/Playtest, with the Video Recording settings. One recording is made per
- * launch: once it stops, at its length or size limit, when the game calls StopVideoRecording, when playtesting stops or
- * when the game instance shuts down, no other starts. Background time is not recorded. Only 64-bit Windows builds that
+ * When the playtest turns video recording on, it records the game's screen, to a VP9 file under
+ * Saved/ProtokitePlaytest/Recordings/Playtest, with the Video Recording settings: from the moment the config is loaded,
+ * and again with each session the game starts, while Start Session And Recording Automatically is on, and whenever the
+ * game calls StartVideoRecording. One recording at a time: once it stops, at its length or size limit, when the game
+ * calls StopVideoRecording or EndPlaytestSession, when playtesting stops or when the game instance shuts down, no other
+ * starts until one of those asks again. Each recording is uploaded to the session open while it recorded, or to the
+ * next one started when none was, and deleted once uploaded. Background time is not recorded. Only 64-bit Windows builds that
  * draw something record video; elsewhere one warning says so and the rest of the playtest carries on. The same recording
  * can be tried without a playtest, saved under Recordings/TestVideos: Record Video In Play In Editor (Protokite Playtest Local
  * Settings), or the console command ProtokitePlaytest.RecordTestVideo <seconds> in builds that are not Shipping.
@@ -167,32 +177,57 @@ public:
 	 */
 	bool IsWaitingToAskForConsentForTesting() const { return WaitingToAskForConsent.IsValid(); }
 
-	/** Where this launch's Protokite session is. Reading it changes nothing. */
+	/** Where the current, or last, Protokite session is. Reading it changes nothing. */
 	EProtokitePlaytestSessionState GetPlaytestSessionState() const { return SessionState; }
 
-	/** The id Protokite gave this launch's session. Empty until the session has started, and kept once it has ended. */
+	/** The id Protokite gave the open session. Empty until a session has started, and again once its end is sent. */
 	const FString& GetPlaytestSessionId() const { return PlaytestSessionId; }
 
 	/** The identity this launch's session start sent. Empty until a start has resolved it. */
 	const FProtokitePlaytestIdentity& GetPlaytestIdentity() const { return PlaytestIdentity; }
 
 	/**
-	 * Ends this launch's Protokite session now, for a game that quits on its own schedule. Protokite ignores an end
-	 * for a session that has already ended, so calling this twice sends two ends. Returns false, and sends nothing,
-	 * when no session has started. The session also ends by itself when the game instance shuts down.
+	 * Starts a Protokite session, for a game that turned Start Session And Recording Automatically off or ended the last
+	 * one. It is sent once a Flock session has reached the server, naming the latest one, so true means asked for rather
+	 * than started: GetPlaytestSessionState says when it has. With Start Session And Recording Automatically on, a
+	 * recording starts with it as well when the playtest records video.
+	 *
+	 * Returns false, logging why, when a session is starting, open or still ending, when the playtest is not ready (see
+	 * GetStatus), or when the player's answer lets this playtest collect nothing.
+	 */
+	bool StartPlaytestSession();
+
+	/**
+	 * Ends the Protokite session now, for a game that ends a part of its play or quits on its own schedule. A recording
+	 * running is stopped and uploaded to this session first, and the end is sent once every upload to it has an answer,
+	 * so a session's recording is never cut off by its end. StartPlaytestSession may then start another. Returns false,
+	 * and sends nothing, when no session is open, or this one is already ending. The session also ends by itself when
+	 * the game instance shuts down.
 	 *
 	 * OnEnded, when given, hears whether Protokite took the end, and why not when it did not.
 	 */
 	bool EndPlaytestSession(TFunction<void(bool bEnded, const FString& WhyNot)> OnEnded = nullptr);
 
 	/**
-	 * Raised once for this launch's recording when it finishes, whatever stopped it: uploaded, or not uploaded with the
-	 * reason, which is also raised when the upload could not even begin (no Protokite session to send it to, the Flock SDK
-	 * not running). One not uploaded is kept on disk for a later launch, unless no session started for it. Not raised
-	 * while the game is closing, for recordings an earlier launch left, or for a test video, which is never uploaded.
+	 * Raised on the game thread each time a playtest recording's upload changes: Started as it begins, then Uploaded (the
+	 * file is deleted) or Kept (it stays on disk for a later chance, WhyNot says why). Also Kept, with no Started before
+	 * it, when an upload cannot begin: no session to send it to yet, or the Flock SDK not running. Raised for this
+	 * launch's recordings and for those an earlier launch left (bFromAnEarlierLaunch). Not raised while the game is
+	 * closing, for a recording deleted because the player's answer no longer allows it, or for a test video, which is
+	 * never uploaded.
 	 */
 	UPROPERTY(BlueprintAssignable, Category = "Protokite|Playtest")
-	FProtokitePlaytestRecordingUploadFinished OnRecordingUploadFinished;
+	FProtokitePlaytestRecordingUploadChanged OnRecordingUploadChanged;
+
+	/**
+	 * Raised on the game thread when a Protokite session opens, with bStarted true once Protokite has answered its start
+	 * with an id (GetPlaytestSessionId is then set), and with bStarted false when its end is sent -- by EndPlaytestSession
+	 * once the session's uploads have answered -- after which GetPlaytestSessionId is empty. Whether Protokite took the end
+	 * is EndPlaytestSession's callback. Not raised for a start that failed, nor while the game is closing: a quit's own end
+	 * raises nothing.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Protokite|Playtest")
+	FProtokitePlaytestSessionChanged OnPlaytestSessionChanged;
 
 	/**
 	 * Records one of the game's own events for this playtest, sent through the Flock SDK's analytics under the playtest
@@ -214,17 +249,28 @@ public:
 	bool IsRecordingVideo() const;
 
 	/**
-	 * Stops this launch's video recording for good, for a game that quits on its own schedule. The file is finished on a
-	 * worker thread, and no other recording starts this launch. Like any finished playtest recording, it is then uploaded
-	 * when a Protokite session started for it. Returns false, and changes nothing, when no recording is capturing.
+	 * Starts recording the screen for the playtest, for a game that turned Start Session And Recording Automatically off
+	 * or stopped the last recording. It goes to the session open while it records, or to the next one started when none
+	 * is. True when it started, or waits for this game instance's viewport.
+	 *
+	 * Returns false, logging why, when a recording is running or still being saved, when the playtest is not ready, when
+	 * the player's answer or the playtest's config does not allow video, when video cannot be recorded here, or when there
+	 * is no room left in Recordings Disk Budget.
+	 */
+	bool StartVideoRecording();
+
+	/**
+	 * Stops the video recording, for a game that ends a part of its play or quits on its own schedule. The file is
+	 * finished on a worker thread, and no other recording starts until something asks for one. Like any finished playtest
+	 * recording, it is then uploaded to its session. Returns false, and changes nothing, when no recording is capturing.
 	 */
 	bool StopVideoRecording();
 
 	/**
-	 * Whether this launch's recording has somewhere to go: one is running, it belongs to the playtest rather than being
-	 * a test video, and a Protokite session has started for it to be uploaded to.
+	 * Whether the running recording has somewhere to go now: one is running, it belongs to the playtest rather than being
+	 * a test video, and a Protokite session is open for it to be uploaded to.
 	 *
-	 * **A recording with no session cannot be uploaded at all** -- the next launch deletes it -- so anything offering
+	 * **A recording with no session cannot be uploaded until one starts** -- the next launch deletes it -- so anything offering
 	 * the player a way to send it asks this first. Offering it on "a recording is running" alone puts a button in front
 	 * of a player that stops their recording and sends nothing.
 	 */
@@ -428,7 +474,7 @@ private:
 	/**
 	 * Warns when the playtest turns exception capturing on and the Flock SDK is not capturing exceptions. Exceptions are
 	 * the Flock SDK's to report and a playtest switch never controls that (decision D4), so all this plugin can do is
-	 * say so. Called as the launch's one session start is sent, which is also the first moment the answer is settled:
+	 * say so. Called as each session start is sent, which is also the first moment the answer is settled:
 	 * the Flock SDK announces it is initialized before it starts capturing.
 	 */
 	void WarnIfExceptionsAreNotCaptured() const;
@@ -528,8 +574,27 @@ private:
 	/** The uploader, built on first use so a launch that never records never makes one. */
 	TSharedRef<FProtokitePlaytestRecordingUploads> GetOrCreateRecordingUploads();
 
-	/** Sends this launch's own finished recording, which this launch still holds the run of. */
-	void UploadThisLaunchsRecording();
+	/**
+	 * Uploads one of this launch's finished playtest recordings, which this launch holds the run of, to the session saved
+	 * beside it. One with no session yet waits for the next session started. Every way out but the player's answer, no
+	 * finished file and the game closing raises OnRecordingUploadChanged.
+	 */
+	void UploadThisLaunchsRecording(const TSharedRef<FProtokitePlaytestRecordingRun>& Run);
+
+	void RaiseUploadChanged(EProtokitePlaytestUploadState State, const FString& SessionId, bool bFromAnEarlierLaunch,
+		int64 BytesSent = 0, const FString& WhyNot = FString());
+
+	/** Raises an upload's answer: Uploaded with the bytes sent, or Kept with the reason. */
+	void RaiseUploadAnswered(const FString& SessionId, bool bFromAnEarlierLaunch, const FProtokitePlaytestRecordingUploadOutcome& Outcome);
+
+	/** Sends the end the game asked for once every upload to the session has an answer. */
+	void SendTheEndOnceUploadsAnswer();
+
+	/**
+	 * Sends the open session's end now, with the game's callback, empties the session id and raises the session's end
+	 * unless the game is closing. The one place a session's end goes out.
+	 */
+	void SendTheEndNow();
 
 	/**
 	 * Pushes recordings earlier launches left, once Flock has initialized and the launch pass has finished with them.
@@ -541,10 +606,13 @@ private:
 	void StartUploadingWhatEarlierLaunchesLeft();
 
 	/**
-	 * Saves this launch's Protokite session beside its playtest recording once both exist, so a later launch can upload the
-	 * recording to it. Does nothing for a test video or before the session has started.
+	 * Saves the open Protokite session beside the playtest recording once both exist, so it is uploaded there, and hands
+	 * the session every finished recording that was waiting for one. Does nothing for a test video or while no session is
+	 * open.
 	 */
 	void SaveVideoRecordingSession();
+
+	bool IsPlaytestSessionOpen() const;
 
 	/** Runs the video ticker while a recording captures or finishes, or waits for a viewport; stops it otherwise. */
 	void UpdateVideoPump();
@@ -580,14 +648,14 @@ private:
 	void ForgetPlaytestConfig();
 
 	/**
-	 * Sends this launch's session start once the status is Ready and a Flock session has reached the server, and
-	 * does nothing otherwise. The one place a start is sent, and it sends one at most per launch.
+	 * Sends a session start once one is asked for, the status is Ready and a Flock session has reached the server, and
+	 * does nothing otherwise. The one place a start is sent, and it sends one per time a session is asked for.
 	 */
 	void StartPlaytestSessionWhenAllowed();
 
 	/**
-	 * True when nothing has been started this launch, the status is Ready and a Flock session has reached the server.
-	 * Logs the wait for a Flock session once. The one owner of the start's precondition.
+	 * True when a session is asked for, none is starting or open, the status is Ready and a Flock session has reached the
+	 * server. Logs the wait for a Flock session once. The one owner of the start's precondition.
 	 */
 	bool IsReadyToStartPlaytestSession();
 
@@ -604,10 +672,10 @@ private:
 	TMap<FString, FString> WithPlayerToken(const TMap<FString, FString>& Headers) const;
 
 	/**
-	 * Whether Auth's current sign-in is the one the first Flock session registered under. Protokite links the session the
-	 * start names to the account whose token the start carries, so a player switch since then sends no token.
+	 * Whether Auth's current sign-in is the one the Flock session the start names registered under. Protokite links the
+	 * session the start names to the account whose token the start carries, so a player switch since then sends no token.
 	 */
-	bool IsTheFirstFlockSessionsSignIn(const FFlockAuthSession& Auth) const;
+	bool IsTheNamedFlockSessionsSignIn(const FFlockAuthSession& Auth) const;
 
 	/**
 	 * The Steam id when a Steam subsystem is running, otherwise this install's device id. When neither can be had,
@@ -640,12 +708,31 @@ private:
 	/** Set when Protokite refused the session because the playtest has closed. Keeps playtesting off for the launch. */
 	bool bPlaytestNoLongerCollecting = false;
 
-	/** The server id of the current Flock initialization's first session to reach the server; empty until one has. */
-	FString FirstFlockServerSessionId;
+	/**
+	 * The server id of the Flock session the next start names: the current Flock initialization's first session to reach
+	 * the server for the launch's automatic start, and the latest for any other. Empty until one has.
+	 */
+	FString NamedFlockServerSessionId;
 
-	/** The sign-in that first session started under, by its auth session and sign-in number. */
-	TWeakPtr<FFlockAuthSession> FirstFlockSessionAuth;
-	int32 FirstFlockSessionSignIn = 0;
+	/** The sign-in that session started under, by its auth session and sign-in number. */
+	TWeakPtr<FFlockAuthSession> NamedFlockSessionAuth;
+	int32 NamedFlockSessionSignIn = 0;
+
+	/**
+	 * Set while the launch's automatic start waits to be sent. Meanwhile the first Flock session to reach the server is the
+	 * one it names; at any other time it is the latest.
+	 */
+	bool bLaunchsAutomaticStartWaiting = false;
+
+	/** Set while a session start is asked for and not yet sent: by the setting at launch, and by StartPlaytestSession. */
+	bool bPlaytestSessionAskedFor = false;
+
+	/** Set while the game's end waits for uploads to the session; the end is sent, with its callback, once they answer. */
+	bool bEndingPlaytestSession = false;
+	TFunction<void(bool bEnded, const FString& WhyNot)> OnPlaytestSessionEnded;
+
+	/** Uploads to the open session that have not answered yet. */
+	int32 UploadsToTheSessionUnanswered = 0;
 
 	/** The sign-in each of the current Flock initialization's sessions started under, by the session's local id. */
 	TMap<FString, TPair<TWeakPtr<FFlockAuthSession>, int32>> SignInsFlockSessionsStartedUnder;
@@ -715,8 +802,17 @@ private:
 	/** Going through what earlier launches left in the recordings folder, on its worker thread. */
 	TFuture<void> RecordingsFolderFinished;
 
-	/** Set once a recording has been started this launch, whatever became of it. */
-	bool bVideoRecordingStartedThisLaunch = false;
+	/** Set once a test video, or a Record Video In Play In Editor recording, has been started this launch, whatever became of it. */
+	bool bTestVideoStartedThisLaunch = false;
+
+	/** Set while a playtest recording is asked for and not yet tried: by the setting, a session started with it, and StartVideoRecording. */
+	bool bPlaytestRecordingAskedFor = false;
+
+	/** This launch's finished playtest recordings, held until the game instance shuts down so no other launch touches them. */
+	TArray<TSharedRef<FProtokitePlaytestRecordingRun>> FinishedRecordingRuns;
+
+	/** Those of them that finished while no session was open, waiting for the next session started. */
+	TArray<TSharedRef<FProtokitePlaytestRecordingRun>> RecordingRunsWaitingForASession;
 
 	/** Set once this launch has begun sending forms earlier launches kept, so it is begun exactly once. */
 	bool bStartedSendingKeptForms = false;

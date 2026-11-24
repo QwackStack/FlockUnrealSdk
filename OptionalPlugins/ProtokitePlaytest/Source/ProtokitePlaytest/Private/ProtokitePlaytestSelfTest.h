@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
 #include "UObject/Object.h"
+#include "ProtokitePlaytestRecordingUpload.h"
 #include "ProtokitePlaytestSelfTest.generated.h"
 
 class FProtokiteClient;
@@ -53,21 +54,32 @@ namespace ProtokitePlaytestSelfTestSteps
 	inline constexpr const TCHAR* SessionEnded = TEXT("This launch's Protokite session ends");
 }
 
-/** Hands the recording's upload-finished event to the self-test, since a Blueprint event binds only to a UFUNCTION. */
+/** Hands the playtest's events to code that is not a UObject, since a Blueprint event binds only to a UFUNCTION. */
 UCLASS()
 class UProtokitePlaytestSelfTestListener : public UObject
 {
 	GENERATED_BODY()
 
 public:
-	TFunction<void(bool bUploaded, const FString& WhyNot)> OnUploadFinished;
+	TFunction<void(const FProtokitePlaytestUploadUpdate& Update)> OnUploadChanged;
 
 	UFUNCTION()
-	void HandleRecordingUploadFinished(bool bUploaded, const FString& WhyNot)
+	void HandleRecordingUploadChanged(const FProtokitePlaytestUploadUpdate& Update)
 	{
-		if (OnUploadFinished)
+		if (OnUploadChanged)
 		{
-			OnUploadFinished(bUploaded, WhyNot);
+			OnUploadChanged(Update);
+		}
+	}
+
+	TFunction<void(const FString& PlaytestSessionId, bool bStarted)> OnSessionChanged;
+
+	UFUNCTION()
+	void HandlePlaytestSessionChanged(const FString& PlaytestSessionId, bool bStarted)
+	{
+		if (OnSessionChanged)
+		{
+			OnSessionChanged(PlaytestSessionId, bStarted);
 		}
 	}
 };
