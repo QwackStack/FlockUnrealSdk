@@ -137,7 +137,7 @@ bool FProtokitePlaytestDoesNotUploadAtTeardownTest::RunTest(const FString& Param
 /**
  * A player who takes the screen recording back after it has started gets what was recorded deleted, not uploaded -- and
  * not kept either. Keeping it would be the same as sending it a launch later, because the session it belongs to is
- * saved beside it, which is the whole point of D10.
+ * saved beside it, which is the whole point of D10. Nothing is raised for it (owner, 2026-11-19): no upload began.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestTakingVideoBackDeletesItTest,
 	"Protokite.Playtest.RecordingUpload.TakingTheScreenBackDeletesTheRecording",
@@ -151,14 +151,10 @@ bool FProtokitePlaytestTakingVideoBackDeletesItTest::RunTest(const FString& Para
 	FPlaytestFixture Fixture;
 	const TSharedRef<FProtokitePlaytestFakeFileUploader> Uploader = StartRecordingPlaytest(*this, Fixture);
 
-	// Whoever is waiting to hear about the recording hears why it did not go, the same as every other way out.
 	const TStrongObjectPtr<UProtokitePlaytestSelfTestListener> Listener(NewObject<UProtokitePlaytestSelfTestListener>());
-	TArray<FString> WhyNot;
-	Listener->OnUploadFinished = [&WhyNot](bool bUploaded, const FString& Reason)
-	{
-		WhyNot.Add(bUploaded ? FString(TEXT("uploaded")) : Reason);
-	};
-	Fixture.Playtest->OnRecordingUploadFinished.AddDynamic(Listener.Get(), &UProtokitePlaytestSelfTestListener::HandleRecordingUploadFinished);
+	int32 Raised = 0;
+	Listener->OnUploadChanged = [&Raised](const FProtokitePlaytestUploadUpdate&) { ++Raised; };
+	Fixture.Playtest->OnRecordingUploadChanged.AddDynamic(Listener.Get(), &UProtokitePlaytestSelfTestListener::HandleRecordingUploadChanged);
 
 	// The player changes their mind: play data, but no screen recording.
 	Fixture.Playtest->SetPlaytestConsent(EProtokitePlaytestConsentChoice::PlayDataOnly);
@@ -176,10 +172,7 @@ bool FProtokitePlaytestTakingVideoBackDeletesItTest::RunTest(const FString& Para
 	TestEqual(TEXT("Nothing is left for a later launch to send"), Waiting.Num(), 0);
 	TestTrue(TEXT("The recording's own file is gone"), Fixture.Playtest->GetFinishedVideoRecordingPath().IsEmpty());
 
-	if (TestEqual(TEXT("It was reported once"), WhyNot.Num(), 1))
-	{
-		TestTrue(TEXT("Saying it was the player's doing"), WhyNot[0].Contains(TEXT("not to be recorded")));
-	}
+	TestEqual(TEXT("Nothing was raised"), Raised, 0);
 	return true;
 }
 

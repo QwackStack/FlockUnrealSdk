@@ -749,35 +749,9 @@ bool FProtokitePlaytestSelfTestSessionAlreadyEndedTest::RunTest(const FString& P
 // The upload-finished event needs a recording, which only a build with video can make.
 #if WITH_PROTOKITE_PLAYTEST_VIDEO
 
-namespace
-{
-/** Hears the recording's upload-finished event for a test. */
-struct FSelfTestUploadHeard
-{
-	TStrongObjectPtr<UProtokitePlaytestSelfTestListener> Listener{ NewObject<UProtokitePlaytestSelfTestListener>() };
-	TSharedRef<TArray<TPair<bool, FString>>> Heard = MakeShared<TArray<TPair<bool, FString>>>();
-
-	explicit FSelfTestUploadHeard(UProtokitePlaytestSubsystem* Playtest)
-	{
-		const TSharedRef<TArray<TPair<bool, FString>>> Into = Heard;
-		Listener->OnUploadFinished = [Into](bool bUploaded, const FString& WhyNot) { Into->Add({ bUploaded, WhyNot }); };
-		Playtest->OnRecordingUploadFinished.AddDynamic(Listener.Get(), &UProtokitePlaytestSelfTestListener::HandleRecordingUploadFinished);
-	}
-
-	/** Ticks the engine's core ticker until the event is heard or Seconds of ticks have passed. */
-	void TickUntilHeard(float Seconds) const
-	{
-		for (float Waited = 0.f; Heard->Num() == 0 && Waited < Seconds; Waited += 0.1f)
-		{
-			FTSTicker::GetCoreTicker().Tick(0.1f);
-		}
-	}
-};
-}
-
-/** The upload-finished event is raised once, uploaded, when the recording reaches storage. */
+/** The upload event says Started as the upload begins, then Uploaded once, with the session and the bytes sent. */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestUploadFinishedWhenUploadedTest,
-	"Protokite.Playtest.RecordingUpload.RaisesUploadFinishedOnceUploaded",
+	"Protokite.Playtest.RecordingUpload.RaisesStartedThenUploaded",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FProtokitePlaytestUploadFinishedWhenUploadedTest::RunTest(const FString& Parameters)
@@ -789,22 +763,30 @@ bool FProtokitePlaytestUploadFinishedWhenUploadedTest::RunTest(const FString& Pa
 	Fixture.StartFlock();
 	Fixture.RegisterFlockSession(FirstFlockSessionId);
 	RecordHalfASecond(Fixture);
-	FSelfTestUploadHeard Heard(Fixture.Playtest);
+	FUploadUpdatesHeard Heard(Fixture.Playtest);
 
 	TestTrue(TEXT("Precondition: it stopped the recording"), Fixture.Playtest->StopVideoRecordingAndUploadIt());
 
 	TestEqual(TEXT("Precondition: the recording was uploaded"), Uploader->Uploads.Num(), 1);
-	if (TestEqual(TEXT("The event was raised once"), Heard.Heard->Num(), 1))
+	if (TestEqual(TEXT("Two updates were raised"), Heard.Heard->Num(), 2))
 	{
-		TestTrue(TEXT("Uploaded"), (*Heard.Heard)[0].Key);
-		TestTrue(TEXT("With no reason"), (*Heard.Heard)[0].Value.IsEmpty());
+		const FProtokitePlaytestUploadUpdate& Started = (*Heard.Heard)[0];
+		const FProtokitePlaytestUploadUpdate& Uploaded = (*Heard.Heard)[1];
+		TestTrue(TEXT("Started first"), Started.State == EProtokitePlaytestUploadState::Started);
+		TestEqualSensitive(TEXT("To this launch's session"), Started.PlaytestSessionId, FString(PlaytestSessionId));
+		TestTrue(TEXT("Then Uploaded"), Uploaded.State == EProtokitePlaytestUploadState::Uploaded);
+		TestEqualSensitive(TEXT("To the same session"), Uploaded.PlaytestSessionId, FString(PlaytestSessionId));
+		TestEqual(TEXT("With the bytes the upload sent"), Uploaded.BytesSent, Uploader->Uploads[0].FileBytes);
+		TestTrue(TEXT("Some bytes"), Uploaded.BytesSent > 0);
+		TestTrue(TEXT("With no reason"), Uploaded.WhyNot.IsEmpty());
+		TestFalse(TEXT("Not from an earlier launch"), Uploaded.bFromAnEarlierLaunch);
 	}
 	return true;
 }
 
-/** A failed upload raises it too, not uploaded, with the reason. */
+/** A failed upload is raised as Kept, with the reason, after its Started. */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestUploadFinishedWhenFailedTest,
-	"Protokite.Playtest.RecordingUpload.RaisesUploadFinishedWithTheReasonWhenItFails",
+	"Protokite.Playtest.RecordingUpload.RaisesKeptWithTheReasonWhenItFails",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FProtokitePlaytestUploadFinishedWhenFailedTest::RunTest(const FString& Parameters)
@@ -817,18 +799,25 @@ bool FProtokitePlaytestUploadFinishedWhenFailedTest::RunTest(const FString& Para
 	Fixture.StartFlock();
 	Fixture.RegisterFlockSession(FirstFlockSessionId);
 	RecordHalfASecond(Fixture);
-	FSelfTestUploadHeard Heard(Fixture.Playtest);
+	FUploadUpdatesHeard Heard(Fixture.Playtest);
 
 	Fixture.Playtest->StopVideoRecordingAndUploadIt();
 	// A failed upload is tried once more with a fresh link, which may come round on a later frame.
 	Heard.TickUntilHeard(5.f);
 
 	TestTrue(TEXT("Precondition: an upload was tried"), Uploader->Uploads.Num() >= 1);
-	if (TestEqual(TEXT("The event was raised once"), Heard.Heard->Num(), 1))
+	TestEqual(TEXT("It started once"), Heard.Starts(), 1);
+	if (TestEqual(TEXT("And was answered once"), Heard.Answers().Num(), 1))
 	{
-		TestFalse(TEXT("Not uploaded"), (*Heard.Heard)[0].Key);
-		TestFalse(TEXT("With a reason"), (*Heard.Heard)[0].Value.IsEmpty());
+		TestTrue(TEXT("As kept"), Heard.Answers()[0].State == EProtokitePlaytestUploadState::Kept);
+		TestTrue(TEXT("With the storage's reason"), Heard.Answers()[0].WhyNot.Contains(TEXT("500")));
+		TestEqual(TEXT("Nothing counted as sent"), Heard.Answers()[0].BytesSent, int64(0));
 	}
+	// The launch ends, which lets go of it: a later launch then finds it waiting.
+	Fixture.Playtest->Deinitialize();
+	const TArray<FProtokitePlaytestRecordingWaitingToUpload> Waiting =
+		FProtokitePlaytestRecordingsFolder::FindRecordingsWaitingToUpload(FPaths::Combine(Fixture.Folder, TEXT("Recordings")));
+	TestEqual(TEXT("It is kept on disk for a later launch"), Waiting.Num(), 1);
 	return true;
 }
 
@@ -837,7 +826,7 @@ bool FProtokitePlaytestUploadFinishedWhenFailedTest::RunTest(const FString& Para
  * reason. Without it, whoever asked for the upload would wait for an answer that never comes.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestUploadFinishedWhenItCannotBeginTest,
-	"Protokite.Playtest.RecordingUpload.RaisesUploadFinishedWhenItCannotBegin",
+	"Protokite.Playtest.RecordingUpload.RaisesKeptWhenItCannotBegin",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
 
 bool FProtokitePlaytestUploadFinishedWhenItCannotBeginTest::RunTest(const FString& Parameters)
@@ -848,16 +837,17 @@ bool FProtokitePlaytestUploadFinishedWhenItCannotBeginTest::RunTest(const FStrin
 	Fixture.AnswerConfig(FProtokitePlaytestFakeTransport::Status(200, ConfigBody(GameVersionId, false, /*bVideoRecording*/ true)));
 	Fixture.StartFlock();
 	RecordHalfASecond(Fixture);
-	FSelfTestUploadHeard Heard(Fixture.Playtest);
+	FUploadUpdatesHeard Heard(Fixture.Playtest);
 	TestEqual(TEXT("Precondition: no session started"), static_cast<int32>(Fixture.Playtest->GetPlaytestSessionState()), static_cast<int32>(EProtokitePlaytestSessionState::NotStarted));
 
 	TestTrue(TEXT("Precondition: it stopped the recording"), Fixture.Playtest->StopVideoRecordingAndUploadIt());
 
 	TestEqual(TEXT("Precondition: nothing was uploaded"), Uploader->Uploads.Num(), 0);
-	if (TestEqual(TEXT("The event was raised once"), Heard.Heard->Num(), 1))
+	if (TestEqual(TEXT("The event was raised once, with no Started"), Heard.Heard->Num(), 1))
 	{
-		TestFalse(TEXT("Not uploaded"), (*Heard.Heard)[0].Key);
-		TestTrue(TEXT("Saying there was no session to send it to"), (*Heard.Heard)[0].Value.Contains(TEXT("session")));
+		TestTrue(TEXT("As kept"), (*Heard.Heard)[0].State == EProtokitePlaytestUploadState::Kept);
+		TestTrue(TEXT("Saying there was no session to send it to"), (*Heard.Heard)[0].WhyNot.Contains(TEXT("session")));
+		TestTrue(TEXT("Naming none"), (*Heard.Heard)[0].PlaytestSessionId.IsEmpty());
 	}
 	return true;
 }
@@ -873,7 +863,7 @@ bool FProtokitePlaytestUploadFinishedNotForTestVideoTest::RunTest(const FString&
 	FPlaytestFixture Fixture;
 	RecordForTheSelfTest(Fixture);
 	Fixture.StartFlock();
-	FSelfTestUploadHeard Heard(Fixture.Playtest);
+	FUploadUpdatesHeard Heard(Fixture.Playtest);
 
 	if (!TestTrue(TEXT("Precondition: a test video started"), Fixture.Playtest->StartTestVideoRecording(10.0)))
 	{
@@ -905,16 +895,16 @@ bool FProtokitePlaytestUploadFinishedAfterAStopTest::RunTest(const FString& Para
 	Fixture.StartFlock();
 	Fixture.RegisterFlockSession(FirstFlockSessionId);
 	RecordHalfASecond(Fixture);
-	FSelfTestUploadHeard Heard(Fixture.Playtest);
+	FUploadUpdatesHeard Heard(Fixture.Playtest);
 
 	TestTrue(TEXT("Precondition: it stopped"), Fixture.Playtest->StopVideoRecording());
 	Fixture.Playtest->WaitUntilVideoWrittenForTesting();
 	Fixture.Playtest->TickVideoRecordingForTesting(1.f / 60.f);
 
 	TestEqual(TEXT("It was uploaded"), Uploader->Uploads.Num(), 1);
-	if (TestEqual(TEXT("And the event was raised once"), Heard.Heard->Num(), 1))
+	if (TestEqual(TEXT("And it was answered once"), Heard.Answers().Num(), 1))
 	{
-		TestTrue(TEXT("Uploaded"), (*Heard.Heard)[0].Key);
+		TestTrue(TEXT("Uploaded"), Heard.Answers()[0].State == EProtokitePlaytestUploadState::Uploaded);
 	}
 	return true;
 }
@@ -936,7 +926,7 @@ bool FProtokitePlaytestUploadFinishedNotWhileClosingTest::RunTest(const FString&
 	Fixture.StartFlock();
 	Fixture.RegisterFlockSession(FirstFlockSessionId);
 	RecordHalfASecond(Fixture);
-	FSelfTestUploadHeard Heard(Fixture.Playtest);
+	FUploadUpdatesHeard Heard(Fixture.Playtest);
 
 	// The game instance goes away, which finishes the recording.
 	Fixture.Playtest->Deinitialize();
@@ -963,10 +953,10 @@ bool FProtokitePlaytestUploadFinishedAfterTheTickerSettlesTest::RunTest(const FS
 	Fixture.AnswerConfig(FProtokitePlaytestFakeTransport::Status(200, ConfigBody(GameVersionId, false, /*bVideoRecording*/ true)));
 	Fixture.StartFlock();
 	RecordHalfASecond(Fixture);
-	FSelfTestUploadHeard Heard(Fixture.Playtest);
+	FUploadUpdatesHeard Heard(Fixture.Playtest);
 	UProtokitePlaytestSubsystem* Playtest = Fixture.Playtest;
 	const TSharedRef<TArray<bool>> TickerRunningWhenHeard = MakeShared<TArray<bool>>();
-	Heard.Listener->OnUploadFinished = [Playtest, TickerRunningWhenHeard](bool, const FString&)
+	Heard.Listener->OnUploadChanged = [Playtest, TickerRunningWhenHeard](const FProtokitePlaytestUploadUpdate&)
 	{
 		TickerRunningWhenHeard->Add(Playtest->IsVideoTickerRunningForTesting());
 	};

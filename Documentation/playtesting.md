@@ -1,12 +1,12 @@
 # Playtesting with Protokite
 
 Protokite Playtest is an optional plugin that turns a Development build of your game into a playtest build for
-Protokite. While a playtest runs, each launch of the game becomes one session on the playtest's
-**Sessions** page, and the playtest decides what that session collects:
+Protokite. While a playtest runs, each launch of the game becomes a session on the playtest's **Sessions** page (or
+several, when the game starts and ends them itself), and the playtest decides what a session collects:
 
 | Playtest feature | What the game sends | Where it shows |
 |---|---|---|
-| Always | One session per launch, named after the player's Steam id or this install's device id; when a player is signed in to Flock, their sign-in too, so the session can be linked to their Qwacks Community account | Protokite **Sessions** |
+| Always | A session for the launch, or for each part of play the game starts one for, named after the player's Steam id or this install's device id; when a player is signed in to Flock, their sign-in too, so the session can be linked to their Qwacks Community account | Protokite **Sessions** |
 | `video_recording` | A recording of the game's screen, uploaded when it ends | The session's recording player |
 | `heavy_analytics` | A performance window every ten seconds of play, each level load, and your own playtest events | Flock **Game Metrics**, under the `playtest` category |
 | `exception_capturing` | Nothing extra: the Flock SDK already reports exceptions, and the playtest only asks for them | Flock **Diagnostics → Errors** |
@@ -170,12 +170,63 @@ The log, under `LogProtokitePlaytest`, says what the playtest is doing:
 1. *Playtesting is set up and waiting for the Flock SDK to initialize*, then *fetching this build's playtest from
    Protokite*.
 2. *Playtesting is ready*, naming the playtest and the features it turns on.
-3. *Protokite session … started for this launch*, once a player is signed in and the Flock session has reached the
-   server.
+3. *Protokite session … started*, once a player is signed in and the Flock session has reached the server.
 
 The session appears on the playtest's **Sessions** page. It ends when the game shuts down, or earlier with
 **Protokite End Playtest Session**. A later Flock session, a sign-out or the Flock SDK initializing again neither ends nor
-restarts it: a launch is one session.
+restarts it: by default a launch is one session.
+
+### Starting and ending sessions yourself
+
+A game that records only part of its play, one match or one level, turns **Start Session And Recording Automatically** off
+in *Project Settings → Plugins → Protokite Playtest Settings*. Nothing then starts until the game asks:
+
+| Node (C++ on the subsystem) | Does | Returns false, with the reason in the log, when |
+|---|---|---|
+| **Protokite Start Playtest Session** (`StartPlaytestSession`) | Starts a session once a player's Flock session has reached the server, naming the latest one. True means asked for: **On Playtest Session Changed** says when it has started, and **Protokite Get Playtest Session Id** fills in then | One is starting, open or still ending; the playtest is not ready; the player chose to have nothing collected |
+| **Protokite Start Video Recording** (`StartVideoRecording`) | Records the screen, for the open session or, with none open, for the next one started | One is recording or still being saved; the playtest is not ready; the player's answer or the playtest does not allow video; video cannot be recorded here; **Recordings Disk Budget** has no room left |
+| **Protokite Stop Video Recording** (`StopVideoRecording`) | Stops the recording, which is then uploaded to its session | Nothing is recording |
+| **Protokite End Playtest Session** (`EndPlaytestSession`) | Stops the recording, uploads it to this session, and sends the end once the upload has an answer. A new session may then be started | No session is open, or it is already ending |
+
+One session and one recording at a time. With the setting on, the launch's first session and its recording start by
+themselves as before, and every session the game starts after an end is recorded too.
+
+To know when a session opens and closes, bind the playtest subsystem's **On Playtest Session Changed** event (C++:
+`OnPlaytestSessionChanged`), raised on the game thread with the session's id and **Started**: true once Protokite has
+answered the start (**Protokite Get Playtest Session Id** is then set), false when its end is sent, after its recording's
+upload has answered (the id is then empty). It is a good place to start the next session. It is not raised for a start
+that failed, or while the game is closing. Whether Protokite took the end is what `EndPlaytestSession`'s callback says.
+
+![Custom event Match Started runs into Protokite Start Playtest Session and Protokite Start Video Recording; custom event Match Ended runs into Protokite End Playtest Session](images/playtest-record-one-match.png)
+
+In C++, the end can tell the game whether Protokite took it:
+
+```cpp
+#include "ProtokitePlaytestLibrary.h"
+#include "ProtokitePlaytestSubsystem.h"
+
+// With Start Session And Recording Automatically off, the game records one match.
+void Playtesting_RecordOneMatch_Start(UObject* WorldContextObject)
+{
+    if (!UProtokitePlaytestLibrary::StartPlaytestSession(WorldContextObject))
+    {
+        // Not ready, one already open, or the player chose nothing: the log says which.
+    }
+    UProtokitePlaytestLibrary::StartVideoRecording(WorldContextObject);
+}
+
+void Playtesting_RecordOneMatch_End(UProtokitePlaytestSubsystem* Playtest)
+{
+    // Stops the recording, uploads it to this session, then ends the session.
+    Playtest->EndPlaytestSession([](bool bEnded, const FString& WhyNot)
+    {
+        if (!bEnded)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("The playtest session could not be ended: %s"), *WhyNot);
+        }
+    });
+}
+```
 
 Each change of status is logged once. A setting or a refusal that stops the playtest is a warning naming the setting;
 waiting, fetching and being ready are ordinary lines; **Turned Off** says nothing, since it is every build that is not a
@@ -204,8 +255,9 @@ Missing*).
 
 ## Video recording
 
-When the playtest turns `video_recording` on, the game's screen is recorded from the moment the playtest loads, one
-recording per launch, to a WebM file a browser plays. Background time is not recorded. The **Video Recording**
+When the playtest turns `video_recording` on, the game's screen is recorded from the moment the playtest loads (or from
+**Protokite Start Video Recording**, see [Starting and ending sessions yourself](#starting-and-ending-sessions-yourself)),
+one recording at a time, to a WebM file a browser plays. Background time is not recorded. The **Video Recording**
 settings in *Protokite Playtest Settings* set the size, frame rate and bitrate (1280×720, 30 frames a second and
 2000 kbps by default), and two limits, whichever comes first: **Recording Length Limit** (60 minutes) and
 **Recording Size Limit** (1536 MB).
@@ -216,35 +268,42 @@ A recording is uploaded to its session:
 - when the game asks, with **Protokite Stop And Upload Playtest Recording** (C++:
   `UProtokitePlaytestLibrary::StopAndUploadPlaytestRecording`, or the subsystem's `StopVideoRecordingAndUploadIt`) or the
   feedback form's **Upload your recording** button;
-- when the game stops it for good, with **Protokite Stop Video Recording**;
+- when the game stops it, with **Protokite Stop Video Recording**, or ends its session, with **Protokite End Playtest
+  Session**;
+- when a session starts, for recordings made while none was open;
 - and at the start of a later launch, for anything an earlier launch could not send: a failed upload, a quit, a crash.
 
 Quitting does not upload: a whole recording cannot be sent inside a shutdown, so it is kept and the next launch sends
 it. A recording is deleted once uploaded. Recordings wait under `Saved/ProtokitePlaytest/Recordings/`, inside
 **Recordings Disk Budget** (4096 MB), and when room is short the oldest test videos go first and recordings waiting to be
-uploaded go last. A recording no playtest session started for can never be uploaded, so the next launch deletes it.
+uploaded go last. A recording no playtest session started for, by the time its launch ends, can never be uploaded, so the
+next launch deletes it.
 
 Offer a player a way to send their recording only while **Protokite Can Send Playtest Recording** is true. It is false
-when no session has started for the recording, and pressing a button then would stop the recording and send nothing.
+when no session is open for the recording, and pressing a button then would stop the recording and send nothing yet.
 
 ### Hearing how the upload went
 
-To tell the player how it went, bind the playtest subsystem's **On Recording Upload Finished** event. It is raised once
-when the launch's recording finishes, with two parameters:
+To tell the player how it went, bind the playtest subsystem's **On Recording Upload Changed** event. It is raised on the
+game thread each time an upload changes, for this launch's recordings and for those an earlier launch left, with one
+**Protokite Playtest Upload Update** (`FProtokitePlaytestUploadUpdate`):
 
-| Parameter | Holds |
+| Member | Holds |
 |---|---|
-| `bUploaded` (*Uploaded*) | True when the recording reached its session |
-| `WhyNot` (*Why Not*) | When it was not uploaded, why: including when the upload could not begin at all (no Protokite session to send it to, the Flock SDK not running). Empty when it was uploaded |
+| `State` (*State*) | `Started` as the upload begins; then `Uploaded` (the file is deleted) or `Kept` (it stays on disk for a later chance). `Kept` also comes alone when an upload cannot begin: no session open yet (it goes to the next one started), or the Flock SDK not running. `WaitingForWiFi` is never raised by this plugin, which records only on 64-bit Windows |
+| `PlaytestSessionId` (*Playtest Session Id*) | The session it goes to; empty while it waits for one |
+| `bFromAnEarlierLaunch` (*From An Earlier Launch*) | True for a recording an earlier launch left, sent by this one |
+| `BytesSent` (*Bytes Sent*) | How much was sent, when `Uploaded` |
+| `WhyNot` (*Why Not*) | Why it is kept, when `Kept` |
 
-A recording that was not uploaded stays on disk for a later launch, unless no session started for it. The event is not
-raised while the game is closing, for a recording an earlier launch left, or for a test video.
+The event is not raised while the game is closing, for a recording deleted because the player no longer allows the screen to
+be recorded, or for a test video.
 
 In Blueprint, reach the subsystem by searching the node menu for **Get ProtokitePlaytestSubsystem** (under *GameInstance
 Subsystems*); in the graph the node is titled **Protokite Playtest Subsystem**. Drag off it and bind the event once, such as on
 Event BeginPlay:
 
-![Event BeginPlay runs into Bind Event to On Recording Upload Finished, whose Target is the Protokite Playtest Subsystem node; the bound custom event Recording Upload Finished branches on Uploaded and, on False, prints Why Not](images/playtest-recording-uploaded.png)
+![Event BeginPlay runs into Bind Event to On Recording Upload Changed, whose Target is the Protokite Playtest Subsystem node; the bound custom event Recording Upload Changed breaks the Update, and when its State equals Kept, prints Why Not](images/playtest-recording-uploaded.png)
 
 In C++ the handler is a `UFUNCTION` of your game instance (or any `UObject` that outlives the recording), bound with
 `AddDynamic`. The module must be in your Build.cs: see [Calling the plugin from C++](#calling-the-plugin-from-c).
@@ -252,7 +311,7 @@ In C++ the handler is a `UFUNCTION` of your game instance (or any `UObject` that
 ```cpp
 // MyGameInstance.h
 UFUNCTION()
-void HandleRecordingUploadFinished(bool bUploaded, const FString& WhyNot);
+void HandleRecordingUploadChanged(const FProtokitePlaytestUploadUpdate& Update);
 
 // MyGameInstance.cpp
 #include "ProtokitePlaytestSubsystem.h"
@@ -262,18 +321,24 @@ void UMyGameInstance::Init()
     Super::Init();
     if (UProtokitePlaytestSubsystem* Playtest = GetSubsystem<UProtokitePlaytestSubsystem>())
     {
-        Playtest->OnRecordingUploadFinished.AddDynamic(this, &UMyGameInstance::HandleRecordingUploadFinished);
+        Playtest->OnRecordingUploadChanged.AddDynamic(this, &UMyGameInstance::HandleRecordingUploadChanged);
     }
 }
 
-void UMyGameInstance::HandleRecordingUploadFinished(bool bUploaded, const FString& WhyNot)
+void UMyGameInstance::HandleRecordingUploadChanged(const FProtokitePlaytestUploadUpdate& Update)
 {
-    if (bUploaded)
+    switch (Update.State)
     {
-        UE_LOG(LogTemp, Display, TEXT("Your recording reached the studio. Thank you."));
-        return;
+    case EProtokitePlaytestUploadState::Started:
+        UE_LOG(LogTemp, Display, TEXT("Sending your recording to session %s."), *Update.PlaytestSessionId);
+        break;
+    case EProtokitePlaytestUploadState::Uploaded:
+        UE_LOG(LogTemp, Display, TEXT("Your recording reached the studio (%lld bytes). Thank you."), Update.BytesSent);
+        break;
+    default:
+        UE_LOG(LogTemp, Warning, TEXT("Your recording is kept to send later: %s"), *Update.WhyNot);
+        break;
     }
-    UE_LOG(LogTemp, Warning, TEXT("Your recording was not sent: %s"), *WhyNot);
 }
 ```
 
@@ -531,18 +596,19 @@ Settings**, which needs no playtest and hands back the project's settings.
 | Protokite Is Playtest Feature Enabled, with Protokite Playtest Feature Video Recording / Exception Capturing / Heavy Analytics | Whether the playtest turns a feature on |
 | Protokite Get Playtest Consent, Protokite Get Players Consent Answer, Protokite Describe Playtest Consent | What the player let the playtest collect |
 | Protokite Set Playtest Consent, Protokite Ask For Playtest Consent, Protokite Is Consent Question Open | Answering it from your own screens, and asking it again |
-| Protokite Get Playtest Session Id, Protokite End Playtest Session | The launch's Protokite session |
+| Protokite Get Playtest Session Id, Protokite Start Playtest Session, Protokite End Playtest Session | The Protokite session |
 | Protokite Record Playtest Event | Records one of your own playtest events |
-| Protokite Is Recording Video, Protokite Stop Video Recording | The launch's recording |
+| Protokite Is Recording Video, Protokite Start Video Recording, Protokite Stop Video Recording | The recording |
 | Protokite Can Send Playtest Recording, Protokite Stop And Upload Playtest Recording | Sending the recording now |
 | Protokite Can Open Feedback Form, Protokite Open / Close Feedback Form, Protokite Is Feedback Form Open | The built-in form |
 | Protokite Get Playtest Settings | The project's playtest settings, to change the form's logos while the game runs. It needs no playtest. A change is not saved and lasts until the game quits; in Play In Editor it lasts until the editor closes, and saving Project Settings meanwhile keeps it |
 | Protokite Get Feedback Form, Set Feedback Text Answer, Set Feedback Rating Answer, Set Feedback Checkbox Answer, Set Feedback Chosen Option, Find Feedback Form Problems, Protokite Send Feedback Form Answers | A form of your own |
 | Protokite Feedback Question Kind Text / Text Area / Rating / Select / Checkbox | A question's kind, to compare with its Type |
 
-The playtest subsystem's own **On Recording Upload Finished** event is reached through the node **Get
-ProtokitePlaytestSubsystem** in the node menu, titled **Protokite Playtest Subsystem** in the graph (see
-[Hearing how the upload went](#hearing-how-the-upload-went)).
+The playtest subsystem's own events, **On Recording Upload Changed** and **On Playtest Session Changed**, are reached through
+the node **Get ProtokitePlaytestSubsystem** in the node menu, titled **Protokite Playtest Subsystem** in the graph (see
+[Hearing how the upload went](#hearing-how-the-upload-went) and
+[Starting and ending sessions yourself](#starting-and-ending-sessions-yourself)).
 
 ## Calling the plugin from C++
 

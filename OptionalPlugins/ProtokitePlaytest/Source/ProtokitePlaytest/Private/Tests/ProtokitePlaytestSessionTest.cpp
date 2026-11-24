@@ -19,12 +19,6 @@ using namespace ProtokitePlaytestFixtures;
 
 namespace
 {
-	void ExpectSessionState(FAutomationTestBase& Test, const FString& What, EProtokitePlaytestSessionState Actual,
-		EProtokitePlaytestSessionState Expected)
-	{
-		Test.TestEqual(What, static_cast<int32>(Actual), static_cast<int32>(Expected));
-	}
-
 	FString ReadFile(const FString& Path)
 	{
 		FString Contents;
@@ -362,11 +356,12 @@ bool FProtokitePlaytestSessionEndUsesTheStartsAddressAndHeadersTest::RunTest(con
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionEndingTwiceSendsTwoEndsTest,
-	"Protokite.Playtest.Session.EndingTwiceSendsTwoEnds",
+/** An end needs a session open: none before one starts, and none for a session already ended. Each refusal says why. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionEndingTwiceSendsOneEndTest,
+	"Protokite.Playtest.Session.EndingTwiceSendsOneEnd",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FProtokitePlaytestSessionEndingTwiceSendsTwoEndsTest::RunTest(const FString& Parameters)
+bool FProtokitePlaytestSessionEndingTwiceSendsOneEndTest::RunTest(const FString& Parameters)
 {
 	FScopedPlaytestSettings Settings(true, UsableUrl);
 	FPlaytestFixture Fixture;
@@ -374,13 +369,14 @@ bool FProtokitePlaytestSessionEndingTwiceSendsTwoEndsTest::RunTest(const FString
 	Fixture.StartFlock();
 	TestFalse(TEXT("Nothing to end before a session starts"), Fixture.Playtest->EndPlaytestSession());
 	TestEqual(TEXT("And nothing is sent"), Fixture.SessionEnds(), 0);
+	TestEqual(TEXT("The log says the launch's session is still starting"), Capture.LinesContaining(TEXT("one is still starting")).Num(), 1);
 
 	Fixture.RegisterFlockSession(FirstFlockSessionId);
 	TestTrue(TEXT("The first end"), Fixture.Playtest->EndPlaytestSession());
-	TestTrue(TEXT("The second end"), Fixture.Playtest->EndPlaytestSession());
-	TestEqual(TEXT("Two ends are sent"), Fixture.SessionEnds(), 2);
-	TestEqual(TEXT("Both are reported as ended"), Capture.LinesContaining(TEXT("ended.")).Num(), 2);
-	TestEqual(TEXT("Neither is reported as a failure"), Capture.LinesContaining(TEXT("could not be ended")).Num(), 0);
+	TestFalse(TEXT("The second end is refused"), Fixture.Playtest->EndPlaytestSession());
+	TestEqual(TEXT("One end is sent"), Fixture.SessionEnds(), 1);
+	TestEqual(TEXT("It is reported as ended"), Capture.LinesContaining(TEXT("ended.")).Num(), 1);
+	TestEqual(TEXT("The second refusal says none is open"), Capture.LinesContaining(TEXT("none is open")).Num(), 1);
 	return true;
 }
 
@@ -410,9 +406,11 @@ bool FProtokitePlaytestSessionEndReportsWhetherItWasTakenTest::RunTest(const FSt
 		TestTrue(TEXT("With no reason"), Heard[0].Value.IsEmpty());
 	}
 
-	// The counter-case: an end Protokite does not take is heard as not ended, with its reason.
+	// The counter-case: an end Protokite does not take is heard as not ended, with its reason. A second session is
+	// started for it, since an ended one cannot be ended again.
 	Heard.Reset();
 	Fixture.Transport->Answer(PlaytestSessionEndRoute, FProtokitePlaytestFakeTransport::Status(500, TEXT("{\"detail\":\"Internal Server Error\"}")));
+	TestTrue(TEXT("Precondition: a second session is started"), Fixture.Playtest->StartPlaytestSession());
 	TestTrue(TEXT("A second end is sent"), Fixture.Playtest->EndPlaytestSession([&Heard](bool bEnded, const FString& WhyNot)
 	{
 		Heard.Add({ bEnded, WhyNot });
@@ -486,7 +484,7 @@ bool FProtokitePlaytestSessionNoPlayerIdentitySendsNothingTest::RunTest(const FS
 	TestEqual(TEXT("No start without an identity"), Fixture.SessionStarts(), 0);
 	ExpectSessionState(*this, TEXT("No identity"), Fixture.Playtest->GetPlaytestSessionState(), EProtokitePlaytestSessionState::NoPlayerIdentity);
 	TestTrue(TEXT("The identity is empty"), Fixture.Playtest->GetPlaytestIdentity().IsEmpty());
-	const TArray<FPlaytestLogCapture::FLine> Reasons = Capture.LinesContaining(TEXT("No Protokite session is started this launch"));
+	const TArray<FPlaytestLogCapture::FLine> Reasons = Capture.LinesContaining(TEXT("No Protokite session is started, and nothing is sent"));
 	if (TestEqual(TEXT("The reason is logged once"), Reasons.Num(), 1))
 	{
 		TestEqual(TEXT("As a warning"), static_cast<int32>(Reasons[0].Verbosity), static_cast<int32>(ELogVerbosity::Warning));
@@ -495,7 +493,7 @@ bool FProtokitePlaytestSessionNoPlayerIdentitySendsNothingTest::RunTest(const FS
 
 	Fixture.RegisterFlockSession(SecondFlockSessionId);
 	TestEqual(TEXT("Nothing is tried again this launch"), Fixture.SessionStarts(), 0);
-	TestEqual(TEXT("And the reason is not logged again"), Capture.LinesContaining(TEXT("No Protokite session is started this launch")).Num(), 1);
+	TestEqual(TEXT("And the reason is not logged again"), Capture.LinesContaining(TEXT("No Protokite session is started, and nothing is sent")).Num(), 1);
 	return true;
 }
 
@@ -608,7 +606,7 @@ bool FProtokitePlaytestSessionLogsTheWaitAndTheStartOnceTest::RunTest(const FStr
 	}
 
 	Fixture.RegisterFlockSession(FirstFlockSessionId);
-	const TArray<FPlaytestLogCapture::FLine> Starts = Capture.LinesContaining(TEXT("started for this launch"));
+	const TArray<FPlaytestLogCapture::FLine> Starts = Capture.LinesContaining(TEXT("started, with the player"));
 	if (TestEqual(TEXT("The start is logged once"), Starts.Num(), 1))
 	{
 		TestEqual(TEXT("At Log"), static_cast<int32>(Starts[0].Verbosity), static_cast<int32>(ELogVerbosity::Log));
@@ -792,6 +790,31 @@ bool FProtokitePlaytestSessionAnExpiredSignInIsRenewedAndTheStartWaitsTest::RunT
 	TestEqual(TEXT("The renewal answering starts the session"), Fixture.SessionStarts(), 1);
 	TestEqual(TEXT("Renewed once"), Fixture.Transport->CountRequestsEndingWith(TokenRefreshRoute), 1);
 	TestEqualSensitive(TEXT("With the renewed token"), PlayerTokenOnLastRequestTo(Fixture, PlaytestSessionStartRoute), Renewed);
+	return true;
+}
+
+/** A later session renews a sign-in that is running out again, though an earlier session of the launch renewed it once. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProtokitePlaytestSessionALaterSessionRenewsAgainTest,
+	"Protokite.Playtest.Session.ALaterSessionRenewsTheSignInAgain",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProtokitePlaytestSessionALaterSessionRenewsAgainTest::RunTest(const FString& Parameters)
+{
+	FScopedPlaytestSettings Settings(true, UsableUrl);
+	FPlaytestFixture Fixture;
+	// Each renewal hands back a token that has run out too, so every session finds it running out.
+	Fixture.Transport->Answer(TokenRefreshRoute, RenewedAnswer(MakeAccessToken(FlockPlayerId, -60, TEXT("renewed"))));
+	Fixture.SignInToFlockOnStart(FlockPlayerId, -60);
+	Fixture.StartFlock();
+	Fixture.RegisterFlockSession(FirstFlockSessionId);
+	TestEqual(TEXT("Precondition: the first session started"), Fixture.SessionStarts(), 1);
+	const int32 RenewalsForTheFirst = Fixture.Transport->CountRequestsEndingWith(TokenRefreshRoute);
+	TestTrue(TEXT("After a renewal"), RenewalsForTheFirst >= 1);
+
+	TestTrue(TEXT("Precondition: it ends"), Fixture.Playtest->EndPlaytestSession());
+	TestTrue(TEXT("The game starts another"), Fixture.Playtest->StartPlaytestSession());
+	TestEqual(TEXT("Which renews the sign-in again"), Fixture.Transport->CountRequestsEndingWith(TokenRefreshRoute), RenewalsForTheFirst + 1);
+	TestEqual(TEXT("And starts"), Fixture.SessionStarts(), 2);
 	return true;
 }
 

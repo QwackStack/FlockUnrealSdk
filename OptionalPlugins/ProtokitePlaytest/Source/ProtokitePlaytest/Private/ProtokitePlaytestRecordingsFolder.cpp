@@ -179,6 +179,13 @@ FString FProtokitePlaytestRecordingRun::GetUnfinishedVideoFilePath() const
 	return GetVideoFilePath() + TEXT(".part");
 }
 
+void FProtokitePlaytestRecordingRun::ReleaseReservation() const
+{
+	// A file that cannot be written leaves the reservation as it was, which only counts the run larger than it is.
+	FFileHelper::SaveStringToFile(TEXT("0"), *FPaths::Combine(Folder, FProtokitePlaytestRecordingsFolder::ReservedBytesFileName),
+		FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+}
+
 bool FProtokitePlaytestRecordingRun::SaveSession(const FProtokitePlaytestRecordingSession& Session, FString& OutError) const
 {
 	const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();

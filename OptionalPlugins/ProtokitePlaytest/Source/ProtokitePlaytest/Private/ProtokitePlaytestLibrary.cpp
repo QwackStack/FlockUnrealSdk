@@ -85,6 +85,12 @@ FString UProtokitePlaytestLibrary::GetPlaytestSessionId(const UObject* WorldCont
 	return Playtest != nullptr ? Playtest->GetPlaytestSessionId() : FString();
 }
 
+bool UProtokitePlaytestLibrary::StartPlaytestSession(const UObject* WorldContextObject)
+{
+	UProtokitePlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);
+	return Playtest != nullptr && Playtest->StartPlaytestSession();
+}
+
 bool UProtokitePlaytestLibrary::EndPlaytestSession(const UObject* WorldContextObject)
 {
 	UProtokitePlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);
@@ -96,6 +102,12 @@ bool UProtokitePlaytestLibrary::RecordPlaytestEvent(const UObject* WorldContextO
 {
 	UProtokitePlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);
 	return Playtest != nullptr && Playtest->RecordPlaytestEvent(EventName, Properties);
+}
+
+bool UProtokitePlaytestLibrary::StartVideoRecording(const UObject* WorldContextObject)
+{
+	UProtokitePlaytestSubsystem* Playtest = FindPlaytestSubsystem(WorldContextObject);
+	return Playtest != nullptr && Playtest->StartVideoRecording();
 }
 
 bool UProtokitePlaytestLibrary::StopVideoRecording(const UObject* WorldContextObject)

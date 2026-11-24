@@ -103,13 +103,24 @@ public:
 
 	// ── Session ──
 
-	/** The id Protokite gave this launch's session. Empty until the session has started. */
+	/** The id Protokite gave the current session. Empty until a session has started. */
 	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Protokite Get Playtest Session Id"))
 	static FString GetPlaytestSessionId(const UObject* WorldContextObject);
 
 	/**
-	 * Ends this launch's Protokite session now, for a game that quits on its own schedule. It also ends by itself when
-	 * the game shuts down. Returns false, and sends nothing, when no session has started.
+	 * Starts a Protokite session, for a game that turned Start Session And Recording Automatically off or ended the last
+	 * one. It goes once a player's Flock session reaches the server, so true means asked for. Returns false, with the
+	 * reason in the log, when one is starting, open or still ending, the playtest is not ready, or the player's answer
+	 * lets it collect nothing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Protokite|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Protokite Start Playtest Session"))
+	static bool StartPlaytestSession(const UObject* WorldContextObject);
+
+	/**
+	 * Ends the Protokite session now, for a game that ends a part of its play or quits on its own schedule. A recording
+	 * running is stopped and uploaded to it first, and the end is sent once the upload has an answer; Start Playtest
+	 * Session may then start another. It also ends by itself when the game shuts down. Returns false, and sends nothing,
+	 * when no session is open or it is already ending.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Protokite|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Protokite End Playtest Session"))
 	static bool EndPlaytestSession(const UObject* WorldContextObject);
@@ -129,8 +140,17 @@ public:
 	// ── Video recording ──
 
 	/**
-	 * Stops this launch's video recording for good and saves the file, for a game that quits on its own schedule. No
-	 * other recording starts this launch. Returns false when no recording is capturing.
+	 * Starts recording the screen for the playtest, for a game that turned Start Session And Recording Automatically off
+	 * or stopped the last recording. It goes to the open session, or to the next one started. Returns false, with the
+	 * reason in the log, when one is recording or still being saved, the playtest is not ready, the player's answer or
+	 * the playtest does not allow video, video cannot be recorded here, or Recordings Disk Budget has no room left.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Protokite|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Protokite Start Video Recording"))
+	static bool StartVideoRecording(const UObject* WorldContextObject);
+
+	/**
+	 * Stops the video recording and saves the file, which is then uploaded to its session. No other recording starts
+	 * until something asks for one. Returns false when no recording is capturing.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Protokite|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Protokite Stop Video Recording"))
 	static bool StopVideoRecording(const UObject* WorldContextObject);
@@ -140,17 +160,16 @@ public:
 	static bool IsRecordingVideo(const UObject* WorldContextObject);
 
 	/**
-	 * Whether this launch's recording has somewhere to go: one is running, it belongs to the playtest, and the launch's
-	 * session has started. Ask this before offering a player a way to send it: a recording with no session cannot be
-	 * uploaded at all.
+	 * Whether the running recording has somewhere to go now: one is running, it belongs to the playtest, and a session is
+	 * open. Ask this before offering a player a way to send it: a recording with no session waits for one.
 	 */
 	UFUNCTION(BlueprintPure, Category = "Protokite|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Protokite Can Send Playtest Recording"))
 	static bool CanSendPlaytestRecording(const UObject* WorldContextObject);
 
 	/**
-	 * Stops this launch's recording and uploads it straight away, while the player is still in the game. Returns false,
-	 * and changes nothing, when no recording is capturing. The upload is not waited for; a recording that does not make
-	 * it is kept and a later launch sends it.
+	 * Stops the recording and uploads it straight away, while the player is still in the game. Returns false, and
+	 * changes nothing, when no recording is capturing. The upload is not waited for: On Recording Upload Changed, on the
+	 * playtest subsystem, says how it went, and a recording that does not make it is kept and a later launch sends it.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Protokite|Playtest", meta = (WorldContext = "WorldContextObject", DisplayName = "Protokite Stop And Upload Playtest Recording"))
 	static bool StopAndUploadPlaytestRecording(const UObject* WorldContextObject);

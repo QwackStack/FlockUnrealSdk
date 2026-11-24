@@ -8,6 +8,7 @@
 
 #include "Containers/Ticker.h"
 #include "Dom/JsonObject.h"
+#include "ProtokitePlaytestSession.h"
 #include "ProtokitePlaytestStatus.h"
 #include "Misc/AutomationTest.h"
 
@@ -43,6 +44,12 @@ inline FString StringMember(const TSharedPtr<FJsonObject>& Object, const TCHAR* 
 }
 
 /** Fails the test with both statuses spelled out when Actual is not Expected. */
+inline void ExpectSessionState(FAutomationTestBase& Test, const FString& What, EProtokitePlaytestSessionState Actual,
+	EProtokitePlaytestSessionState Expected)
+{
+	Test.TestEqual(What, static_cast<int32>(Actual), static_cast<int32>(Expected));
+}
+
 inline void ExpectPlaytestStatus(FAutomationTestBase& Test, const FString& What, EProtokitePlaytestStatus Actual,
 	EProtokitePlaytestStatus Expected)
 {

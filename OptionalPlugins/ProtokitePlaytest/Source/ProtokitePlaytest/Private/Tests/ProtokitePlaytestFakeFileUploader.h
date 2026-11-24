@@ -131,6 +131,17 @@ public:
 		}
 	}
 
+	/** Delivers the oldest queued completion alone. */
+	void FlushOne()
+	{
+		if (Pending.Num() > 0)
+		{
+			TFunction<void()> Run = MoveTemp(Pending[0]);
+			Pending.RemoveAt(0);
+			Run();
+		}
+	}
+
 	/** Drains until nothing new is queued. */
 	void FlushAll()
 	{

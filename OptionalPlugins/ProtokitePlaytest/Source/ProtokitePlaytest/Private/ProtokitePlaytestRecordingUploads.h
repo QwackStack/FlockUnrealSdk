@@ -15,6 +15,9 @@ struct FProtokitePlaytestRecordingUploadOutcome
 	/** True only when storage answered the PUT with a 2xx. A link on its own is never this. */
 	bool bUploaded = false;
 
+	/** How many bytes the PUT sent; 0 unless uploaded. */
+	int64 BytesSent = 0;
+
 	/** True when the recording was deleted after being uploaded. */
 	bool bRecordingDeleted = false;
 
@@ -70,10 +73,13 @@ public:
 	 * same time: they share one connection and one disk budget, and a failure part-way should leave the rest for a
 	 * later launch rather than half-sending all of them.
 	 *
-	 * A run another launch still holds is skipped, not waited for.
+	 * A run another launch still holds is skipped, not waited for. OnEachStarted and OnEachFinished, when given, hear each
+	 * recording's upload begin and end, with the Protokite session it goes to.
 	 */
 	void UploadEveryOneWaiting(const FString& RecordingsFolder, const TMap<FString, FString>& LaunchHeaders,
-		TFunction<void(int32 UploadedCount, int32 LeftCount)> OnDone);
+		TFunction<void(int32 UploadedCount, int32 LeftCount)> OnDone,
+		TFunction<void(const FString& PlaytestSessionId)> OnEachStarted = nullptr,
+		TFunction<void(const FString& PlaytestSessionId, const FProtokitePlaytestRecordingUploadOutcome& Outcome)> OnEachFinished = nullptr);
 
 	/** How long a single recording may take to send. Zero means no limit, which is the default for a whole recording. */
 	float UploadTimeoutSeconds = 0.f;

@@ -44,6 +44,15 @@ public:
 	FString ProtokiteApiUrl = DefaultProtokiteApiUrl;
 
 	/**
+	 * Start the launch's Protokite session, and its screen recording when the playtest records video, by themselves.
+	 *
+	 * On by default. Off, nothing starts until the game calls Start Playtest Session and Start Video Recording, for a game
+	 * that records only part of its play (one match, one level). Either way the game may end a session and start another.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Playtesting", meta = (DisplayName = "Start Session And Recording Automatically"))
+	bool bStartSessionAndRecordingAutomatically = true;
+
+	/**
 	 * Ask the player what this playtest may collect, and collect nothing until they answer.
 	 *
 	 * On by default. The question is the playtest's own and says so: it is asked once this build's playtest is loaded,

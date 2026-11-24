@@ -16,6 +16,12 @@ namespace ProtokitePlaytestRecordingUploadTesting
 	inline const FString UploadSessionId = TEXT("01M2N94A0CM8JMH48XV1Z735YK");
 	inline const FString SignedUploadUrl = TEXT("http://storage.local/put/recording.webm?signature=abc");
 
+	/** The link route for one session: the session id makes it the longest fragment, so it wins over the session-start route. */
+	inline FString UploadLinkRouteFor(const FString& SessionId)
+	{
+		return FString(TEXT("/game/sdk/playtest-session/")) + SessionId + UploadRoute;
+	}
+
 	/** The shape the route really answers: the link sits under `result`, not at the root. */
 	inline FString EnvelopedLinkBody(const FString& UploadUrl = SignedUploadUrl)
 	{

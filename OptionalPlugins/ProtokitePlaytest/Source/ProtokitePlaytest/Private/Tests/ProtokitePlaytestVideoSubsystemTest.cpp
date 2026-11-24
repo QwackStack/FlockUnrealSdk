@@ -1274,7 +1274,7 @@ bool FProtokitePlaytestVideoRecordingsNoRoomRecordsNothingTest::RunTest(const FS
 	if (TestEqual(TEXT("Warned once"), Lines.Num(), 1))
 	{
 		TestEqual(TEXT("As a warning"), static_cast<int32>(Lines[0].Verbosity), static_cast<int32>(ELogVerbosity::Warning));
-		TestTrue(TEXT("Saying no video is recorded"), Lines[0].Message.Contains(TEXT("No video is recorded this launch")));
+		TestTrue(TEXT("Saying no video is recorded"), Lines[0].Message.Contains(TEXT("No video is recorded:")));
 	}
 	TestEqual(TEXT("No run folder is made for it"), CountRecordingRunFolders(RecordingsFolder(Fixture), EProtokitePlaytestRecordingKind::Playtest), 0);
 	TestTrue(TEXT("The running game's run is untouched"), IFileManager::Get().DirectoryExists(*StillRunning->GetFolder()));

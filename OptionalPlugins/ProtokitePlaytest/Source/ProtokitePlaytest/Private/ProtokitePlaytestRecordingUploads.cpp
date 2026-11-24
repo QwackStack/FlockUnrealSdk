@@ -120,6 +120,7 @@ void FProtokitePlaytestRecordingUploads::AskForLinkAndSend(const TSharedRef<FPro
 					if (Sent.IsUploaded())
 					{
 						Outcome.bUploaded = true;
+						Outcome.BytesSent = Sent.BytesSent;
 
 						TArray<FString> FilesLeft;
 						Outcome.bRecordingDeleted = Run->DeleteEverything(FilesLeft);
@@ -161,7 +162,9 @@ void FProtokitePlaytestRecordingUploads::AskForLinkAndSend(const TSharedRef<FPro
 }
 
 void FProtokitePlaytestRecordingUploads::UploadEveryOneWaiting(const FString& RecordingsFolder,
-	const TMap<FString, FString>& LaunchHeaders, TFunction<void(int32, int32)> OnDone)
+	const TMap<FString, FString>& LaunchHeaders, TFunction<void(int32, int32)> OnDone,
+	TFunction<void(const FString&)> OnEachStarted,
+	TFunction<void(const FString&, const FProtokitePlaytestRecordingUploadOutcome&)> OnEachFinished)
 {
 	const TArray<FProtokitePlaytestRecordingWaitingToUpload> Waiting =
 		FProtokitePlaytestRecordingsFolder::FindRecordingsWaitingToUpload(RecordingsFolder);
@@ -179,7 +182,7 @@ void FProtokitePlaytestRecordingUploads::UploadEveryOneWaiting(const FString& Re
 	// each upload's completion holds it strongly, so it is freed with the last completion rather than never.
 	const TSharedRef<TFunction<void()>> UploadNext = MakeShared<TFunction<void()>>();
 	const TWeakPtr<TFunction<void()>> WeakUploadNext = UploadNext;
-	*UploadNext = [WeakSelf, ToUpload, Uploaded, Left, Next, LaunchHeaders, WeakUploadNext, OnDone]()
+	*UploadNext = [WeakSelf, ToUpload, Uploaded, Left, Next, LaunchHeaders, WeakUploadNext, OnDone, OnEachStarted, OnEachFinished]()
 	{
 		const TSharedPtr<FProtokitePlaytestRecordingUploads> Self = WeakSelf.Pin();
 		if (!Self.IsValid())
@@ -205,9 +208,17 @@ void FProtokitePlaytestRecordingUploads::UploadEveryOneWaiting(const FString& Re
 			{
 				return;
 			}
+			if (OnEachStarted)
+			{
+				OnEachStarted(Recording.Session.ProtokiteSessionId);
+			}
 			Self->UploadOne(Run.ToSharedRef(), Recording.Session, LaunchHeaders,
-				[Uploaded, Left, ThisStep](FProtokitePlaytestRecordingUploadOutcome Outcome)
+				[Uploaded, Left, ThisStep, OnEachFinished, SessionId = Recording.Session.ProtokiteSessionId](FProtokitePlaytestRecordingUploadOutcome Outcome)
 				{
+					if (OnEachFinished)
+					{
+						OnEachFinished(SessionId, Outcome);
+					}
 					if (Outcome.bUploaded)
 					{
 						++(*Uploaded);
